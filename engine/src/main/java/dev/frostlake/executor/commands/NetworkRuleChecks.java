@@ -40,7 +40,7 @@ import java.util.regex.Pattern;
  *   GCPPSCID            INGRESS                                      a whole number
  *   COMPUTE_POOL        INGRESS                                      not judged
  *   HOST_PORT           EGRESS, DATA_CONNECTIVITY_PROXY_EGRESS       host[:port], see {@link #isHostPort}
- *   PRIVATE_HOST_PORT   EGRESS                                       not judged
+ *   PRIVATE_HOST_PORT   EGRESS                                       none taken: every value is refused
  * </pre>
  *
  * <p>The account resolves a HOST_PORT rule's hosts when the rule is made and refuses one it cannot resolve. With no
@@ -164,9 +164,27 @@ final class NetworkRuleChecks {
                 return DIGITS.matcher(value).matches() && fits(value, true);
             case "HOST_PORT":
                 return isHostPort(value);
+            case "PRIVATE_HOST_PORT":
+                // A host and port, a bare host, a private-link host and a wildcard were all refused.
+                return false;
             default:
                 return true;
         }
+    }
+
+    /**
+     * How many values a value list holds, as SHOW NETWORK RULES counts them: a comma inside a value separates
+     * several (live-verified).
+     *
+     * @param values the VALUE_LIST as written
+     * @return the count
+     */
+    static long entries(final List<String> values) {
+        long count = 0;
+        for (final String written : values) {
+            count += written.split(",", -1).length;
+        }
+        return count;
     }
 
     /** Whether a run of digits is a 64-bit number: a signed one, or an unsigned one. */

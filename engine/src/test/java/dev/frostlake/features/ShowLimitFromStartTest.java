@@ -27,8 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Where a listing's {@code LIMIT n FROM 'name'} starts (live-verified, listing by listing): tables, views and
- * schemas after the name; tasks at it; streams, tags, alerts and policies at the name's own row and on through
- * the listing — which shows when a listing spans schemas, whose rows come schema by schema.
+ * schemas after the name; tasks at it; streams, tags and alerts at the name's own row and on through the listing —
+ * which shows when a listing spans schemas, whose rows come schema by schema; and masking, row access and password
+ * policies read the name and keep every row.
  */
 public class ShowLimitFromStartTest extends BaseDatabaseTest {
 
@@ -93,8 +94,31 @@ public class ShowLimitFromStartTest extends BaseDatabaseTest {
         assertEquals(Arrays.asList("PC_AA.PC_X2G", "PC_ZZ.PC_X1G", "PC_ZZ.PC_X3G"), across("TAGS", "PC_X2G"));
     }
 
+    /** The three policy listings read the name and start nothing: every row is kept, up to the limit. */
     @Test
-    public void alertsAndPoliciesStartAtTheName() {
+    public void policiesReadTheNameAndKeepEveryRow() {
+        engine.execute("CREATE MASKING POLICY lf_ma AS (v VARCHAR) RETURNS VARCHAR -> v");
+        engine.execute("CREATE MASKING POLICY lf_mb AS (v VARCHAR) RETURNS VARCHAR -> v");
+        engine.execute("CREATE MASKING POLICY pc_aa.lf_mc AS (v VARCHAR) RETURNS VARCHAR -> v");
+        engine.execute("CREATE ROW ACCESS POLICY lf_ra AS (v VARCHAR) RETURNS BOOLEAN -> TRUE");
+        engine.execute("CREATE ROW ACCESS POLICY lf_rb AS (v VARCHAR) RETURNS BOOLEAN -> TRUE");
+        engine.execute("CREATE PASSWORD POLICY lf_pa");
+        engine.execute("CREATE PASSWORD POLICY lf_pb");
+        final String in = " IN SCHEMA test_db.test_schema LIMIT 5 FROM ";
+        assertEquals(Arrays.asList("TEST_SCHEMA.LF_MA", "TEST_SCHEMA.LF_MB"),
+            listed("SHOW MASKING POLICIES" + in + "'LF_MB'"));
+        assertEquals(Arrays.asList("TEST_SCHEMA.LF_RA", "TEST_SCHEMA.LF_RB"),
+            listed("SHOW ROW ACCESS POLICIES" + in + "'LF_RB'"));
+        assertEquals(Arrays.asList("TEST_SCHEMA.LF_PA", "TEST_SCHEMA.LF_PB"),
+            listed("SHOW PASSWORD POLICIES" + in + "'LF_PB'"));
+        assertEquals(Arrays.asList("PC_AA.LF_MC", "TEST_SCHEMA.LF_MA", "TEST_SCHEMA.LF_MB"),
+            listed("SHOW MASKING POLICIES LIKE 'LF_M%' IN DATABASE test_db LIMIT 10 FROM 'LF_MB'"));
+        assertEquals(Arrays.asList("TEST_SCHEMA.LF_PA"),
+            listed("SHOW PASSWORD POLICIES IN SCHEMA test_db.test_schema LIMIT 1"));
+    }
+
+    @Test
+    public void aPageFromTheFirstNameKeepsEveryRow() {
         engine.execute("CREATE ALERT lf_aa SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         engine.execute("CREATE ALERT lf_ab SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         engine.execute("CREATE MASKING POLICY lf_ma AS (v VARCHAR) RETURNS VARCHAR -> v");

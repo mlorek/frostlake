@@ -63,8 +63,24 @@ public final class FutureGrants {
      */
     public static String ownerOfNew(final Catalog catalog, final String objectKind,
                                     final Schema schema, final String objectName) {
+        return ownerOfNew(catalog, objectKind, objectKind, schema, objectName);
+    }
+
+    /**
+     * {@link #ownerOfNew} for an object the future grants of one kind cover whose privileges are recorded under
+     * another: an event table takes the grants ON FUTURE EVENT TABLES and holds them as a table's.
+     *
+     * @param catalog      the catalog holding the roles
+     * @param futureKind   the kind the future grants name, singular and upper-case (EVENT_TABLE, ...)
+     * @param recordedKind the kind its privileges are recorded under (TABLE, ...)
+     * @param schema       the schema the object is created in
+     * @param objectName   the object's own name, unqualified
+     * @return the role that owns the object
+     */
+    public static String ownerOfNew(final Catalog catalog, final String futureKind, final String recordedKind,
+                                    final Schema schema, final String objectName) {
         final String databaseName = schema == null ? null : schema.getDatabaseName();
-        return ownerOfNewNamed(catalog, objectKind, schema, objectName,
+        return ownerOfNewNamed(catalog, futureKind, recordedKind, schema, objectName,
             databaseName == null ? null : QualifiedName.join(databaseName, schema.getName(), objectName));
     }
 
@@ -83,22 +99,22 @@ public final class FutureGrants {
     public static String ownerOfNewRoutine(final Catalog catalog, final String objectKind, final Schema schema,
                                            final String routineName, final List<Parameter> parameters) {
         final String databaseName = schema == null ? null : schema.getDatabaseName();
-        return ownerOfNewNamed(catalog, objectKind, schema, routineName,
+        return ownerOfNewNamed(catalog, objectKind, objectKind, schema, routineName,
             databaseName == null ? null : GrantNames.routine(schema, routineName, parameters));
     }
 
-    private static String ownerOfNewNamed(final Catalog catalog, final String objectKind, final Schema schema,
-                                          final String objectName, final String qualified) {
+    private static String ownerOfNewNamed(final Catalog catalog, final String futureKind, final String objectKind,
+                                          final Schema schema, final String objectName, final String qualified) {
         if (qualified == null) {
             return catalog.currentRoleForOwner();
         }
         final String databaseName = schema.getDatabaseName();
         final List<Role> holders = new ArrayList<>();
         final List<FutureGrant> covering = new ArrayList<>();
-        collect(catalog, objectKind, "SCHEMA", QualifiedName.join(databaseName, schema.getName()),
+        collect(catalog, futureKind, "SCHEMA", QualifiedName.join(databaseName, schema.getName()),
             holders, covering);
         if (covering.isEmpty()) {
-            collect(catalog, objectKind, "DATABASE", databaseName, holders, covering);
+            collect(catalog, futureKind, "DATABASE", databaseName, holders, covering);
         }
         // The privileges a dropped object of this name held are not the new object's (GrantNames). A temporary
         // table that takes a permanent one's name only hides it, and the permanent table keeps its privileges.

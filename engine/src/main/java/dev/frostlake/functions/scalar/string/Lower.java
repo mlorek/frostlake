@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -31,7 +32,7 @@ public class Lower extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        return args.get(0).toString().toLowerCase(Locale.ROOT);
+        return SharedFunctionHelpers.textOf(args.get(0)).toLowerCase(Locale.ROOT);
     }
 
     @Override

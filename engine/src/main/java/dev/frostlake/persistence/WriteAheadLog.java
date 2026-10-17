@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import dev.frostlake.metastore.CounterDraw;
+import dev.frostlake.storage.RecordedResult;
 import dev.frostlake.transaction.WalStatementContext;
 
 import java.io.BufferedOutputStream;
@@ -33,7 +34,12 @@ import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,17 +59,25 @@ import org.slf4j.LoggerFactory;
  * double-apply), a crash after it recovers from the snapshot. See {@code docs/acid-snowflake-plan.md}.
  *
  * <p>Logical (statement) logging means replay RE-EXECUTES the SQL. What a statement computes at run time is put
- * back where the log can carry it: each statement's instant, the session it ran in and that session's context
- * (see {@link WalStatementContext}), the values it drew from IDENTITY columns and sequences, and the stream its
- * RANDOM, UUID_STRING and SAMPLE draw from, which the instant seeds. What a statement READ is read again: a
- * transaction that committed after another session's writes reads them on replay.
+ * back where the log can carry it: each statement's instant, the session it ran in and that session's context,
+ * variables and parameters (see {@link WalStatementContext}), the values it drew from IDENTITY columns and
+ * sequences, the stream its RANDOM, UUID_STRING and SAMPLE draw from, which the instant seeds, the rows it read by
+ * RESULT_SCAN and from the query-history listings, and what CURRENT_SESSION, CURRENT_TRANSACTION and LAST_QUERY_ID
+ * answered. A transaction's record is appended when it commits, after what other sessions committed while it was
+ * open; each of its statements keeps how many records the log took between the statement and the commit, and the
+ * replay runs it in that place, so it reads what it read when it first ran. Work a statement commits in a session of
+ * its own — a task's run, an alert's evaluation, a pipe's load — is no part of its transaction: a statement a block
+ * or a procedure runs to start it is logged at once in a record of its own, and the enclosing statement's replay does
+ * not run it again.
  */
 public class WriteAheadLog {
 
     private static final Logger logger = LoggerFactory.getLogger(WriteAheadLog.class);
 
     private static final int MAGIC = 0x53465731;          // "SFW1"
-    private static final byte VERSION = 4;                // v4: v3 + what each statement ran under
+    private static final byte VERSION = 6;                // v6: v5 + each statement's identity answers, runs apart
+    private static final byte VERSION_WITH_STATE = 5;     // still readable; its identities answer as they do now
+    private static final byte VERSION_WITH_CONTEXT = 4;   // still readable; its statements replay where logged
     private static final byte VERSION_WITH_INSTANT = 3;   // still readable; its records replay in one session
     private static final byte VERSION_WITHOUT_INSTANT = 2;   // still readable; those records replay at the wall clock
     private static final byte REC_TRANSACTION = 1;
@@ -75,6 +89,10 @@ public class WriteAheadLog {
     private boolean readsInstants = true;
     /** False while reading a log before v4, whose statements carry no context. */
     private boolean readsContexts = true;
+    /** False while reading a log before v5, whose contexts carry no session state, results or place. */
+    private boolean readsStatementState = true;
+    /** False while reading a log before v6, whose contexts carry no identity answers. */
+    private boolean readsAnswers = true;
     private static final byte REC_CHECKPOINT = 2;
     private static final int MAX_STRING_BYTES = 1 << 28;  // 256 MB sanity cap — a larger length means a torn record
 
@@ -185,9 +203,68 @@ public class WriteAheadLog {
             writeString(o, draw.getCounter());
             o.writeLong(draw.getValue());
         }
+        o.writeInt(context.getLag());
+        writeState(o, context.getVariables(), context.getUnkeptVariables());
+        writeState(o, context.getParameters(), context.getUnkeptParameters());
+        final List<RecordedResult> results = context.getResults();
+        o.writeInt(results.size());
+        for (final RecordedResult result : results) {
+            writeValue(o, result == null ? null : WalValues.bytesOf(result));
+        }
+        final Map<String, List<String>> answers = context.getAnswers();
+        o.writeInt(answers.size());
+        for (final Map.Entry<String, List<String>> identity : answers.entrySet()) {
+            writeString(o, identity.getKey());
+            o.writeInt(identity.getValue().size());
+            for (final String value : identity.getValue()) {
+                writeNullable(o, value);
+            }
+        }
+        o.writeBoolean(context.isRunsLoggedApart());
     }
 
-    private static WalStatementContext readContext(final DataInputStream in) throws IOException {
+    /**
+     * A session's variables or parameters, each by name with its value, or as one the log cannot keep: a value
+     * serialization does not write, or one the context itself could not keep.
+     */
+    private static void writeState(final DataOutputStream o, final Map<String, Object> values,
+                                   final Set<String> unkept) throws IOException {
+        o.writeBoolean(values != null);
+        if (values == null) {
+            return;
+        }
+        o.writeInt(values.size() + unkept.size());
+        for (final Map.Entry<String, Object> entry : values.entrySet()) {
+            writeString(o, entry.getKey());
+            writeValue(o, WalValues.bytesOf(entry.getValue()));
+        }
+        for (final String name : unkept) {
+            writeString(o, name);
+            writeValue(o, null);
+        }
+    }
+
+    /** A serialized value, or the mark of one not kept. */
+    private static void writeValue(final DataOutputStream o, final byte[] bytes) throws IOException {
+        o.writeBoolean(bytes != null);
+        if (bytes != null) {
+            o.writeInt(bytes.length);
+            o.write(bytes);
+        }
+    }
+
+    /** A serialized value's bytes, or null for one not kept. */
+    private static byte[] readValue(final DataInputStream in) throws IOException {
+        if (!in.readBoolean()) {
+            return null;
+        }
+        final byte[] bytes = new byte[readCount(in)];
+        in.readFully(bytes);
+        return bytes;
+    }
+
+    private static WalStatementContext readContext(final DataInputStream in, final boolean withState,
+                                                   final boolean withAnswers) throws IOException {
         if (!in.readBoolean()) {
             return null;
         }
@@ -208,7 +285,72 @@ public class WriteAheadLog {
             final String counter = readString(in);
             draws.add(new CounterDraw(counter, in.readLong()));
         }
-        return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws);
+        if (!withState) {
+            return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws);
+        }
+        final int lag = in.readInt();
+        final Set<String> unkeptVariables = new HashSet<>();
+        final Map<String, Object> variables = readState(in, new LinkedHashMap<String, Object>(), unkeptVariables);
+        final Set<String> unkeptParameters = new HashSet<>();
+        final Map<String, Object> parameters = readState(in, new HashMap<String, Object>(), unkeptParameters);
+        final List<RecordedResult> results = new ArrayList<>();
+        final int read = readCount(in);
+        for (int i = 0; i < read; i++) {
+            final byte[] bytes = readValue(in);
+            results.add(bytes == null ? null : recordedResult(bytes));
+        }
+        final Map<String, List<String>> answers = new LinkedHashMap<>();
+        boolean runsLoggedApart = false;
+        if (withAnswers) {
+            final int identities = readCount(in);
+            for (int i = 0; i < identities; i++) {
+                final String identity = readString(in);
+                final List<String> values = new ArrayList<>();
+                final int answered = readCount(in);
+                for (int j = 0; j < answered; j++) {
+                    values.add(readNullable(in));
+                }
+                answers.put(identity, values);
+            }
+            runsLoggedApart = in.readBoolean();
+        }
+        return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws,
+            variables, parameters, unkeptVariables, unkeptParameters, results, answers, runsLoggedApart, -1L, lag);
+    }
+
+    /** A session's variables or parameters, into {@code into}, the names of those not kept into {@code unkept}. */
+    private static Map<String, Object> readState(final DataInputStream in, final Map<String, Object> into,
+                                                 final Set<String> unkept) throws IOException {
+        if (!in.readBoolean()) {
+            return null;
+        }
+        final int count = readCount(in);
+        for (int i = 0; i < count; i++) {
+            final String name = readString(in);
+            final byte[] bytes = readValue(in);
+            if (bytes == null) {
+                unkept.add(name);
+                continue;
+            }
+            try {
+                into.put(name, WalValues.valueOf(bytes));
+            } catch (final IOException unreadable) {
+                logger.debug("A write-ahead log value of {} does not read back: {}", name, unreadable.getMessage());
+                unkept.add(name);
+            }
+        }
+        return into;
+    }
+
+    /** A result a statement read by RESULT_SCAN, or null when it does not read back. */
+    private static RecordedResult recordedResult(final byte[] bytes) {
+        try {
+            final Object value = WalValues.valueOf(bytes);
+            return value instanceof RecordedResult ? (RecordedResult) value : null;
+        } catch (final IOException unreadable) {
+            logger.debug("A write-ahead log result does not read back: {}", unreadable.getMessage());
+            return null;
+        }
     }
 
     private static void writeNullable(final DataOutputStream o, final String s) throws IOException {
@@ -254,10 +396,14 @@ public class WriteAheadLog {
                 logger.warn("Write-ahead log at {} has an unrecognized header; ignoring it", path);
                 return new ArrayList<>();
             }
-            // v2 records carry no instant; v3 onwards prefix each statement with one, and v4 with its context.
+            // v2 records carry no instant; v3 onwards prefix each statement with one, v4 with its context, v5
+            // adds the session state, results and place to the context, and v6 its identities' answers and whether
+            // its runs went to records of their own.
             final byte version = in.readByte();
             readsInstants = version >= VERSION_WITH_INSTANT;
-            readsContexts = version >= VERSION;
+            readsContexts = version >= VERSION_WITH_CONTEXT;
+            readsStatementState = version >= VERSION_WITH_STATE;
+            readsAnswers = version >= VERSION;
             while (true) {
                 final WalRecord rec = readRecord(in);
                 if (rec == null) {
@@ -299,7 +445,7 @@ public class WriteAheadLog {
                 final List<WalStatementContext> contexts = new ArrayList<>(count);
                 for (int i = 0; i < count; i++) {
                     instants.add(readsInstants ? instantFrom(in.readLong()) : null);
-                    contexts.add(readsContexts ? readContext(in) : null);
+                    contexts.add(readsContexts ? readContext(in, readsStatementState, readsAnswers) : null);
                     statements.add(readString(in));
                 }
                 return WalRecord.transaction(statements, instants, contexts);

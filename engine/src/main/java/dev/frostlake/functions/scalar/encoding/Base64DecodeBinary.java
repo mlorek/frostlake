@@ -34,8 +34,7 @@ public class Base64DecodeBinary extends BuiltInFunction {
         }
         final String text = args.get(0).toString();
         try {
-            return BinaryValue.fromBase64(
-                Base64Options.toStandardAlphabet(text, Base64Options.alphabetOf(args, 1)));
+            return BinaryValue.fromBase64(Base64Options.decodable(text, Base64Options.alphabetOf(args, 1)));
         } catch (final IllegalArgumentException notBase64) {
             throw Base64Options.notBase64(text);
         }

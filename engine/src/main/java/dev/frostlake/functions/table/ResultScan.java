@@ -23,6 +23,7 @@ import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.StatementResults;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
@@ -64,7 +65,7 @@ public class ResultScan extends TableFunction {
      * @return ResultSet from the cached query
      */
     public ResultSet execute(final String queryId) {
-        final ResultSet result = queryId == null ? null : resultCache.getResult(queryId);
+        final ResultSet result = resultFor(queryId);
         if (result == null) {
             // A statement that failed has an ID but never a result, and live says so in those words.
             if (queryId != null && resultCache.hasFailed(queryId)) {
@@ -92,6 +93,25 @@ public class ResultScan extends TableFunction {
     }
 
     /**
+     * The result a query ID names: the one a replayed statement first read in its place (see
+     * {@link StatementResults}), else the cached one, which a statement the write-ahead log may keep notes as read.
+     *
+     * @param queryId the query ID, or null
+     * @return the result, or null when there is none
+     */
+    public ResultSet resultFor(final String queryId) {
+        final ResultSet replayed = StatementResults.replayed(queryId);
+        if (replayed != null) {
+            return replayed;
+        }
+        final ResultSet result = queryId == null ? null : resultCache.getResult(queryId);
+        if (result != null) {
+            StatementResults.record(queryId, result);
+        }
+        return result;
+    }
+
+    /**
      * A procedure's one answer held against the width its RETURNS declared. A handler may answer a text longer
      * than {@code RETURNS VARCHAR(2)} allows: the CALL hands it out, and the scan of that CALL refuses to read
      * it — {@code String 'abc' is too long and would be truncated} — where a count of the scan's rows, which
@@ -114,7 +134,8 @@ public class ResultScan extends TableFunction {
             return rows;
         }
         final List<Row> held = new ArrayList<>();
-        held.add(new Row(new DeferredFault(new ColumnLengthException(width, (String) answer))));
+        // A write over the scan raises it as it is, with no DML sentence around it (live-verified).
+        held.add(new Row(DeferredFault.bare(new ColumnLengthException(width, (String) answer))));
         return held;
     }
 

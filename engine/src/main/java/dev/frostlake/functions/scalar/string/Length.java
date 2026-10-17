@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
@@ -35,7 +36,7 @@ public class Length extends TextArgumentFunction {
             // LENGTH of a BINARY value is its byte count, not the length of the hex rendering.
             return ((BinaryValue) args.get(0)).length();
         }
-        return CodePointText.length(args.get(0).toString());
+        return CodePointText.length(SharedFunctionHelpers.textOf(args.get(0)));
     }
 
     @Override

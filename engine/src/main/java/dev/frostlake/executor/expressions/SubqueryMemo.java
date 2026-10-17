@@ -50,6 +50,7 @@ public class SubqueryMemo {
     private final Map<String, List<ResultSet>> uncorrelatedResults = new HashMap<>();
     private final Map<String, PreparedInSet> inSets = new HashMap<>();
     private final Map<String, PreparedKeyedValues> keyedValues = new HashMap<>();
+    private final Map<String, PreparedKeySet> keySets = new HashMap<>();
     private final Set<String> correlated = new HashSet<>();
     private final Set<String> redrawn = new HashSet<>();
 
@@ -81,6 +82,26 @@ public class SubqueryMemo {
 
     public void recordRedrawnPerRow(final String subquery) {
         redrawn.add(subquery);
+    }
+
+    /**
+     * The inner keys a correlated EXISTS probes, by the query that computed them, or null if not yet built.
+     *
+     * @param subquery the keys' query
+     * @return the keys, or null
+     */
+    public PreparedKeySet cachedKeySet(final String subquery) {
+        return keySets.get(subquery);
+    }
+
+    /**
+     * Keeps the inner keys a correlated EXISTS probes.
+     *
+     * @param subquery the keys' query
+     * @param keys     the keys
+     */
+    public void recordKeySet(final String subquery, final PreparedKeySet keys) {
+        keySets.put(subquery, keys);
     }
 
     /** Prepared IN-membership index for an uncorrelated subquery, or {@code null} if not yet built. */

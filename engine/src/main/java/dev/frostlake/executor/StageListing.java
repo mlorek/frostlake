@@ -97,11 +97,12 @@ final class StageListing {
         final Path root = executor.resolveCopyBaseDir(location);
         final String stored = executor.copyPatternPrefix(location);
         final String pattern = ctx.PATTERN() != null ? ParseTreeText.extractStringLiteral(ctx.STRING_LITERAL()) : null;
+        // Each column of a listing is nullable to the driver, which reads it as known (live-verified).
         final List<ResultSetColumn> cols = Arrays.asList(
-            new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("size", NumericType.NUMBER),
-            new ResultSetColumn("md5", StringType.VARCHAR),
-            new ResultSetColumn("last_modified", StringType.VARCHAR));
+            new ResultSetColumn("name", StringType.VARCHAR, null, null, true, true),
+            new ResultSetColumn("size", NumericType.NUMBER, null, null, true, true),
+            new ResultSetColumn("md5", StringType.VARCHAR, null, null, true, true),
+            new ResultSetColumn("last_modified", StringType.VARCHAR, null, null, true, true));
         final List<Row> rows = new ArrayList<>();
         if (root == null || !Files.isDirectory(root)) {
             return new ResultSet(cols, rows);

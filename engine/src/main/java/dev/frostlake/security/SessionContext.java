@@ -20,6 +20,7 @@ import dev.frostlake.metastore.StatementSession;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -145,11 +146,16 @@ public class SessionContext {
         return roles().getCurrentRole();
     }
 
+    /**
+     * Makes a role the session's primary one.
+     *
+     * @param currentRole the role's own name, as the catalog keeps it: a quoted name as written
+     */
     public void setCurrentRole(final String currentRole) {
         final SessionRoles roles = ownedRoles();
-        roles.setCurrentRole(currentRole != null ? currentRole.toUpperCase(Locale.ROOT) : null);
+        roles.setCurrentRole(currentRole);
         if (currentRole != null) {
-            roles.activeRoles().add(currentRole.toUpperCase(Locale.ROOT));
+            roles.activeRoles().add(currentRole);
         }
     }
 
@@ -175,7 +181,7 @@ public class SessionContext {
         if (owner == null) {
             executableOwner.remove();
         } else {
-            executableOwner.set(owner.toUpperCase(Locale.ROOT));
+            executableOwner.set(owner);
         }
     }
 
@@ -185,9 +191,14 @@ public class SessionContext {
         return owner != null ? owner : roles().getCurrentRole();
     }
 
+    /**
+     * Adds a role to those the session acts with.
+     *
+     * @param role the role's own name, as the catalog keeps it
+     */
     public void addActiveRole(final String role) {
         if (role != null) {
-            ownedRoles().activeRoles().add(role.toUpperCase(Locale.ROOT));
+            ownedRoles().activeRoles().add(role);
         }
     }
 
@@ -356,5 +367,33 @@ public class SessionContext {
     /** Every session variable SET defined, in creation order — what SHOW VARIABLES lists. */
     public Map<String, Object> getAllSessionVariables() {
         return new LinkedHashMap<>(settings().variables());
+    }
+
+    /**
+     * Puts back the parameters and variables a session held, as the write-ahead log's replay does before each
+     * statement it runs again: every one the log names takes its logged value, one the log could not keep stays as
+     * this session holds it, and any other is gone.
+     *
+     * @param parameters       the parameters the session had set, by upper-case name
+     * @param variables        its variables, by upper-case name
+     * @param unkeptParameters the parameters whose values the log could not keep
+     * @param unkeptVariables  the variables whose values the log could not keep
+     */
+    public void restoreSessionState(final Map<String, Object> parameters, final Map<String, Object> variables,
+                                    final Set<String> unkeptParameters, final Set<String> unkeptVariables) {
+        restore(settings().parameters(), parameters, unkeptParameters);
+        restore(settings().variables(), variables, unkeptVariables);
+    }
+
+    private static void restore(final Map<String, Object> held, final Map<String, Object> logged,
+                                final Set<String> unkept) {
+        final Iterator<String> names = held.keySet().iterator();
+        while (names.hasNext()) {
+            final String name = names.next();
+            if (!logged.containsKey(name) && !unkept.contains(name)) {
+                names.remove();
+            }
+        }
+        held.putAll(logged);
     }
 }

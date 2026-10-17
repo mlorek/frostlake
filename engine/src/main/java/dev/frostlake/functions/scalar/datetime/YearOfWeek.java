@@ -16,11 +16,11 @@
 
 package dev.frostlake.functions.scalar.datetime;
 
+import dev.frostlake.executor.SessionWeek;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import java.time.LocalDateTime;
-import java.time.temporal.WeekFields;
 import java.util.List;
 
 /** YEAROFWEEK(t) — the year the week belongs to (engine week = ISO week). */
@@ -31,7 +31,7 @@ public class YearOfWeek extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final LocalDateTime t = SharedFunctionHelpers.toLocalDateTime(args.get(0));
-        return (long) t.get(WeekFields.ISO.weekBasedYear());
+        return (long) SessionWeek.yearOfWeek(t.toLocalDate());
     }
 
     @Override

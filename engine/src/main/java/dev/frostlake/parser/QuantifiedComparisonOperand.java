@@ -162,9 +162,6 @@ public final class QuantifiedComparisonOperand {
 
     /** The token of the operator a value is an application of, or null when it is none. */
     private static Token operatorOf(final ParseTree value) {
-        if (value instanceof FrostlakeParser.ConcatExprContext) {
-            return ((FrostlakeParser.ConcatExprContext) value).PIPE_PIPE().getSymbol();
-        }
         if (value instanceof FrostlakeParser.AdditiveExprContext) {
             return ((FrostlakeParser.AdditiveExprContext) value).op;
         }
@@ -238,10 +235,6 @@ public final class QuantifiedComparisonOperand {
 
     /** The token of the operator {@code node} applies to a quantified comparison over a query, or null. */
     private static Token refusedOperator(final ParseTree node) {
-        if (node instanceof FrostlakeParser.ConcatExprContext) {
-            final FrostlakeParser.ConcatExprContext concat = (FrostlakeParser.ConcatExprContext) node;
-            return quantified(concat.expression(0)) ? concat.PIPE_PIPE().getSymbol() : null;
-        }
         if (node instanceof FrostlakeParser.AdditiveExprContext) {
             final FrostlakeParser.AdditiveExprContext sum = (FrostlakeParser.AdditiveExprContext) node;
             return quantified(sum.expression(0)) ? sum.op : null;

@@ -46,6 +46,7 @@ import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.IcebergTableMetadata;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.MaterializedView;
@@ -72,6 +73,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.IcebergTypes;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
@@ -231,6 +233,7 @@ public class GetDdl extends BuiltInFunction {
                 return lookupOnly ? null : containers.database(database, names);
             }
             case "TABLE":
+            case "ICEBERG_TABLE":
             case "VIEW":
             case "MATERIALIZED_VIEW":
             case "DYNAMIC_TABLE":
@@ -274,7 +277,6 @@ public class GetDdl extends BuiltInFunction {
             case "FAILOVER_GROUP":
             case "REPLICATION_GROUP":
             case "NOTEBOOK":
-            case "ICEBERG_TABLE":
             case "ROLE":
             case "DBT_PROJECT":
             case "CORTEX_SEARCH_SERVICE":
@@ -339,7 +341,10 @@ public class GetDdl extends BuiltInFunction {
         return actual != null && actual.equals(name);
     }
 
-    /** TABLE, VIEW, MATERIALIZED VIEW or DYNAMIC TABLE: whichever relation of the four holds the name. */
+    /**
+     * TABLE, ICEBERG_TABLE, VIEW, MATERIALIZED VIEW or DYNAMIC TABLE: whichever relation holds the name — an
+     * ICEBERG_TABLE asked of a plain table answers the table's DDL (live-verified).
+     */
     private String relationDdl(final String objectType, final String written, final DdlNames names,
                                final boolean lookupOnly) {
         final String[] parts = nameParts(written);
@@ -390,6 +395,9 @@ public class GetDdl extends BuiltInFunction {
                 return missing(parts, owner, "Materialized view", false);
             case "DYNAMIC_TABLE":
                 return missing(parts, owner, "Dynamic table", true);
+            case "ICEBERG_TABLE":
+                // An Iceberg table is looked up as a table is, and a missing one named in full (live-verified).
+                return missing(parts, owner, "Iceberg table", true);
             default:
                 return missing(parts, owner, "Table", false);
         }
@@ -544,6 +552,11 @@ public class GetDdl extends BuiltInFunction {
                 return ObjectDdl.passwordPolicy(policy, names.object(owner, name));
             }
         }
+        for (final SecurityObject policy : owner.getSecurityObjects().list(SecurityObjectKind.SESSION_POLICY)) {
+            if (named(policy.getName(), name)) {
+                return ObjectDdl.sessionPolicy(policy, names.object(owner, name));
+            }
+        }
         throw missing(parts, owner, "Policy", true);
     }
 
@@ -569,7 +582,8 @@ public class GetDdl extends BuiltInFunction {
         } else if (table.isTransient() || schema.isTransientObject()) {
             sb.append("TRANSIENT ");
         }
-        sb.append("TABLE ").append(name);
+        final IcebergTableMetadata iceberg = table.getIcebergMetadata();
+        sb.append(iceberg != null ? "ICEBERG TABLE " : "TABLE ").append(name);
         // A clustering key is spelled between the name and the column list, as its statement wrote it, the paren
         // following it directly.
         if (!table.getClusterKeys().isEmpty()) {
@@ -587,7 +601,7 @@ public class GetDdl extends BuiltInFunction {
                     + SqlIdentifiers.spellCanonical(schema.getName()) + "."
                     + SqlIdentifiers.spellCanonical(table.getName()), SqlIdentifiers.spellCanonical(col.getName()));
             }
-            lines.add(columnLine(col, schema));
+            lines.add(columnLine(col, schema, iceberg != null && col.isFormatTyped()));
         }
         // Every key and check follows the columns as a TABLE-level line, however it was written: the unique keys
         // — a column's own first, then the table-level ones as declared — the checks, the primary key, and the
@@ -597,13 +611,13 @@ public class GetDdl extends BuiltInFunction {
         for (final UniqueConstraint unique : table.getUniqueConstraints()) {
             if (!declaredAs(declared, unique)) {
                 lines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames()) + ")",
-                    relies(table, unique.getColumnNames())));
+                    Boolean.TRUE.equals(unique.getRely())));
             }
         }
         for (final UniqueConstraint unique : table.getUniqueConstraints()) {
             if (declaredAs(declared, unique)) {
                 lines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames()) + ")",
-                    relies(table, unique.getColumnNames())));
+                    Boolean.TRUE.equals(unique.getRely())));
             }
         }
         for (final CheckConstraint check : table.getCheckConstraints()) {
@@ -612,7 +626,7 @@ public class GetDdl extends BuiltInFunction {
         }
         if (!table.getPrimaryKeys().isEmpty()) {
             lines.add(keyLine(table.primaryKeyConstraintName(), "primary key (" + spelledNames(table.getPrimaryKeys())
-                + ")", relies(table, table.getPrimaryKeys())));
+                + ")", Boolean.TRUE.equals(table.getPrimaryKeyRely())));
         }
         for (final TableColumn col : table.getColumns()) {
             if (col.getReferencedTable() != null) {
@@ -637,7 +651,29 @@ public class GetDdl extends BuiltInFunction {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(lines.get(i));
         }
         sb.append("\n)");
-        return sb.append(tableTail(table, schema)).toString();
+        final String tail = tableTail(table, schema);
+        if (iceberg == null) {
+            return sb.append(tail).toString();
+        }
+        return sb.append(tail, 0, tail.length() - 1).append(icebergTail(iceberg)).toString();
+    }
+
+    /**
+     * What ends an Iceberg table's DDL in place of the semicolon, each property on a line of its own led by a space:
+     * the external volume, the format version and the catalog, then the base location — a clone's in
+     * Snowflake-managed storage, and any table's on a volume of its own (live-verified for managed storage; its
+     * storage serialization policy, its retention and its change tracking are never spelled).
+     */
+    private static String icebergTail(final IcebergTableMetadata iceberg) {
+        final StringBuilder tail = new StringBuilder("\n EXTERNAL_VOLUME = ")
+            .append(ObjectDdl.quoted(iceberg.getExternalVolume()))
+            .append("\n ICEBERG_VERSION = 2\n CATALOG = ").append(ObjectDdl.quoted(iceberg.getCatalog()));
+        if ((iceberg.isBaseLocationSpelled()
+                || !IcebergTableMetadata.MANAGED_VOLUME.equalsIgnoreCase(iceberg.getExternalVolume()))
+                && iceberg.getBaseLocation() != null) {
+            tail.append("\n BASE_LOCATION = ").append(ObjectDdl.quoted(iceberg.getBaseLocation()));
+        }
+        return tail.append(';').toString();
     }
 
     /**
@@ -761,16 +797,6 @@ public class GetDdl extends BuiltInFunction {
         return false;
     }
 
-    /** Whether a key relies: RELY rides on the key's columns. */
-    private static boolean relies(final Table table, final List<String> columnNames) {
-        for (final String columnName : columnNames) {
-            if (table.hasColumn(columnName) && Boolean.TRUE.equals(table.getColumn(columnName).getRely())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /** A foreign key's parent in full, whatever the key's statement wrote: DATABASE.SCHEMA.TABLE. */
     private static String parentName(final Schema schema, final String referencedTable) {
         final String[] parts = QualifiedName.parse(referencedTable).parts();
@@ -796,9 +822,15 @@ public class GetDdl extends BuiltInFunction {
         return spelled.toString();
     }
 
-    private String columnLine(final TableColumn col, final Schema schema) {
+    /**
+     * One column's line: its name and type, then its collation, nullability, default or identity, policies, tags and
+     * COMMENT. An Iceberg table's column a column definition typed is spelled in the format's names
+     * ({@code IcebergTypes.ddlName}).
+     */
+    private String columnLine(final TableColumn col, final Schema schema, final boolean formatNames) {
         final StringBuilder c = new StringBuilder();
-        c.append(SqlIdentifiers.spellCanonicalEscaped(col.getName())).append(" ").append(renderType(col.getDataType()));
+        c.append(SqlIdentifiers.spellCanonicalEscaped(col.getName())).append(" ")
+         .append(formatNames ? IcebergTypes.ddlName(col.getFormatType()) : renderType(col.getDataType()));
         if (col.getCollation() != null && !col.getCollation().isEmpty()) {
             c.append(" COLLATE '").append(col.getCollation()).append("'");
         }
@@ -1095,12 +1127,15 @@ public class GetDdl extends BuiltInFunction {
      * each on a line of their own when set, then a handler's RUNTIME_VERSION and HANDLER, MEMOIZABLE
      * prefixing whatever line follows it, and the body re-quoted as ONE single-quoted literal whatever
      * quoting the CREATE used. CALLED ON NULL INPUT, a NOT NULL return and TEMPORARY are not rendered at
-     * all (live-verified).
+     * all, and an aggregate function is a CREATE OR REPLACE AGGREGATE FUNCTION (live-verified).
      */
     String functionDdl(final Function function, final Schema schema, final DdlNames names) {
         final StringBuilder sb = new StringBuilder("CREATE OR REPLACE ");
         if (function.isSecure()) {
             sb.append("SECURE ");
+        }
+        if (function.isAggregate()) {
+            sb.append("AGGREGATE ");
         }
         sb.append("FUNCTION ").append(names.routine(schema, function.getName()))
           .append(routineParameters(function.getParameters())).append("\n");

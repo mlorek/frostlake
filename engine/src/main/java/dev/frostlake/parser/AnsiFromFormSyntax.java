@@ -886,8 +886,7 @@ public final class AnsiFromFormSyntax {
             || context instanceof FrostlakeParser.UnaryExprContext
             || context instanceof FrostlakeParser.ParenExprContext
             || context instanceof FrostlakeParser.AdditiveExprContext
-            || context instanceof FrostlakeParser.MultiplicativeExprContext
-            || context instanceof FrostlakeParser.ConcatExprContext;
+            || context instanceof FrostlakeParser.MultiplicativeExprContext;
     }
 
     /**

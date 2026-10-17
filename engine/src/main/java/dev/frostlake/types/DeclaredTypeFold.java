@@ -250,12 +250,14 @@ public final class DeclaredTypeFold {
         if (left instanceof MapType && right instanceof MapType) {
             final DataType key = combineMapKey(((MapType) left).getKeyType(), ((MapType) right).getKeyType());
             final DataType value = combineMember(((MapType) left).getValueType(), ((MapType) right).getValueType());
-            return key == null || value == null ? null : new MapType(key, value);
+            return key == null || value == null ? null : new MapType(key, value,
+                ((MapType) left).isValueNotNull() && ((MapType) right).isValueNotNull());
         }
         if (left instanceof StructuredArrayType && right instanceof StructuredArrayType) {
             final DataType element = combineMember(((ArrayType) left).getElementType(),
                 ((ArrayType) right).getElementType());
-            return element == null ? null : new StructuredArrayType(element);
+            return element == null ? null : new StructuredArrayType(element,
+                ((StructuredArrayType) left).isElementNotNull() && ((StructuredArrayType) right).isElementNotNull());
         }
         return null;
     }

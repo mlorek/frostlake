@@ -17,14 +17,17 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.functions.SystemFunctionNames;
+import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
+import dev.frostlake.task.TaskOnlyFunctions;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
 
@@ -50,6 +53,8 @@ public class SystemFunctionEvaluator {
     private final StorageEngine storageEngine;
     private final TransactionManager transactionManager;
     private final SessionDirectory sessionDirectory;
+    // What runs a query a function compiles of its own; installed by the executor once it can run one.
+    private QueryRunner queryRunner;
 
     public SystemFunctionEvaluator(final Catalog catalog, final StorageEngine storageEngine,
                                    final TransactionManager transactionManager,
@@ -58,6 +63,15 @@ public class SystemFunctionEvaluator {
         this.storageEngine = storageEngine;
         this.transactionManager = transactionManager;
         this.sessionDirectory = sessionDirectory;
+    }
+
+    /**
+     * Installs what runs a query a function compiles of its own, SYSTEM$CLUSTERING_DEPTH's predicate's.
+     *
+     * @param runner the runner
+     */
+    public void setQueryRunner(final QueryRunner runner) {
+        this.queryRunner = runner;
     }
 
     /** Evaluate a SYSTEM$FUNCNAME call from expression context (no ANTLR ctx available). */
@@ -103,7 +117,7 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$WAIT":
                 return SystemWait.waitFor(args);
             case "SYSTEM$CLUSTERING_DEPTH":
-                return ClusteringStatistics.depth(catalog, storageEngine, args);
+                return ClusteringStatistics.depth(catalog, storageEngine, args, queryRunner);
             case "SYSTEM$CLUSTERING_INFORMATION":
                 return ClusteringStatistics.information(catalog, storageEngine, args);
             case "SYSTEM$CLUSTERING_RATIO":
@@ -140,6 +154,7 @@ public class SystemFunctionEvaluator {
             }
             case "SYSTEM$GET_PREDECESSOR_RETURN_VALUE": {
                 // The task-graph value SET by this task's (first) predecessor in its latest run.
+                TaskOnlyFunctions.requireTask("SYSTEM$GET_PREDECESSOR_RETURN_VALUE");
                 final Task current = TaskScheduler.currentTask();
                 if (current != null && !current.getPredecessors().isEmpty() && catalog != null) {
                     String predName = current.getPredecessors().get(0);
@@ -167,6 +182,7 @@ public class SystemFunctionEvaluator {
                 return value;
             }
             case "SYSTEM$TASK_RUNTIME_INFO":
+                TaskOnlyFunctions.requireTask("SYSTEM$TASK_RUNTIME_INFO");
                 return "{}";
             case "SYSTEM$GET_TASK_GRAPH_CONFIG":
                 return TaskGraphConfig.readInTask(args);
@@ -174,7 +190,16 @@ public class SystemFunctionEvaluator {
                 final String pipeName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 // Reflect the pipe's actual state (RUNNING/PAUSED); getPipe throws on an unknown pipe, matching Snowflake.
                 if (catalog != null && !pipeName.isEmpty()) {
-                    return catalog.getPipe(pipeName).getStatusJson();
+                    final Pipe pipe;
+                    try {
+                        pipe = catalog.getPipe(pipeName);
+                    } catch (final RuntimeException missing) {
+                        // A pipe that is not there is named as the argument writes it, with no privilege
+                        // sentence (live-verified).
+                        throw new RuntimeException(SqlCompilationError.of("Pipe '" + pipeName
+                            + "' does not exist or not authorized."));
+                    }
+                    return pipe.getStatusJson();
                 }
                 return "{\"executionState\": \"RUNNING\", \"pendingFileCount\": 0}";
             }

@@ -20,6 +20,7 @@ import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -36,9 +37,10 @@ public class Replace extends TextArgumentFunction {
             return null;
         }
         if (args.get(0) == null) return null;
-        final String str = args.get(0).toString();
-        final String search = args.get(1) != null ? args.get(1).toString() : "";
-        final String replacement = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : "";
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
+        final String search = args.get(1) != null ? SharedFunctionHelpers.textOf(args.get(1)) : "";
+        final String replacement = args.size() > 2 && args.get(2) != null
+            ? SharedFunctionHelpers.textOf(args.get(2)) : "";
         // An empty text is found nowhere: the subject is as it was (live-verified).
         return search.isEmpty() ? str : str.replace(search, replacement);
     }
@@ -53,9 +55,9 @@ public class Replace extends TextArgumentFunction {
         if (collation == null || args.get(0) == null) {
             return evaluate(args);
         }
-        return CollationMatching.replaceUnder(collation, args.get(0).toString(),
-            args.get(1) != null ? args.get(1).toString() : "",
-            args.size() > 2 && args.get(2) != null ? args.get(2).toString() : "");
+        return CollationMatching.replaceUnder(collation, SharedFunctionHelpers.textOf(args.get(0)),
+            args.get(1) != null ? SharedFunctionHelpers.textOf(args.get(1)) : "",
+            args.size() > 2 && args.get(2) != null ? SharedFunctionHelpers.textOf(args.get(2)) : "");
     }
 
     @Override

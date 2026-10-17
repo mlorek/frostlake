@@ -132,6 +132,17 @@ public final class CsvEscapes {
         return records;
     }
 
+    /**
+     * Whether a line's record carries on into the next: it ends in an escape character that nothing escapes.
+     *
+     * @param line   the record read so far
+     * @param escape ESCAPE_UNENCLOSED_FIELD, or null for NONE
+     * @return true when the line break is escaped
+     */
+    public static boolean carriesOn(final String line, final Character escape) {
+        return escape != null && endsInEscape(line, escape.charValue());
+    }
+
     private static boolean endsInEscape(final String line, final char escape) {
         int trailing = 0;
         while (trailing < line.length() && line.charAt(line.length() - 1 - trailing) == escape) {

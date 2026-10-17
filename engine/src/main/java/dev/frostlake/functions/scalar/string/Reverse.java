@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 
@@ -45,7 +46,7 @@ public class Reverse extends TextArgumentFunction {
             }
             return BinaryValue.of(reversed);
         }
-        return new StringBuilder(value.toString()).reverse().toString();
+        return new StringBuilder(SharedFunctionHelpers.textOf(value)).reverse().toString();
     }
 
     @Override

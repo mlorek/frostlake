@@ -16,11 +16,11 @@
 
 package dev.frostlake.functions.scalar.datetime;
 
+import dev.frostlake.executor.SessionWeek;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
 
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
@@ -46,8 +46,8 @@ public class LastDay extends BuiltInFunction {
             case "QUARTER":
                 return lastDayOfQuarter(d);
             case "WEEK":
-                // Default WEEK_START (weeks start on Monday) → the week's last day is Sunday.
-                return d.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY));
+                // The last day of the week the session's WEEK_START makes: Sunday under the default.
+                return SessionWeek.weekStartOf(d).plusDays(6);
             default:
                 return d.with(TemporalAdjusters.lastDayOfMonth());
         }

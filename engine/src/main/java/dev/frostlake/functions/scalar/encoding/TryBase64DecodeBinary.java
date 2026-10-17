@@ -33,7 +33,7 @@ public class TryBase64DecodeBinary extends BuiltInFunction {
             return null;
         }
         try {
-            return BinaryValue.fromBase64(Base64Options.toStandardAlphabet(
+            return BinaryValue.fromBase64(Base64Options.decodable(
                 args.get(0).toString(), Base64Options.alphabetOf(args, 1)));
         } catch (final RuntimeException e) {
             return null;

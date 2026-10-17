@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.CodePointText;
 import dev.frostlake.values.VariantValue;
@@ -50,11 +51,12 @@ public class RegexpSubstrAll extends TextArgumentFunction {
         if (args.get(0) == null || args.get(1) == null) {
             return null;
         }
-        final String subject = args.get(0).toString();
-        final String pattern = args.get(1).toString();
+        final String subject = SharedFunctionHelpers.textOf(args.get(0));
+        final String pattern = SharedFunctionHelpers.textOf(args.get(1));
         final int position = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
         final int occurrence = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 1;
-        final String parameters = args.size() > 4 && args.get(4) != null ? args.get(4).toString() : null;
+        final String parameters = args.size() > 4 && args.get(4) != null
+            ? SharedFunctionHelpers.textOf(args.get(4)) : null;
         final Integer groupNum = args.size() > 5 && args.get(5) != null ? ((Number) args.get(5)).intValue() : null;
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrence(occurrence);

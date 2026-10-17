@@ -44,10 +44,11 @@ final class RoutineDescriptionRows {
      * @param runtimeVersion the routine's runtime version, or null
      * @param imports        the routine's imports
      * @param environment    what the routine is given to run with
-     * @param function       whether the routine is a function, which tells whether it is an aggregate
+     * @param aggregate      whether the routine is an aggregate function, told by a Python function; null for a
+     *                       procedure, which does not tell
      */
     static void add(final List<Row> rows, final String language, final String handler, final String runtimeVersion,
-                    final List<String> imports, final RoutineEnvironment environment, final boolean function) {
+                    final List<String> imports, final RoutineEnvironment environment, final Boolean aggregate) {
         if (!isHandlerLanguage(language)) {
             return;
         }
@@ -70,8 +71,8 @@ final class RoutineDescriptionRows {
             rows.add(row("artifact_repository_packages", RoutineEnvironment.listed(environment.getPackages())));
         }
         rows.add(row("installed_packages", "[]"));
-        if (function) {
-            rows.add(row("is_aggregate", "false"));
+        if (aggregate != null) {
+            rows.add(row("is_aggregate", aggregate.toString()));
         }
         if (repository != null) {
             rows.add(row("artifact_repository_installed_packages", "[]"));

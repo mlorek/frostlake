@@ -182,12 +182,11 @@ final class ShowInfraExecutor {
             final String url = stage.getUrl() != null ? stage.getUrl() : "";
             // An internal stage with server-side encryption alone is INTERNAL NO CSE; a temporary stage says so
             // after its kind; the cloud is named in upper case (live-verified).
-            final boolean external = url.startsWith("s3://") || url.startsWith("azure://") || url.startsWith("gcs://");
+            final String cloud = stage.locationCloud();
+            final boolean external = cloud != null;
             final String type = external ? stage.isTemporary() ? "EXTERNAL TEMPORARY" : "EXTERNAL"
                 : stage.isTemporary() ? "INTERNAL TEMPORARY"
                 : "SNOWFLAKE_SSE".equalsIgnoreCase(stage.getEncryptionType()) ? "INTERNAL NO CSE" : "INTERNAL";
-            final String cloud = url.startsWith("s3://") ? "AWS" : url.startsWith("azure://") ? "AZURE"
-                : url.startsWith("gcs://") ? "GCP" : null;
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(stage.getCreatedAt()),
                 stage.getName(),
@@ -439,6 +438,12 @@ final class ShowInfraExecutor {
         {"FORCE", "Boolean", "false"},
     };
 
+    /** The copy options DESC STAGE lists only once they are set, after the others (live-verified). */
+    private static final String[][] STAGE_COPY_OPTION_PROPERTIES_WHEN_SET = {
+        {"MATCH_BY_COLUMN_NAME", "String", "NONE"},
+        {"LOAD_MODE", "String", "FULL_INGEST"},
+    };
+
     /**
      * DESC STAGE in live's five-column shape — a property TREE grouped as STAGE_FILE_FORMAT,
      * STAGE_COPY_OPTIONS, STAGE_LOCATION and DIRECTORY, each row carrying its type, current value
@@ -470,8 +475,19 @@ final class ShowInfraExecutor {
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
                 spelled(copyOptions.get(property[0]), property[1], property[2]), property[2])));
         }
+        addCopyOptionsWhenSet(rows, copyOptions);
         rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String", "", "")));
         return new ResultSet(stagePropertyColumns(), rows);
+    }
+
+    /** The rows of the copy options listed only once set, each that is. */
+    private void addCopyOptionsWhenSet(final List<Row> rows, final Map<String, String> copyOptions) {
+        for (final String[] property : STAGE_COPY_OPTION_PROPERTIES_WHEN_SET) {
+            if (copyOptions.containsKey(property[0])) {
+                rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
+                    spelled(copyOptions.get(property[0]), property[1], property[2]), property[2])));
+            }
+        }
     }
 
     /** A written option's value as the listing spells it: a boolean in lower case, like every default. */
@@ -549,6 +565,7 @@ final class ShowInfraExecutor {
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
                 spelled(stage.getCopyOptions().get(property[0]), property[1], property[2]), property[2])));
         }
+        addCopyOptionsWhenSet(rows, stage.getCopyOptions());
         rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String",
             stage.getUrl() != null ? stage.getUrl() : "", "")));
         if (stage.isDirectoryEnabled()) {

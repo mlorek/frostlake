@@ -214,6 +214,7 @@ public class DatabaseResultSet implements ResultSet {
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
+        ScaledNumberReads.refuseInteger(getMetaData(), columnIndex, value, "int");
         if (value instanceof Number) return ((Number) value).intValue();
         return Integer.parseInt(value.toString());
     }
@@ -227,6 +228,7 @@ public class DatabaseResultSet implements ResultSet {
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
+        ScaledNumberReads.refuseInteger(getMetaData(), columnIndex, value, "long");
         if (value instanceof Number) return ((Number) value).longValue();
         return Long.parseLong(value.toString());
     }

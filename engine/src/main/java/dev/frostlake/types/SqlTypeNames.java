@@ -162,6 +162,10 @@ public final class SqlTypeNames {
      * @return the spelling a routine surface prints
      */
     public static String routineType(final DataType type) {
+        if (StructuredTypes.isStructured(type)) {
+            // A leaf of the shape written with no width reads bare (see StructuredLeafWidths).
+            return StructuredLeafWidths.typeOfText(type);
+        }
         if (type instanceof StringType && !(type instanceof LengthlessStringType)
                 && ((StringType) type).getMaxLength() == DESCRIBED_STRING_MAXIMUM) {
             return "VARCHAR";
@@ -180,7 +184,7 @@ public final class SqlTypeNames {
      * @return the spelling
      */
     public static String routineType(final DataType type, final Boolean sized) {
-        if (sized == null) {
+        if (sized == null || StructuredTypes.isStructured(type)) {
             return routineType(type);
         }
         if (type instanceof BinaryType) {
@@ -235,6 +239,9 @@ public final class SqlTypeNames {
      * @return the spelling
      */
     public static String declaredSpelling(final DataType type, final boolean sized) {
+        if (StructuredTypes.isStructured(type)) {
+            return routineType(type);
+        }
         if (!sized && type instanceof BinaryType) {
             return "BINARY";
         }
@@ -297,13 +304,15 @@ public final class SqlTypeNames {
             return out.append(')').toString();
         }
         if (type instanceof StructuredArrayType) {
-            return "ARRAY(" + canonical(((StructuredArrayType) type).getElementType()) + ")";
+            return "ARRAY(" + canonical(((StructuredArrayType) type).getElementType())
+                + StructuredTypes.notNullMark(type) + ")";
         }
         if (type instanceof MapType) {
             // A MAP spells both halves, with a space after the comma (live-verified, in DESCRIBE,
             // GET_DDL and the type-matching refusals alike).
             final MapType map = (MapType) type;
-            return "MAP(" + canonical(map.getKeyType()) + ", " + canonical(map.getValueType()) + ")";
+            return "MAP(" + canonical(map.getKeyType()) + ", " + canonical(map.getValueType())
+                + StructuredTypes.notNullMark(type) + ")";
         }
         return type.getName().toUpperCase(Locale.ROOT);
     }

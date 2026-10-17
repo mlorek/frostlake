@@ -57,7 +57,7 @@ public final class AlertRunner {
      * @param schema the alert's schema
      * @param alert the alert
      * @param scheduledFrom what started the evaluation: {@code SCHEDULE} or {@code EXECUTE ALERT}
-     * @return the recorded evaluation
+     * @return the recorded evaluation, or null when none ran
      */
     public AlertExecution run(final String database, final String schema, final Alert alert,
                               final String scheduledFrom) {
@@ -79,6 +79,10 @@ public final class AlertRunner {
             catalog.restoreSessionScope(prior);
         }
         final AlertExecution execution = evaluated[0];
+        if (execution == null) {
+            // Nothing ran: a replay whose evaluation the write-ahead log keeps in a record of its own.
+            return null;
+        }
         alert.recordExecution(execution);
         final Integer limit = alert.getSuspendAfterNumFailures();
         if (execution.failed() && limit != null && limit.intValue() > 0

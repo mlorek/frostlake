@@ -47,9 +47,9 @@ public class LPad extends TextArgumentFunction {
         if (args.get(0) instanceof BinaryValue) {
             return padBytes((BinaryValue) args.get(0), args);
         }
-        final String str = args.get(0).toString();
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
         final int targetLength = wholeNumber(args.get(1));
-        final String padStr = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : " ";
+        final String padStr = args.size() > 2 && args.get(2) != null ? SharedFunctionHelpers.textOf(args.get(2)) : " ";
 
         // Live-verified: an input longer than the target length is TRUNCATED to it (LPAD('world', 3, '*')
         // is 'wor'), not returned unchanged.

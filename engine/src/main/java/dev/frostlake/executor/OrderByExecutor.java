@@ -35,6 +35,7 @@ import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import java.util.ArrayList;
@@ -92,7 +93,7 @@ final class OrderByExecutor {
         final List<Integer> starSlots = starSlotsOfFirstOperand(ctx, table, aliasToTable, allTables);
         final List<Integer> presetSlots = new ArrayList<>();
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            final long position = OrdinalLiteral.positionOf(ParseTreeText.getOriginalText(item.expression()));
+            final long position = OrdinalLiteral.positionOf(ParseTreeText.getOriginalText(KeyContexts.of(item)));
             presetSlots.add(Integer.valueOf(position == OrdinalLiteral.NOT_AN_ORDINAL || starSlots == null
                 || position < 1 || position > starSlots.size() ? -1 : starSlots.get((int) position - 1).intValue()));
         }
@@ -108,9 +109,9 @@ final class OrderByExecutor {
             // unaffected by spacing.)
             final String colName = resolveOrderKey(item, ctx, table, aliasToTable, outputNames);
             orderColumns.add(colName);
-            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
-                ? new SourcePosition(item.expression().getStart().getLine(),
-                    item.expression().getStart().getCharPositionInLine())
+            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(KeyContexts.of(item)))
+                ? new SourcePosition(KeyContexts.of(item).getStart().getLine(),
+                    KeyContexts.of(item).getStart().getCharPositionInLine())
                 : null);
             ascending.add(item.DESC() == null); // Default is ASC
             nullsFirst.add(ValueComparisons.nullsFirstFlag(item));
@@ -326,14 +327,14 @@ final class OrderByExecutor {
             }
         }
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
+            final String asWritten = ParseTreeText.getOriginalText(KeyContexts.of(item)).trim();
             if (OrdinalLiteral.positionOf(asWritten) != OrdinalLiteral.NOT_AN_ORDINAL) {
                 // A POSITION, never a name: the range check owns it, and it runs right after this one.
                 // Matching it as a key instead reached the number reader with a value no int holds and
                 // threw its raw complaint in place of the ordinal sentence.
                 continue;
             }
-            if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) >= 0) {
                 continue;
             }
             if (outputNames.contains(asWritten.toUpperCase(Locale.ROOT))) {
@@ -341,11 +342,11 @@ final class OrderByExecutor {
             }
             if (namesOnly) {
                 executor.validateClauseColumnScope(asWritten, table, aliasToTable, allTables, outputNames,
-                    item.expression());
+                    KeyContexts.of(item));
                 continue;
             }
             executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
-                item.expression(), echoedBare);
+                KeyContexts.of(item), echoedBare);
         }
     }
 
@@ -525,9 +526,9 @@ final class OrderByExecutor {
     private String resolveOrderKey(final FrostlakeParser.OrderItemContext item,
                                    final FrostlakeParser.SelectStatementContext ctx, final Table table,
                                    final Map<String, Table> aliasToTable, final OrderKeyOutputNames outputNames) {
-        final String written = ParseTreeText.getOriginalText(item.expression());
+        final String written = ParseTreeText.getOriginalText(KeyContexts.of(item));
         final String positioned = resolveOrderOrdinal(written, ctx, table, aliasToTable);
-        return positioned.equals(written) ? outputNames.expand(item.expression()) : positioned;
+        return positioned.equals(written) ? outputNames.expand(KeyContexts.of(item)) : positioned;
     }
 
     /**
@@ -548,8 +549,8 @@ final class OrderByExecutor {
             // A key too wide to BE an integer is refused by the literal reader before it is a position
             // at all — the reader runs on the written number, so it outranks the range check that would
             // otherwise call the same digits an out-of-range ordinal.
-            IntegerLiteralRange.reject(item.expression().getStart());
-            resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), stmtCtx, table, aliasToTable);
+            IntegerLiteralRange.reject(KeyContexts.of(item).getStart());
+            resolveOrderOrdinal(ParseTreeText.getOriginalText(KeyContexts.of(item)), stmtCtx, table, aliasToTable);
         }
     }
 
@@ -632,7 +633,7 @@ final class OrderByExecutor {
             if (colIndex[k] >= 0 && projected != null && colIndex[k] < projected.size()) {
                 keyTexts.add(projected.get(colIndex[k]));
             } else {
-                keyTexts.add(ParseTreeText.getOriginalText(items.get(k).expression()));
+                keyTexts.add(ParseTreeText.getOriginalText(KeyContexts.of(items.get(k))));
             }
         }
         if (!KeyCollations.reachable(keyTexts, table, aliasToTable, null)) {
@@ -805,13 +806,13 @@ final class OrderByExecutor {
             final FrostlakeParser.OrderItemContext item = items.get(k);
             ascending[k] = item.DESC() == null;
             nullsFirst[k] = ValueComparisons.nullsFirstFlag(item);
-            colIndex[k] = matchOrderSlot(item.expression().getText(), selectItems, itemStartSlot,
+            colIndex[k] = matchOrderSlot(KeyContexts.of(item).getText(), selectItems, itemStartSlot,
                 starNamesByItem, totalSlots, ctx.selectOperand().size() > 1);
             if (colIndex[k] == -1 && resolver == null) {
                 // AS WRITTEN, not getText(): the latter concatenates tokens with no whitespace, so a
                 // key with separators came back unreadable — ROW_NUMBER()OVER(ORDERBYc).
                 throw new RuntimeException("ORDER BY expression not found in SELECT list: "
-                    + ParseTreeText.getOriginalText(item.expression()));
+                    + ParseTreeText.getOriginalText(KeyContexts.of(item)));
             }
         }
 
@@ -897,16 +898,16 @@ final class OrderByExecutor {
                 rejectSubqueryInKey(item, table, aliasToTable, allTables);
             }
             rejectCaseVariantOrderKey(item, selectItems, groupBy, table, allTables);
-            if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) >= 0) {
                 continue;
             }
-            final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
+            final String asWritten = ParseTreeText.getOriginalText(KeyContexts.of(item)).trim();
             if (outputNames.contains(asWritten.toUpperCase(Locale.ROOT))
-                    || groupKeyTexts.contains(item.expression().getText().toUpperCase(Locale.ROOT))) {
+                    || groupKeyTexts.contains(KeyContexts.of(item).getText().toUpperCase(Locale.ROOT))) {
                 continue;
             }
             executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
-                item.expression());
+                KeyContexts.of(item));
             if (groupBy != null && groupBy.ALL() == null) {
                 rejectUngroupedOrderReference(ExpressionEvaluator.parse(asWritten), table, allTables,
                     outputNames, groupKeyNames, groupedColumns);
@@ -925,7 +926,7 @@ final class OrderByExecutor {
                                            final List<Table> allTables) {
         final Expression key;
         try {
-            key = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(item.expression()).trim());
+            key = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(KeyContexts.of(item)).trim());
         } catch (final RuntimeException unparsed) {
             return;
         }
@@ -997,11 +998,20 @@ final class OrderByExecutor {
     /** Refuses one key of a grouped or DISTINCT query's ORDER BY that holds a subquery outside every aggregate. */
     private void rejectSubqueryInKey(final FrostlakeParser.OrderItemContext item, final Table table,
                                      final Map<String, Table> aliasToTable, final List<Table> allTables) {
-        final ParserRuleContext subquery = firstUnaggregatedSubqueryIn(item.expression());
+        final ParserRuleContext subquery = firstUnaggregatedSubqueryIn(KeyContexts.of(item));
         if (subquery != null) {
-            throw new RuntimeException(SqlCompilationError.of("[" + plannedSubquery(subquery, table,
-                aliasToTable, allTables) + "] is not a valid order by expression"));
+            // A key that negates an EXISTS is planned as one NOT EXISTS, and echoed so; a NOT over a membership test
+            // is not part of what the plan names (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("[" + (negatedExists(subquery) ? "NOT " : "")
+                + plannedSubquery(subquery, table, aliasToTable, allTables) + "] is not a valid order by expression"));
         }
+    }
+
+    /** Whether a subquery is an EXISTS a NOT is written right before. */
+    private static boolean negatedExists(final ParserRuleContext subquery) {
+        return subquery instanceof FrostlakeParser.ExistsExprContext
+            && subquery.getParent() instanceof FrostlakeParser.ValueExprContext
+            && subquery.getParent().getParent() instanceof FrostlakeParser.NotExprContext;
     }
 
     /**
@@ -1140,14 +1150,14 @@ final class OrderByExecutor {
             }
         }
         for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
-            if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) >= 0) {
                 continue;
             }
             // A name that resolves to NOTHING is that error first, DISTINCT or no DISTINCT — live
             // answers "invalid identifier" for ORDER BY zz rather than calling it unselected.
-            executor.validateClauseScope(ParseTreeText.getOriginalText(item.expression()).trim(),
-                table, aliasToTable, allTables, outputNames, item.expression());
-            rejectUnselectedDistinctKey(item.expression(), selectItems, outputNames, table, aliasToTable,
+            executor.validateClauseScope(ParseTreeText.getOriginalText(KeyContexts.of(item)).trim(),
+                table, aliasToTable, allTables, outputNames, KeyContexts.of(item));
+            rejectUnselectedDistinctKey(KeyContexts.of(item), selectItems, outputNames, table, aliasToTable,
                 allTables);
         }
     }
@@ -1236,21 +1246,7 @@ final class OrderByExecutor {
         if (groupBy == null || groupBy.ALL() != null) {
             return;
         }
-        final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
-        for (final FrostlakeParser.GroupByElementContext element : groupBy.groupByElement()) {
-            if (element.expression() != null) {
-                keys.add(element.expression());
-            }
-            if (element.groupByColumnList() != null) {
-                keys.addAll(element.groupByColumnList().expression());
-            }
-            if (element.groupingSetList() != null) {
-                for (final FrostlakeParser.GroupingSetContext set : element.groupingSetList().groupingSet()) {
-                    keys.addAll(set.expression());
-                }
-            }
-        }
-        for (final FrostlakeParser.ExpressionContext key : keys) {
+        for (final ParserRuleContext key : KeyContexts.groupKeys(groupBy)) {
             keyTexts.add(key.getText().toUpperCase(Locale.ROOT));
             groupedColumns.add(ParseTreeText.getOriginalText(key));
             try {
@@ -1419,9 +1415,9 @@ final class OrderByExecutor {
             final FrostlakeParser.OrderItemContext item = items.get(k);
             ascending[k] = item.DESC() == null;
             nullsFirst[k] = ValueComparisons.nullsFirstFlag(item);
-            final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
+            final String asWritten = ParseTreeText.getOriginalText(KeyContexts.of(item)).trim();
             if (!repeatedNames.isEmpty()) {
-                AmbiguousOutputNames.refuseReferences(item.expression(), repeatedNames);
+                AmbiguousOutputNames.refuseReferences(KeyContexts.of(item), repeatedNames);
             }
             int matched = -1;
             final long ordinal = OrdinalLiteral.positionOf(asWritten);
@@ -1454,16 +1450,16 @@ final class OrderByExecutor {
             // else (a branch qualifier, a non-output name) into live's invalid-identifier.
             executor.validateClauseScope(asWritten, outputTable,
                 Map.of(outputTable.getName().toUpperCase(Locale.ROOT), outputTable), List.of(outputTable), outputNames,
-                item.expression());
+                KeyContexts.of(item));
             // A subquery in the key compiles where the key stands, so what it refuses is placed in the statement.
             // It reads none of the output's names: they are no relation of its.
-            final RuntimeException subqueryRefusal = executor.compileSubqueriesIn(List.of(item.expression()),
+            final RuntimeException subqueryRefusal = executor.compileSubqueriesIn(List.of(KeyContexts.of(item)),
                 new Table("DUMMY", new ArrayList<TableColumn>(), false), null, null, null);
             if (subqueryRefusal != null) {
                 throw subqueryRefusal;
             }
-            keyOrigins[k] = new SourcePosition(item.expression().getStart().getLine(),
-                item.expression().getStart().getCharPositionInLine());
+            keyOrigins[k] = new SourcePosition(KeyContexts.of(item).getStart().getLine(),
+                KeyContexts.of(item).getStart().getCharPositionInLine());
             if (keyEvaluator == null) {
                 keyEvaluator = new ExpressionEvaluator(outputTable,
                     executor.getFunctionRegistry(), executor.getCatalog(), executor);
@@ -1644,7 +1640,7 @@ final class OrderByExecutor {
             : firstOp.selectStatement().selectOperand(0).selectClause();
         final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            if (matchOrderItem(item.expression().getText(), selectItems, false) < 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) < 0) {
                 return false;
             }
         }
@@ -1662,9 +1658,9 @@ final class OrderByExecutor {
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
             final String colName = resolveOrderKey(item, ctx, table, aliasToTable, outputNames);
             orderColumns.add(colName);
-            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
-                ? new SourcePosition(item.expression().getStart().getLine(),
-                    item.expression().getStart().getCharPositionInLine())
+            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(KeyContexts.of(item)))
+                ? new SourcePosition(KeyContexts.of(item).getStart().getLine(),
+                    KeyContexts.of(item).getStart().getCharPositionInLine())
                 : null);
         }
         rejectFileSortKeys(orderColumns, keyOrigins, table, aliasToTable, allTables);
@@ -1686,7 +1682,7 @@ final class OrderByExecutor {
             : firstOp.selectStatement().selectOperand(0).selectClause();
         final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            if (matchOrderItem(item.expression().getText(), selectItems, ctx.selectOperand().size() > 1) == -1) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, ctx.selectOperand().size() > 1) == -1) {
                 unmatched.add(item);
             }
         }

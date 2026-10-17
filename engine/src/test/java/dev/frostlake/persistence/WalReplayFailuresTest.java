@@ -24,6 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -52,8 +53,18 @@ public class WalReplayFailuresTest {
 
     @AfterEach
     public void tearDown() throws IOException {
-        Files.deleteIfExists(walFile);
-        Files.deleteIfExists(dir);
+        deleteRecursively(dir.toFile());
+    }
+
+    /** Remove a test's data directory whole: the engine keeps its stages in a directory inside it. */
+    private static void deleteRecursively(final File file) {
+        final File[] children = file.listFiles();
+        if (children != null) {
+            for (final File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        file.delete();
     }
 
     private EngineConfig walConfig(final boolean strict) {

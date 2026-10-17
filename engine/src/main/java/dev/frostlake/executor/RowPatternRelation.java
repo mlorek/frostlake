@@ -25,6 +25,7 @@ import dev.frostlake.executor.rowpattern.RowPatternTest;
 import dev.frostlake.executor.rowpattern.RowsPerMatch;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -126,7 +127,7 @@ final class RowPatternRelation {
 
         // The window a definition reads: the clause's partition, in its order.
         final List<String> partitionTexts = new ArrayList<>();
-        for (final FrostlakeParser.ExpressionContext key : clause.expression()) {
+        for (final ParserRuleContext key : KeyContexts.keys(clause.booleanExpr())) {
             partitionTexts.add(ParseTreeText.getOriginalText(key));
         }
         final List<String> orderTexts = new ArrayList<>();

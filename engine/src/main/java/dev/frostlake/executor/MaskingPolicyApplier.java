@@ -221,7 +221,24 @@ final class MaskingPolicyApplier {
      * on an escaped quote inside the tag literal ({@code 'o''brien_tag'}) and on a comment before
      * the argument, both of which the lexer handles for free.
      */
-    private String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain) {
+    static String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain) {
+        return rewriteTagFn(body, fnName, objectName, domain, null, null);
+    }
+
+    /**
+     * {@link #rewriteTagFn(String, String, String, String)}, each call read for the object, and for {@code fallback}
+     * when the object carries no value of the tag: {@code COALESCE(SYSTEM$GET_TAG(…), SYSTEM$GET_TAG(…))}.
+     *
+     * @param body           the policy's body
+     * @param fnName         the tag function's name after SYSTEM$
+     * @param objectName     the object the call reads
+     * @param domain         its domain
+     * @param fallback       the object read when the first holds no value, or null
+     * @param fallbackDomain its domain
+     * @return the body rewritten
+     */
+    static String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain,
+                               final String fallback, final String fallbackDomain) {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
@@ -246,8 +263,9 @@ final class MaskingPolicyApplier {
             }
             final String tagArg = toks.get(i + 2).getText();
             out.append(body, cursor, t.getStartIndex());
-            out.append("SYSTEM$GET_TAG(").append(tagArg).append(", '").append(objectName)
-                .append("', '").append(domain).append("')");
+            final String own = "SYSTEM$GET_TAG(" + tagArg + ", '" + objectName + "', '" + domain + "')";
+            out.append(fallback == null ? own : "COALESCE(" + own + ", SYSTEM$GET_TAG(" + tagArg + ", '" + fallback
+                + "', '" + fallbackDomain + "'))");
             cursor = toks.get(i + 3).getStopIndex() + 1;
             i += 3;
         }
@@ -264,6 +282,19 @@ final class MaskingPolicyApplier {
      * exactly what the policy withholds.
      */
     List<Row> applyRowAccessPolicy(final List<Row> rows, final Table table) {
+        return applyRowAccessPolicy(rows, table, table);
+    }
+
+    /**
+     * {@link #applyRowAccessPolicy(List, Table)} with the policy one relation carries, over rows of another shape
+     * that holds its columns: a stream's or a CHANGES clause's rows filtered by their table's policy.
+     *
+     * @param rows  the rows
+     * @param table the relation carrying the policy
+     * @param shape the relation the rows are rows of
+     * @return the rows the policy keeps, the same row objects
+     */
+    List<Row> applyRowAccessPolicy(final List<Row> rows, final Table table, final Table shape) {
         if (!table.hasRowAccessPolicy()) return rows;
         final SecurityManager securityManager = executor.getSecurityManager();
         if (securityManager == null) return rows;
@@ -285,6 +316,6 @@ final class MaskingPolicyApplier {
         final String body = rewriteTagFn(
             SqlIdentifierSubstitution.substituteParameters(policy.getBody(), names, bound),
             "GET_TAG_ON_CURRENT_TABLE", table.getName(), "TABLE");
-        return executor.filterRows(rows, table, body);
+        return executor.filterRows(rows, shape, body);
     }
 }

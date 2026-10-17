@@ -252,6 +252,17 @@ public class Warehouse implements Taggable {
         }
     }
 
+    /**
+     * Puts back the moment the warehouse last changed state, which a restart keeps as it keeps the creation time.
+     *
+     * @param moment the moment, or null to keep the one the restore set
+     */
+    public void restoreLastStateChange(final LocalDateTime moment) {
+        if (moment != null) {
+            this.lastStateChange = moment;
+        }
+    }
+
     public LocalDateTime getLastStateChange() {
         return lastStateChange;
     }

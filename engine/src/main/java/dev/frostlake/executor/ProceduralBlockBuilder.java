@@ -21,6 +21,7 @@ import dev.frostlake.executor.procedural.AwaitStatement;
 import dev.frostlake.executor.procedural.BaseExpression;
 import dev.frostlake.executor.procedural.CallStatement;
 import dev.frostlake.executor.procedural.CaseStatement;
+import dev.frostlake.executor.procedural.DeclareStatement;
 import dev.frostlake.executor.procedural.EvaluateStatement;
 import dev.frostlake.executor.procedural.ExecuteImmediateExpression;
 import dev.frostlake.executor.procedural.ForStatement;
@@ -270,6 +271,11 @@ public class ProceduralBlockBuilder {
         if (ctx.letStatement() != null) {
             final FrostlakeParser.LetStatementContext lCtx = ctx.letStatement();
             final String varName = visitor.getText(lCtx.variableName());
+            if (lCtx.booleanExpr() == null && lCtx.dataTypeName() != null) {
+                // A type and no value declares the variable NULL of its type (live-verified).
+                return new DeclareStatement(varName, null,
+                    visitor.parseDataType(lCtx.dataTypeName(), lCtx.typeParameters()));
+            }
             if (lCtx.booleanExpr() != null) {
                 // An untyped LET's initialiser is judged while the block compiles; a typed one when it is reached.
                 final BaseExpression expr = lCtx.dataTypeName() == null ? visitor.buildExpression(lCtx.booleanExpr())
@@ -422,8 +428,14 @@ public class ProceduralBlockBuilder {
         if (ctx.booleanExpr() == null) {
             return new ReturnStatement(null);
         }
-        // A value may be a NOT, an AND or an OR, which returns a BOOLEAN.
-        final ReturnStatement ret = new ReturnStatement(judged(visitor.buildExpression(ctx.booleanExpr()), ctx.booleanExpr()));
+        // A value may be a NOT, an AND or an OR, which returns a BOOLEAN. Its fault is placed where the value is
+        // written, at its first parenthesis when it has one: RETURN (ABS(1, 2)) at the ( (live-verified).
+        final BaseExpression value = judged(visitor.buildExpression(ctx.booleanExpr()), ctx.booleanExpr());
+        if (value != null) {
+            value.setSourcePosition(ctx.booleanExpr().getStart().getLine(),
+                ctx.booleanExpr().getStart().getCharPositionInLine());
+        }
+        final ReturnStatement ret = new ReturnStatement(value);
         // The value read as SQL too, from the same parse tree: it types the result column whenever the
         // RETURN keeps the expression's own type.
         ret.setSqlExpression(DeclarationTypes.sqlExpression(ctx.booleanExpr()));

@@ -24,6 +24,7 @@ import dev.frostlake.functions.window.NamedArgumentWindowFunctions;
 import dev.frostlake.functions.window.WindowFunctionArity;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.parser.OperandRefusal;
 import dev.frostlake.parser.OperandRefusals;
 import dev.frostlake.parser.SyntaxErrorListener;
@@ -109,7 +110,7 @@ final class OverCallRules {
             for (final ParserRuleContext call : windowed) {
                 final String canonical = functionName(call).getText().toUpperCase(Locale.ROOT);
                 if (overToken(call) < refusal.order() && !WindowFunctionNames.handles(canonical)
-                        && functions.getAggregateFunction(canonical) == null
+                        && !functions.hasBuiltInAggregateFunction(canonical)
                         && (earliest == null || overToken(call) < overToken(earliest))) {
                     earliest = call;
                 }
@@ -181,7 +182,8 @@ final class OverCallRules {
     void rejectKinds(final List<ParseTree> clauses) {
         for (final ParserRuleContext call : calls(clauses)) {
             final String canonical = functionName(call).getText().toUpperCase(Locale.ROOT);
-            if (!WindowFunctionNames.handles(canonical) && functionRegistry.getAggregateFunction(canonical) == null) {
+            // A user's aggregate function takes no window (live-verified).
+            if (!WindowFunctionNames.handles(canonical) && !functionRegistry.hasBuiltInAggregateFunction(canonical)) {
                 throw new RuntimeException(SqlCompilationError.of("Invalid function type ["
                     + spelledName(functionName(call)) + "] for window function."));
             }
@@ -208,7 +210,7 @@ final class OverCallRules {
             final String kind = functionName(call).getText().toUpperCase(Locale.ROOT);
             // A call of the wrong kind is refused for its kind, whatever its arguments look like.
             if (call instanceof FrostlakeParser.FunctionCallExprContext
-                    || !WindowFunctionNames.handles(kind) && functionRegistry.getAggregateFunction(kind) == null) {
+                    || !WindowFunctionNames.handles(kind) && !functionRegistry.hasBuiltInAggregateFunction(kind)) {
                 continue;
             }
             walkItemsBefore(call, selectList, itemWalk);
@@ -250,11 +252,11 @@ final class OverCallRules {
         final List<ParserRuleContext> written = new ArrayList<>(argumentValues(call));
         final FrostlakeParser.OverClauseContext over = overClause(call);
         if (over.partitionByClause() != null) {
-            written.addAll(over.partitionByClause().expressionList().expression());
+            written.addAll(KeyContexts.partitionKeys(over.partitionByClause()));
         }
         if (over.orderByClause() != null) {
             for (final FrostlakeParser.OrderItemContext item : over.orderByClause().orderItem()) {
-                written.add(item.expression());
+                written.add(KeyContexts.of(item));
             }
         }
         for (final ParserRuleContext node : written) {

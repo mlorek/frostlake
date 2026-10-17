@@ -27,6 +27,9 @@ public class Function extends SqlObject {
     private String serviceName;
     private String serviceEndpoint;
     private Long maxBatchRows;
+    private boolean aggregate;
+    private String apiIntegration;
+    private String externalUrl;
     private final List<Parameter> parameters;
     private final DataType returnType;
     private final List<Parameter> returnColumns; // for RETURNS TABLE(col TYPE, ...)
@@ -146,6 +149,17 @@ public class Function extends SqlObject {
     public Boolean getReturnSized() { return returnSized; }
     public void setReturnSized(final Boolean returnSized) { this.returnSized = returnSized; }
 
+    /** Whether the RETURNS type was written NOT NULL, which DESCRIBE FUNCTION's returns row tells. */
+    private boolean returnNotNull;
+
+    public boolean isReturnNotNull() {
+        return returnNotNull;
+    }
+
+    public void setReturnNotNull(final boolean returnNotNull) {
+        this.returnNotNull = returnNotNull;
+    }
+
     public void setSecure(final boolean secure) { this.secure = secure; }
 
     /**
@@ -216,5 +230,46 @@ public class Function extends SqlObject {
     /** Whether this is a service function. */
     public boolean isServiceFunction() {
         return serviceName != null;
+    }
+
+    /**
+     * Marks this function an external one: a call would reach the URL through the API integration named.
+     *
+     * @param integration the API integration's name
+     * @param url the remote service's URL, as the AS clause wrote it
+     */
+    public void setExternal(final String integration, final String url) {
+        this.apiIntegration = integration;
+        this.externalUrl = url;
+    }
+
+    /** Whether this is an external function. */
+    public boolean isExternalFunction() {
+        return apiIntegration != null;
+    }
+
+    /**
+     * Marks this function a user-defined aggregate: CREATE AGGREGATE FUNCTION made it, and a call reduces a group's
+     * rows through its handler's accumulate, merge and finish.
+     *
+     * @param aggregate whether it is one
+     */
+    public void setAggregate(final boolean aggregate) {
+        this.aggregate = aggregate;
+    }
+
+    /** Whether this is a user-defined aggregate function. */
+    public boolean isAggregate() {
+        return aggregate;
+    }
+
+    /** The API integration an external function names, or null for any other function. */
+    public String getApiIntegration() {
+        return apiIntegration;
+    }
+
+    /** The URL an external function's calls would reach, or null. */
+    public String getExternalUrl() {
+        return externalUrl;
     }
 }

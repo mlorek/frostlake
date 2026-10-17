@@ -121,12 +121,12 @@ public final class JavaTableFunctions {
         return new TablePartitionRows(written, atEnd);
     }
 
-    private static String where(final Function function) {
+    static String where(final Function function) {
         return " in function " + function.getName() + " with handler " + function.getHandler();
     }
 
     /** The class an inline body or an IMPORTS JAR holds for the handler, or the report of a class neither has. */
-    private static Class<?> loaded(final Function function, final Catalog catalog, final S3PathResolver s3Resolver) {
+    static Class<?> loaded(final Function function, final Catalog catalog, final S3PathResolver s3Resolver) {
         final String where = where(function);
         final String className = function.getHandler();
         try {
@@ -193,7 +193,7 @@ public final class JavaTableFunctions {
         return new JavaTableHandler(handled, process, publicMethod(handled, "endPartition", 0), columns);
     }
 
-    private static Method publicMethod(final Class<?> handled, final String name, final int arity) {
+    static Method publicMethod(final Class<?> handled, final String name, final int arity) {
         for (final Method method : handled.getMethods()) {
             if (method.getName().equals(name) && method.getParameterCount() == arity) {
                 return method;

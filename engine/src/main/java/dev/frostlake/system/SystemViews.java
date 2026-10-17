@@ -615,7 +615,8 @@ public class SystemViews {
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                for (final View view : schema.getViews()) {
+                // Every session's temporary views are listed, as live lists them, though another session reaches none.
+                for (final View view : schema.allViews()) {
                     if (!lists("VIEW", schema, view.getName(), view.getOwner())) {
                         continue;
                     }
@@ -660,11 +661,11 @@ public class SystemViews {
                     final String primaryKeyName = table.primaryKeyConstraintName();
                     if (primaryKeyName != null) {
                         result.addRow(constraintRow(db, schema, table, primaryKeyName, "PRIMARY KEY",
-                            relyOfColumns(table, table.getPrimaryKeys())));
+                            table.getPrimaryKeyRely()));
                     }
                     for (final UniqueConstraint unique : table.getUniqueConstraints()) {
                         result.addRow(constraintRow(db, schema, table, unique.getConstraintName(), "UNIQUE",
-                            relyOfColumns(table, unique.getColumnNames())));
+                            unique.getRely()));
                     }
                     // An inline REFERENCES is its own single-column FOREIGN KEY constraint.
                     for (final TableColumn col : table.getColumns()) {
@@ -700,17 +701,6 @@ public class SystemViews {
                        db.getName(), schema.getName(), table.getName(),
                        type, YES_NO_FALSE, YES_NO_TRUE, YES_NO_FALSE, null,
                        table.constraintCreatedTime(name), table.constraintLastAlteredTime(name), relyText);
-    }
-
-    // RELY for a constraint spanning several columns: RELY is declared per column in Frostlake, so the
-    // constraint relies when any of its columns does.
-    private Boolean relyOfColumns(final Table table, final List<String> columnNames) {
-        for (final String columnName : columnNames) {
-            if (table.hasColumn(columnName) && Boolean.TRUE.equals(table.getColumn(columnName).getRely())) {
-                return Boolean.TRUE;
-            }
-        }
-        return Boolean.FALSE;
     }
 
     // The name of the PRIMARY KEY constraint a foreign key points at — REFERENTIAL_CONSTRAINTS reports it
@@ -844,7 +834,7 @@ public class SystemViews {
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                for (final Function func : schema.getFunctions()) {
+                for (final Function func : schema.allFunctions()) {
                     if (visibility != null && !visibility.listsFunction(schema, func)) {
                         continue;
                     }
@@ -876,7 +866,7 @@ public class SystemViews {
                         yesNo(func.isMemoizable()),
                         listOrNull(func.getEnvironment().getExternalAccessIntegrations()),
                         textOrNull(func.getEnvironment().secretsText(db.getName(), schema.getName())),
-                        YES_NO_FALSE, YES_NO_FALSE,
+                        YES_NO_FALSE, yesNo(func.isAggregate()),
                         artifactRepository(func.getLanguage(), func.getEnvironment(),
                             func.getEnvironment().getPackages())
                     ));
@@ -941,8 +931,7 @@ public class SystemViews {
                     final String url = stage.getUrl();
                     // Live's stage-type vocabulary is "External Named" / "Internal Named";
                     // an internal stage reports a null URL and null region.
-                    final boolean external = url != null && (url.startsWith("s3://")
-                        || url.startsWith("azure://") || url.startsWith("gcs://"));
+                    final boolean external = stage.locationCloud() != null;
                     // The name as the catalog holds it: a quoted name keeps its case, "s.dotted" included.
                     result.addRow(new Row(
                         db.getName(), schema.getName(), stage.getName(),
@@ -1066,7 +1055,9 @@ public class SystemViews {
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                for (final FileFormat format : schema.getFileFormats()) {
+                // Every session's temporary formats are listed, as live lists them, though another session reaches
+                // none.
+                for (final FileFormat format : schema.allFileFormats()) {
                     if (!lists("FILE_FORMAT", schema, format.getName(), format.getOwner())) {
                         continue;
                     }

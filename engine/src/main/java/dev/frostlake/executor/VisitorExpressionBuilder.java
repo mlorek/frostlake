@@ -40,6 +40,7 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
+import dev.frostlake.task.TaskOnlyFunctions;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.task.UserTaskCancellation;
 import dev.frostlake.types.NumericLiteralTypes;
@@ -227,13 +228,6 @@ public class VisitorExpressionBuilder {
 
         // A value operator written after a LIKE ANY's pattern list applies to the list, not to the predicate the
         // grammar gave it ('ab' LIKE ANY ('a') || 'b' matches 'a' || 'b'), so it is read as SQL reads it below.
-        if (ctx instanceof FrostlakeParser.ConcatExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
-            final FrostlakeParser.ConcatExprContext concatCtx = (FrostlakeParser.ConcatExprContext) ctx;
-            final BaseExpression left = buildExpression(concatCtx.expression(0));
-            final BaseExpression right = buildExpression(concatCtx.expression(1));
-            return new BinaryExpression(left, BinaryOperator.CONCAT, right);
-        }
-
         if (ctx instanceof FrostlakeParser.MultiplicativeExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
             final FrostlakeParser.MultiplicativeExprContext binCtx = (FrostlakeParser.MultiplicativeExprContext) ctx;
             final BaseExpression left = buildExpression(binCtx.expression(0));
@@ -465,8 +459,10 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.SystemFuncExprContext) {
             return evaluateSystemFunc((FrostlakeParser.SystemFuncExprContext) ctx, scriptingNamesVisible);
         }
-        if (ctx instanceof FrostlakeParser.ConcatExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
-            final FrostlakeParser.ConcatExprContext cc = (FrostlakeParser.ConcatExprContext) ctx;
+        if (ctx instanceof FrostlakeParser.AdditiveExprContext
+                && ((FrostlakeParser.AdditiveExprContext) ctx).PIPE_PIPE() != null
+                && !ComparisonLevelChain.appliesToPatternList(ctx)) {
+            final FrostlakeParser.AdditiveExprContext cc = (FrostlakeParser.AdditiveExprContext) ctx;
             final Object left = evaluateExpression(cc.expression(0), scriptingNamesVisible);
             final Object right = evaluateExpression(cc.expression(1), scriptingNamesVisible);
             if (left == null || right == null) return null;
@@ -703,6 +699,7 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$GET_PREDECESSOR_RETURN_VALUE": {
+                TaskOnlyFunctions.requireTask("SYSTEM$GET_PREDECESSOR_RETURN_VALUE");
                 final Task currentTask = TaskScheduler.currentTask();
                 if (currentTask != null && !currentTask.getPredecessors().isEmpty()) {
                     String predName = currentTask.getPredecessors().get(0);
@@ -740,6 +737,7 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$TASK_RUNTIME_INFO":
+                TaskOnlyFunctions.requireTask("SYSTEM$TASK_RUNTIME_INFO");
                 return "{}";
 
             case "SYSTEM$GET_TASK_GRAPH_CONFIG":
@@ -780,7 +778,8 @@ public class VisitorExpressionBuilder {
 
             // ── Clustering ─────────────────────────────────────────────────────
             case "SYSTEM$CLUSTERING_DEPTH":
-                return ClusteringStatistics.depth(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args);
+                return ClusteringStatistics.depth(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args,
+                    queryExecutor.getFunctionRegistry().getQueryRunner());
             case "SYSTEM$CLUSTERING_INFORMATION":
                 return ClusteringStatistics.information(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
                     args);

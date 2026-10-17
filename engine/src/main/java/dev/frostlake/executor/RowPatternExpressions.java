@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -226,7 +227,7 @@ final class RowPatternExpressions {
         if (over != null) {
             // A window of the definition's own carries a frame alone; the clause's partition and order are its.
             if (over.partitionByClause() != null) {
-                throw new RuntimeException(placed(over.partitionByClause().expressionList(),
+                throw new RuntimeException(placed(KeyContexts.partitionKeys(over.partitionByClause()).get(0),
                     "PARTITION BY clause not allowed within MATCH_RECOGNIZE DEFINE clause."));
             }
             if (over.orderByClause() != null) {

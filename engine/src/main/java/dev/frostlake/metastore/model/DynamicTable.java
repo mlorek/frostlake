@@ -29,12 +29,16 @@ import java.util.List;
  */
 public class DynamicTable extends SqlObject {
 
+    /** How many refreshes a table keeps for time travel (see {@link #keepRefresh}). */
+    public static final int KEPT_REFRESHES = 256;
+
     private final String query;
     private String targetLag;          // e.g. "1 minutes", "DOWNSTREAM"
     private String warehouse;
     private RefreshMode refreshMode;
     private Initialize initialize;
     private int dataRetentionDays;
+    private boolean dataRetentionSet;
     private int maxDataExtensionDays;
     private State state;
     private Instant lastRefreshedTime;
@@ -51,6 +55,8 @@ public class DynamicTable extends SqlObject {
     private long refreshedRows;
     /** The rows of the last refresh this engine ran, each as its values; null when it has run none. */
     private List<List<Object>> refreshImage;
+    /** The refreshes this engine ran, oldest first, for a read or a stream at a past point (see {@link #refreshAt}). */
+    private final List<DynamicTableRefresh> refreshes = new ArrayList<>();
     private boolean transientTable;
     private String schedulingState;    // descriptive status returned by SHOW
     private String createText;
@@ -85,7 +91,19 @@ public class DynamicTable extends SqlObject {
     public Initialize getInitialize() { return initialize; }
     public void setInitialize(final Initialize initialize) { this.initialize = initialize; }
     public int getDataRetentionDays() { return dataRetentionDays; }
-    public void setDataRetentionDays(final int days) { this.dataRetentionDays = days; }
+
+    /**
+     * Sets the table's own DATA_RETENTION_TIME_IN_DAYS, which it then reports in place of what it inherits.
+     *
+     * @param days the retention
+     */
+    public void setDataRetentionDays(final int days) {
+        this.dataRetentionDays = days;
+        this.dataRetentionSet = true;
+    }
+
+    /** Whether the table set its own DATA_RETENTION_TIME_IN_DAYS, rather than inheriting its schema's. */
+    public boolean isDataRetentionSet() { return dataRetentionSet; }
     public int getMaxDataExtensionDays() { return maxDataExtensionDays; }
     public void setMaxDataExtensionDays(final int days) { this.maxDataExtensionDays = days; }
     public State getState() { return state; }
@@ -157,6 +175,73 @@ public class DynamicTable extends SqlObject {
     public void setRefreshImage(final List<List<Object>> image) { this.refreshImage = image; }
 
     /**
+     * Keeps a refresh for time travel. Only the latest {@link #KEPT_REFRESHES} are kept: a point before the oldest
+     * kept one reads as one the table's history no longer reaches.
+     *
+     * @param refresh the refresh that just ran
+     */
+    public synchronized void keepRefresh(final DynamicTableRefresh refresh) {
+        refreshes.add(refresh);
+        if (refreshes.size() > KEPT_REFRESHES) {
+            refreshes.remove(0);
+        }
+    }
+
+    /**
+     * The refresh a read at a past point sees: the last one before the point, or at it unless the point is BEFORE.
+     * A statement's point is placed by the order snapshots are taken in, which tells apart two statements inside
+     * one millisecond; any other point by its time.
+     *
+     * @param sequence where a statement's point falls among the snapshots, or -1 for a point given as a time
+     * @param millis   the point's time, in epoch milliseconds
+     * @param before   whether the point is BEFORE rather than AT
+     * @return the refresh, or null when none this engine still keeps came before the point
+     */
+    public synchronized DynamicTableRefresh refreshAt(final long sequence, final long millis, final boolean before) {
+        DynamicTableRefresh seen = null;
+        for (final DynamicTableRefresh refresh : refreshes) {
+            final long at = sequence >= 0 ? refresh.getSequence() : refresh.getMillis();
+            final long point = sequence >= 0 ? sequence : millis;
+            if (before ? at >= point : at > point) {
+                break;
+            }
+            seen = refresh;
+        }
+        return seen;
+    }
+
+    /**
+     * The refreshes the table keeps for time travel, oldest first, as a snapshot of the engine's state saves them.
+     *
+     * @return a copy of the kept refreshes
+     */
+    public synchronized List<DynamicTableRefresh> getRefreshes() {
+        return new ArrayList<DynamicTableRefresh>(refreshes);
+    }
+
+    /**
+     * Puts back the refreshes a snapshot of the engine's state saved, so a read AT or BEFORE a point before a restart
+     * reaches the rows the table held then.
+     *
+     * @param kept the refreshes, oldest first
+     */
+    public synchronized void restoreRefreshes(final List<DynamicTableRefresh> kept) {
+        refreshes.clear();
+        for (final DynamicTableRefresh refresh : kept) {
+            keepRefresh(refresh);
+        }
+    }
+
+    /**
+     * The last refresh this engine ran and still keeps.
+     *
+     * @return the refresh, or null when it has run none
+     */
+    public synchronized DynamicTableRefresh lastRefresh() {
+        return refreshes.isEmpty() ? null : refreshes.get(refreshes.size() - 1);
+    }
+
+    /**
      * Puts back the refresh state a snapshot of the engine's state saved, as it was: when the table last refreshed,
      * where and when its first refresh fell, and the rows its last refresh read.
      *
@@ -209,6 +294,7 @@ public class DynamicTable extends SqlObject {
         copy.refreshMode = refreshMode;
         copy.initialize = initialize;
         copy.dataRetentionDays = dataRetentionDays;
+        copy.dataRetentionSet = dataRetentionSet;
         copy.maxDataExtensionDays = maxDataExtensionDays;
         copy.clusterKeys.addAll(clusterKeys);
         copy.declaredColumns.addAll(declaredColumns);

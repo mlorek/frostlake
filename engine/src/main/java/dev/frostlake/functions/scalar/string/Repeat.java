@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.CodePointText;
 
@@ -36,7 +37,7 @@ public class Repeat extends TextArgumentFunction {
     public Object evaluate(final List<Object> args) {
         // A NULL count answers NULL as a NULL string does (live: REPEAT('ab', NULL) is NULL).
         if (args.get(0) == null || args.get(1) == null) return null;
-        final String s = args.get(0).toString();
+        final String s = SharedFunctionHelpers.textOf(args.get(0));
         // The count multiplies the text's length, and the product is what rounds: REPEAT('ab', 2.5) is five
         // characters, ababa, and REPEAT('ab', 0.25) one (live-verified). A text count is read as its number.
         final int characters = wholeNumber(

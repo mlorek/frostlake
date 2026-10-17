@@ -322,6 +322,32 @@ public class StreamManager {
     }
 
     /**
+     * Bring a new stream over a dynamic table, started from a past refresh's rows (its refresh image), up to the
+     * table's last refresh: the rows that left and arrived since are pending in it, and the last refresh's rows
+     * become its image, as {@link #trackDynamicTableRefresh} would have left them refresh by refresh.
+     *
+     * @param stream    the stream, its image the rows of the refresh it starts from
+     * @param tableName the dynamic table's qualified name, DB.SCHEMA.NAME
+     * @param rows      the rows of the table's last refresh
+     */
+    public void catchUpDynamicTableStream(final Stream stream, final String tableName,
+                                          final List<List<Object>> rows) {
+        final List<List<Object>> before = stream.getRefreshImage() == null
+            ? new ArrayList<List<Object>>() : stream.getRefreshImage();
+        final List<List<Object>> removed = new ArrayList<>();
+        final List<List<Object>> added = new ArrayList<>();
+        diff(before, rows, removed, added);
+        final String rowIdKey = tableName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
+        for (final List<Object> values : removed) {
+            stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
+        }
+        for (final List<Object> values : added) {
+            stream.addRecord(new StreamRecord(values, ChangeType.INSERT, false, getNextRowId(rowIdKey)));
+        }
+        stream.setRefreshImage(new ArrayList<>(rows));
+    }
+
+    /**
      * The multiset difference of two row images: each row of {@code before} no row of {@code after} matches is
      * removed, each row of {@code after} no row of {@code before} matches is added.
      */

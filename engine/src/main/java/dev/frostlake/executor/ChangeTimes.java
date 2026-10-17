@@ -26,7 +26,6 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
@@ -61,8 +60,9 @@ final class ChangeTimes {
      * SYSTEM$LAST_CHANGE_COMMIT_TIME('&lt;table or view&gt;'): a token that moves only when the table's rows do, and
      * for a view only when the rows of a table it reads do (documented: "If the specified database object is a view,
      * then at least one of the database objects referenced by the view changed"). A view's token is the newest of
-     * its tables', and never earlier than the view itself. The name resolves as a written one would, against the
-     * session's database and schema, and a name that is no table or view refuses the call, told as it was written.
+     * its tables', 0 while none of them was ever written (live-verified). The name resolves as a written one would,
+     * against the session's database and schema, and a name that is no table or view refuses the call, told as it
+     * was written.
      *
      * @param catalog  the catalog
      * @param argument the call's argument, the object's name as written
@@ -91,10 +91,10 @@ final class ChangeTimes {
      * @param catalog       the catalog
      * @param storageEngine the storage engine holding the table's versions
      * @param argument      the call's argument, the stream's name as written
-     * @return the stamp, or null for a NULL argument
+     * @return the stamp as text — the call answers a VARCHAR (live-verified) — or null for a NULL argument
      */
-    static Long streamTableTimestamp(final Catalog catalog, final StorageEngine storageEngine,
-                                     final Object argument) {
+    static String streamTableTimestamp(final Catalog catalog, final StorageEngine storageEngine,
+                                       final Object argument) {
         if (argument == null) {
             return null;
         }
@@ -129,7 +129,7 @@ final class ChangeTimes {
                 stamp = Math.max(stamp, version.epochMillis);
             }
         }
-        return stamp * NANOS_PER_MILLI;
+        return String.valueOf(stamp * NANOS_PER_MILLI);
     }
 
     /** The argument's text, its surrounding quotes dropped when a caller left them on. */
@@ -182,9 +182,7 @@ final class ChangeTimes {
             return 0L;
         }
         if (schema.hasView(name[2])) {
-            final View view = schema.getView(name[2]);
-            return Math.max(view.getCreatedTime().toEpochMilli() * NANOS_PER_MILLI,
-                queryToken(catalog, schema, view.getDefinition(), seen));
+            return queryToken(catalog, schema, schema.getView(name[2]).getDefinition(), seen);
         }
         if (schema.hasMaterializedView(name[2])) {
             final MaterializedView materialized = schema.getMaterializedView(name[2]);

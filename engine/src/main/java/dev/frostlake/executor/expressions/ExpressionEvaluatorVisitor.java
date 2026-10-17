@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.AmbiguousColumnException;
 import dev.frostlake.executor.AmbiguousOverload;
+import dev.frostlake.executor.ClusteringStatistics;
 import dev.frostlake.executor.ColumnLengthException;
 import dev.frostlake.executor.ConnectByExpander;
 import dev.frostlake.executor.DeferredFault;
@@ -46,6 +47,7 @@ import dev.frostlake.executor.TransactionAbort;
 import dev.frostlake.executor.UndeclaredScriptVariableException;
 import dev.frostlake.executor.UsingBindText;
 import dev.frostlake.executor.udf.StatementHandlerStates;
+import dev.frostlake.executor.udf.UserAggregateFunction;
 import dev.frostlake.functions.AggregateDistinctRefusals;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.ArrayArgumentKind;
@@ -98,6 +100,7 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.task.TaskOnlyFunctions;
 import dev.frostlake.task.UserTaskCancellation;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
@@ -134,6 +137,7 @@ import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.FloatOriginNode;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.RelationStatistics;
+import dev.frostlake.values.StructuredElementRefusal;
 import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.ValueRange;
 import dev.frostlake.values.VariantJsonNulls;
@@ -1573,6 +1577,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * Whether a type is a sized text of no width at all, which SYSTEM$TYPEOF spells as it is:
+     * {@code TRY_HEX_DECODE_STRING('6')} is VARCHAR(0) (live-verified).
+     */
+    private static boolean isEmptyText(final DataType type) {
+        return type instanceof StringType && !(type instanceof LengthlessStringType)
+            && !(type instanceof WidthlessStringType) && ((StringType) type).getMaxLength() == 0;
+    }
+
+    /**
      * What SYSTEM$TYPEOF answers for {@code typed} in this scope: its declared type as the plan reports it,
      * and the storage tag of the interval its values lie in.
      *
@@ -1589,6 +1602,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             : planned instanceof WidthlessStringType ? "VARCHAR"
             : planned instanceof StringType && ((StringType) planned).isUnsized() ? "VARCHAR"
             : StructuredTypes.isStructured(planned) ? StructuredLeafWidths.typeOfText(planned)
+            : isEmptyText(planned) ? "VARCHAR(0)"
             : planned == declared ? strictArgTypeText(typed) : SqlTypeNames.canonical(planned);
         return SystemTypeOfDescription.of(planned, typeText, inferStaticRange(typed),
             RowIndexPredicates.isPredicate(typed));
@@ -2053,11 +2067,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                         }
                     }
                 }
-                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(cat.getCurrentSchema()).getSequence(parts[0]);
+                // A quoted name in another case names another sequence, which is not there (live-verified).
+                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(cat.getCurrentSchema())
+                    .getSequenceExact(parts[0]);
             } else if (parts.length == 2) {
-                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(parts[0]).getSequence(parts[1]);
+                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(parts[0]).getSequenceExact(parts[1]);
             }
-            return cat.getDatabase(parts[0]).getSchema(parts[1]).getSequence(parts[2]);
+            return cat.getDatabase(parts[0]).getSchema(parts[1]).getSequenceExact(parts[2]);
         } catch (final RuntimeException e) {
             return null;
         }
@@ -2983,6 +2999,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     @Override
     public Object visitFunctionCall(final FunctionCallExpression written) {
+        if (written.getQualifierDatabase() != null && catalog != null
+                && !catalog.hasDatabaseExact(written.getQualifierDatabase())) {
+            // A built-in named under a database's INFORMATION_SCHEMA looks the database up (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object",
+                written.getQualifierDatabase()));
+        }
+        if (NullFoldedOperation.foldsExtreme(written, this)) {
+            // A constant NULL beside a subquery: the plan folds GREATEST or LEAST, and the subquery is not run.
+            return null;
+        }
         final Object result = evaluateFunctionCall(written);
         if (written instanceof RowExpression || written.getNameExpression() != null) {
             return result;
@@ -3278,6 +3304,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         } finally {
             callsBeingRead.remove(callsBeingRead.size() - 1);
         }
+        if ("SEARCH".equals(funcName) && !callArguments.isEmpty() && callArguments.get(0) instanceof RowExpression) {
+            argValues.set(0, searchedColumns((RowExpression) callArguments.get(0)));
+        }
         // A date call over the bare word NULL folds before its operands are judged (see UntypedNullFold).
         final boolean foldedOverNull = UntypedNullFold.foldsOverNullArgument(expr);
         if (!foldedOverNull) {
@@ -3385,6 +3414,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             if (DATE_SHIFT_NAMES.contains(funcName) && argValues.size() == 3 && expr.getArguments().size() == 3) {
                 convertVariantShiftArgument(expr, argValues);
+            }
+            if ("OBJECT_PICK".equals(funcName) && argValues.size() == 2 && expr.getArguments().size() == 2) {
+                pickKeysByType(expr, argValues);
+            }
+            if (StructuredElementRule.elementPosition(funcName) >= 0) {
+                castStructuredElement(funcName, expr, argValues);
             }
             try {
                 // DECODE and NVL2 are conditionals that do NOT short-circuit, so their branch cast
@@ -3517,7 +3552,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 queryExecutor.requireRoutinePrivilege(Privilege.USAGE, udfHome, udf);
             }
             if (udf != null) {
-                rejectStructuredUdfArgument(udf, funcName, expr.getArguments(), expr.getArgumentNames());
+                rejectStructuredUdfArgument(udf, funcName, expr);
                 final List<Object> callArgs = expr.getArgumentNames() != null
                     ? reorderNamedArgs(expr.getArgumentNames(), argValues, udf.getParameters(), funcName)
                     : argValues;
@@ -3585,11 +3620,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return kind + (named.size() > 1 ? "s " : " ") + String.join(", ", named) + ".";
     }
 
-    /** Whether the call names a SCHEMA (or database) as well as a routine. */
+    /**
+     * Whether the call names a SCHEMA (or database) as well as a routine. A name under INFORMATION_SCHEMA is no
+     * user's function and is refused with the bare names, {@code Unknown function INFORMATION_SCHEMA.NOSUCH.}
+     * (live-verified, see InformationSchemaCalls).
+     */
     private boolean isQualifiedCall(final FunctionCallExpression call) {
         final List<String> parts = call.getNameParts();
         return parts != null
-            ? parts.size() > 1
+            ? parts.size() > 1 && !InformationSchemaCalls.isUnder(parts)
             : spelledFunctionName(call).indexOf('.') >= 0;
     }
 
@@ -4279,8 +4318,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * base types do ({@code OBJECT(x INT)} does not). A bare NULL argument is accepted.
      */
     private void rejectStructuredUdfArgument(final Function udf, final String funcName,
-                                             final List<Expression> args, final List<String> argumentNames) {
-        if (udf == null || argumentNames != null) {
+                                             final FunctionCallExpression call) {
+        final List<Expression> args = call.getArguments();
+        if (udf == null || call.getArgumentNames() != null) {
             return;   // named arguments are reordered later: positions are unreliable here
         }
         final List<Parameter> params = udf.getParameters();
@@ -4294,8 +4334,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (StructuredTypes.bindsAsArgument(argType, paramType)) {
                 continue;
             }
-            throw new RuntimeException("Invalid argument types for function '" + funcName + "': ("
-                + strictArgTypeList(args) + ")");
+            throw arityMismatch("Invalid argument types for function '" + funcName + "': ("
+                + strictArgTypeList(args) + ")", call);
         }
     }
 
@@ -4303,8 +4343,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * A user-defined function call whose arguments no overload of that arity can take, refused while the
      * query compiles, at the call and over an empty table too (live-verified; the pairs are
      * {@link UdfArgumentTypes}'): "Invalid argument types for function 'F': (ARRAY, NUMBER(1,0))", every
-     * argument's type listed. With overloads it is refused only when EVERY one of that arity refuses;
-     * which of several accepting overloads runs stays the runtime's choice. A TIME into a TIMESTAMP
+     * argument's type listed. A structured argument or parameter is held to the binding rule besides (see
+     * {@link StructuredTypes#bindsAsArgument}): {@code f(OBJECT(c INT))} beside {@code f(OBJECT(a INT))} and
+     * {@code f(OBJECT(b INT))} is refused at the call. With overloads it is refused only when EVERY one of that
+     * arity refuses; which of several accepting overloads runs stays the runtime's choice. A TIME into a TIMESTAMP
      * parameter is "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]", unanchored. A call with named
      * arguments that fits no overload is "named arguments [P] do not match any signature for function F" (see
      * {@link #rejectMisnamedUdfArguments}). Inside a running block an argument is judged as anywhere else: a bind
@@ -4358,7 +4400,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                             + SqlTypeNames.canonical(param) + "]";
                     }
                     refused = true;
-                } else if (UdfArgumentTypes.refuses(param, types.get(i))) {
+                } else if (UdfArgumentTypes.refuses(param, types.get(i))
+                        || !StructuredTypes.bindsAsArgument(types.get(i), param)) {
                     refused = true;
                     incompatible = "";
                 }
@@ -4650,35 +4693,6 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
     }
 
-    /**
-     * The single user-defined function the name {@code parts} names with {@code argCount} parameters, for
-     * the plan-time argument check — null when it cannot be pinned down (no such function, or several
-     * overloads of that arity, which runtime resolution decides between).
-     */
-    private Function resolveUdfForValidation(final List<String> parts, final int argCount) {
-        if (catalog == null) {
-            return null;
-        }
-        try {
-            final Schema schema = functionSchemaOf(parts);
-            if (schema == null) {
-                return null;
-            }
-            Function match = null;
-            for (final Function candidate : schema.getFunctionOverloads(parts.get(parts.size() - 1))) {
-                if (candidate.getParameters().size() == argCount) {
-                    if (match != null) {
-                        return null;
-                    }
-                    match = candidate;
-                }
-            }
-            return match;
-        } catch (final RuntimeException e) {
-            return null;
-        }
-    }
-
     private List<Object> reorderNamedArgs(final List<String> names, final List<Object> argValues,
             final List<Parameter> params, final String funcName) {
         return udfInvoker.reorderNamedArgs(names, argValues, params, funcName);
@@ -4767,10 +4781,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * @param value the operand's value
      * @return the converted value
      */
-    private Object castEvaluated(final CastExpression expr, final Object value) {
-        if (isVariantJsonNullCast(expr, value)) {
+    private Object castEvaluated(final CastExpression expr, final Object carried) {
+        if (isVariantJsonNullCast(expr, carried)) {
             return null;
         }
+        // An element or a path read out of a semi-structured value is a VARIANT, whatever its value is carried as,
+        // and is cast to a date, a time, a timestamp, a BOOLEAN or a BINARY as one: [1,2][0]::DATE and
+        // GET({'n': 1}, 'n')::DATE are "Failed to cast variant value 1 to DATE", as PARSE_JSON('1')::DATE is
+        // (live-verified).
+        final DataType castTo = TypeInferencer.typeForName(expr.getTargetType());
+        final Object value = (carried instanceof Number || carried instanceof Boolean || carried instanceof String)
+            && (castTo instanceof DateTimeType || castTo instanceof BooleanType || castTo instanceof BinaryType)
+            && typeInferencer.infer(expr.getExpression()) instanceof VariantType ? asVariantValue(carried) : carried;
         if (TypeInferencer.typeForName(expr.getTargetType()) instanceof StringType) {
             final String intervalText = intervalTextAsDeclared(expr.getExpression(), value);
             if (intervalText != null) {
@@ -4789,6 +4811,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             } catch (final RuntimeException e) {
                 return null;
             }
+        }
+        if (value instanceof VariantValue && (((VariantValue) value).node().isNumber()
+                || ((VariantValue) value).node().isBoolean())
+                && TypeInferencer.typeForName(expr.getTargetType()) instanceof BinaryType) {
+            // A VARIANT number or boolean is no binary: [1][0]::BINARY is refused as the variant's (live-verified).
+            throw VariantTemporalCasts.failure(value, "BINARY");
         }
         if (VariantTemporalCasts.readsVariantTemporalText(value, typeInferencer.infer(expr.getExpression()),
                 TypeInferencer.typeForName(expr.getTargetType()))) {
@@ -4868,6 +4896,58 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * @param call      the call
      * @param argValues its evaluated arguments, the shifted value converted in place
      */
+    /**
+     * The element ARRAY_APPEND, ARRAY_PREPEND or ARRAY_INSERT adds to a structured ARRAY, cast to the array's element
+     * type as the call reads it (see {@link StructuredElementRule}).
+     */
+    private void castStructuredElement(final String funcName, final FunctionCallExpression expr,
+                                       final List<Object> argValues) {
+        final int position = StructuredElementRule.elementPosition(funcName);
+        if (argValues.size() <= position || expr.getArguments().size() <= position || argValues.get(position) == null) {
+            return;
+        }
+        final DataType array = inferStaticType(expr.getArguments().get(0));
+        if (!(array instanceof StructuredArrayType)) {
+            return;
+        }
+        final String target = StructuredElementRule.castTarget(((StructuredArrayType) array).getElementType());
+        if (target == null) {
+            return;
+        }
+        try {
+            argValues.set(position, castValue(argValues.get(position), target));
+        } catch (final StructuredElementRefusal refused) {
+            throw refused;
+        } catch (final RuntimeException refused) {
+            // Refused in the cast's own words, outside any DML envelope (see StructuredElementRefusal).
+            throw new StructuredElementRefusal(refused.getMessage());
+        }
+    }
+
+    /**
+     * OBJECT_PICK's one key argument names its keys as an ARRAY's elements only when it is typed ARRAY: a VARIANT
+     * holding an array is a single key, its text, which names no member (live-verified).
+     */
+    private void pickKeysByType(final FunctionCallExpression call, final List<Object> argValues) {
+        final Object keys = argValues.get(1);
+        if (keys == null) {
+            return;
+        }
+        DataType type = null;
+        try {
+            type = typeInferencer.infer(call.getArguments().get(1));
+        } catch (final RuntimeException untyped) {
+            type = null;
+        }
+        if (type instanceof ArrayType) {
+            if (keys instanceof String) {
+                argValues.set(1, VariantValue.of((String) keys));
+            }
+        } else if (keys instanceof VariantValue && ((VariantValue) keys).isJsonArray()) {
+            argValues.set(1, keys.toString());
+        }
+    }
+
     private void convertVariantShiftArgument(final FunctionCallExpression call, final List<Object> argValues) {
         final Object value = argValues.get(2);
         if (value == null || !variantArgument(call, 2, value)) {
@@ -5043,6 +5123,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (toVariantVector != null) {
                 return applyStructuredTarget(expr,
                     toVariantVector.evaluate(Collections.singletonList(value)));
+            }
+        }
+        if (value instanceof VectorValue
+                && "ARRAY".equalsIgnoreCase(String.valueOf(expr.getTargetType()).trim())) {
+            // A VECTOR cast to ARRAY is TO_ARRAY of it: a FLOAT vector's elements are the DOUBLEs its 32-bit
+            // elements widen to, 0.1234567 reading 0.1234567016 (live-verified), never the six-decimal display text.
+            final BuiltInFunction toArrayVector = functionRegistry == null ? null
+                : functionRegistry.getFunction("TO_ARRAY");
+            if (toArrayVector != null) {
+                return applyStructuredTarget(expr, toArrayVector.evaluate(Collections.singletonList(value)));
             }
         }
         if ((value instanceof Double || value instanceof Float)
@@ -6312,6 +6402,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     rejectWholeDayUnitOverTime(funcName, call.getArguments());
                     rejectIntervalCallArguments(funcName, call);
                     ClockPrecisionRule.require(funcName, call, this);
+                    StructuredElementRule.require(funcName, call, this);
                     rejectWrittenRowArguments(funcName, call);
                 }
                 // ★ A STAR EXPANDS FIRST AND ONE ARITY RULE JUDGES THE EXPANDED LIST (live):
@@ -6330,8 +6421,6 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     rejectScalarStarArity(arityChecked, funcName, starExpandedArgumentEcho(call), call);
                 }
                 if (functionRegistry.getFunction(funcName) == null) {
-                    rejectStructuredUdfArgument(resolveUdfForValidation(udfNameParts(call), call.getArguments().size()),
-                        funcName, call.getArguments(), call.getArgumentNames());
                     rejectUncoercibleUdfArguments(funcName, call);
                 }
             }
@@ -6356,6 +6445,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 rejectFileConcatOperand((BinaryOperationExpression) expr);
                 rejectSemiStructuredConcatOperand((BinaryOperationExpression) expr);
                 rejectIntervalLikeOperand((BinaryOperationExpression) expr);
+                rejectStructuredLikeOperand((BinaryOperationExpression) expr);
                 // Ahead of the semi-structured rule, which speaks for FILE and the geo pair as well but
                 // has no position to give: a family this one already names is refused where live points.
                 rejectOperandFamilies((BinaryOperationExpression) expr);
@@ -6492,10 +6582,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             final LikeAnyAllExpression like = (LikeAnyAllExpression) expr;
             rejectPatternRowOperator(like);
             validateStrictArguments(like.getSubject());
+            rejectLikeAnyQueryTypes(like);
             for (final Expression pattern : like.getPatterns()) {
                 validateStrictArguments(pattern);
             }
-            rejectPredicateLikeAnyArguments(like);
+            rejectLikeAnyArgumentTypes(like);
         }
     }
 
@@ -6532,24 +6623,136 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * the subject and the patterns, NULL where none is written, at the keyword (live-verified):
      * {@code 'a' IS NULL ILIKE ANY ('a')} is "Invalid argument types for function 'ILIKE_ANY': (BOOLEAN, NULL,
      * VARCHAR(1))" and {@code 'a' LIKE ANY ('a') IS NULL} names 'LIKE_ANY' for (VARCHAR(1), NULL, BOOLEAN). A
-     * BOOLEAN value there is read as its text: {@code TRUE LIKE ANY ('a')} is FALSE.
+     * BOOLEAN value there is read as its text: {@code TRUE LIKE ANY ('a')} is FALSE. A ROW, an ARRAY, an OBJECT, a
+     * MAP, a BINARY and a VECTOR are refused alike — {@code 'a' LIKE ANY ['a']} names (VARCHAR(1), NULL, ARRAY) and
+     * {@code 'a' LIKE ANY (('a', 'b'), 'c')} (VARCHAR(1), NULL, ROW(VARCHAR(1), VARCHAR(1)), VARCHAR(1)) — and a
+     * NULL written as a pattern is skipped, as it is when the patterns are matched (live-verified).
      */
-    private void rejectPredicateLikeAnyArguments(final LikeAnyAllExpression like) {
-        boolean predicate = PredicateExpressions.isPredicate(like.getSubject());
+    private void rejectLikeAnyArgumentTypes(final LikeAnyAllExpression like) {
+        boolean refused = refusedLikeAnyOperand(like.getSubject());
         for (final Expression pattern : like.getPatterns()) {
-            predicate = predicate || PredicateExpressions.isPredicate(pattern);
+            refused = refused || refusedLikeAnyOperand(pattern);
         }
-        if (!predicate) {
+        if (!refused) {
             return;
         }
         final StringBuilder types = new StringBuilder(strictArgTypeText(like.getSubject()));
         types.append(", ").append(like.getEscape() == null ? "NULL" : strictArgTypeText(like.getEscape()));
         for (final Expression pattern : like.getPatterns()) {
-            types.append(", ").append(strictArgTypeText(pattern));
+            if (!(pattern instanceof LiteralExpression
+                    && ((LiteralExpression) pattern).getType() == LiteralType.NULL)) {
+                types.append(", ").append(strictArgTypeText(pattern));
+            }
         }
         final String function = (like.isCaseInsensitive() ? "ILIKE" : "LIKE") + (like.isAll() ? "_ALL" : "_ANY");
         throw new RuntimeException(positionedAt(like.getPosition(),
             "Invalid argument types for function '" + function + "': (" + types + ")"));
+    }
+
+    /** Whether LIKE ANY, LIKE ALL or ILIKE ANY refuses an operand: a predicate, a ROW or a type LIKE refuses. */
+    private boolean refusedLikeAnyOperand(final Expression operand) {
+        return PredicateExpressions.isPredicate(operand) || operand instanceof RowExpression
+            || refusedLikeType(likeOperandType(operand));
+    }
+
+    /**
+     * A query written as LIKE ANY's one pattern is matched row by row as LIKE matches, so a query of several columns,
+     * or of one LIKE refuses, is refused as LIKE refuses it: the subject's type, the query's ROW or its column's
+     * type, then the ESCAPE's where one is written, at the keyword (live-verified) — {@code 'a' LIKE ANY (SELECT
+     * 'a', 'b')} is "Invalid argument types for function 'LIKE': (VARCHAR(1), ROW(VARCHAR(1), VARCHAR(1)))". ILIKE
+     * ANY's query is typed as a pattern is: {@code 'a' ILIKE ANY (SELECT ['a'])} names 'ILIKE_ANY' (see
+     * {@link #rejectLikeAnyArgumentTypes}).
+     */
+    private void rejectLikeAnyQueryTypes(final LikeAnyAllExpression like) {
+        if (like.isAll() || like.isCaseInsensitive() || like.getPatterns().size() != 1
+                || !(like.getPatterns().get(0) instanceof SubqueryExpression)) {
+            return;
+        }
+        final SubqueryExpression query = (SubqueryExpression) like.getPatterns().get(0);
+        final List<DataType> columns = subqueryColumnTypes(query);
+        if (columns == null || columns.isEmpty() || columns.size() == 1 && !refusedLikeType(columns.get(0))) {
+            return;
+        }
+        final String row = subqueryRowTypeText(query);
+        if (row == null) {
+            return;
+        }
+        final StringBuilder types = new StringBuilder(strictArgTypeText(like.getSubject())).append(", ").append(row);
+        if (like.getEscape() != null) {
+            types.append(", ").append(strictArgTypeText(like.getEscape()));
+        }
+        throw new RuntimeException(positionedAt(like.getPosition(), "Invalid argument types for function 'LIKE': ("
+            + types + ")"));
+    }
+
+    /**
+     * A LIKE or ILIKE matches text, and an ARRAY, an OBJECT, a MAP, a BINARY or a VECTOR converts to none:
+     * {@code 'a' LIKE ['a']} is "Invalid argument types for function 'LIKE': (VARCHAR(1), ARRAY)", with the ESCAPE's
+     * type after the pattern's where one is written, at the keyword — nowhere (line 0, position -1) for the NOT
+     * spellings (live-verified).
+     */
+    private void rejectStructuredLikeOperand(final BinaryOperationExpression expr) {
+        final BinaryOperator op = expr.getOperator();
+        if (op != BinaryOperator.LIKE && op != BinaryOperator.ILIKE && op != BinaryOperator.NOT_LIKE
+                && op != BinaryOperator.NOT_ILIKE) {
+            return;
+        }
+        if (!refusedLikeType(likeOperandType(expr.getLeft())) && !refusedLikeType(likeOperandType(expr.getRight()))) {
+            return;
+        }
+        if (isNullLiteral(expr.getRight())) {
+            // A NULL pattern folds the match to NULL before its operands' types are asked (live-verified).
+            return;
+        }
+        final List<Expression> operands = new ArrayList<>(Arrays.asList(expr.getLeft(), expr.getRight()));
+        if (expr.getEscape() != null) {
+            operands.add(expr.getEscape());
+        }
+        final String detail = "Invalid argument types for function '"
+            + (op == BinaryOperator.ILIKE || op == BinaryOperator.NOT_ILIKE ? "ILIKE" : "LIKE") + "': ("
+            + strictArgTypeList(operands) + ")";
+        if (op == BinaryOperator.NOT_LIKE || op == BinaryOperator.NOT_ILIKE) {
+            throw new RuntimeException(SqlCompilationError.at(0, -1, detail));
+        }
+        throw new RuntimeException(positionedAt(expr.getPosition(), detail));
+    }
+
+    /**
+     * LIKE and ILIKE called as functions refuse what their operators refuse, at the call (live-verified:
+     * {@code LIKE(OBJECT_CONSTRUCT('a', 1), 'i%')} is "Invalid argument types for function 'LIKE': (OBJECT,
+     * VARCHAR(2))" at position 7); a NULL pattern folds the match first, as the operator's does.
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     * @param call     the call
+     */
+    private void rejectStructuredLikeArgument(final String funcName, final List<Expression> args,
+                                              final Expression call) {
+        if ((!"LIKE".equals(funcName) && !"ILIKE".equals(funcName)) || args.size() < 2
+                || !(call instanceof FunctionCallExpression) || isNullLiteral(args.get(1))) {
+            return;
+        }
+        boolean refused = false;
+        for (final Expression arg : args) {
+            refused = refused || refusedLikeType(likeOperandType(arg));
+        }
+        if (refused) {
+            throw new RuntimeException(positionedAt(((FunctionCallExpression) call).getPosition(),
+                "Invalid argument types for function '" + funcName + "': (" + strictArgTypeList(args) + ")"));
+        }
+    }
+
+    /** The static type of a LIKE family operand, read from the query around a subquery where it is not its own. */
+    private DataType likeOperandType(final Expression operand) {
+        final DataType inferred = operand instanceof RowExpression ? null : inferStaticType(operand);
+        return inferred != null || operand instanceof RowExpression ? inferred : outerScopeType(operand);
+    }
+
+    /** Whether the LIKE family refuses a value of this type: an ARRAY, an OBJECT, a MAP, a BINARY or a VECTOR. */
+    private static boolean refusedLikeType(final DataType type) {
+        return type instanceof ArrayType || type instanceof ObjectType || type instanceof MapType
+            || type instanceof BinaryType || type instanceof VectorType
+            || type != null && StructuredTypes.isStructured(type);
     }
 
     /**
@@ -7040,6 +7243,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // unit, and a unit that is not a string literal is the date-part sentence whatever its
         // family — TRUNC(d, d) is "Date/time component [TO_CHAR(TT.D) ]…", not "(DATE, DATE)".
         rejectNonLiteralTruncUnit(funcName, args);
+        rejectUntruncatableOperand(funcName, args);
         rejectArrayFunctionArgument(funcName, args, call);
         rejectSemiStructuredArgument(funcName, args, call);
         rejectNullIfZeroFamilies(funcName, args, call);
@@ -7054,7 +7258,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         rejectNonConstantVariableName(funcName, args, call);
         rejectNonConstantQueryIndex(funcName, args);
         rejectTagLookupArguments(funcName, args, call);
+        rejectCompileTimeSystemCall(funcName, args, call);
+        rejectStructuredLikeArgument(funcName, args, call);
         rejectSearchOptions(funcName, args, call);
+        rejectUnsearchableData(funcName, args, call);
         rejectMalformedExtractionPath(funcName, args);
         rejectNonStringToCharFormat(funcName, args);
         rejectNonConstantDigestSize(funcName, args);
@@ -7210,6 +7417,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (written != null && written.stripTrailingZeros().scale() <= 0) {
             return;
         }
+        String echo = written != null ? written.toPlainString() : null;
         if (written == null && ConstantRootFold.isOverLiterals(part, functionRegistry)) {
             final Object computed;
             try {
@@ -7222,6 +7430,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     || computed instanceof Long || computed instanceof Integer || computed instanceof BigInteger) {
                 return;
             }
+            // A conversion of a text or a FLOAT the plan carried out is echoed by the value it made:
+            // TO_DECIMAL('1.6', 4, 1) and 1.6::FLOAT::NUMBER(4,2) are '1.6' (live-verified).
+            if (computed instanceof BigDecimal && convertsTextOrFloat(part)) {
+                echo = ((BigDecimal) computed).stripTrailingZeros().toPlainString();
+            }
         }
         if (written == null && !accumulates(part)) {
             // The one whole value the plan knows a column's expression to be is read as a constant is.
@@ -7232,8 +7445,29 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
         }
         throw new RuntimeException(SqlCompilationError.of("argument 3 to function SPLIT_PART needs to be an integer,"
-            + " found: '" + (written != null ? written.toPlainString() : strictPlanText(part)) + "'"));
+            + " found: '" + (echo != null ? echo : strictPlanText(part)) + "'"));
     }
+
+    /** Whether a value is a conversion into an exact number of a text or a FLOAT: a cast, or TO_NUMBER and kin. */
+    private boolean convertsTextOrFloat(final Expression value) {
+        final Expression source;
+        final FunctionCallExpression call = value instanceof FunctionCallExpression ? (FunctionCallExpression) value
+            : null;
+        if (value instanceof CastExpression) {
+            source = ((CastExpression) value).getExpression();
+        } else if (call != null && call.getNameExpression() == null && !call.getArguments().isEmpty()
+                && NUMBER_CONVERSION_NAMES.contains(call.getFunctionName().toUpperCase(Locale.ROOT))) {
+            source = call.getArguments().get(0);
+        } else {
+            return false;
+        }
+        final DataType from = typeInferencer.infer(source);
+        return from instanceof StringType || NumericType.isApproximate(from);
+    }
+
+    /** The conversions into an exact number a constant is folded through. */
+    private static final Set<String> NUMBER_CONVERSION_NAMES = new HashSet<>(Arrays.asList(
+        "TO_NUMBER", "TO_DECIMAL", "TO_NUMERIC", "TRY_TO_NUMBER", "TRY_TO_DECIMAL", "TRY_TO_NUMERIC"));
 
     /**
      * Whether an expression holds an aggregate whose interval tells its accumulator and not its value: any but
@@ -7389,6 +7623,40 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * @param args     its arguments
      * @param call     the call
      */
+    /**
+     * SEARCH refuses data that holds no column a full-text search reads: a number, a BOOLEAN or a date, as a value
+     * or a column, alone or every member of the row it is given, is {@code Expected non-empty set of columns supporting
+     * full-text search.} at the call, the place followed by a colon (live-verified). A text, a VARIANT and a NULL are
+     * searched; a star's columns are judged once it is spliced.
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     * @param call     the call
+     */
+    private void rejectUnsearchableData(final String funcName, final List<Expression> args, final Expression call) {
+        if (!"SEARCH".equals(funcName) || args.isEmpty() || !(call instanceof FunctionCallExpression)) {
+            return;
+        }
+        final Expression data = args.get(0);
+        final List<Expression> members = data instanceof RowExpression ? ((RowExpression) data).getArguments()
+            : Collections.singletonList(data);
+        for (final Expression member : members) {
+            if (member instanceof ColumnReferenceExpression
+                    && ((ColumnReferenceExpression) member).getStarArgument() != null) {
+                return;
+            }
+            final DataType type = inferStaticType(member);
+            if (!(type instanceof NumericType || type instanceof BooleanType || type instanceof DateTimeType)) {
+                return;
+            }
+        }
+        final SourcePosition place = ((FunctionCallExpression) call).getPosition();
+        final SourcePosition at = place == null ? null : ExpressionSource.resolve(place);
+        throw new RuntimeException(SqlCompilationError.PREFIX + (at == null ? "" : " error line " + at.getLine()
+            + " at position " + at.getCharPositionInLine() + ":") + " Expected non-empty set of columns supporting"
+            + " full-text search.");
+    }
+
     private void rejectSearchOptions(final String funcName, final List<Expression> args, final Expression call) {
         if (!"SEARCH".equals(funcName) || !(call instanceof FunctionCallExpression)
                 || ((FunctionCallExpression) call).getArgumentNames() == null) {
@@ -7482,6 +7750,31 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         } else {
             TagReferencesFunction.systemGetTagAllowedValues(reading, values);
         }
+    }
+
+    /**
+     * The SYSTEM$ calls refused while the statement compiles, wherever they stand — under a WHERE, over a table with no
+     * row, inside SYSTEM$TYPEOF, which runs no argument else: a function that runs in a task alone, outside one, and
+     * SYSTEM$CLUSTERING_RATIO, a feature no longer supported, once its constant arguments are read (live-verified).
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     * @param call     the call
+     */
+    private void rejectCompileTimeSystemCall(final String funcName, final List<Expression> args,
+                                             final Expression call) {
+        TaskOnlyFunctions.requireTask(funcName);
+        if (!"SYSTEM$CLUSTERING_RATIO".equals(funcName) || queryExecutor == null) {
+            return;
+        }
+        final List<Object> values = new ArrayList<>();
+        for (final Expression arg : args) {
+            if (!ConstantArgumentWalk.isConstant(arg, functionRegistry)) {
+                return;
+            }
+            values.add(arg.accept(this));
+        }
+        ClusteringStatistics.ratio(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), values);
     }
 
     /**
@@ -7855,6 +8148,31 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * "[TO_CHAR(TT.D) ]", live-verified) while the same value beside a NUMERIC first argument is the
      * family refusal, "(NUMBER(2,1), DATE)".
      */
+    /**
+     * TRUNC with a date part reads its first argument as a date, a time or a timestamp, and refuses a value of another
+     * family by its type, a text and a VARIANT included (live-verified): over a BOOLEAN {@code TRUNC(b, 'month')} is
+     * "Function TRUNC does not support BOOLEAN argument type", over a VARCHAR(5) the same sentence naming it. A
+     * number keeps the numeric TRUNC, which reads the part as its scale.
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     */
+    private void rejectUntruncatableOperand(final String funcName, final List<Expression> args) {
+        if (!"TRUNC".equals(funcName) || args.size() != 2 || !(args.get(1) instanceof LiteralExpression)
+                || ((LiteralExpression) args.get(1)).getType() != LiteralType.STRING) {
+            return;
+        }
+        if (!SharedFunctionHelpers.isDatePartUnit(String.valueOf(((LiteralExpression) args.get(1)).getValue()))) {
+            return;
+        }
+        final DataType operand = typeInferencer.infer(args.get(0));
+        if (operand == null || operand instanceof NumericType || operand instanceof DateTimeType) {
+            return;
+        }
+        throw new RuntimeException(SqlCompilationError.of("Function TRUNC does not support "
+            + strictArgTypeText(args.get(0)) + " argument type"));
+    }
+
     private void rejectNonLiteralTruncUnit(final String funcName, final List<Expression> args) {
         if (!funcName.equals("TRUNC") && !funcName.equals("TRUNCATE") || args.size() < 2) {
             return;
@@ -8200,6 +8518,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * as 'SUBSTR', {@code REPEAT(o, 2)} as 'LENGTH', {@code DIV0NULL(o, 2)} as 'DIV0' with a
      * rewritten argument list — are copied as measured (see {@link #rewrittenCallRefusal}).
      */
+    /** Whether a declared type is one OBJECT_KEYS refuses: a number, a text, an ARRAY, a BOOLEAN, a date or a binary. */
+    private static boolean namesNoObject(final DataType type) {
+        return type instanceof NumericType || type instanceof StringType || type instanceof ArrayType
+            || type instanceof BooleanType || type instanceof DateTimeType || type instanceof BinaryType;
+    }
+
     private void rejectSemiStructuredArgument(final String funcName, final List<Expression> args,
                                               final Expression call) {
         if (funcName.equals("NTILE") && args.size() == 1
@@ -8208,6 +8532,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // A bucket count is a number or what spells one: a BOOLEAN and a date are neither (live-verified).
             throw new RuntimeException(positionedArgumentTypes(call,
                 "Invalid argument types for function 'NTILE': (" + strictArgTypeText(args.get(0)) + ")"));
+        }
+        if (funcName.equals("OBJECT_KEYS") && args.size() == 1 && namesNoObject(typeInferencer.infer(args.get(0)))) {
+            // An OBJECT or a VARIANT has keys; a value declared anything else is refused by its type as the call
+            // compiles, at the call: OBJECT_KEYS(1) is "Invalid argument types for function 'OBJECT_KEYS':
+            // (NUMBER(1,0))", over an ARRAY "(ARRAY)" (live-verified).
+            throw new RuntimeException(positionedArgumentTypes(call,
+                "Invalid argument types for function 'OBJECT_KEYS': (" + strictArgTypeText(args.get(0)) + ")"));
         }
         final BuiltInFunction function = registeredFunction(funcName);
         if (function == null) {
@@ -9595,13 +9926,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private static void addStarColumns(final List<String> columns, final String relation, final Table source,
                                        final List<String> excludes, final Pattern kept) {
         final String qualifier = printableRelationName(relation);
-        for (final TableColumn column : source.getColumns()) {
+        final List<String> planNames = source.getPlanColumnNames();
+        for (int i = 0; i < source.getColumns().size(); i++) {
+            final TableColumn column = source.getColumns().get(i);
             final String name = column.getName();
             if (column.isHiddenFromStar() || excludes != null && excludes.contains(name)
                     || kept != null && !kept.matcher(name).matches()) {
                 continue;
             }
-            columns.add((qualifier == null ? "" : qualifier + ".") + SqlIdentifiers.spellCanonical(name));
+            // A VALUES clause's column is echoed by the name it keeps in the plan (live-verified: W.COLUMN1).
+            final String printed = planNames != null && i < planNames.size() ? planNames.get(i) : name;
+            columns.add((qualifier == null ? "" : qualifier + ".") + SqlIdentifiers.spellCanonical(printed));
         }
     }
 
@@ -9723,6 +10058,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             ORDERED_VALUE_AGGREGATES.contains(call.getFunctionName().toUpperCase(Locale.ROOT));
         final int minimum = orderedValue ? 1 : aggregate.getMinArgCount();
         final int argCount = call.getArguments().size();
+        if (argCount < minimum && aggregate instanceof UserAggregateFunction) {
+            // A user's aggregate function given too few arguments is refused for their types, as a user's scalar
+            // function is: Invalid argument types for function 'F': (NUMBER(38,0)) (live-verified).
+            final StringBuilder types = new StringBuilder();
+            for (int i = 0; i < argCount; i++) {
+                types.append(i == 0 ? "" : ", ").append(strictArgTypeText(call.getArguments().get(i)));
+            }
+            throw arityMismatch("Invalid argument types for function '" + aggregate.getName() + "': (" + types
+                + ")", call);
+        }
         if (argCount < minimum) {
             throw arityMismatch("not enough arguments for function ["
                 + strictText(call) + "], expected " + minimum + ", got " + argCount, call);
@@ -9741,6 +10086,23 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * {@code HASH(a, t.*)} is {@code HASH(a, a, b, c)} and {@code MOD(a, t.*)} is refused as
      * {@code MOD(T.A, T.A, T.B, T.C)}. The call itself when it holds no such star.
      */
+    /**
+     * The values of a row SEARCH searches, each element's own, its NULLs kept and its numbers left out: a number is
+     * no text SEARCH reads, whatever it holds, and its NULL makes no answer NULL either (live-verified).
+     *
+     * @param row the row as written
+     * @return the values of the elements that are no number
+     */
+    private List<Object> searchedColumns(final RowExpression row) {
+        final List<Object> searched = new ArrayList<>();
+        for (final Expression element : row.getArguments()) {
+            if (!(typeInferencer.infer(element) instanceof NumericType)) {
+                searched.add(element.accept(this));
+            }
+        }
+        return searched;
+    }
+
     FunctionCallExpression splicedStarArguments(final FunctionCallExpression call) {
         if (call.isStar()) {
             return splicedLoneStar(call);
@@ -9756,6 +10118,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return call;
         }
         final boolean qualified = multiTableAllTables != null && multiTableAllTables.size() > 1;
+        final Expression first = call.getArguments().get(0);
+        if ("SEARCH".equalsIgnoreCase(call.getFunctionName()) && first instanceof ColumnReferenceExpression
+                && ((ColumnReferenceExpression) first).getStarArgument() != null) {
+            // SEARCH reads a star as the row of the columns it names, the data it searches (live-verified).
+            final List<Expression> columns = new ArrayList<Expression>(((ColumnReferenceExpression) first)
+                .getStarArgument().expandReferences(table, multiTableAliasToTable, multiTableAllTables, qualified));
+            final List<Expression> searched = new ArrayList<>(call.getArguments());
+            searched.set(0, new RowExpression(columns));
+            return call.withArguments(searched);
+        }
         final List<Expression> spliced = new ArrayList<>();
         for (final Expression arg : call.getArguments()) {
             final StarArgument star = arg instanceof ColumnReferenceExpression
@@ -10039,6 +10411,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private void judgeSignature(final BuiltInFunction func, final String funcName, final FunctionCallExpression call) {
         final int count = call.getArguments().size();
+        if (func.namesStructuredKeysByLiteral() && count > 0) {
+            judgeStructuredKeys(funcName, call);
+        }
         final String named = func.signatureName(count);
         if (named == null) {
             return;
@@ -10057,6 +10432,41 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (func.refusesSignatureTypes(types)) {
             throw arityMismatch("Invalid argument types for function '" + named + "': ("
                 + strictArgTypeList(call.getArguments()) + ")", call);
+        }
+    }
+
+    /**
+     * A structured OBJECT names the keys a call picks from it or deletes out of it by string literals alone: any
+     * other key argument, an ARRAY of keys, a VARIANT or a NULL among them, is refused by its number, the object's
+     * own being 0 — {@code OBJECT_PICK(o, 'c', ['a'])} is "Argument number 2 for function 'OBJECT_PICK' needs to be
+     * a string literal." — and each literal names one of its fields, spelled exactly, or the statement is refused
+     * whatever rows it reads: "Function OBJECT_PICK: expected structured object to contain field zz but it did not."
+     * (live-verified).
+     */
+    private void judgeStructuredKeys(final String funcName, final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        final DataType objectType = typeInferencer.infer(arguments.get(0));
+        if (!(objectType instanceof StructuredObjectType)) {
+            return;
+        }
+        for (int i = 1; i < arguments.size(); i++) {
+            final Expression key = arguments.get(i);
+            if (!(key instanceof LiteralExpression) || ((LiteralExpression) key).getType() != LiteralType.STRING
+                    || ((LiteralExpression) key).getValue() == null) {
+                throw new RuntimeException(SqlCompilationError.of("Argument number " + i + " for function '"
+                    + funcName + "' needs to be a string literal."));
+            }
+        }
+        for (int i = 1; i < arguments.size(); i++) {
+            final String key = String.valueOf(((LiteralExpression) arguments.get(i)).getValue());
+            boolean named = false;
+            for (final StructuredField field : ((StructuredObjectType) objectType).getFields()) {
+                named = named || field.getName().equals(key);
+            }
+            if (!named) {
+                throw new RuntimeException("Function " + funcName + ": expected structured object to contain field "
+                    + key + " but it did not.");
+            }
         }
     }
 
@@ -10966,8 +11376,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 rejectInvalidTupleInShape((TupleInExpression) operand);
             }
         }
-        final String typed = BinaryOperationTypes.refusalFor(expr.getOperator(),
-            typeInferencer.infer(expr.getLeft()), typeInferencer.infer(expr.getRight()));
+        // An interval constant is added to a date or a time and never the reverse: INTERVAL '1 year' + t is refused by
+        // its argument types at the operator while the statement compiles, where a typed interval literal,
+        // INTERVAL '1' DAY, moves a date from either side (live-verified).
+        final boolean intervalFirst = expr.getLeft() instanceof IntervalExpression
+            && ((IntervalExpression) expr.getLeft()).getLiteral() == null;
+        final DataType afterInterval = expr.getOperator() == BinaryOperator.ADD && intervalFirst
+            ? typeInferencer.infer(expr.getRight()) : null;
+        final String typed = afterInterval instanceof DateTimeType
+            ? "Invalid argument types for function '+': (INTERVAL, " + strictArgTypeText(expr.getRight()) + ")"
+            : BinaryOperationTypes.refusalFor(expr.getOperator(),
+                typeInferencer.infer(expr.getLeft()), typeInferencer.infer(expr.getRight()));
         final String refusal = typed != null ? typed : predicateOperandRefusal(expr);
         if (refusal == null) {
             return;
@@ -11218,12 +11637,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         } else if (ORDERING_CONDITIONALS.contains(funcName)) {
             // A quoted-unit interval literal takes no part in an ordering either.
             rejectInStringIntervalComparison(funcName, args, call.getPosition(), false);
-            for (final Expression arg : args) {
-                if (PredicateExpressions.isPredicate(arg)) {
-                    typeInferencer.infer(call);
-                    return;
-                }
-            }
+            // The arguments are brought to one type as the statement compiles, wherever the call stands: a UUID beside
+            // a number is refused before any row, inside IS NULL as under SYSTEM$TYPEOF (live-verified).
+            typeInferencer.infer(call);
         } else if (IN_STRING_BRANCH_CONDITIONALS.contains(funcName)) {
             rejectInStringIntervalBranch(funcName, call);
         }
@@ -11631,6 +12047,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      *   SELECT 1, +TRUE         error line 1 at position 10  … 'UNARY PLUS': (BOOLEAN)   — the sign's place, not the operand's
      *   -d  -t  -ts  -bn  -b5   (DATE)  (TIME(9))  (TIMESTAMP_NTZ(9))  (BINARY(8388608))  (BINARY(5))
      *   -o  -a  -sm  -g  -f     (OBJECT)  (ARRAY)  the whole MAP type  (GEOGRAPHY)  (FILE)
+     *   -u                      (UUID) — a UUID is no text that converts
      *   +IFF(TRUE, d, d)        (DATE) — the DECLARED type, read through a conditional
      * </pre>
      *
@@ -11660,6 +12077,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 && !(declared instanceof BooleanType)
                 && !(declared instanceof DateTimeType)
                 && !(declared instanceof BinaryType)
+                && !(declared instanceof UuidType)
                 && !signedInterval) {
             return;
         }
@@ -15138,6 +15556,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // The two bounds are two comparisons, each settling its own collation with the value's.
         final CollationSpec lowRules = comparisonCollation(expr.getValue(), expr.getLower());
         final CollationSpec highRules = comparisonCollation(expr.getValue(), expr.getUpper());
+        if (NullFoldedOperation.foldsBetween(expr, this)) {
+            // A constant NULL subject beside a subquery: the plan folds the BETWEEN, and the subquery is not run.
+            return null;
+        }
         final Object value = expr.getValue().accept(this);
         final Object lower = expr.getLower().accept(this);
         final Object upper = expr.getUpper().accept(this);
@@ -15297,6 +15719,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (!(expr.getSubquery() instanceof SubqueryExpression)) {
             throw new RuntimeException("Quantified comparison requires SubqueryExpression");
         }
+        if (subqueryEvaluator.requireSupportedQuantified(expr)) {
+            return null;
+        }
 
         final List<ResultSet> results = subqueryEvaluator.executeSubquery((SubqueryExpression) expr.getSubquery());
         // The subject and the query's column settle the collation as `=` settles two columns' (an IN's does too):
@@ -15308,7 +15733,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
         // A NULL operand that reads no column is folded with its comparison, which is UNKNOWN whatever the
         // query answers, no row included (live-verified).
-        if (leftValue == null && subqueryEvaluator.readsNoColumn(expr.getLeft())) {
+        if (leftValue == null && subqueryEvaluator.nullBeforeAnyRow(expr.getLeft())) {
             return null;
         }
         if (results.isEmpty() || results.get(0).getRowCount() == 0) {
@@ -16258,6 +16683,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (!"TIME".equalsIgnoreCase(valueType.getName())) {
             return;
         }
+        final boolean difference = "DATEDIFF".equals(funcName) || "TIMEDIFF".equals(funcName)
+            || "TIMESTAMPDIFF".equals(funcName);
+        if (difference && args.size() == 3 && typeInferencer.infer(args.get(2)) instanceof DateTimeType
+                && !"TIME".equalsIgnoreCase(((DateTimeType) typeInferencer.infer(args.get(2))).getName())) {
+            // A TIME beside a date or a timestamp is refused by the argument types before the unit is read
+            // (live-verified): DATEDIFF(day, tm, d) names (VARCHAR(3), TIME(9), DATE).
+            return;
+        }
         final String shown = unitWord.toUpperCase(Locale.ROOT);
         if ("DATE_PART".equals(funcName)) {
             throw new RuntimeException(SqlCompilationError.of("invalid value [" + shown
@@ -16336,9 +16769,20 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 known = word == null || LastDay.partOf(word) != null;
                 break;
             case "TIME_SLICE":
+                // A slice length that is no number is refused by its type before the unit is read (live-verified).
+                if (args.size() >= 2 && typeInferencer.infer(args.get(1)) instanceof StringType) {
+                    throw new RuntimeException(SqlCompilationError.of("invalid type [" + strictArgTypeText(args.get(1))
+                        + "] for parameter 'slice-length'"));
+                }
                 word = args.size() >= 3 && isStringLiteral(args.get(2))
                     ? String.valueOf(((LiteralExpression) args.get(2)).getValue()) : null;
                 known = word == null || DateUnitVocabulary.sliceUnit(word) != null;
+                if (known && word != null && DatePartOperands.isDate(typeInferencer.infer(args.get(0)))
+                        && !DateUnitVocabulary.sliceUnit(word).isWholeDay()) {
+                    // A DATE is sliced by the day and the units above it: a clock unit is no component of it.
+                    throw new RuntimeException("SQL compilation error: ['" + word.toUpperCase(Locale.ROOT)
+                        + "'] is not a valid date/time component for function TIME_SLICE and type DATE.");
+                }
                 break;
             default:
                 return;

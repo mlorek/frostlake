@@ -22,21 +22,30 @@ import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
+import dev.frostlake.executor.expressions.VolatileCalls;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.context.GetDdl;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.storage.Row;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
@@ -49,8 +58,10 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * expansion of view 'V': …}; a call reached through a view is told bare, with no view named. Everything else of
  * the statement is judged first: a column it does not have, and a call given the wrong number of arguments, speak
  * ahead of the function's table (all live-verified). A block compiles no call this way: its expressions are
- * judged as they are reached. Where a name has several overloads the call's argument count leaves open, none is
- * judged here.
+ * judged as they are reached. Where a name has several overloads the call's argument count leaves open, the one the
+ * arguments' declared types settle is judged — an exact number and the bare NULL reach a number parameter, a text a
+ * text one: {@code f_o(1)}, {@code f_o(a)} over an INT column and {@code f_o(NULL)} reach {@code f_o(p INT)}, where
+ * {@code f_o('a')} reaches {@code f_o(p VARCHAR)} (live-verified); any other kind settles nothing here.
  */
 public final class CalledRoutineSources {
 
@@ -64,9 +75,22 @@ public final class CalledRoutineSources {
      * @param executor the executor compiling it
      */
     public static void require(final ParseTree tree, final QueryExecutor executor) {
+        require(tree, executor, null);
+    }
+
+    /**
+     * {@link #require} with the arguments of the statement's own calls typed in its scope, which settles an overload
+     * their count leaves open.
+     *
+     * @param tree     a statement, a clause or an expression, as parsed; null reads nothing
+     * @param executor the executor compiling it
+     * @param typer    types an argument in the statement's scope; null types none
+     */
+    public static void require(final ParseTree tree, final QueryExecutor executor,
+                               final ExpressionEvaluator typer) {
         if (tree != null) {
             walk(tree, executor, new HashSet<String>(), Collections.<String>emptySet(),
-                Collections.<String>emptySet());
+                Collections.<String>emptySet(), Collections.<String, Object>emptyMap(), typer);
         }
     }
 
@@ -82,7 +106,8 @@ public final class CalledRoutineSources {
     public static void requireInBody(final ParseTree body, final QueryExecutor executor,
                                      final Set<String> parameters) {
         if (body != null) {
-            walk(body, executor, new HashSet<String>(), parameters, Collections.<String>emptySet());
+            walk(body, executor, new HashSet<String>(), parameters, Collections.<String>emptySet(),
+                Collections.<String, Object>emptyMap(), null);
         }
     }
 
@@ -95,8 +120,20 @@ public final class CalledRoutineSources {
      * @param executor the executor compiling it
      */
     public static void requireLast(final ParseTree tree, final QueryExecutor executor) {
+        requireLast(tree, executor, null);
+    }
+
+    /**
+     * {@link #requireLast} with the statement's own call arguments typed in its scope (see {@link #require}).
+     *
+     * @param tree     a query, as parsed
+     * @param executor the executor compiling it
+     * @param typer    types an argument in the query's scope; null types none
+     */
+    public static void requireLast(final ParseTree tree, final QueryExecutor executor,
+                                   final ExpressionEvaluator typer) {
         try {
-            require(tree, executor);
+            require(tree, executor, typer);
         } catch (final RuntimeException refused) {
             if (!LateConstantRefusal.record(refused, null)) {
                 throw refused;
@@ -106,10 +143,12 @@ public final class CalledRoutineSources {
 
     /**
      * Judges the calls under a tree. Inside a function's body, a name that is one of {@code parameters} reads a row
-     * only when it is one of {@code rowParameters} — a parameter the call of that function passed a row's value.
+     * only when it is one of {@code rowParameters} — a parameter the call of that function passed a row's value — and
+     * one of {@code constants} holds the constant value the call passed.
      */
     private static void walk(final ParseTree node, final QueryExecutor executor, final Set<String> judged,
-                             final Set<String> parameters, final Set<String> rowParameters) {
+                             final Set<String> parameters, final Set<String> rowParameters,
+                             final Map<String, Object> constants, final ExpressionEvaluator typer) {
         final FrostlakeParser.FunctionNameContext called = CalledRoutineSecrets.calledBy(node);
         if (called != null && !called.identifier().isEmpty()) {
             final List<String> parts = new ArrayList<String>();
@@ -127,27 +166,124 @@ public final class CalledRoutineSources {
                     candidates++;
                 }
             }
+            if (candidates > 1 && typer != null) {
+                reached = typedOverload(node, CalledRoutineSecrets.overloads(executor, parts), written, typer);
+                candidates = reached == null ? candidates : 1;
+            }
             if (candidates == 1) {
                 final Set<String> rowRead = rowReadParameters(node, reached, parameters, rowParameters);
                 requireEvaluableBody(node, reached, executor, rowRead);
-                if (judged.add(Integer.toHexString(System.identityHashCode(reached)) + new TreeSet<String>(rowRead))) {
-                    requireSourcesOf(reached, executor, judged, rowRead);
+                final Map<String, Object> bound = constantArguments(node, reached, executor, constants);
+                if (judged.add(Integer.toHexString(System.identityHashCode(reached)) + new TreeSet<String>(rowRead)
+                        + new TreeMap<String, Object>(bound))) {
+                    requireSourcesOf(reached, executor, judged, rowRead, bound);
                 }
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            walk(node.getChild(i), executor, judged, parameters, rowParameters);
+            walk(node.getChild(i), executor, judged, parameters, rowParameters, constants, typer);
         }
     }
 
     /**
-     * The parameters of a call's function whose arguments read the row (see {@link #walk}): a positional argument
-     * binds the parameter of its place, and a named one the parameter of its name.
+     * The constant values a call passes its function's parameters, by parameter: an argument written of literals, of
+     * the built-in functions over them and of the calling body's own constant parameters, by place or by name, and the
+     * default of a parameter the call leaves out. The account expands the body with them while the statement
+     * compiles, so the objects its GET_DDL calls name through a parameter are looked up then (live-verified).
      */
-    private static Set<String> rowReadParameters(final ParseTree call, final Function function,
-                                                 final Set<String> parameters, final Set<String> rowParameters) {
+    private static Map<String, Object> constantArguments(final ParseTree call, final Function function,
+                                                         final QueryExecutor executor,
+                                                         final Map<String, Object> constants) {
+        final Map<String, Object> bound = new HashMap<String, Object>();
+        if (function.getUdfLanguage() != UdfLanguage.SQL || function.getBody() == null) {
+            return bound;
+        }
+        final List<Parameter> declared = function.getParameters();
         final List<ParseTree> positional = new ArrayList<ParseTree>();
         final List<FrostlakeParser.NamedArgumentContext> named = new ArrayList<FrostlakeParser.NamedArgumentContext>();
+        argumentsOf(call, positional, named);
+        for (int i = 0; i < positional.size() && i < declared.size(); i++) {
+            bindConstant(bound, declared.get(i), positional.get(i), executor, constants);
+        }
+        for (final FrostlakeParser.NamedArgumentContext argument : named) {
+            final String name = SqlIdentifiers.canonical(argument.variableName());
+            for (final Parameter parameter : declared) {
+                if (parameter.getName().equalsIgnoreCase(name) && argument.expression() != null) {
+                    bindConstant(bound, parameter, argument.expression(), executor, constants);
+                }
+            }
+        }
+        for (final Parameter parameter : declared) {
+            final String name = parameter.getName().toUpperCase(Locale.ROOT);
+            if (!bound.containsKey(name) && parameter.hasDefault() && parameter.getDefaultValue() != null) {
+                final Object value = constantValue(parameter.getDefaultValue(), null, executor,
+                    Collections.<String, Object>emptyMap());
+                if (value != null) {
+                    bound.put(name, value);
+                }
+            }
+        }
+        return bound;
+    }
+
+    /** Binds a parameter to its argument's constant value, where the argument is a constant. */
+    private static void bindConstant(final Map<String, Object> bound, final Parameter parameter,
+                                     final ParseTree argument, final QueryExecutor executor,
+                                     final Map<String, Object> constants) {
+        final Object value = constantValue(ParseTreeText.getOriginalText((ParserRuleContext) argument), argument,
+            executor, constants);
+        if (value != null) {
+            bound.put(parameter.getName().toUpperCase(Locale.ROOT), value);
+        }
+    }
+
+    /**
+     * An expression's value where it is a constant: written of literals, of the built-in functions that answer alike
+     * each time, and of the names {@code constants} binds; null for anything else, a value that reads a row or a
+     * user-defined function among them.
+     *
+     * @param text     the expression's text
+     * @param tree     its parse tree, or null to judge it by its text alone
+     * @param executor the executor compiling the statement
+     * @param constants the calling body's constant parameters
+     */
+    private static Object constantValue(final String text, final ParseTree tree, final QueryExecutor executor,
+                                        final Map<String, Object> constants) {
+        try {
+            final ParseTree written = tree != null ? tree : AntlrExpressionParser.parseTree(text);
+            final Expression parsed = ExpressionEvaluator.parse(text);
+            if (!builtInsOnly(written, executor) || VolatileCalls.writes(parsed)) {
+                return null;
+            }
+            final ExpressionEvaluator evaluator = new ExpressionEvaluator(null, executor.getFunctionRegistry(),
+                executor.getCatalog(), executor);
+            evaluator.setOuterLateralContext(constants);
+            return DeferredFault.read(evaluator.evaluate(parsed, new Row(new ArrayList<Object>())));
+        } catch (final RuntimeException notConstant) {
+            return null;
+        }
+    }
+
+    /** Whether every call a tree writes is a built-in function's, and it holds no query of its own. */
+    private static boolean builtInsOnly(final ParseTree node, final QueryExecutor executor) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.FunctionNameContext && executor.getFunctionRegistry()
+                .getFunction(node.getText().toUpperCase(Locale.ROOT)) == null) {
+            return false;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (!builtInsOnly(node.getChild(i), executor)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** A call's arguments: those written by place, and those written by name. */
+    private static void argumentsOf(final ParseTree call, final List<ParseTree> positional,
+                                    final List<FrostlakeParser.NamedArgumentContext> named) {
         if (call instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionArgListContext arguments =
                 ((FrostlakeParser.FunctionCallExprContext) call).functionArgList();
@@ -161,6 +297,17 @@ public final class CalledRoutineSources {
             named.addAll(((FrostlakeParser.FunctionCallNamedArgsExprContext) call).namedArgumentList()
                 .namedArgument());
         }
+    }
+
+    /**
+     * The parameters of a call's function whose arguments read the row (see {@link #walk}): a positional argument
+     * binds the parameter of its place, and a named one the parameter of its name.
+     */
+    private static Set<String> rowReadParameters(final ParseTree call, final Function function,
+                                                 final Set<String> parameters, final Set<String> rowParameters) {
+        final List<ParseTree> positional = new ArrayList<ParseTree>();
+        final List<FrostlakeParser.NamedArgumentContext> named = new ArrayList<FrostlakeParser.NamedArgumentContext>();
+        argumentsOf(call, positional, named);
         final Set<String> rowRead = new HashSet<String>();
         final List<Parameter> declared = function.getParameters();
         for (int i = 0; i < positional.size() && i < declared.size(); i++) {
@@ -288,6 +435,77 @@ public final class CalledRoutineSources {
         return arguments == null ? 0 : arguments.functionArg().size();
     }
 
+    /**
+     * The one overload a call's positional arguments settle by their declared types, or null where none or several
+     * do: an exact number and the bare NULL reach a number parameter, a text a text one, and any other kind settles
+     * nothing.
+     */
+    private static Function typedOverload(final ParseTree call, final List<Function> overloads, final int written,
+                                          final ExpressionEvaluator typer) {
+        final List<ParseTree> positional = new ArrayList<ParseTree>();
+        final List<FrostlakeParser.NamedArgumentContext> named = new ArrayList<FrostlakeParser.NamedArgumentContext>();
+        argumentsOf(call, positional, named);
+        if (!named.isEmpty() || positional.size() != written) {
+            return null;
+        }
+        final List<String> families = new ArrayList<String>();
+        for (final ParseTree argument : positional) {
+            final String family = argumentFamily(argument, typer);
+            if (family == null) {
+                return null;
+            }
+            families.add(family);
+        }
+        Function settled = null;
+        for (final Function overload : overloads) {
+            if (!takes(overload, written) || !acceptsFamilies(overload, families)) {
+                continue;
+            }
+            if (settled != null) {
+                return null;
+            }
+            settled = overload;
+        }
+        return settled;
+    }
+
+    /** The family an argument's declared type gives it for an overload's choice: FIXED, TEXT, NULL, or null. */
+    private static String argumentFamily(final ParseTree argument, final ExpressionEvaluator typer) {
+        final Expression parsed;
+        final DataType type;
+        try {
+            parsed = ExpressionEvaluator.parse(argument instanceof ParserRuleContext
+                ? ParseTreeText.getOriginalText((ParserRuleContext) argument) : argument.getText());
+            if (parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getType() == LiteralType.NULL) {
+                return "NULL";
+            }
+            type = typer.inferStaticType(parsed);
+        } catch (final RuntimeException untyped) {
+            return null;
+        }
+        return parameterFamily(type);
+    }
+
+    private static String parameterFamily(final DataType type) {
+        if (type instanceof NumericType && !NumericType.isApproximate(type)) {
+            return "FIXED";
+        }
+        return type instanceof StringType ? "TEXT" : null;
+    }
+
+    /** Whether an overload's parameters take arguments of these families, the bare NULL reaching a number. */
+    private static boolean acceptsFamilies(final Function overload, final List<String> families) {
+        final List<Parameter> parameters = overload.getParameters();
+        for (int i = 0; i < families.size(); i++) {
+            final String parameter = parameterFamily(parameters.get(i).getDataType());
+            final String argument = families.get(i);
+            if (parameter == null || !parameter.equals("NULL".equals(argument) ? "FIXED" : argument)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Whether an overload can be the one a call of that many arguments reaches. */
     private static boolean takes(final Function overload, final int written) {
         if (written < 0) {
@@ -303,19 +521,21 @@ public final class CalledRoutineSources {
     }
 
     /**
-     * The objects the body's GET_DDL calls name with constant text, looked up where the function lives as the call
-     * looks them up while a statement compiles: a missing one refuses the statement wherever the function is called,
-     * under SYSTEM$TYPEOF, in a branch never taken and over no row alike (live-verified).
+     * The objects the body's GET_DDL calls name with constant text, or through a parameter the call passed constant
+     * text, looked up where the function lives as the call looks them up while a statement compiles: a missing one
+     * refuses the statement wherever the function is called, under SYSTEM$TYPEOF, in a branch never taken and over no
+     * row alike (live-verified).
      */
-    private static void requireDdlObjectsIn(final ParseTree node, final QueryExecutor executor) {
+    private static void requireDdlObjectsIn(final ParseTree node, final QueryExecutor executor,
+                                            final Map<String, Object> constants) {
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
             final List<FrostlakeParser.FunctionArgContext> arguments = call.functionArgList() == null
                 ? new ArrayList<FrostlakeParser.FunctionArgContext>() : call.functionArgList().functionArg();
             if ("GET_DDL".equalsIgnoreCase(call.functionName().getText()) && arguments.size() >= 2
                     && arguments.size() <= 3) {
-                final String type = constantText(arguments.get(0));
-                final String name = constantText(arguments.get(1));
+                final String type = constantText(arguments.get(0), executor, constants);
+                final String name = constantText(arguments.get(1), executor, constants);
                 final BuiltInFunction getDdl = executor.getFunctionRegistry().getFunction("GET_DDL");
                 if (type != null && name != null && getDdl instanceof GetDdl) {
                     ((GetDdl) getDdl).requireObject(type, name);
@@ -323,22 +543,33 @@ public final class CalledRoutineSources {
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            requireDdlObjectsIn(node.getChild(i), executor);
+            requireDdlObjectsIn(node.getChild(i), executor, constants);
         }
     }
 
-    /** The text a call's argument writes as a string literal, or null for any other argument. */
-    private static String constantText(final FrostlakeParser.FunctionArgContext argument) {
+    /**
+     * The text a call's argument writes as a string literal, or the text a constant argument, a call's parameter
+     * among its names, comes to; null for any other argument.
+     */
+    private static String constantText(final FrostlakeParser.FunctionArgContext argument,
+                                       final QueryExecutor executor, final Map<String, Object> constants) {
         if (argument.booleanExpr() == null) {
             return null;
         }
         try {
             final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(argument.booleanExpr()));
-            return parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getType() == LiteralType.STRING
-                ? String.valueOf(((LiteralExpression) parsed).getValue()) : null;
+            if (parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getType() == LiteralType.STRING) {
+                return String.valueOf(((LiteralExpression) parsed).getValue());
+            }
         } catch (final RuntimeException notALiteral) {
             return null;
         }
+        if (constants.isEmpty()) {
+            return null;
+        }
+        final Object value = constantValue(ParseTreeText.getOriginalText(argument.booleanExpr()),
+            argument.booleanExpr(), executor, constants);
+        return value instanceof String ? (String) value : null;
     }
 
     /**
@@ -349,13 +580,14 @@ public final class CalledRoutineSources {
      * (live-verified).
      */
     private static void walkBody(final ParseTree parsed, final Function function, final QueryExecutor executor,
-                                 final Set<String> judged, final Set<String> rowRead) {
+                                 final Set<String> judged, final Set<String> rowRead,
+                                 final Map<String, Object> constants) {
         final Set<String> parameters = new HashSet<String>();
         for (final Parameter parameter : function.getParameters()) {
             parameters.add(parameter.getName().toUpperCase(Locale.ROOT));
         }
         try {
-            walk(parsed, executor, judged, parameters, rowRead);
+            walk(parsed, executor, judged, parameters, rowRead, constants, null);
         } catch (final UnsupportedSubqueryException refused) {
             if (!rowRead.isEmpty() && refused.namesFunction()
                     && parsed instanceof FrostlakeParser.SqlScriptContext) {
@@ -367,7 +599,8 @@ public final class CalledRoutineSources {
 
     /** The relations a SQL function's body reads, looked for where the function lives, and those of its calls. */
     private static void requireSourcesOf(final Function function, final QueryExecutor executor,
-                                         final Set<String> judged, final Set<String> rowRead) {
+                                         final Set<String> judged, final Set<String> rowRead,
+                                         final Map<String, Object> constants) {
         if (function.getUdfLanguage() != UdfLanguage.SQL || function.getBody() == null) {
             return;
         }
@@ -393,9 +626,9 @@ public final class CalledRoutineSources {
                 final boolean outer = ViewExpansion.suspend();
                 try {
                     new StatementSourceCheck(executor, parsed).checkQueriesIn(parsed);
-                    requireDdlObjectsIn(parsed, executor);
+                    requireDdlObjectsIn(parsed, executor, constants);
                     executor.expandViewsIn(parsed);
-                    walkBody(parsed, function, executor, judged, rowRead);
+                    walkBody(parsed, function, executor, judged, rowRead, constants);
                 } finally {
                     ViewExpansion.end(outer);
                 }

@@ -179,7 +179,11 @@ public final class DdlStatusMessage {
             // created (live-verified).
             return kind + " '" + name + "' is successfully created.";
         }
-        return kind == null ? EXECUTED : kind + " " + name + " successfully created.";
+        // A view's, a materialized view's and a dynamic table's name is spelled as a name is written, quoted where it
+        // must be: View "v" successfully created., where every other kind prints it bare (live-verified).
+        final boolean spelled = "View".equals(kind) || "Materialized view".equals(kind) || "Dynamic table".equals(kind);
+        return kind == null ? EXECUTED : kind + " " + (spelled ? SqlIdentifiers.spellCanonical(name) : name)
+            + " successfully created.";
     }
 
     /** An UNDROP's sentence: {@code <Kind> <NAME> successfully restored.}, the kind being the word after UNDROP. */
@@ -285,7 +289,9 @@ public final class DdlStatusMessage {
         if ("STAGE".equals(words)) {
             return "Stage area";
         }
-        if ("PROCEDURE".equals(words)) {
+        if ("PROCEDURE".equals(words) || "EXTERNAL FUNCTION".equals(words) || "AGGREGATE FUNCTION".equals(words)) {
+            // A procedure, an external function and an aggregate function are each answered for as a function
+            // (live-verified).
             return "Function";
         }
         if ("IMAGE REPOSITORY".equals(words)) {

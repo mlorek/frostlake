@@ -23,6 +23,7 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableRefresh;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
@@ -192,8 +193,10 @@ final class StreamStart {
     /**
      * Start a stream over a dynamic table: it holds the table's rows as of its last refresh, and records what
      * each later refresh changes. {@code STREAM => '<name>'} over the same table takes that stream's pending
-     * changes. Any other point before the table's first refresh is refused as a time-travel read before the
-     * table was; a later one is unsupported, for the history of the table's refreshes is not kept.
+     * changes. Any other point starts the stream from the refresh a read at that point sees, so what every later
+     * refresh changed is pending at once: AT or BEFORE (STATEMENT => a refresh) holds that refresh's changes and the
+     * later ones (live-verified). A point before the table's first refresh, or before the oldest refresh still
+     * kept, is refused as a time-travel read before the table was.
      *
      * @param stream          the new stream
      * @param home            the schema the dynamic table lives in
@@ -216,13 +219,14 @@ final class StreamStart {
                 if (sameSource(source, stream)) {
                     stream.inheritChanges(source);
                 } else {
-                    refuseDynamicTablePoint(dynamicTable, source.getOffsetSequence() < dynamicTable.getFirstRefreshedSequence());
+                    startFromRefresh(stream, dynamicTable, dynamicTable.refreshAt(source.getOffsetSequence(), 0L,
+                        false));
                 }
             } else {
                 requirePointValue(point, dynamicTable.getName());
                 final long millis = queryExecutor.streamPointMillis(point);
-                refuseDynamicTablePoint(dynamicTable, millis < dynamicTable.getFirstRefreshedMillis()
-                    || point.BEFORE() != null && millis <= dynamicTable.getFirstRefreshedMillis());
+                startFromRefresh(stream, dynamicTable, dynamicTable.refreshAt(
+                    queryExecutor.streamPointSequence(point), millis, point.BEFORE() != null));
             }
         }
         if (showInitialRows) {
@@ -234,14 +238,22 @@ final class StreamStart {
         }
     }
 
-    /** A point on a dynamic table's stream that is no stream of the same table is refused either way. */
-    private static void refuseDynamicTablePoint(final DynamicTable dynamicTable, final boolean beforeFirstRefresh) {
-        if (dynamicTable.getFirstRefreshedSequence() == 0L || beforeFirstRefresh) {
+    /**
+     * Start a dynamic table's stream from a past refresh: what every later refresh changed is pending at once, and
+     * a point no kept refresh came before is refused as a time-travel read before the table was.
+     *
+     * @param stream       the new stream
+     * @param dynamicTable its dynamic table
+     * @param seen         the refresh a read at the point sees, or null for none
+     */
+    private void startFromRefresh(final Stream stream, final DynamicTable dynamicTable,
+                                  final DynamicTableRefresh seen) {
+        final DynamicTableRefresh last = dynamicTable.lastRefresh();
+        if (seen == null || last == null) {
             throw QueryExecutor.timeTravelUnavailable(dynamicTable.getName());
         }
-        throw new RuntimeException(SqlCompilationError.of("Unsupported feature 'AT | BEFORE on a stream over a "
-            + "dynamic table': a point after the table's first refresh needs the history of its refreshes, which "
-            + "Frostlake does not keep."));
+        stream.setRefreshImage(seen.getRows());
+        queryExecutor.getStreamManager().catchUpDynamicTableStream(stream, stream.getSourceTableName(), last.getRows());
     }
 
     /** The stream a {@code STREAM => '<name>'} point names, refused with the name as written when missing. */

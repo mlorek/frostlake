@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.AnonymousBlockResult;
+import dev.frostlake.executor.ApartRecording;
 import dev.frostlake.executor.BlockExpressionTypeError;
 import dev.frostlake.executor.BlockExpressionTypes;
 import dev.frostlake.executor.BodyAbort;
@@ -367,6 +368,8 @@ public class BeginEndBlockHandler implements CommandHandler {
         // An unnamed bind is refused while the block compiles, before any statement of it runs.
         ScriptingNameValidator.rejectUnnamedBinds(ctx);
         ScriptingNameValidator.rejectUnknownLoggingNames(ctx);
+        // An IDENTIFIER() text that names nothing is refused while the block compiles, placed in the block.
+        BlockIdentifierLiterals.require(ctx);
         // So is a BREAK, a CONTINUE or an EXIT that stands in no loop of the body, or names no loop around it.
         if (proceduralExecutor.entersTopBlockOfBody()) {
             LoopControlPlacement.require(ctx);
@@ -762,15 +765,25 @@ public class BeginEndBlockHandler implements CommandHandler {
         final String queryIdBefore = proceduralExecutor.lastQueryIdOfSession();
         final String text = visitor.getOriginalText(stmtCtx);
         final QueryHistory row = isChildStatement(stmtCtx) ? queryExecutor.beginChildStatement(text, stmtCtx) : null;
+        // A statement that commits work in a session of its own goes to the write-ahead log by itself, apart from
+        // the transaction running the block (see ApartRecording).
+        final ApartRecording apart = queryExecutor.beginApartRecording(stmtCtx);
         final Object stmtResult;
         try {
             if (bindsAsAStatement(stmtCtx)) {
                 InfiniteBindRefusal.requireFiniteBinds(stmtCtx, proceduralExecutor);
             }
             stmtResult = inHandler ? visitor.visit(stmtCtx) : visitStatement(stmtCtx);
+            if (apart != null) {
+                apart.complete();
+            }
         } catch (final RuntimeException failure) {
             queryExecutor.failChildStatement(row, text, failure);
             throw failure;
+        } finally {
+            if (apart != null) {
+                queryExecutor.endApartRecording(apart, text, false);
+            }
         }
         if (stmtResult instanceof ResultSet) {
             if (row != null) {

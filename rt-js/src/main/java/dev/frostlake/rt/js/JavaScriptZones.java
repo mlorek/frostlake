@@ -73,7 +73,32 @@ final class JavaScriptZones {
         }
     }
 
+    /** The zones of the old rule names the account's engine keeps as zones of their own, named by their offset. */
+    private static final Set<String> NAMED_BY_OFFSET = new HashSet<>(Arrays.asList("CET", "MET", "EET", "WET"));
+
     private JavaScriptZones() {
+    }
+
+    /**
+     * Whether a date in the zone names it by its offset: CET, MET, EET and WET, which the account's engine keeps as
+     * zones of their own with no long name — {@code GMT+0100 (GMT+01:00)}, and {@code (GMT)} at no offset
+     * (live-verified).
+     *
+     * @param zone the session's zone
+     * @return whether the zone is named by its offset
+     */
+    static boolean namedByOffset(final ZoneId zone) {
+        return zone != null && NAMED_BY_OFFSET.contains(zone.getId());
+    }
+
+    /**
+     * An offset as a zone named by it reads: {@code GMT+01:00}, {@code GMT-03:30}, and {@code GMT} at no offset.
+     *
+     * @param offset the offset
+     * @return the name
+     */
+    static String offsetName(final ZoneOffset offset) {
+        return offset.getTotalSeconds() == 0 ? "GMT" : "GMT" + offset.getId();
     }
 
     /**

@@ -19,6 +19,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
@@ -103,7 +104,8 @@ public abstract class MeasuredCellsTestSupport extends BaseDatabaseTest {
         if (type instanceof StringType) {
             return type.getName() + "(" + ((StringType) type).getMaxLength() + ")";
         }
-        return type.getName();
+        // A driver reads a MAP column as the OBJECT it is, as the live account's does.
+        return type instanceof MapType ? "OBJECT" : type.getName();
     }
 
     /** Asserts each statement of {@code cells} — a statement and its answer — reads as measured. */

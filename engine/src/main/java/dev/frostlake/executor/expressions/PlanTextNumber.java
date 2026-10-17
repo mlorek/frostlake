@@ -87,7 +87,8 @@ final class PlanTextNumber {
      * The width a conditional over text literals reads at beside an exact number: IFF and CASE whose results are
      * all text literals read at the widest scale their results spell — {@code IFF(TRUE, '1.50', '2') * 1} and
      * {@code IFF(FALSE, '1.50', '2') * 1} are both NUMBER(19,1) — where NVL and COALESCE over the same texts
-     * read as any text value does (live-verified).
+     * read as any text value does. A NULL result spells nothing and widens nothing: {@code IFF(TRUE, '1.50',
+     * NULL) * 1} and {@code CASE WHEN FALSE THEN '1.50' END * 1} are NUMBER(19,1) too (live-verified).
      *
      * @param operand the operand
      * @return the width, or null for any other operand
@@ -133,8 +134,50 @@ final class PlanTextNumber {
         return new NumericType("NUMBER", Math.min(MAX_PRECISION, whole + scale), scale);
     }
 
-    /** The results of an IFF, or of a CASE with an ELSE, when every one is a text literal; null otherwise. */
+    /**
+     * Whether a conditional over text literals has a NULL among its results — a CASE with no ELSE has one — which
+     * the plan converts as it stands: its product by one is not folded and LAST_QUERY_ID's index is not cast,
+     * {@code (TO_NUMBER(IFF(…), 18, 1)) * 1} (live-verified).
+     *
+     * @param operand the operand
+     * @return whether it is such a conditional
+     */
+    static boolean settlesOverNull(final Expression operand) {
+        final List<Expression> results = conditionalResults(operand);
+        if (results == null || settledResults(operand) == null) {
+            return false;
+        }
+        for (final Expression result : results) {
+            if (result == null || !ImpliedTextNumber.isTextLiteral(result)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The text-literal results of an IFF or a CASE whose every result is a text literal or a NULL, one at least
+     * a text; null otherwise.
+     */
     private static List<Expression> settledResults(final Expression operand) {
+        final List<Expression> results = conditionalResults(operand);
+        if (results == null) {
+            return null;
+        }
+        final List<Expression> texts = new ArrayList<Expression>();
+        for (final Expression result : results) {
+            if (result != null && ImpliedTextNumber.isTextLiteral(result)) {
+                texts.add(result);
+            } else if (result != null && !UntypedNullFold.isUntypedNull(result)
+                    && !UntypedNullFold.isNullTextConstant(result)) {
+                return null;
+            }
+        }
+        return texts.isEmpty() ? null : texts;
+    }
+
+    /** The results of an IFF or a CASE, a CASE with no ELSE ending in a null entry; null for any other operand. */
+    private static List<Expression> conditionalResults(final Expression operand) {
         final List<Expression> results = new ArrayList<Expression>();
         if (operand instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) operand;
@@ -145,20 +188,12 @@ final class PlanTextNumber {
             results.add(call.getArguments().get(2));
         } else if (operand instanceof CaseExpression) {
             final CaseExpression chosen = (CaseExpression) operand;
-            if (chosen.getElseExpression() == null) {
-                return null;
-            }
             for (final WhenClause when : chosen.getWhenClauses()) {
                 results.add(when.getResult());
             }
             results.add(chosen.getElseExpression());
         } else {
             return null;
-        }
-        for (final Expression result : results) {
-            if (!ImpliedTextNumber.isTextLiteral(result)) {
-                return null;
-            }
         }
         return results;
     }

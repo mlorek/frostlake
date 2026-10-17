@@ -126,7 +126,14 @@ final class IntegrationReferences {
      * @param name the integration's canonical name
      * @param scopes the secret's OAUTH_SCOPES, empty when it names none
      */
-    void requireSecretAuthentication(final String secretType, final String name, final List<String> scopes) {
+    /**
+     * The integration a secret's API_AUTHENTICATION names, judged before anything about the secret's type: it has
+     * to exist and to be a security integration (live-verified).
+     *
+     * @param name the integration's canonical name
+     * @return the integration
+     */
+    Integration requireAuthenticationIntegration(final String name) {
         final Integration integration = catalog.getIntegrations().find(name);
         if (integration == null) {
             throw new RuntimeException(SqlCompilationError.of("Integration '" + name
@@ -136,6 +143,11 @@ final class IntegrationReferences {
             throw new RuntimeException(SqlCompilationError.PREFIX + " Integration '" + integration.getName()
                 + "' is not of type API Authentication.");
         }
+        return integration;
+    }
+
+    void requireSecretAuthentication(final String secretType, final String name, final List<String> scopes) {
+        final Integration integration = requireAuthenticationIntegration(name);
         requireEnabled(integration);
         final String needed = "CLOUD_PROVIDER_TOKEN".equals(secretType) ? "AWS_IAM" : "OAUTH2";
         if (!needed.equals(integration.text("AUTH_TYPE"))) {
@@ -233,11 +245,8 @@ final class IntegrationReferences {
         if (stage == null || stage.getType() != StageType.EXTERNAL || stage.getUrl() == null) {
             return ACCOUNT_CLOUD;
         }
-        final String url = stage.getUrl();
-        if (url.startsWith("azure://")) {
-            return "AZURE";
-        }
-        return url.startsWith("gcs://") ? "GCP" : ACCOUNT_CLOUD;
+        final String cloud = stage.locationCloud();
+        return "AZURE".equals(cloud) || "GCP".equals(cloud) ? cloud : ACCOUNT_CLOUD;
     }
 
     private static List<String> allowedScopes(final Integration integration) {

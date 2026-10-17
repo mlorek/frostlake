@@ -20,6 +20,7 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serializable snapshot of catalog metadata
@@ -57,4 +58,8 @@ public class CatalogSnapshot implements Serializable {
      * history it restores; zero on a snapshot written before histories were kept.
      */
     public long snapshotSequence;
+    /** The identity the next row stored would have taken; zero on a snapshot written before identities were kept. */
+    public long nextRowId;
+    /** The files each permanent table has loaded, by the table's storage key; null on an older snapshot. */
+    public Map<String, List<String>> copyLoadedFiles;
 }

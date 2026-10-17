@@ -17,6 +17,7 @@
 package dev.frostlake.parser;
 
 import org.antlr.v4.runtime.CommonToken;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 import org.antlr.v4.runtime.tree.TerminalNodeImpl;
@@ -52,7 +53,7 @@ final class RowListItems {
         boolean split = false;
         for (final ParseTree child : clause.children) {
             final List<FrostlakeParser.ExpressionContext> values = child instanceof FrostlakeParser.OrderItemContext
-                ? valuesOf(((FrostlakeParser.OrderItemContext) child).expression()) : null;
+                ? valuesOf(((FrostlakeParser.OrderItemContext) child).booleanExpr()) : null;
             if (values == null) {
                 rebuilt.add(child);
                 continue;
@@ -66,8 +67,7 @@ final class RowListItems {
                 final FrostlakeParser.OrderItemContext item =
                     new FrostlakeParser.OrderItemContext(clause, written.invokingState);
                 final FrostlakeParser.ExpressionContext value = values.get(i);
-                value.setParent(item);
-                item.addChild(value);
+                item.addChild(asKey(item, value));
                 for (int word = 1; word < written.getChildCount(); word++) {
                     if (written.getChild(word) instanceof TerminalNode) {
                         item.addChild(new TerminalNodeImpl(((TerminalNode) written.getChild(word)).getSymbol()));
@@ -96,7 +96,7 @@ final class RowListItems {
         boolean split = false;
         for (final ParseTree child : clause.children) {
             final List<FrostlakeParser.ExpressionContext> values = child instanceof FrostlakeParser.GroupByElementContext
-                ? valuesOf(((FrostlakeParser.GroupByElementContext) child).expression()) : null;
+                ? valuesOf(((FrostlakeParser.GroupByElementContext) child).booleanExpr()) : null;
             if (values == null) {
                 rebuilt.add(child);
                 continue;
@@ -110,8 +110,7 @@ final class RowListItems {
                 final FrostlakeParser.GroupByElementContext element =
                     new FrostlakeParser.GroupByElementContext(clause, written.invokingState);
                 final FrostlakeParser.ExpressionContext value = values.get(i);
-                value.setParent(element);
-                element.addChild(value);
+                element.addChild(asKey(element, value));
                 element.start = value.getStart();
                 element.stop = value.getStop();
                 rebuilt.add(element);
@@ -120,6 +119,18 @@ final class RowListItems {
         if (split) {
             clause.children = rebuilt;
         }
+    }
+
+    /** A row's value as the key the grammar reads: the condition that is the value. */
+    private static FrostlakeParser.ValueExprContext asKey(final ParserRuleContext holder,
+            final FrostlakeParser.ExpressionContext value) {
+        final FrostlakeParser.ValueExprContext key = new FrostlakeParser.ValueExprContext(
+            new FrostlakeParser.BooleanExprContext(holder, holder.invokingState));
+        value.setParent(key);
+        key.addChild(value);
+        key.start = value.getStart();
+        key.stop = value.getStop();
+        return key;
     }
 
     /** The values of the row an expression is, a row among them read as its own values; null for no row. */

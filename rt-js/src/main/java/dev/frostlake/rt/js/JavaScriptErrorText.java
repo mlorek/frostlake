@@ -327,23 +327,36 @@ final class JavaScriptErrorText {
         }
     }
 
+    /**
+     * A member of a thrown value as text, or {@code absent}. A value whose context is gone (a failure another
+     * language's runtime has since closed) cannot be read, and its members are absent.
+     */
     private static String memberText(final Value object, final String member, final String absent) {
-        if (object == null || !object.hasMembers()) {
+        try {
+            if (object == null || !object.hasMembers()) {
+                return absent;
+            }
+            final Value value = object.getMember(member);
+            if (value == null || value.isNull()) {
+                return absent;
+            }
+            return value.isString() ? value.asString() : value.toString();
+        } catch (final RuntimeException unreadable) {
             return absent;
         }
-        final Value value = object.getMember(member);
-        if (value == null || value.isNull()) {
-            return absent;
-        }
-        return value.isString() ? value.asString() : value.toString();
     }
 
+    /** Whether a thrown value holds {@code member} as TRUE; a value that cannot be read holds nothing. */
     private static boolean flag(final Value object, final String member) {
-        if (object == null || !object.hasMembers() || !object.hasMember(member)) {
+        try {
+            if (object == null || !object.hasMembers() || !object.hasMember(member)) {
+                return false;
+            }
+            final Value value = object.getMember(member);
+            return value != null && value.isBoolean() && value.asBoolean();
+        } catch (final RuntimeException unreadable) {
             return false;
         }
-        final Value value = object.getMember(member);
-        return value != null && value.isBoolean() && value.asBoolean();
     }
 
     /**

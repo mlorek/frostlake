@@ -27,7 +27,9 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.DeclaredTypeFold;
@@ -36,6 +38,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.WidthlessStringType;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
@@ -109,8 +112,17 @@ final class PivotUnpivotExecutor {
                 // value 'q1' produces a column called 'q1' that is referenced as "'q1'" (which is exactly how
                 // real queries write it, e.g. MAX("'q1'")). Naming it `q1` instead made "'q1'" unresolvable and,
                 // worse, made MAX("'q1'") silently return the STRING q1. An explicit alias still wins.
-                pivotValues.add(PivotValue.written(pvCtx.literal(), literalValue(pvCtx.literal()),
-                    pvCtx.identifier() != null ? ParseTreeText.getIdentifier(pvCtx.identifier()) : null));
+                final String valueAlias = pvCtx.identifier() != null ? ParseTreeText.getIdentifier(pvCtx.identifier())
+                    : null;
+                if (pvCtx.literal() == null) {
+                    // A constant written as an expression names its column as the plan prints it: TRUE::BOOLEAN is
+                    // CAST(TRUE AS BOOLEAN), NOT FALSE is NOT(FALSE), +2 is UNARY PLUS(2) (live-verified).
+                    pivotValues.add(PivotValue.computed(
+                        ExpressionEvaluator.parse(ParseTreeText.getOriginalText(pvCtx.booleanExpr())),
+                        evaluateConstant(pvCtx.booleanExpr()), valueAlias));
+                    continue;
+                }
+                pivotValues.add(PivotValue.written(pvCtx.literal(), literalValue(pvCtx.literal()), valueAlias));
             }
             rejectRepeatedColumns(inList.pivotValueList(), pivotValues);
         } else if (inList.ANY() != null) {
@@ -179,6 +191,7 @@ final class PivotUnpivotExecutor {
             resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null));
         }
         final DataType aggregated = aggColIndex >= 0 ? table.getColumns().get(aggColIndex).getDataType() : null;
+        requireAggregable(aggFuncName, aggregated);
         final DataType pivotedType = pivotColumnType(aggFuncName, aggregated, aggregateText, table,
             inList.pivotValueList() != null);
         for (final PivotValue pivotValue : pivotValues) {
@@ -371,7 +384,7 @@ final class PivotUnpivotExecutor {
             }
             final FrostlakeParser.PivotValueContext written = list.pivotValue(i);
             if (written.identifier() != null) {
-                final Token value = written.literal().getStart();
+                final Token value = written.getStart();
                 final SourcePosition at = ExpressionSource.place(value.getLine(), value.getCharPositionInLine());
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                     "Duplicate column alias '" + values.get(i).name() + "'."));
@@ -469,6 +482,25 @@ final class PivotUnpivotExecutor {
         return declared;
     }
 
+    /**
+     * The aggregates a pivot cannot compute over its column's type, refused as the account refuses them, whether or
+     * not a row is there (live-verified): SUM and AVG over a BOOLEAN — both named SUM, the call an average is
+     * computed from — at no position of the statement, and MIN or MAX over an ARRAY.
+     *
+     * @param aggFuncName the aggregate's upper-case name
+     * @param aggregated  the aggregated column's type, or null when it is not a column of the source
+     */
+    private static void requireAggregable(final String aggFuncName, final DataType aggregated) {
+        if (aggregated instanceof BooleanType && ("SUM".equals(aggFuncName) || "AVG".equals(aggFuncName))) {
+            throw new RuntimeException(SqlCompilationError.PREFIX + " error line 0 at position -1\n"
+                + "Invalid argument types for function 'SUM': (BOOLEAN)");
+        }
+        if (aggregated instanceof ArrayType && ("MIN".equals(aggFuncName) || "MAX".equals(aggFuncName))) {
+            throw new RuntimeException(SqlCompilationError.of("Function " + aggFuncName
+                + " does not support ARRAY argument type"));
+        }
+    }
+
     private DataType declaredAggregateType(final String aggFuncName, final DataType aggregated,
                                            final String aggregateText, final Table table) {
         final DataType inferred = typedCall(aggregateText, table);
@@ -519,7 +551,7 @@ final class PivotUnpivotExecutor {
         return evaluator.evaluate(ParseTreeText.getOriginalText(literal), new Row(new ArrayList<>()));
     }
 
-    private Object evaluateConstant(final FrostlakeParser.ExpressionContext expr) {
+    private Object evaluateConstant(final ParserRuleContext expr) {
         final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(
             dummyTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);

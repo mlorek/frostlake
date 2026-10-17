@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -311,7 +312,7 @@ final class UnreadColumnPruning {
         }
         if (body.orderByClause() != null) {
             for (final FrostlakeParser.OrderItemContext item : body.orderByClause().orderItem()) {
-                if (isOrdinal(item.expression())) {
+                if (isOrdinal(KeyContexts.of(item))) {
                     return false;
                 }
             }
@@ -332,7 +333,7 @@ final class UnreadColumnPruning {
                     return false;
                 }
                 for (final FrostlakeParser.GroupByElementContext element : groupBy.groupByElement()) {
-                    if (element.expression() != null && isOrdinal(element.expression())) {
+                    if (KeyContexts.of(element) != null && isOrdinal(KeyContexts.of(element))) {
                         return false;
                     }
                 }

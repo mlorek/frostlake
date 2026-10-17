@@ -18,7 +18,9 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.storage.Row;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -40,12 +42,12 @@ import java.util.Map;
  */
 final class TablePartitioning {
 
-    private final List<FrostlakeParser.ExpressionContext> partitionKeys;
+    private final List<ParserRuleContext> partitionKeys;
     private final List<FrostlakeParser.OrderItemContext> orderItems;
     private final List<Integer> keptSlots;
     private final int leftWidth;
 
-    private TablePartitioning(final List<FrostlakeParser.ExpressionContext> partitionKeys,
+    private TablePartitioning(final List<ParserRuleContext> partitionKeys,
                               final List<FrostlakeParser.OrderItemContext> orderItems,
                               final List<Integer> keptSlots, final int leftWidth) {
         this.partitionKeys = partitionKeys;
@@ -66,7 +68,7 @@ final class TablePartitioning {
         for (final Table table : scopeTables) {
             width += table.getColumns().size();
         }
-        final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
+        final List<ParserRuleContext> keys = new ArrayList<>();
         final List<FrostlakeParser.OrderItemContext> order = new ArrayList<>();
         final List<Integer> kept = new ArrayList<>();
         if (over == null) {
@@ -78,7 +80,7 @@ final class TablePartitioning {
                 + word.getCharPositionInLine() + " unexpected '" + word.getText() + "'."));
         }
         if (over.partitionByClause() != null) {
-            for (final FrostlakeParser.ExpressionContext key : over.partitionByClause().expressionList().expression()) {
+            for (final ParserRuleContext key : KeyContexts.partitionKeys(over.partitionByClause())) {
                 final boolean column = key instanceof FrostlakeParser.QualifiedNameExprContext;
                 if (!column && namesAColumn(key)) {
                     throw new RuntimeException("Invalid partitioning expression '"
@@ -99,7 +101,7 @@ final class TablePartitioning {
         return new TablePartitioning(keys, order, kept, width);
     }
 
-    List<FrostlakeParser.ExpressionContext> partitionKeys() {
+    List<ParserRuleContext> partitionKeys() {
         return partitionKeys;
     }
 

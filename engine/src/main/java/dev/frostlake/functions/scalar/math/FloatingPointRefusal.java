@@ -40,16 +40,27 @@ final class FloatingPointRefusal {
     }
 
     /**
+     * An argument as the refusal prints it, in C's {@code %g}: six significant digits, trailing zeros dropped, and
+     * an exponent once the leading digit stands six places up or five down — {@code -4}, {@code -2.5},
+     * {@code 0.333333}, {@code -1e+10} (live-verified).
+     *
      * @param value an argument
-     * @return the argument as the refusal prints it: a whole number bare, any other at six significant digits
+     * @return its print
      */
     static String number(final double value) {
         if (Double.isNaN(value) || Double.isInfinite(value)) {
             return value > 0 ? "inf" : Double.isNaN(value) ? "nan" : "-inf";
         }
-        if (value == Math.rint(value) && Math.abs(value) < 1e15) {
-            return Long.toString((long) value);
+        if (value == 0) {
+            return "0";
         }
-        return new BigDecimal(value).round(SIX_DIGITS).stripTrailingZeros().toPlainString();
+        final BigDecimal rounded = new BigDecimal(value).round(SIX_DIGITS);
+        final int exponent = rounded.precision() - rounded.scale() - 1;
+        if (exponent < -4 || exponent >= 6) {
+            final String mantissa = rounded.movePointLeft(exponent).stripTrailingZeros().toPlainString();
+            return mantissa + "e" + (exponent < 0 ? "-" : "+") + (Math.abs(exponent) < 10 ? "0" : "")
+                + Math.abs(exponent);
+        }
+        return rounded.stripTrailingZeros().toPlainString();
     }
 }

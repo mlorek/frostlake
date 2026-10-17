@@ -63,8 +63,8 @@ public final class RoleOwnership {
                 reownAll(schema.getProjectionPolicies(), from, to);
                 reownAll(schema.getMaskingPolicies(), from, to);
                 reownAll(schema.getRowAccessPolicies(), from, to);
-                reownAll(schema.getProcedures(), from, to);
-                reownAll(schema.getFunctions(), from, to);
+                reownAll(schema.allProcedures(), from, to);
+                reownAll(schema.allFunctions(), from, to);
                 reownAll(schema.getAlerts(), from, to);
                 reownAll(schema.getPipes(), from, to);
                 reownAll(schema.getStages(), from, to);

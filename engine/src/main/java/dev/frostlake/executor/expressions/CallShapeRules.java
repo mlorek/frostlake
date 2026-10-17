@@ -96,6 +96,14 @@ final class CallShapeRules {
             throw new RuntimeException("Unsupported feature 'TOK_STAR'.");
         }
         final String quantifier = call.getQuantifier();
+        if (builtin == null && (call.isDistinct() || call.getWithinGroupKeys() != null)
+                && call.getFunctionName() != null
+                && functionRegistry().getAggregateFunction(call.getFunctionName().toUpperCase(Locale.ROOT)) != null) {
+            // A user's aggregate function takes neither DISTINCT nor WITHIN GROUP: the call names no function the
+            // account knows of (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Unknown function "
+                + SqlIdentifiers.spellCanonical(parts.get(parts.size() - 1)) + "."));
+        }
         if (quantifier != null && call.getArguments().isEmpty() && !call.isStar()) {
             throw invalidFunction(builtin, parts);
         }
@@ -134,7 +142,7 @@ final class CallShapeRules {
             && (takesNoQuantifier(builtin, true) || userFunction != null);
         final boolean refusedWithinGroup = window.getWithinGroupKeys() != null && builtin != null
             && !WITHIN_GROUP_FUNCTIONS.contains(builtin)
-            && (functionRegistry().hasAggregateFunction(builtin) || WindowFunctionNames.handles(builtin));
+            && (functionRegistry().hasBuiltInAggregateFunction(builtin) || WindowFunctionNames.handles(builtin));
         final String kind = parts.size() == 1 && !windowCapable(builtin)
             ? (builtin != null ? builtin : SqlIdentifiers.spellCanonical(parts.get(0))) : null;
         final boolean orderRequired = builtin != null && !window.isOrdered()
@@ -232,7 +240,7 @@ final class CallShapeRules {
      * — and other than RATIO_TO_REPORT under OVER, which is planned as SUM.
      */
     private boolean takesNoQuantifier(final String builtin, final boolean windowed) {
-        if (builtin == null || functionRegistry().hasAggregateFunction(builtin)) {
+        if (builtin == null || functionRegistry().hasBuiltInAggregateFunction(builtin)) {
             return false;
         }
         if (WindowFunctionNames.handles(builtin)) {
@@ -244,7 +252,7 @@ final class CallShapeRules {
     /** Whether a built-in may stand before OVER: a window function or an aggregate. */
     private boolean windowCapable(final String builtin) {
         return builtin != null
-            && (WindowFunctionNames.handles(builtin) || functionRegistry().hasAggregateFunction(builtin));
+            && (WindowFunctionNames.handles(builtin) || functionRegistry().hasBuiltInAggregateFunction(builtin));
     }
 
     /** Whether the call's one argument is a bare star, {@code COUNT(*)}, however the call spells it. */
@@ -267,7 +275,7 @@ final class CallShapeRules {
             return null;
         }
         final String name = parts.get(0).toUpperCase(Locale.ROOT);
-        return functionRegistry().getFunction(name) != null || functionRegistry().hasAggregateFunction(name)
+        return functionRegistry().getFunction(name) != null || functionRegistry().hasBuiltInAggregateFunction(name)
             || WindowFunctionNames.handles(name) ? name : null;
     }
 

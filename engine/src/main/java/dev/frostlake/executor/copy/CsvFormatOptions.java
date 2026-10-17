@@ -56,6 +56,8 @@ public final class CsvFormatOptions {
     private String compression;
     private String fileExtension;
     private String type;
+    private String encoding;
+    private boolean replaceInvalidCharacters;
 
     /**
      * Take every option of a named format or of a stage's own.
@@ -118,6 +120,12 @@ public final class CsvFormatOptions {
                 break;
             case "FILE_EXTENSION":
                 fileExtension = none ? null : value;
+                break;
+            case "ENCODING":
+                encoding = value;
+                break;
+            case "REPLACE_INVALID_CHARACTERS":
+                replaceInvalidCharacters = "TRUE".equalsIgnoreCase(value);
                 break;
             default:
                 break;
@@ -230,5 +238,15 @@ public final class CsvFormatOptions {
     /** FILE_EXTENSION, or null when no format names one. */
     public String getFileExtension() {
         return fileExtension;
+    }
+
+    /** ENCODING as written, or null when no format names one: UTF-8 then. */
+    public String getEncoding() {
+        return encoding;
+    }
+
+    /** Whether REPLACE_INVALID_CHARACTERS = TRUE reads an unreadable byte sequence as U+FFFD instead of refusing. */
+    public boolean replacesInvalidCharacters() {
+        return replaceInvalidCharacters;
     }
 }

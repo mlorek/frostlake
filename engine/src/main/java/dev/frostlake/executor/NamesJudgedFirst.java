@@ -68,6 +68,9 @@ final class NamesJudgedFirst {
             if (ctx.undropStatement() != null) {
                 return restoresNothing(ctx.undropStatement(), catalog);
             }
+            if (ctx.createStatement() != null && createsAViewThatDoesNotCompile(ctx.createStatement(), queryExecutor)) {
+                return true;
+            }
             return ctx.createStatement() != null
                 && createsOverATakenName(ctx.createStatement(), queryExecutor, catalog);
         } catch (final RuntimeException unread) {
@@ -158,6 +161,26 @@ final class NamesJudgedFirst {
             return !isHeld(String.join(".", ParseTreeText.qualifiedNameParts(create.qualifiedName(0))), catalog);
         }
         return false;
+    }
+
+    /**
+     * Whether a CREATE [OR REPLACE] VIEW's query does not compile: a column or a relation it names that nothing
+     * answers to refuses the view with the transaction still open (live-verified). The query is compiled for its
+     * shape alone, as an EXPLAIN compiles it, so nothing it reads is carried out.
+     */
+    private static boolean createsAViewThatDoesNotCompile(final FrostlakeParser.CreateStatementContext create,
+                                                          final QueryExecutor queryExecutor) {
+        if (create.VIEW() == null || create.MATERIALIZED() != null || create.selectStatement() == null
+                || create.TEMPORARY() != null || create.TEMP() != null || create.VOLATILE() != null
+                || create.RECURSIVE() != null || create.if_not_exists() != null) {
+            return false;
+        }
+        try {
+            ExplainPlan.compileOnly(queryExecutor, ParseTreeText.getOriginalText(create.selectStatement()));
+            return false;
+        } catch (final RuntimeException doesNotCompile) {
+            return true;
+        }
     }
 
     private static boolean isPlain(final FrostlakeParser.ObjectNameContext name) {

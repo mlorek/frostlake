@@ -446,6 +446,7 @@ final class RestCatalogSnapshots {
             saved.externalVolume = iceberg.getExternalVolume();
             saved.catalog = iceberg.getCatalog();
             saved.baseLocation = iceberg.getBaseLocation();
+            saved.baseLocationSpelled = iceberg.isBaseLocationSpelled();
             saved.catalogSync = iceberg.getCatalogSync();
             saved.storageSerializationPolicy = iceberg.getStorageSerializationPolicy();
             saved.catalogTableName = iceberg.getCatalogTableName();
@@ -492,6 +493,7 @@ final class RestCatalogSnapshots {
             iceberg.setExternalVolume(saved.externalVolume);
             iceberg.setCatalog(saved.catalog);
             iceberg.setBaseLocation(saved.baseLocation);
+            iceberg.setBaseLocationSpelled(saved.baseLocationSpelled);
             iceberg.setCatalogSync(saved.catalogSync);
             iceberg.setStorageSerializationPolicy(saved.storageSerializationPolicy);
             iceberg.setCatalogTableName(saved.catalogTableName);
@@ -675,13 +677,15 @@ final class RestCatalogSnapshots {
         saved.tags = new HashMap<>(role.getTagValues());
     }
 
-    /** Adds what the older user snapshot left out: privilege and role grantors, database roles, tags. */
+    /** Adds what the older user snapshot left out: privilege grantors and options, role grantors, database roles,
+     *  tags. */
     static void saveUserGrants(final User user, final UserSnapshot saved) {
         saved.parameters = new HashMap<>(user.getParameters().entries());
         for (final PrivilegeSnapshot privilege : saved.privileges) {
             if (privilege.column == null) {
-                privilege.grantor = user.getPrivilegeGrantor(privilege.objectType, privilege.objectName,
-                    Privilege.valueOf(privilege.privilege));
+                final Privilege granted = Privilege.valueOf(privilege.privilege);
+                privilege.grantor = user.getPrivilegeGrantor(privilege.objectType, privilege.objectName, granted);
+                privilege.grantOption = user.hasGrantOption(privilege.objectType, privilege.objectName, granted);
             }
         }
         saved.roleGrantors = new HashMap<>();
@@ -719,7 +723,7 @@ final class RestCatalogSnapshots {
         }
     }
 
-    /** Grants one recorded privilege to a user, with its grantor when the snapshot has one. */
+    /** Grants one recorded privilege to a user, with its grantor and grant option when the snapshot has them. */
     static void grant(final User user, final PrivilegeSnapshot privilege) {
         final Privilege granted = Privilege.valueOf(privilege.privilege);
         if (privilege.column != null) {
@@ -728,6 +732,9 @@ final class RestCatalogSnapshots {
             user.grantPrivilege(privilege.objectType, privilege.objectName, granted, privilege.grantor);
         } else {
             user.grantPrivilege(privilege.objectType, privilege.objectName, granted);
+        }
+        if (privilege.column == null && Boolean.TRUE.equals(privilege.grantOption)) {
+            user.setGrantOption(privilege.objectType, privilege.objectName, granted, true);
         }
     }
 

@@ -16,18 +16,17 @@
 
 package dev.frostlake.functions.scalar.datetime;
 
+import dev.frostlake.executor.SessionWeek;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
 
 import dev.frostlake.functions.scalar.DateTypeHelper;
 
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
-import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 
 public class DateTrunc extends BuiltInFunction {
@@ -72,7 +71,8 @@ public class DateTrunc extends BuiltInFunction {
             case "MONTH": case "MM": result = dt.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS);
             break;
             case "WEEK": case "WK": {
-                result = dt.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).truncatedTo(ChronoUnit.DAYS);
+                // The week the session's WEEK_START makes: Monday under the default.
+                result = SessionWeek.weekStartOf(dt.toLocalDate()).atStartOfDay();
                 break;
             }
             case "DAY": case "DD": result = dt.truncatedTo(ChronoUnit.DAYS);

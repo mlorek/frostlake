@@ -869,8 +869,27 @@ public class ProceduralExecutor {
         // array's elements, binding the loop variable to each element's Java value.
         final ArrayNode arrayIterable = ArrayFunctionHelper.parseArray(iterableValue);
         if (arrayIterable != null) {
+            // The variable of a loop over a value is a VARIANT, whatever its element holds (live-verified).
+            declareVariableType(stmt.getVariableName(), new VariantType());
             for (final JsonNode element : arrayIterable) {
                 setVariable(stmt.getVariableName(), ArrayFunctionHelper.fromNode(element));
+                executeLoopBody(stmt.getBlock());
+                if (!loopProceeds(stmt.getLabel())) {
+                    break;
+                }
+            }
+            return;
+        }
+        final JsonNode held = iterableValue == null ? null : ArrayFunctionHelper.parseNode(iterableValue);
+        if (iterableValue != null && (held == null || !held.isObject())) {
+            // A value that is neither an ARRAY nor an OBJECT is refused at the FOR (live-verified).
+            throw new RuntimeException(ForStatement.NOT_ITERABLE);
+        }
+        if (held != null) {
+            // An OBJECT is looped over once per key, the variable a VARIANT holding NULL each time (live-verified).
+            declareVariableType(stmt.getVariableName(), new VariantType());
+            for (int key = 0; key < held.size(); key++) {
+                setVariable(stmt.getVariableName(), null);
                 executeLoopBody(stmt.getBlock());
                 if (!loopProceeds(stmt.getLabel())) {
                     break;
@@ -921,6 +940,46 @@ public class ProceduralExecutor {
             throw new RuntimeException(NumericRangeRefusal.typed(
                 SignedStorageWidth.tagOfPrecision(9), 9, 0, false, BigDecimal.valueOf(first)));
         }
+    }
+
+    /**
+     * Refuse a CALL argument too wide for its NUMBER parameter in the words the account has for an argument
+     * (live-verified): an exact number printed at the parameter's scale, or at its own when that is finer, under the
+     * storage class that printed value needs — {@code CALL p(123456789)} into a NUMBER(5,2) is "Number out of
+     * representable range: type FIXED[SB8](5,2){nullable}, value 123456789.00"; a FLOAT by its own text under the
+     * parameter's class and {@code not null}; a text as written, "Numeric value '1000' is out of range".
+     *
+     * @param value    the argument as evaluated
+     * @param type     the parameter's declared type
+     * @param nullable whether the refusal words the target nullable
+     */
+    private static void refuseArgumentPastWidth(final Object value, final NumericType type, final boolean nullable) {
+        if (type.getPrecision() <= 0 || NumericType.isApproximate(type)) {
+            return;
+        }
+        final BigDecimal parsed;
+        try {
+            parsed = value instanceof BigDecimal ? (BigDecimal) value
+                : value instanceof Double || value instanceof Float ? BigDecimal.valueOf(((Number) value).doubleValue())
+                : value instanceof Long || value instanceof Integer ? BigDecimal.valueOf(((Number) value).longValue())
+                : value instanceof String ? new BigDecimal(((String) value).trim()) : null;
+        } catch (final NumberFormatException unread) {
+            return;
+        }
+        if (parsed == null || !NumericRangeRefusal.exceeds(parsed, type.getPrecision(), type.getScale())) {
+            return;
+        }
+        if (value instanceof String) {
+            throw new RuntimeException(NumericRangeRefusal.unconvertibleText(value));
+        }
+        if (value instanceof Double || value instanceof Float) {
+            throw new RuntimeException(NumericRangeRefusal.typedText(
+                SignedStorageWidth.tagOfPrecision(type.getPrecision()), type.getPrecision(), type.getScale(), false,
+                SharedFunctionHelpers.textOf(value)));
+        }
+        final BigDecimal shown = parsed.scale() < type.getScale() ? parsed.setScale(type.getScale()) : parsed;
+        throw new RuntimeException(NumericRangeRefusal.typedText(SignedStorageWidth.tagOf(shown, shown.scale()),
+            type.getPrecision(), type.getScale(), nullable, shown.toPlainString()));
     }
 
     /** REPEAT … UNTIL &lt;cond&gt; — a post-test loop: run the body, then stop once the condition is true. */
@@ -1292,6 +1351,33 @@ public class ProceduralExecutor {
      * The NULL of a declared text, BOOLEAN, date, time or timestamp variable's type, as SQL writes it; null for any
      * other value.
      */
+    /**
+     * A NUMBER, FLOAT or BOOLEAN variable's value as a block binds it into a call: the conversion of its text to the
+     * declared type — {@code CAST('1.50' AS NUMBER(10,2))}, {@code CAST('5' AS NUMBER(38,0))},
+     * {@code CAST('true' AS BOOLEAN)} — so the call reads the declared type, TO_VARCHAR of a NUMBER(10,2) holding
+     * 1.50 printing 1.50, and a refusal echoes the conversion (live-verified).
+     *
+     * @param argument the argument as written
+     * @param value    its value
+     * @return the conversion, or null for an argument that is no such variable or holds no value
+     */
+    private String boundConversion(final BaseExpression argument, final Object value) {
+        if (!(argument instanceof VariableExpression) || value == null) {
+            return null;
+        }
+        final DataType declared = variableTypes.get(((VariableExpression) argument).getName().toUpperCase(Locale.ROOT));
+        if (!(declared instanceof NumericType) && !(declared instanceof BooleanType)) {
+            return null;
+        }
+        final Object held = coerceToType(value, declared);
+        if (held instanceof Double && (((Double) held).isNaN() || ((Double) held).isInfinite())) {
+            return null;
+        }
+        final String text = held instanceof BigDecimal ? ((BigDecimal) held).toPlainString()
+            : String.valueOf(held).toLowerCase(Locale.ROOT);
+        return "CAST(" + SqlStringLiterals.encode(text) + " AS " + SqlTypeNames.canonical(declared) + ")";
+    }
+
     private String declaredNullOf(final BaseExpression argument) {
         if (!(argument instanceof VariableExpression)) {
             return null;
@@ -1462,6 +1548,7 @@ public class ProceduralExecutor {
             if (value instanceof VariantValue) {
                 return variantNumber((VariantValue) value, numeric, sqlBody);
             }
+            refuseArgumentPastWidth(value, numeric, sqlBody);
             return toNumericValue(value, numeric, sqlBody);
         }
         if (type instanceof StringType) {
@@ -1657,7 +1744,10 @@ public class ProceduralExecutor {
                 try {
                     r = issuePlaced(bound, binds, 0);
                 } catch (final RuntimeException refused) {
-                    throw lead == null ? refused : BoundText.displaced(refused, lead[0], lead[1]);
+                    // An argument-count refusal echoes each bind as the block wrote it.
+                    final RuntimeException echoed = BoundText.echoedAsWritten(refused, rsv.getSelectQuery(), bound,
+                        binds);
+                    throw lead == null ? echoed : BoundText.displaced(echoed, lead[0], lead[1]);
                 }
                 rsv.setResultSet(r.isEmpty() ? null : r.get(0));
             }
@@ -1892,6 +1982,65 @@ public class ProceduralExecutor {
      * its thirty zeros where the FLOAT prints 1e+30 — and no numeric literal spells NaN or an infinity, whose
      * words written bare are names, so each of those is the cast of its word.
      */
+    /**
+     * The text of a call's argument that reads no name and is an expression of its own - an operator over values or
+     * a cast - as written; null for a literal, a name or anything else, which is written out from its value.
+     */
+    private static String writtenExpressionArgument(final FunctionCallExpression funcExpr, final int index) {
+        final BaseExpression argument = funcExpr.getArguments().get(index);
+        if (!(argument instanceof BinaryExpression) && !(argument instanceof SqlScalarExpression)) {
+            return null;
+        }
+        final String written = funcExpr.getNamelessArgument(index);
+        return written == null || written.isBlank() ? null : written;
+    }
+
+    /**
+     * Arithmetic over numbers and the block's NUMBER and FLOAT variables as the SQL that computes it: each variable
+     * written as its value's conversion to its declared type (see {@link #boundConversion}), each number as written,
+     * each operation in parentheses. Null for anything else, which is written out from its value.
+     */
+    private String boundArithmetic(final BaseExpression argument) {
+        if (argument instanceof VariableExpression) {
+            if (!hasVariable(((VariableExpression) argument).getName())) {
+                return null;
+            }
+            final String bound = boundConversion(argument, evaluateExpression(argument));
+            return bound == null ? null : "(" + bound + ")";
+        }
+        if (argument instanceof LiteralExpression) {
+            final Object value = ((LiteralExpression) argument).getValue();
+            return value instanceof BigDecimal || value instanceof Long || value instanceof Integer
+                ? numberLiteral((Number) value) : null;
+        }
+        if (!(argument instanceof BinaryExpression)) {
+            return null;
+        }
+        final BinaryExpression binary = (BinaryExpression) argument;
+        final String symbol = arithmeticSymbol(binary.getOperator());
+        final String left = symbol == null ? null : boundArithmetic(binary.getLeft());
+        final String right = left == null ? null : boundArithmetic(binary.getRight());
+        return right == null ? null : "(" + left + " " + symbol + " " + right + ")";
+    }
+
+    /** The symbol of an arithmetic operator, or null for any other. */
+    private static String arithmeticSymbol(final BinaryOperator operator) {
+        switch (operator) {
+            case ADD:
+                return "+";
+            case SUBTRACT:
+                return "-";
+            case MULTIPLY:
+                return "*";
+            case DIVIDE:
+                return "/";
+            case MODULO:
+                return "%";
+            default:
+                return null;
+        }
+    }
+
     private static String numberLiteral(final Number value) {
         final String nonFinite = NonFiniteDoubles.castOfWord(value);
         if (nonFinite != null) {
@@ -2305,7 +2454,22 @@ public class ProceduralExecutor {
                     continue;
                 }
             }
-            if (av == null) {
+            final String bound = boundConversion(argExprs.get(i), av);
+            final String asWritten = av instanceof BigDecimal ? writtenExpressionArgument(funcExpr, i) : null;
+            final String asBound = asWritten == null && av instanceof BigDecimal
+                && argExprs.get(i) instanceof BinaryExpression ? boundArithmetic(argExprs.get(i)) : null;
+            if (bound != null) {
+                callExpr.append(bound);
+            } else if (asBound != null) {
+                // Arithmetic over the block's names is SQL's to type too, each name bound as its value's conversion
+                // to its declared type: TO_VARCHAR(x / 4) over an INT holding 10 is 2.500000 (live-verified).
+                callExpr.append(asBound);
+            } else if (asWritten != null) {
+                // An expression over no name is SQL's to type as written, so the call reads it at the type SQL
+                // gives it: TO_VARCHAR(10 / 4) is 2.500000 and TO_VARCHAR(1.50::NUMBER(10,2)) is 1.50 in a block
+                // as in a query (live-verified), where the value's own scale printed 2.5 and 1.5.
+                callExpr.append(asWritten);
+            } else if (av == null) {
                 // A NULL an argument folds to is not the NULL it would be written as: SQL converts an
                 // untyped NULL where an operator or a call takes it, and a call that needs a constant
                 // refuses the conversion — RANDOM(NULL + 1) is "argument 1 to function RANDOM needs to

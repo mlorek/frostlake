@@ -46,6 +46,10 @@ public class FileFormat {
     /** When the last DDL after the CREATE ran, or null while the CREATE is the last; see {@link #getLastDdlTime}. */
     private Instant lastDdlTime;
     private String owner = "SYSADMIN";
+    /** Whether CREATE TEMPORARY FILE FORMAT made it, so it ends with its session. */
+    private boolean temporary;
+    /** The session whose statement created a temporary format, or null (see SqlObject#getCreatedInSession). */
+    private Long createdInSession;
 
     public FileFormat(final String name, final String type) {
         this.name = name;
@@ -181,6 +185,26 @@ public class FileFormat {
     }
 
     /** The role that owns this file format. */
+    /**
+     * Marks the format temporary: its session's alone, and dropped when that session ends (live-verified).
+     *
+     * @param session the number of the session that created it, or null for the engine's own
+     */
+    public void markTemporary(final Long session) {
+        this.temporary = true;
+        this.createdInSession = session;
+    }
+
+    /** Whether CREATE TEMPORARY FILE FORMAT made it. */
+    public boolean isTemporary() {
+        return temporary;
+    }
+
+    /** The session that created a temporary format, or null. */
+    public Long getCreatedInSession() {
+        return createdInSession;
+    }
+
     public String getOwner() {
         return owner;
     }

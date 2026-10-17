@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
@@ -53,7 +54,7 @@ public class Substring extends TextArgumentFunction {
             final int[] window = window(bytes.length, start, length);
             return BinaryValue.of(Arrays.copyOfRange(bytes, window[0], window[1]));
         }
-        final String str = value.toString();
+        final String str = SharedFunctionHelpers.textOf(value);
         final int[] window = window(CodePointText.length(str), start, length);
         return CodePointText.slice(str, window[0], window[1]);
     }

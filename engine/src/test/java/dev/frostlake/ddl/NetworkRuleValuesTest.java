@@ -149,6 +149,28 @@ public class NetworkRuleValuesTest extends BaseDatabaseTest {
         }
     }
 
+    /** No value a private host-and-port rule takes was found: each form is refused, and an empty list is taken. */
+    @Test
+    public void aPrivateHostPortRuleTakesNoValue() {
+        for (final String value : new String[] {"example.com:443", "example.com", "google.com:443", "10.0.0.1:443",
+            "*.example.com:443", "xyz.privatelink.snowflakecomputing.com"}) {
+            assertEquals("SQL compilation error:\n" + invalid(value),
+                refused("TYPE = PRIVATE_HOST_PORT MODE = EGRESS VALUE_LIST = ('" + value + "')"), value);
+        }
+        taken("TYPE = PRIVATE_HOST_PORT MODE = EGRESS VALUE_LIST = ()");
+        taken("TYPE = COMPUTE_POOL VALUE_LIST = ('pool1')");
+    }
+
+    /** A comma inside a value separates entries: SHOW counts two where DESCRIBE joins them back. */
+    @Test
+    public void aCommaInsideAValueSeparatesEntries() {
+        engine.execute("CREATE NETWORK RULE nv_comma TYPE = IPV4 VALUE_LIST = ('1.1.1.1,2.2.2.2')");
+        assertEquals("1.1.1.1,2.2.2.2", engine.executeQuery(
+            "DESC NETWORK RULE nv_comma ->> SELECT \"value_list\" FROM $1").getRows().get(0).getValue(0));
+        assertEquals("2", String.valueOf(engine.executeQuery("SHOW NETWORK RULES LIKE 'NV_COMMA'"
+            + " ->> SELECT \"entries_in_valuelist\" FROM $1").getRows().get(0).getValue(0)));
+    }
+
     @Test
     public void alterAndCreateOrAlterJudgeTheValuesToo() {
         engine.execute("CREATE NETWORK RULE nv_set TYPE = IPV4 VALUE_LIST = ('1.1.1.1')");

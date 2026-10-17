@@ -42,4 +42,7 @@ public class TaskExecutionSnapshot implements Serializable {
 
     /** What triggered it, as TASK_HISTORY's scheduled_from reports it. */
     public String scheduledFrom;
+
+    /** The attempt of its graph run it belongs to; null in a snapshot taken before attempts were kept. */
+    public Integer attempt;
 }

@@ -127,6 +127,14 @@ public class IntegrationStatementsTest extends BaseDatabaseTest {
             "Missing option(s): WEBHOOK_URL");
         refused("CREATE NOTIFICATION INTEGRATION it_bad TYPE = EMAIL ENABLED = TRUE ENABLED = FALSE",
             "duplicate property 'ENABLED'");
+        // A subscription's project id runs to six characters or more, and Pub/Sub carries nothing out of this account.
+        refused("CREATE NOTIFICATION INTEGRATION it_bad TYPE = QUEUE NOTIFICATION_PROVIDER = GCP_PUBSUB ENABLED = TRUE"
+            + " GCP_PUBSUB_SUBSCRIPTION_NAME = 'projects/p/subscriptions/s'",
+            "invalid value ['projects/p/subscriptions/s'] for parameter 'GCP_PUBSUB_SUBSCRIPTION_NAME'");
+        refused("CREATE NOTIFICATION INTEGRATION it_bad TYPE = QUEUE DIRECTION = OUTBOUND"
+            + " NOTIFICATION_PROVIDER = GCP_PUBSUB ENABLED = TRUE"
+            + " GCP_PUBSUB_TOPIC_NAME = 'projects/project-1/topics/topic1'",
+            "invalid value 'OUTBOUND' for property 'Direction'");
         refused("CREATE STORAGE INTEGRATION it_bad TYPE = EXTERNAL_STAGE", "syntax error");
     }
 

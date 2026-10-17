@@ -36,8 +36,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * STRIP_NULL_VALUES = TRUE loads a JSON record without its null-valued object fields and null array elements, at every
- * depth, inline or in a named format; without it the nulls stay (documented on the JSON file format options).
+ * STRIP_NULL_VALUES = TRUE loads a JSON record without its null-valued object fields, at every depth, and with each
+ * null array element a hole, inline or in a named format — as a staged-file query reads the same file
+ * (live-verified); without it the nulls stay.
  */
 public class CopyStripNullValuesTest {
 
@@ -123,13 +124,13 @@ public class CopyStripNullValuesTest {
     private static final String NULLS = "{\"id\": 1, \"x\": null, \"a\": [1, null], \"o\": {\"k\": null, \"j\": 2}}\n";
 
     @Test
-    public void nullFieldsAndElementsAreDropped() throws IOException {
+    public void nullFieldsAreDroppedAndNullElementsLeaveHoles() throws IOException {
         engine.execute("CREATE TABLE j (v VARIANT)");
         stage("nulls.json", NULLS);
         assertEquals("LOADED", status(engine.executeQuery("COPY INTO j FROM @s FILES = ('nulls.json')"
             + " FILE_FORMAT = (TYPE = JSON STRIP_NULL_VALUES = TRUE)")));
-        assertEquals("[\"a\",\"id\",\"o\"], true, 1, [\"j\"]",
-            answer("SELECT OBJECT_KEYS(v), v:x IS NULL, ARRAY_SIZE(v:a), OBJECT_KEYS(v:o) FROM j"));
+        assertEquals("[\"a\",\"id\",\"o\"], true, 2, [\"j\"], true",
+            answer("SELECT OBJECT_KEYS(v), v:x IS NULL, ARRAY_SIZE(v:a), OBJECT_KEYS(v:o), v:a[1] IS NULL FROM j"));
     }
 
     @Test

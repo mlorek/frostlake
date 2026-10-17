@@ -173,6 +173,15 @@ public final class UnclosedLiteralLines {
         if (opensBinary(sql, at)) {
             return new int[] {TO_END, at - 1};
         }
+        // A binary literal whose quotes are doubled after its opening one is left open by them: x''' takes everything
+        // to the end, its doubled quote being part of it (live-verified).
+        int run = at;
+        while (run > 0 && sql.charAt(run - 1) == '\'') {
+            run--;
+        }
+        if (at - run >= 2 && (at - run) % 2 == 0 && opensBinary(sql, run)) {
+            return new int[] {TO_END, run - 1};
+        }
         // A quote that ends the text is a token of its own unless a string closes straight before it: 'a'' is one
         // string left unclosed.
         final boolean alone = sql.substring(at + 1).trim().isEmpty() && (at == 0 || sql.charAt(at - 1) != '\'');

@@ -318,6 +318,16 @@ final class UpdateDeleteExecutor {
         }
     }
 
+    /**
+     * The target's row access policy, ahead of the WHERE: an UPDATE or a DELETE changes only the rows the policy lets
+     * the session see, and counts only those (live-verified).
+     */
+    private void policeTarget(final SelectPlan plan, final Table table) {
+        if (table.hasRowAccessPolicy()) {
+            plan.add(executor.rowAccessPolicyStage(table));
+        }
+    }
+
     /** How an UPDATE's write stage reads in a plan: the target and the columns it sets. */
     private static String updateDescription(final Table table, final Map<String, String> assignments) {
         return "UPDATE[" + table.getName() + " SET " + String.join(", ", assignments.keySet()) + "]";
@@ -335,6 +345,7 @@ final class UpdateDeleteExecutor {
         final TableStorage updateStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
         final List<Row> rows = updateStorage.scan();
         plan.source(rows, "TARGET[" + table.getName() + "]");
+        policeTarget(plan, table);
         if (whereExpr != null) {
             plan.add(whereStage(table, targetAlias, whereExpr, cteResults, whereOrigin));
         }
@@ -391,6 +402,7 @@ final class UpdateDeleteExecutor {
                         written.add(updatedRow);
                         rowIndexes.add(rowPositions.take(row));
                     }
+                    new HybridKeyGuard(executor).requireUpdate(table, fullyQualifiedName, rows, oldRows, written);
                     for (int i = 0; i < written.size(); i++) {
                         final int rowIndex = rowIndexes.get(i).intValue();
                         final Row oldRow = oldRows.get(i);
@@ -451,6 +463,7 @@ final class UpdateDeleteExecutor {
         final List<Row> targetRows = new ArrayList<>(effective);
         targetRows.addAll(pendingInserts);
         plan.source(targetRows, "TARGET[" + table.getName() + "]");
+        policeTarget(plan, table);
         if (whereExpr != null) {
             plan.add(whereStage(table, targetAlias, whereExpr, cteResults, whereOrigin));
         }
@@ -489,6 +502,7 @@ final class UpdateDeleteExecutor {
                             written.add(row);
                         }
                     }
+                    new HybridKeyGuard(executor).requireUpdate(table, fullyQualifiedName, targetRows, written, images);
                     for (int i = 0; i < images.size(); i++) {
                         if (pendingAt.get(i) != null) {
                             writeSet.setPendingInsert(fullyQualifiedName, pendingAt.get(i).intValue(), images.get(i));
@@ -515,6 +529,7 @@ final class UpdateDeleteExecutor {
         final TableStorage storage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
         final List<Row> rows = storage.scan();
         plan.source(rows, "TARGET[" + table.getName() + "]");
+        policeTarget(plan, table);
         if (whereExpr != null) {
             plan.add(whereStage(table, targetAlias, whereExpr, cteResults, null));
         }
@@ -523,6 +538,7 @@ final class UpdateDeleteExecutor {
             @Override
             protected List<Row> apply(final List<Row> rowsToDelete) {
                 requireUnlockedFor(rowsToDelete, fullyQualifiedName, table);
+                new HybridKeyGuard(executor).requireDelete(table, fullyQualifiedName, rows, rowsToDelete);
                 // Collect indices to delete (in reverse order to avoid shifting)
                 final List<Integer> indicesToDelete = new ArrayList<>();
                 // Each row's identity, read while the row is still stored: a stream reports the DELETE under it.
@@ -589,6 +605,7 @@ final class UpdateDeleteExecutor {
         final List<Row> targetRows = new ArrayList<>(effective);
         targetRows.addAll(pendingInserts);
         plan.source(targetRows, "TARGET[" + table.getName() + "]");
+        policeTarget(plan, table);
         if (whereExpr != null) {
             plan.add(whereStage(table, targetAlias, whereExpr, cteResults, whereOrigin));
         }
@@ -600,6 +617,7 @@ final class UpdateDeleteExecutor {
             @Override
             protected List<Row> apply(final List<Row> matching) {
                 requireUnlockedFor(matching, fullyQualifiedName, table);
+                new HybridKeyGuard(executor).requireDelete(table, fullyQualifiedName, targetRows, matching);
                 final List<Row> deleted = new ArrayList<>();
                 final List<Integer> pendingIndices = new ArrayList<>();
                 for (final Row row : matching) {
@@ -740,6 +758,7 @@ final class UpdateDeleteExecutor {
             }
         }
         plan.source(targetRows, "TARGET[" + target.getName() + "]");
+        policeTarget(plan, target);
         // The match: each target row combined with the FIRST source row that joins it (first match wins), or
         // with NULLs under an Oracle (+); a target row no source joins is dropped.
         final Map<Row, Row> targetOf = new IdentityHashMap<>();
@@ -776,9 +795,12 @@ final class UpdateDeleteExecutor {
                 requireUnlockedFor(combinedRows, targetFqn, target);
                 // Every row's new image is computed before any is written (see executeUpdateImmediate).
                 final List<Row> images = new ArrayList<>();
+                final List<Row> changed = new ArrayList<>();
                 for (final Row combinedRow : combinedRows) {
                     images.add(applySet(targetOf.get(combinedRow), target, combinedRow, ev, setByColumn, writtenName));
+                    changed.add(targetOf.get(combinedRow));
                 }
+                new HybridKeyGuard(executor).requireUpdate(target, targetFqn, targetRows, changed, images);
                 final List<Row> written = new ArrayList<>();
                 for (int i = 0; i < combinedRows.size(); i++) {
                     final Row targetRow = targetOf.get(combinedRows.get(i));
@@ -858,6 +880,7 @@ final class UpdateDeleteExecutor {
             }
         }
         plan.source(targetRows, "TARGET[" + target.getName() + "]");
+        policeTarget(plan, target);
         // The match: the target rows at least one source row joins.
         plan.add(new StageOperator("MATCH[" + (whereExpr != null ? whereExpr : "every source row") + "]{"
                 + sources.describe() + "}") {
@@ -877,6 +900,7 @@ final class UpdateDeleteExecutor {
             @Override
             protected List<Row> apply(final List<Row> matching) {
                 requireUnlockedFor(matching, targetFqn, target);
+                new HybridKeyGuard(executor).requireDelete(target, targetFqn, targetRows, matching);
                 final List<Row> deleted = new ArrayList<>();
                 final List<Integer> immediateDeletes = new ArrayList<>();
                 final List<Integer> pendingDeletes = new ArrayList<>();

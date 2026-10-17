@@ -711,6 +711,17 @@ public class ShowCommandExecutor {
         return sessionExecutor.showParametersInTask(task, likePattern);
     }
 
+    /**
+     * SHOW PARAMETERS IN ALERT (see {@link ShowSessionExecutor#showParametersInAlert}).
+     *
+     * @param alert        the alert as written
+     * @param likePattern  the LIKE filter, or null
+     * @return the listing
+     */
+    public ResultSet showParametersInAlert(final SchemaObjectName alert, final String likePattern) {
+        return sessionExecutor.showParametersInAlert(alert, likePattern);
+    }
+
     public ResultSet showParametersInTable(final SchemaObjectName table, final String likePattern) {
         return sessionExecutor.showParametersInTable(table, likePattern);
     }

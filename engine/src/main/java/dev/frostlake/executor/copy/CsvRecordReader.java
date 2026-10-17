@@ -19,7 +19,9 @@ package dev.frostlake.executor.copy;
 import java.io.IOException;
 import java.io.Reader;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The records of one staged CSV file as INFER_SCHEMA splits them.
@@ -45,8 +47,12 @@ import java.util.List;
  * the line and character, and the row — {@code Row 1 starts at line 2} when the fault is on a later line than
  * the record's first — and the column, {@code "TRANSIENT_STAGE_TABLE"["$1":1]} for the first and
  * {@code "TRANSIENT_STAGE_TABLE"[2]} for any other.
+ *
+ * <p>A staged-file query reads its CSV files with the same splitting (live-verified): a delimiter of several
+ * characters, a record delimiter other than a newline, a closing enclosure followed by anything but a delimiter
+ * refused. Its refusals end at the row and name every column {@code "TRANSIENT_STAGE_TABLE"["$2":2]}.
  */
-final class CsvRecordReader {
+public final class CsvRecordReader {
 
     /** A field that ended at a field delimiter: the record goes on. */
     private static final int NEXT_FIELD = 0;
@@ -68,6 +74,17 @@ final class CsvRecordReader {
     private final Character escape;
     private final Character escapeUnenclosed;
     private final boolean trimSpace;
+    /** Whether a staged-file query reads the file, whose refusals are worded as its own. */
+    private final boolean stagedQuery;
+
+    /** Whether a field holding bytes its file's encoding could not read is settled here (see settlingUnreadable). */
+    private boolean settlesUnreadable;
+
+    /** Whether such a field reads each unreadable sequence as U+FFFD rather than being refused. */
+    private boolean replacesUnreadable;
+
+    /** The refusals the last record's fields hold, by field number from 1 (see {@link #unreadableFaults}). */
+    private final Map<Integer, RuntimeException> unreadable = new HashMap<Integer, RuntimeException>();
 
     /** The characters read from the source and not yet taken. */
     private final StringBuilder ahead = new StringBuilder();
@@ -98,6 +115,32 @@ final class CsvRecordReader {
         this.escape = options.escape();
         this.escapeUnenclosed = options.escapeUnenclosed();
         this.trimSpace = options.trimSpace();
+        this.stagedQuery = false;
+    }
+
+    /**
+     * A reader over one file as a staged-file query reads it.
+     *
+     * @param source the file's characters
+     * @param relativeName the file's stage-relative name, as the refusals name it
+     * @param fieldDelimiter the text between two fields, null for NONE
+     * @param recordDelimiter the text between two records, null for NONE
+     * @param enclosure FIELD_OPTIONALLY_ENCLOSED_BY, or null
+     * @param escape ESCAPE, or null
+     * @param escapeUnenclosed ESCAPE_UNENCLOSED_FIELD, or null
+     */
+    public CsvRecordReader(final Reader source, final String relativeName, final String fieldDelimiter,
+                           final String recordDelimiter, final Character enclosure, final Character escape,
+                           final Character escapeUnenclosed) {
+        this.source = source;
+        this.relativeName = relativeName;
+        this.fieldDelimiter = fieldDelimiter;
+        this.recordDelimiter = recordDelimiter;
+        this.enclosure = enclosure;
+        this.escape = escape;
+        this.escapeUnenclosed = escapeUnenclosed;
+        this.trimSpace = false;
+        this.stagedQuery = true;
     }
 
     /**
@@ -106,7 +149,7 @@ final class CsvRecordReader {
      * @param lines how many
      * @throws IOException when the file cannot be read
      */
-    void skipLines(final int lines) throws IOException {
+    public void skipLines(final int lines) throws IOException {
         for (int skipped = 0; skipped < lines; skipped++) {
             int c = take();
             while (c >= 0 && c != '\n') {
@@ -135,7 +178,7 @@ final class CsvRecordReader {
      * @return the fields
      * @throws IOException when the file cannot be read
      */
-    List<String> next(final int width, final long row, final List<Boolean> enclosedOut) throws IOException {
+    public List<String> next(final int width, final long row, final List<Boolean> enclosedOut) throws IOException {
         int blank = recordDelimiterLength();
         while (blank > 0) {
             consume(blank);
@@ -154,6 +197,7 @@ final class CsvRecordReader {
     private List<String> fields(final boolean header, final int width, final long row, final List<Boolean> enclosedOut)
             throws IOException {
         enclosedOut.clear();
+        unreadable.clear();
         final int startLine = line;
         final List<String> fields = new ArrayList<String>();
         int ending = NEXT_FIELD;
@@ -164,13 +208,55 @@ final class CsvRecordReader {
                     column, row, startLine, width);
             }
             final StringBuilder value = new StringBuilder();
+            final int fieldLine = line;
+            final int fieldColumn = column;
             final boolean enclosed = enclosureAhead();
             ending = enclosed ? enclosedField(value, header, width, row, startLine, index)
                 : unenclosedField(value, header);
-            fields.add(value.toString());
+            fields.add(header ? value.toString()
+                : settled(value.toString(), fieldLine, fieldColumn, row, startLine, index));
             enclosedOut.add(Boolean.valueOf(enclosed));
         }
         return fields;
+    }
+
+    /**
+     * Settles the bytes a field's file could not read in its encoding, as a staged-file query does: the field holds
+     * its refusal (see {@link #unreadableFaults}), or each unreadable sequence is read as U+FFFD under
+     * REPLACE_INVALID_CHARACTERS = TRUE.
+     *
+     * @param replace whether the format's REPLACE_INVALID_CHARACTERS is TRUE
+     * @return this reader
+     */
+    public CsvRecordReader settlingUnreadable(final boolean replace) {
+        this.settlesUnreadable = true;
+        this.replacesUnreadable = replace;
+        return this;
+    }
+
+    /**
+     * The refusals of the last record's fields that hold bytes their file's encoding could not read, in the account's
+     * words — the bytes spelled as {@code 0xE9}, the field's start named — by field number from 1. A query refuses
+     * only where it reads such a field: a count of the file's rows reads none (live-verified).
+     *
+     * @return the refusals, empty when every field read
+     */
+    public Map<Integer, RuntimeException> unreadableFaults() {
+        return new HashMap<Integer, RuntimeException>(unreadable);
+    }
+
+    /** A field as it is read, each unreadable sequence as U+FFFD under REPLACE_INVALID_CHARACTERS = TRUE. */
+    private String settled(final String value, final int fieldLine, final int fieldColumn, final long row,
+                           final int startLine, final int index) {
+        if (!settlesUnreadable || StagedFileIo.firstUnreadable(value) < 0) {
+            return value;
+        }
+        if (replacesUnreadable) {
+            return StagedFileIo.unreadableReplaced(value);
+        }
+        unreadable.put(Integer.valueOf(index), parseRefusal("Invalid UTF8 detected in string '"
+            + StagedFileIo.unreadableShown(value) + "'", fieldLine, fieldColumn, row, startLine, index));
+        return value;
     }
 
     /** Whether the next field is enclosed, the spaces before its enclosure taken under TRIM_SPACE. */
@@ -338,16 +424,19 @@ final class CsvRecordReader {
     private RuntimeException parseRefusal(final String detail, final int atLine, final int atColumn, final long row,
                                           final int startLine, final int index) {
         final String where = "\n  File '" + relativeName + "', line " + atLine + ", character " + atColumn;
-        return new RuntimeException(detail + where + "\n  Row " + row + startingAt(atLine, startLine) + ", column "
-            + columnReference(index) + where + "\n  Row 0 starts at line 0, column " + columnReference(index));
+        final String at = detail + where + "\n  Row " + row + startingAt(atLine, startLine) + ", column "
+            + columnReference(index);
+        return new RuntimeException(stagedQuery ? at
+            : at + where + "\n  Row 0 starts at line 0, column " + columnReference(index));
     }
 
     private static String startingAt(final int atLine, final int startLine) {
         return atLine == startLine ? "" : " starts at line " + startLine;
     }
 
-    private static String columnReference(final int index) {
-        return "\"TRANSIENT_STAGE_TABLE\"" + (index == 1 ? "[\"$1\":1]" : "[" + index + "]");
+    private String columnReference(final int index) {
+        return "\"TRANSIENT_STAGE_TABLE\"" + (index == 1 || stagedQuery ? "[\"$" + index + "\":" + index + "]"
+            : "[" + index + "]");
     }
 
     /** A delimiter as a refusal spells it, a newline, a carriage return and a tab escaped. */

@@ -47,6 +47,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
+import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 
@@ -248,6 +249,30 @@ public final class PythonRuntime {
                 closer.interrupt();
             }
         }, EXECUTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Settle this thread's context after a failed execution. A failure raised in the handler's code — Python's own
+     * exception, or the engine's raised through it — unwinds through every {@code finally} and {@code with} on its
+     * way out and leaves no lock held, so the context is kept: a context replaced under another language's frame (a
+     * JavaScript procedure's {@code snowflake.execute}) failed the next Python execution there on the polyglot
+     * runtime's own sharing check. A cancelled, interrupted or exhausted execution, an exit, an internal failure, and
+     * a failure that is no polyglot one at all, may have left the interpreter mid-step, and the context is thrown away
+     * ({@link #discardContext()}).
+     *
+     * @param failure what the execution threw
+     * @return whether the context was kept, so that the failure's guest values can still be read
+     */
+    public static boolean settleAfter(final Throwable failure) {
+        if (failure instanceof PolyglotException) {
+            final PolyglotException polyglot = (PolyglotException) failure;
+            if (!polyglot.isCancelled() && !polyglot.isInterrupted() && !polyglot.isInternalError()
+                    && !polyglot.isResourceExhausted() && !polyglot.isExit()) {
+                return true;
+            }
+        }
+        discardContext();
+        return false;
     }
 
     /**

@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.metastore.StatementDraws;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -26,10 +28,11 @@ import java.util.UUID;
 
 /**
  * The tokens a statement hands out to what it creates — a notebook's URL id, a generated job service name, an
- * Iceberg table's location suffix — drawn so that the statement, replayed from the write-ahead log, hands out the
- * same ones: each token is derived from the instant the outermost statement started at, which the log records,
- * and from how many tokens the statement drew before it. Every statement's start is its own, whichever session runs
- * it (see {@link StatementClock#observedStatementStart}), so no two statements hand out the same token. Outside a
+ * Iceberg table's location suffix — and the random values it draws, drawn so that the statement, replayed from the
+ * write-ahead log, hands out the same ones: each follows from a seed the statement draws at random the first time it
+ * needs one, which the log records with the statement's counter draws, and from how many it drew before. Two
+ * statements, of one engine or of two, therefore draw unrelated values, and nothing about the statement predicts
+ * them. A record from before seeds were logged replays from the statement's start, as it was drawn then. Outside a
  * statement a token is random.
  */
 public final class StatementTokens {
@@ -41,6 +44,11 @@ public final class StatementTokens {
     /** The statement the random stream below belongs to, and the stream. */
     private static final ThreadLocal<Instant> STREAM_FOR = new ThreadLocal<Instant>();
     private static final ThreadLocal<SplittableRandom> STREAM = new ThreadLocal<SplittableRandom>();
+    /** The statement the seed below belongs to, and what its tokens and stream are derived from. */
+    private static final ThreadLocal<Instant> BASIS_FOR = new ThreadLocal<Instant>();
+    private static final ThreadLocal<String> BASIS = new ThreadLocal<String>();
+    /** The counter a statement's seed is recorded under among its draws (see {@link StatementDraws}). */
+    private static final String SEED_COUNTER = "#statement-seed";
 
     private StatementTokens() {
     }
@@ -56,10 +64,37 @@ public final class StatementTokens {
         DRAWN.remove();
         STREAM_FOR.remove();
         STREAM.remove();
+        BASIS_FOR.remove();
+        BASIS.remove();
     }
 
     /**
-     * A random 64-bit value, drawn from a stream the statement's start seeds: what RANDOM(), UNIFORM over it, a
+     * What a statement's tokens and random stream are derived from: a seed it draws at random the first time, recorded
+     * with its draws for the write-ahead log, which its replay draws again. A replayed record from before seeds were
+     * logged derives them from the statement's start, as it did then.
+     */
+    private static String basis(final Instant statement) {
+        if (!statement.equals(BASIS_FOR.get())) {
+            final Long replayed = StatementDraws.replayed(SEED_COUNTER);
+            final String basis;
+            if (replayed != null) {
+                basis = "seed:" + Long.toHexString(replayed.longValue());
+                StatementDraws.record(SEED_COUNTER, replayed.longValue());
+            } else if (StatementDraws.isReplaying()) {
+                basis = statement.toString();
+            } else {
+                final long seed = RANDOM.nextLong();
+                basis = "seed:" + Long.toHexString(seed);
+                StatementDraws.record(SEED_COUNTER, seed);
+            }
+            BASIS_FOR.set(statement);
+            BASIS.set(basis);
+        }
+        return BASIS.get();
+    }
+
+    /**
+     * A random 64-bit value, drawn from a stream the statement's seed starts: what RANDOM(), UNIFORM over it, a
      * SAMPLE without a SEED and UUID_STRING() draw from, so a statement replayed from the write-ahead log draws what
      * it first drew, in the order it drew it. Outside a statement the value is random.
      *
@@ -71,7 +106,7 @@ public final class StatementTokens {
             return RANDOM.nextLong();
         }
         if (!statement.equals(STREAM_FOR.get())) {
-            final byte[] seed = sha256().digest((statement + "#stream").getBytes(StandardCharsets.UTF_8));
+            final byte[] seed = sha256().digest((basis(statement) + "#stream").getBytes(StandardCharsets.UTF_8));
             long bits = 0L;
             for (int i = 0; i < Long.BYTES; i++) {
                 bits = bits << Byte.SIZE | (seed[i] & 0xFFL);
@@ -129,7 +164,7 @@ public final class StatementTokens {
         drawn[0]++;
         final MessageDigest digest = sha256();
         for (int block = 0; out.length() < length; block++) {
-            final byte[] bytes = digest.digest((statement + "#" + drawn[0] + "#" + block)
+            final byte[] bytes = digest.digest((basis(statement) + "#" + drawn[0] + "#" + block)
                 .getBytes(StandardCharsets.UTF_8));
             for (int i = 0; i < bytes.length && out.length() < length; i++) {
                 out.append(alphabet.charAt((bytes[i] & 0xFF) % alphabet.length()));

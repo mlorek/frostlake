@@ -193,58 +193,77 @@ public final class TaskGraphRuns {
         return newestFirst(rows, 10, limit);
     }
 
+    /**
+     * One row per attempt of each graph run of the root: its first attempt, then one more for each retry, as the
+     * account counts them (live-verified). An attempt is told from its own task runs — its state, first error and
+     * completion — and a retry's SCHEDULED_TIME is its first run's, scheduled from MANUAL RETRY; every attempt keeps
+     * the graph run's RUN_ID and GRAPH_RUN_GROUP_ID. A retry's QUERY_START_TIME is when the root's run in it
+     * started, or, when the retry does not run the root, when its first run started if that run succeeded: a retry
+     * whose first run failed tells none.
+     */
     private static void addCompleted(final List<Row> rows, final Task root, final Schema schema,
                                      final boolean errorOnly) {
-        final List<TaskExecution> rootRuns = root.getExecutionHistory();
-        final List<Task> graph = TaskGraphs.descendants(schema, root, true);
-        for (int i = 0; i < rootRuns.size(); i++) {
-            final TaskExecution run = rootRuns.get(i);
+        final List<TaskExecution> graphRuns = TaskGraphs.graphRuns(root);
+        final List<Task> tasks = new ArrayList<>();
+        tasks.add(root);
+        tasks.addAll(TaskGraphs.descendants(schema, root, true));
+        for (int i = 0; i < graphRuns.size(); i++) {
+            final TaskExecution run = graphRuns.get(i);
             final LocalDateTime start = run.getStartTime();
-            final LocalDateTime until = i + 1 < rootRuns.size() ? rootRuns.get(i + 1).getStartTime() : null;
-            boolean failed = FAILED.equals(run.getState());
-            TaskExecution firstError = failed ? run : null;
-            String firstErrorTask = failed ? root.getName() : null;
-            LocalDateTime completed = run.getEndTime();
-            for (final Task task : graph) {
-                final TaskExecution last = lastRunWithin(task, start, until);
-                if (last == null) {
-                    continue;
-                }
-                if (last.getEndTime() != null && (completed == null || last.getEndTime().isAfter(completed))) {
-                    completed = last.getEndTime();
-                }
-                if (FAILED.equals(last.getState())) {
-                    failed = true;
-                    if (firstError == null || before(last, firstError)) {
-                        firstError = last;
-                        firstErrorTask = task.getName();
-                    }
-                }
+            final LocalDateTime until = i + 1 < graphRuns.size() ? graphRuns.get(i + 1).getStartTime() : null;
+            final int attempts = TaskGraphs.lastAttempt(schema, root, start, until);
+            for (int attempt = 1; attempt <= attempts; attempt++) {
+                addAttempt(rows, root, schema, tasks, run, until, attempt, errorOnly);
             }
-            if (errorOnly && !failed) {
-                continue;
-            }
-            final String state = failed ? FAILED : TaskExecutionState.SUCCEEDED.name();
-            rows.add(row(true, root, schema, state, run.getScheduledFrom(), firstErrorTask,
-                firstError == null ? null : firstError.getErrorMessage(),
-                ShowResultHelpers.createdOn(run.getScheduledTime()), ShowResultHelpers.createdOn(start),
-                ShowResultHelpers.createdOn(completed)));
         }
     }
 
-    private static TaskExecution lastRunWithin(final Task task, final LocalDateTime start,
-                                               final LocalDateTime until) {
-        TaskExecution last = null;
-        for (final TaskExecution run : task.getExecutionHistory()) {
-            final LocalDateTime began = run.getStartTime();
-            if (began == null || start == null || began.isBefore(start)) {
+    private static void addAttempt(final List<Row> rows, final Task root, final Schema schema, final List<Task> tasks,
+                                   final TaskExecution graphRun, final LocalDateTime until, final int attempt,
+                                   final boolean errorOnly) {
+        TaskExecution first = null;
+        TaskExecution rootRun = null;
+        TaskExecution firstError = null;
+        String firstErrorTask = null;
+        LocalDateTime completed = null;
+        for (final Task task : tasks) {
+            final TaskExecution last = TaskGraphs.lastRunWithin(task, graphRun.getStartTime(), until, attempt);
+            if (last == null) {
                 continue;
             }
-            if (until == null || began.isBefore(until)) {
-                last = run;
+            if (task == root) {
+                rootRun = last;
+            }
+            if (first == null || before(last, first)) {
+                first = last;
+            }
+            if (last.getEndTime() != null && (completed == null || last.getEndTime().isAfter(completed))) {
+                completed = last.getEndTime();
+            }
+            if (FAILED.equals(last.getState()) && (firstError == null || before(last, firstError))) {
+                firstError = last;
+                firstErrorTask = task.getName();
             }
         }
-        return last;
+        if (first == null || errorOnly && firstError == null) {
+            return;
+        }
+        final String state = firstError != null ? FAILED : TaskExecutionState.SUCCEEDED.name();
+        final boolean retry = attempt > 1;
+        final LocalDateTime queryStart;
+        if (!retry) {
+            queryStart = graphRun.getStartTime();
+        } else if (rootRun != null) {
+            queryStart = rootRun.getStartTime();
+        } else {
+            queryStart = FAILED.equals(first.getState()) ? null : first.getStartTime();
+        }
+        rows.add(row(true, root, schema, state,
+            retry ? TaskTrigger.MANUAL_RETRY.reported() : graphRun.getScheduledFrom(), firstErrorTask,
+            firstError == null ? null : firstError.getErrorMessage(),
+            ShowResultHelpers.createdOn(retry ? first.getScheduledTime() : graphRun.getScheduledTime()),
+            ShowResultHelpers.createdOn(queryStart), ShowResultHelpers.createdOn(completed),
+            TaskGraphs.runId(graphRun.getScheduledTime()), attempt));
     }
 
     private static boolean before(final TaskExecution a, final TaskExecution b) {
@@ -259,7 +278,14 @@ public final class TaskGraphRuns {
                            final String scheduledFrom, final String firstErrorTask, final String firstErrorMessage,
                            final OffsetDateTime scheduled, final OffsetDateTime queryStart,
                            final OffsetDateTime completed) {
-        final Long runId = scheduled == null ? null : Long.valueOf(scheduled.toInstant().toEpochMilli());
+        return row(completedShape, root, schema, state, scheduledFrom, firstErrorTask, firstErrorMessage, scheduled,
+            queryStart, completed, scheduled == null ? null : Long.valueOf(scheduled.toInstant().toEpochMilli()), 1);
+    }
+
+    private static Row row(final boolean completedShape, final Task root, final Schema schema, final String state,
+                           final String scheduledFrom, final String firstErrorTask, final String firstErrorMessage,
+                           final OffsetDateTime scheduled, final OffsetDateTime queryStart,
+                           final OffsetDateTime completed, final Long runId, final int attempt) {
         final String group = GraphRunGroup.id(root.getId(), runId);
         final OffsetDateTime next = root.isActive() && root.getSchedule() != null
             ? ShowResultHelpers.createdOn(root.getNextRunTime()) : null;
@@ -269,7 +295,7 @@ public final class TaskGraphRuns {
         if (completedShape) {
             cells.add(completed);
         }
-        cells.addAll(Arrays.<Object>asList(root.getId(), Long.valueOf(1L), runId, Long.valueOf(1L), scheduledFrom,
+        cells.addAll(Arrays.<Object>asList(root.getId(), Long.valueOf(1L), runId, Long.valueOf(attempt), scheduledFrom,
             null, group, null, null));
         return new Row(cells);
     }

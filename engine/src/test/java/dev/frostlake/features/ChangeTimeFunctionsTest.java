@@ -51,8 +51,9 @@ public class ChangeTimeFunctionsTest {
     }
 
     private long number(final String sql) {
+        // SYSTEM$STREAM_GET_TABLE_TIMESTAMP answers its stamp as text.
         final Row row = engine.executeQuery(sql).getRows().get(0);
-        return ((Number) row.getValue(0)).longValue();
+        return Long.parseLong(String.valueOf(row.getValue(0)));
     }
 
     private String refusal(final String sql) {

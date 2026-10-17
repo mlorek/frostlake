@@ -75,6 +75,22 @@ final class ExplainPlan {
     }
 
     /**
+     * Compile a query for its shape alone, as an EXPLAIN compiles it: a name it cannot resolve is refused, and
+     * nothing it reads is carried out.
+     *
+     * @param executor the executor that compiles the query
+     * @param query    the query's text
+     */
+    static void compileOnly(final QueryExecutor executor, final String query) {
+        PLANNING.get()[0]++;
+        try {
+            executor.resolveRelationShape(query, null);
+        } finally {
+            PLANNING.get()[0]--;
+        }
+    }
+
+    /**
      * The plan of an EXPLAIN, in the format it names.
      *
      * @param executor the executor that compiles the statement

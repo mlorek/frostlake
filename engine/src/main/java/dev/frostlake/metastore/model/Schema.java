@@ -24,22 +24,26 @@ import dev.frostlake.metastore.NameKeys;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StatementSession;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.WrittenSignatureType;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Schema extends SqlObject {
@@ -65,6 +69,17 @@ public class Schema extends SqlObject {
      * while {@link #tables} holds a temporary table under it (see {@link #swapShadow}).
      */
     private final Map<String, Table> shadowedTables;
+    /**
+     * Each session's own temporary tables, by session and then by name (see Table.isSessionTemporary). A session's
+     * temporary table is its own: two sessions may each hold one of a name, and one above a permanent table of its
+     * name leaves every other session reading the permanent one (live-verified). The current session's own tables
+     * answer to a name before the tables every session shares.
+     */
+    private final Map<Long, Map<String, Table>> sessionTables = new ConcurrentHashMap<>();
+    /** A session's own temporary table, set aside while the session creates a permanent table of its name. */
+    private final Map<Long, Map<String, Table>> sessionTablesAside = new ConcurrentHashMap<>();
+    /** Each session's own temporary views, by session and then by name, as {@link #sessionTables} holds tables. */
+    private final Map<Long, Map<String, View>> sessionViews = new ConcurrentHashMap<>();
     private final Map<String, View> views;
     private final Map<String, MaterializedView> materializedViews;
     private final Map<String, DynamicTable> dynamicTables;
@@ -212,6 +227,16 @@ public class Schema extends SqlObject {
         requireCreatable("tables");
         rejectNameHeldByOtherKind(table.getName(), RelationKind.TABLE, table.isTemporary());
         final String upperName = table.getName();
+        if (table.isSessionTemporary()) {
+            final Map<String, Table> own = sessionMap(sessionTables, table.getCreatedInSession());
+            if (own.containsKey(upperName)) {
+                throw new NameTakenException(SqlCompilationError.of(
+                    "Object '" + SqlIdentifiers.spellCanonical(table.getName()) + "' already exists."));
+            }
+            table.markCatalogResident();
+            own.put(upperName, table);
+            return;
+        }
         if (tables.containsKey(upperName)) {
             throw new NameTakenException(SqlCompilationError.of(
                 "Object '" + SqlIdentifiers.spellCanonical(table.getName()) + "' already exists."));
@@ -232,6 +257,10 @@ public class Schema extends SqlObject {
     }
 
     public void dropTable(final String name) {
+        final Map<String, Table> own = ownTables();
+        if (own != null && own.remove(keyFor(own, name)) != null) {
+            return;
+        }
         if (!tables.containsKey(keyFor(tables, name))) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Table", qualified(name)));
         }
@@ -247,6 +276,26 @@ public class Schema extends SqlObject {
      * {@code Object 'DB.SCHEMA.MIXEDTBL' does not exist or not authorized.} — "Object", not "Table".
      */
     public Table tableExact(final String name) {
+        final Table own = ownTable(name);
+        if (own != null && own.getName().equals(name)) {
+            return own;
+        }
+        final Table table = heldTable(name);
+        if (table == null) {
+            final Table session = anySessionTable(name);
+            return session != null && session.getName().equals(name) ? session : null;
+        }
+        return hiddenHere(table) ? null : table;
+    }
+
+    /**
+     * The table held under exactly this name, whichever session's it is: what a statement's own lookups never
+     * reach of another session's temporary table, and what the engine's own bookkeeping reaches all the same.
+     *
+     * @param name the canonical name
+     * @return the table, or null
+     */
+    public Table heldTable(final String name) {
         final Table table = tables.get(keyFor(tables, name));
         if (table == null || !table.getName().equals(name)) {
             return null;
@@ -255,24 +304,181 @@ public class Schema extends SqlObject {
     }
 
     /**
+     * Whether a table is another session's temporary one, which a statement neither reaches nor lists
+     * (live-verified). A table a temporary one hides a permanent table beneath stays as it is, its storage
+     * holding the hidden rows aside.
+     */
+    private boolean hiddenHere(final Table table) {
+        return othersTemporary(table, table.isTemporary()) && !shadowedTables.containsKey(table.getName());
+    }
+
+    /**
+     * Whether an object is another session's temporary one: one a session created, read in another session. The
+     * engine's own session, which serves no bound session, reaches every one.
+     */
+    private static boolean othersTemporary(final SqlObject object, final boolean temporary) {
+        final Long current = StatementSession.current();
+        return temporary && current != null && object.getCreatedInSession() != null
+            && !current.equals(object.getCreatedInSession());
+    }
+
+    /**
      * The table, or a miss reported as {@code reportedKind 'reportedName'}. A DDL statement always spells
      * the name in full, while a query or DML statement echoes what the writer wrote and calls a missing
      * FROM-clause name an {@code Object} — so the caller, which knows the statement, chooses both.
      */
     public Table getTable(final String name, final String reportedName, final String reportedKind) {
+        final Table own = ownTable(name);
+        if (own != null) {
+            return own;
+        }
         final Table table = tables.get(keyFor(tables, name));
-        if (table == null) {
+        if (table == null && anySessionTable(name) != null) {
+            return anySessionTable(name);
+        }
+        if (table == null || hiddenHere(table)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist(reportedKind, reportedName));
         }
         return table;
     }
 
     public boolean hasTable(final String name) {
-        return tables.containsKey(keyFor(tables, name));
+        if (ownTable(name) != null) {
+            return true;
+        }
+        final Table table = tables.get(keyFor(tables, name));
+        return table != null && !hiddenHere(table) || table == null && anySessionTable(name) != null;
     }
 
+    /**
+     * The tables a statement here lists: the current session's own temporary tables and every shared one they do not
+     * hide, but no other session's temporary tables. The engine's own session lists every session's.
+     */
     public List<Table> getTables() {
-        return new ArrayList<>(tables.values());
+        if (StatementSession.current() == null) {
+            return allTables();
+        }
+        final Map<String, Table> own = ownTables();
+        final List<Table> reached = new ArrayList<>();
+        for (final Table table : tables.values()) {
+            if (!hiddenHere(table) && (own == null || !own.containsKey(table.getName()))) {
+                reached.add(table);
+            }
+        }
+        if (own != null) {
+            reached.addAll(own.values());
+        }
+        return reached;
+    }
+
+    /** Every table held here, every session's temporary ones included: the engine's own bookkeeping reads these. */
+    public List<Table> allTables() {
+        final List<Table> all = new ArrayList<>(tables.values());
+        for (final Map<String, Table> own : sessionTables.values()) {
+            all.addAll(own.values());
+        }
+        for (final Map<String, Table> aside : sessionTablesAside.values()) {
+            all.addAll(aside.values());
+        }
+        return all;
+    }
+
+    /**
+     * Remove a session's own temporary table, whichever session runs the statement: the session ended.
+     *
+     * @param table the table
+     */
+    public void removeSessionTable(final Table table) {
+        final Map<String, Table> own = sessionTables.get(table.getCreatedInSession());
+        if (own != null && own.get(table.getName()) == table) {
+            own.remove(table.getName());
+            if (own.isEmpty()) {
+                sessionTables.remove(table.getCreatedInSession());
+            }
+        }
+    }
+
+    /**
+     * Whether the current session holds a temporary table of its own under this exact name.
+     *
+     * @param name the canonical name
+     * @return true when it does
+     */
+    public boolean holdsOwnTable(final String name) {
+        final Table own = ownTable(name);
+        return own != null && own.getName().equals(name);
+    }
+
+    /**
+     * Set the current session's own temporary table of a name aside while the session creates a permanent table of
+     * that name, so the CREATE meets only the tables every session shares; {@link #bringOwnTableBack} restores it.
+     *
+     * @param name the canonical name
+     */
+    public void setOwnTableAside(final String name) {
+        final Map<String, Table> own = ownTables();
+        final Table table = own == null ? null : own.remove(name);
+        if (table != null) {
+            sessionMap(sessionTablesAside, StatementSession.current()).put(name, table);
+        }
+    }
+
+    /**
+     * Bring the current session's own temporary table of a name back above the shared table of its name.
+     *
+     * @param name the canonical name
+     * @return whether a table was set aside under it
+     */
+    public boolean bringOwnTableBack(final String name) {
+        final Long session = StatementSession.current();
+        final Map<String, Table> aside = session == null ? null : sessionTablesAside.get(session);
+        final Table table = aside == null ? null : aside.remove(name);
+        if (table != null) {
+            sessionMap(sessionTables, session).put(name, table);
+        }
+        return table != null;
+    }
+
+    /** The current session's own temporary tables, or null for none (or the engine's own session). */
+    private Map<String, Table> ownTables() {
+        final Long session = StatementSession.current();
+        return session == null ? null : sessionTables.get(session);
+    }
+
+    /** The current session's own temporary table that a name reaches, or null. */
+    private Table ownTable(final String name) {
+        final Map<String, Table> own = ownTables();
+        return own == null ? null : own.get(keyFor(own, name));
+    }
+
+    /**
+     * A session's own temporary table of a name, read by the engine's own session, which reaches every session's
+     * temporary tables where no shared table holds the name; null in any other session.
+     */
+    private Table anySessionTable(final String name) {
+        if (StatementSession.current() != null) {
+            return null;
+        }
+        for (final Map<String, Table> held : sessionTables.values()) {
+            final Table table = held.get(keyFor(held, name));
+            if (table != null) {
+                return table;
+            }
+        }
+        return null;
+    }
+
+    /** A session's map in a per-session table, made when it has none. */
+    private static <T> Map<String, T> sessionMap(final Map<Long, Map<String, T>> bySession, final Long session) {
+        Map<String, T> held = bySession.get(session);
+        if (held == null) {
+            held = new ConcurrentHashMap<>();
+            final Map<String, T> raced = bySession.putIfAbsent(session, held);
+            if (raced != null) {
+                held = raced;
+            }
+        }
+        return held;
     }
 
     /**
@@ -285,9 +491,22 @@ public class Schema extends SqlObject {
         return shadowedTables.get(name);
     }
 
-    /** Every permanent table a temporary table hides in this schema. */
+    /**
+     * Every permanent table a temporary table hides in this schema: beneath a temporary table every session reads,
+     * and beneath one of the current session's own.
+     */
     public List<Table> getShadowedTables() {
-        return new ArrayList<>(shadowedTables.values());
+        final List<Table> hidden = new ArrayList<>(shadowedTables.values());
+        final Map<String, Table> own = ownTables();
+        if (own != null) {
+            for (final String name : own.keySet()) {
+                final Table shared = tables.get(name);
+                if (shared != null && !hiddenHere(shared)) {
+                    hidden.add(shared);
+                }
+            }
+        }
+        return hidden;
     }
 
     /**
@@ -331,14 +550,20 @@ public class Schema extends SqlObject {
         // Allow system views to be added during initialization, but protect after that
         rejectNameHeldByOtherKind(view.getName(), RelationKind.VIEW, view.isTemporary());
         final String upperName = view.getName();
-        if (views.containsKey(upperName)) {
+        final Map<String, View> own = view.isTemporary() && view.getCreatedInSession() != null
+            ? sessionMap(sessionViews, view.getCreatedInSession()) : null;
+        if (views.containsKey(upperName) || own != null && own.containsKey(upperName)) {
             throw new NameTakenException(SqlCompilationError.of(
                 "Object '" + SqlIdentifiers.spellCanonical(view.getName()) + "' already exists."));
         }
-        views.put(upperName, view);
+        (own != null ? own : views).put(upperName, view);
     }
 
     public void dropView(final String name) {
+        final Map<String, View> own = ownViews();
+        if (own != null && own.remove(keyFor(own, name)) != null) {
+            return;
+        }
         final String upperName = keyFor(views, name);
         if (!views.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
@@ -353,8 +578,12 @@ public class Schema extends SqlObject {
     }
 
     public View getView(final String name) {
+        final View own = ownView(name);
+        if (own != null) {
+            return own;
+        }
         final View view = views.get(keyFor(views, name));
-        if (view == null) {
+        if (view == null || othersTemporary(view, view.isTemporary())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
         }
         return view;
@@ -362,11 +591,91 @@ public class Schema extends SqlObject {
 
     /** Whether a view of this name exists, without the throwing lookup {@link #getView} performs. */
     public boolean hasView(final String name) {
-        return views.containsKey(keyFor(views, name));
+        if (ownView(name) != null) {
+            return true;
+        }
+        final View view = views.get(keyFor(views, name));
+        return view != null && !othersTemporary(view, view.isTemporary());
     }
 
+    /**
+     * Whether a view carries exactly this canonical name - the check a statement makes, where a name that differs only
+     * in case is another view (live-verified).
+     */
+    public boolean hasViewExact(final String name) {
+        final Map<String, View> own = ownViews();
+        if (own != null && own.containsKey(name)) {
+            return true;
+        }
+        final View view = views.get(name);
+        return view != null && !othersTemporary(view, view.isTemporary());
+    }
+
+    /**
+     * Drops the view of exactly this canonical name, refused as missing when only another case of it exists.
+     *
+     * @param name the canonical name
+     */
+    public void dropViewExact(final String name) {
+        if (!hasViewExact(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
+        }
+        dropView(name);
+    }
+
+    /** The views a statement here lists: every one but another session's temporary ones. */
     public List<View> getViews() {
-        return new ArrayList<>(views.values());
+        final List<View> reached = new ArrayList<>();
+        for (final View view : views.values()) {
+            if (!othersTemporary(view, view.isTemporary())) {
+                reached.add(view);
+            }
+        }
+        final Map<String, View> own = ownViews();
+        if (own != null) {
+            reached.addAll(own.values());
+        }
+        return reached;
+    }
+
+    /** Every view held here, every session's temporary ones included: the engine's own bookkeeping reads these. */
+    public List<View> allViews() {
+        final List<View> all = new ArrayList<>(views.values());
+        for (final Map<String, View> own : sessionViews.values()) {
+            all.addAll(own.values());
+        }
+        return all;
+    }
+
+    /**
+     * Remove a session's own temporary view, whichever session runs the statement: the session ended.
+     *
+     * @param view the view
+     * @return whether it was a session's own view
+     */
+    public boolean removeSessionView(final View view) {
+        final Map<String, View> own = view.getCreatedInSession() == null ? null
+            : sessionViews.get(view.getCreatedInSession());
+        if (own == null || own.get(view.getName()) != view) {
+            return false;
+        }
+        own.remove(view.getName());
+        if (own.isEmpty()) {
+            sessionViews.remove(view.getCreatedInSession());
+        }
+        return true;
+    }
+
+    /** The current session's own temporary views, or null for none (or the engine's own session). */
+    private Map<String, View> ownViews() {
+        final Long session = StatementSession.current();
+        return session == null ? null : sessionViews.get(session);
+    }
+
+    /** The current session's own temporary view that a name reaches, or null. */
+    private View ownView(final String name) {
+        final Map<String, View> own = ownViews();
+        return own == null ? null : own.get(keyFor(own, name));
     }
 
     // Materialized Views
@@ -564,10 +873,16 @@ public class Schema extends SqlObject {
             }
         }
 
-        // Check for duplicate signature
         for (final Procedure existing : overloads) {
-            if (hasSameSignature(existing.getParameters(), procedure.getParameters())) {
-                throw new RuntimeException(alreadyExists(name));
+            if (!hasSameSignature(existing.getParameters(), procedure.getParameters())) {
+                continue;
+            }
+            if (hasExactSignature(existing.getParameters(), procedure.getParameters())) {
+                refuseSignatureHeld(name, procedure.isTemporary(), procedure, existing.isTemporary(), existing,
+                    existing.getParameters(), existing.getReturnType(), existing.getReturnSized());
+            } else if (sameLifetime(procedure.isTemporary(), procedure, existing.isTemporary(), existing)) {
+                throw notNullOnlyTwin(name, procedure.getParameters(), procedure.returnsTable(),
+                    procedure.getReturnColumns(), procedure.getReturnType(), procedure.getReturnSized());
             }
         }
 
@@ -604,7 +919,7 @@ public class Schema extends SqlObject {
 
     public Procedure getProcedure(final String name) {
         final String upperName = keyFor(procedures, name);
-        final List<Procedure> overloads = procedures.get(upperName);
+        final List<Procedure> overloads = getProcedureOverloads(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
         }
@@ -662,7 +977,17 @@ public class Schema extends SqlObject {
         removeProcedure(getProcedureByWrittenSignature(name, argumentTypes));
     }
 
+    /** Every procedure this session reaches (see {@link #reachedProcedures}). */
     public List<Procedure> getProcedures() {
+        final List<Procedure> allProcedures = new ArrayList<>();
+        for (final List<Procedure> overloads : procedures.values()) {
+            allProcedures.addAll(reachedProcedures(new ArrayList<>(overloads)));
+        }
+        return allProcedures;
+    }
+
+    /** Every procedure, each session's temporary ones included, for what outlives or owns them all. */
+    public List<Procedure> allProcedures() {
         final List<Procedure> allProcedures = new ArrayList<>();
         for (final List<Procedure> overloads : procedures.values()) {
             allProcedures.addAll(overloads);
@@ -670,10 +995,34 @@ public class Schema extends SqlObject {
         return allProcedures;
     }
 
-    /** Every overload carrying exactly this canonical name, or none. */
+    /** Every overload carrying exactly this canonical name this session reaches, or none. */
     public List<Procedure> getProcedureOverloads(final String name) {
         final List<Procedure> overloads = procedures.get(name);
-        return overloads != null ? new ArrayList<>(overloads) : new ArrayList<>();
+        return overloads != null ? reachedProcedures(new ArrayList<>(overloads)) : new ArrayList<>();
+    }
+
+    /**
+     * The overloads this session reaches of those carrying one name: the permanent ones and its own temporary ones
+     * (live-verified: another session's temporary procedure is no procedure here). A permanent overload hides a
+     * temporary one of its signature.
+     */
+    private List<Procedure> reachedProcedures(final List<Procedure> overloads) {
+        final List<Procedure> reached = new ArrayList<>();
+        for (final Procedure overload : overloads) {
+            if (!overload.isTemporary()) {
+                reached.add(overload);
+                continue;
+            }
+            boolean hidden = !ownedHere(overload);
+            for (final Procedure other : overloads) {
+                hidden = hidden || !other.isTemporary() && hasExactSignature(other.getParameters(),
+                    overload.getParameters());
+            }
+            if (!hidden) {
+                reached.add(overload);
+            }
+        }
+        return reached;
     }
 
     // Functions
@@ -690,10 +1039,16 @@ public class Schema extends SqlObject {
             }
         }
 
-        // Check for duplicate signature
         for (final Function existing : overloads) {
-            if (hasSameSignature(existing.getParameters(), function.getParameters())) {
-                throw new RuntimeException(alreadyExists(name));
+            if (!hasSameSignature(existing.getParameters(), function.getParameters())) {
+                continue;
+            }
+            if (hasExactSignature(existing.getParameters(), function.getParameters())) {
+                refuseSignatureHeld(name, function.isTemporary(), function, existing.isTemporary(), existing,
+                    existing.getParameters(), existing.getReturnType(), existing.getReturnSized());
+            } else if (sameLifetime(function.isTemporary(), function, existing.isTemporary(), existing)) {
+                throw notNullOnlyTwin(name, function.getParameters(), function.isTableFunction(),
+                    function.getReturnColumns(), function.getReturnType(), function.getReturnSized());
             }
         }
 
@@ -734,7 +1089,7 @@ public class Schema extends SqlObject {
 
     public Function getFunction(final String name) {
         final String upperName = keyFor(functions, name);
-        final List<Function> overloads = functions.get(upperName);
+        final List<Function> overloads = getFunctionOverloads(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
         }
@@ -792,7 +1147,20 @@ public class Schema extends SqlObject {
         removeFunction(getFunctionByWrittenSignature(name, argumentTypes));
     }
 
+    /** Every function this session reaches (see {@link #reachedFunctions}). */
     public List<Function> getFunctions() {
+        final List<Function> allFunctions = new ArrayList<>();
+        for (final List<Function> overloads : functions.values()) {
+            allFunctions.addAll(reachedFunctions(new ArrayList<>(overloads)));
+        }
+        return allFunctions;
+    }
+
+    /**
+     * Every function, each session's temporary ones included, for what outlives or owns them all - and for
+     * INFORMATION_SCHEMA.FUNCTIONS, which lists another session's temporary function (live-verified).
+     */
+    public List<Function> allFunctions() {
         final List<Function> allFunctions = new ArrayList<>();
         for (final List<Function> overloads : functions.values()) {
             allFunctions.addAll(overloads);
@@ -800,10 +1168,149 @@ public class Schema extends SqlObject {
         return allFunctions;
     }
 
-    /** Every overload carrying exactly this canonical name, or none. */
+    /** Every overload carrying exactly this canonical name this session reaches, or none. */
     public List<Function> getFunctionOverloads(final String name) {
         final List<Function> overloads = functions.get(name);
-        return overloads != null ? new ArrayList<>(overloads) : new ArrayList<>();
+        return overloads != null ? reachedFunctions(new ArrayList<>(overloads)) : new ArrayList<>();
+    }
+
+    /**
+     * The overloads this session reaches of those carrying one name: the permanent ones and its own temporary ones.
+     * Another session's temporary function is no function here, and a permanent function created after a temporary
+     * one of its signature is the one every session calls, its creator's included (live-verified).
+     */
+    private List<Function> reachedFunctions(final List<Function> overloads) {
+        final List<Function> reached = new ArrayList<>();
+        for (final Function overload : overloads) {
+            if (!overload.isTemporary()) {
+                reached.add(overload);
+                continue;
+            }
+            boolean hidden = !ownedHere(overload);
+            for (final Function other : overloads) {
+                hidden = hidden || !other.isTemporary() && hasExactSignature(other.getParameters(),
+                    overload.getParameters());
+            }
+            if (!hidden) {
+                reached.add(overload);
+            }
+        }
+        return reached;
+    }
+
+    /** Whether a temporary object is this session's own. */
+    private static boolean ownedHere(final SqlObject temporary) {
+        return Objects.equals(temporary.getCreatedInSession(), StatementSession.current());
+    }
+
+    /**
+     * Refuses a new routine an existing one of its signature holds the name for (live-verified): a temporary routine
+     * may not take a permanent one's signature, refused with that one's signature and return type spelled
+     * ({@code Object 'PERMF():NUMBER(38,0)' already exists.}); a permanent routine beside a temporary one, and a
+     * temporary one beside another session's, are each created; two of the same lifetime and session are refused
+     * for the name alone.
+     *
+     * @param name             the routine's canonical name
+     * @param temporary        whether the new routine is temporary
+     * @param created          the new routine
+     * @param existingTemporary whether the existing one is temporary
+     * @param existing         the existing routine of the signature
+     * @param parameters       the existing routine's parameters
+     * @param returnType       the existing routine's return type
+     * @param returnSized      whether that type was written with its width
+     */
+    private static void refuseSignatureHeld(final String name, final boolean temporary, final SqlObject created,
+                                            final boolean existingTemporary, final SqlObject existing,
+                                            final List<Parameter> parameters, final DataType returnType,
+                                            final Boolean returnSized) {
+        if (temporary && !existingTemporary) {
+            final StringBuilder signature = new StringBuilder(SqlIdentifiers.spellCanonical(name)).append('(');
+            for (int i = 0; i < parameters.size(); i++) {
+                signature.append(i == 0 ? "" : ", ").append(SqlTypeNames.routineType(parameters.get(i).getDataType()));
+            }
+            signature.append("):").append(returnType == null ? "TABLE" : SqlTypeNames.routineType(returnType,
+                returnSized));
+            throw new RuntimeException(SqlCompilationError.of("Object '" + signature + "' already exists."));
+        }
+        if (sameLifetime(temporary, created, existingTemporary, existing)) {
+            throw new RuntimeException(alreadyExists(name));
+        }
+    }
+
+    /** Whether two routines are both permanent, or both temporary to one session. */
+    private static boolean sameLifetime(final boolean temporary, final SqlObject created,
+                                        final boolean existingTemporary, final SqlObject existing) {
+        return temporary == existingTemporary
+            && (!temporary || Objects.equals(created.getCreatedInSession(), existing.getCreatedInSession()));
+    }
+
+    /**
+     * The refusal a routine gets whose signature an overload of the same lifetime holds but for a structured field's
+     * NOT NULL, the new routine spelled with its parameters' names and what it returns:
+     * {@code Object 'F1(X OBJECT(a NUMBER NOT NULL)):VARCHAR' already exists.}, and
+     * {@code Object 'H1(X OBJECT(a NUMBER)):TABLE: (C NUMBER)' already exists.} for one that returns a table
+     * (live-verified). It is judged when the routine is added, after everything else about it.
+     */
+    private static RuntimeException notNullOnlyTwin(final String name, final List<Parameter> parameters,
+                                                    final boolean table, final List<Parameter> columns,
+                                                    final DataType returnType, final Boolean returnSized) {
+        final StringBuilder signature = new StringBuilder(SqlIdentifiers.spellCanonical(name)).append('(')
+            .append(namedTypes(parameters)).append("):");
+        if (table) {
+            signature.append("TABLE: (").append(namedTypes(columns)).append(')');
+        } else {
+            signature.append(SqlTypeNames.routineType(returnType, returnSized));
+        }
+        return new RuntimeException(SqlCompilationError.of("Object '" + signature + "' already exists."));
+    }
+
+    /**
+     * Parameters or columns by name and bare type, as a routine's spelled signature lists them:
+     * {@code X OBJECT(a NUMBER NOT NULL), Z NUMBER}.
+     */
+    private static String namedTypes(final List<Parameter> items) {
+        final StringBuilder text = new StringBuilder();
+        for (int i = 0; i < items.size(); i++) {
+            text.append(i == 0 ? "" : ", ").append(SqlIdentifiers.spellCanonical(items.get(i).getName()))
+                .append(' ').append(StructuredTypes.signatureText(items.get(i).getDataType()));
+        }
+        return text.toString();
+    }
+
+    /**
+     * Whether a new function of that lifetime would find this signature taken (see {@link #addFunction}): a
+     * temporary function by this session's own temporary one, a permanent function by a permanent one. A temporary
+     * function over a permanent one is refused for its signature when it is added.
+     *
+     * @param name       the function's canonical name
+     * @param parameters the new signature
+     * @param temporary  whether the new function is temporary
+     * @return whether the signature is taken
+     */
+    public boolean hasFunctionSignature(final String name, final List<Parameter> parameters, final boolean temporary) {
+        for (final Function existing : getFunctionOverloads(name)) {
+            if (existing.isTemporary() == temporary && hasExactSignature(existing.getParameters(), parameters)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * {@link #hasFunctionSignature(String, List, boolean)} for a procedure.
+     *
+     * @param name       the procedure's canonical name
+     * @param parameters the new signature
+     * @param temporary  whether the new procedure is temporary
+     * @return whether the signature is taken
+     */
+    public boolean hasProcedureSignature(final String name, final List<Parameter> parameters, final boolean temporary) {
+        for (final Procedure existing : getProcedureOverloads(name)) {
+            if (existing.isTemporary() == temporary && hasExactSignature(existing.getParameters(), parameters)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether a function of that name already carries this signature (see {@link #addFunction}). */
@@ -903,7 +1410,7 @@ public class Schema extends SqlObject {
 
     /** Whether two different signatures take a call of some argument count with the same leading types. */
     private boolean competes(final List<Parameter> one, final List<Parameter> other) {
-        if (hasSameSignature(one, other)) {
+        if (hasExactSignature(one, other)) {
             return false;
         }
         // The fewest arguments both take: where the leading types differ there, they differ for every longer call.
@@ -912,7 +1419,7 @@ public class Schema extends SqlObject {
             return false;
         }
         for (int i = 0; i < fewest; i++) {
-            if (!one.get(i).getDataType().equals(other.get(i).getDataType())) {
+            if (!sameSignatureType(one.get(i).getDataType(), other.get(i).getDataType(), true)) {
                 return false;
             }
         }
@@ -931,18 +1438,48 @@ public class Schema extends SqlObject {
     }
 
     // Helper methods for signature matching
+    /**
+     * Whether two parameter lists are one overload: each parameter of one type family, and a structured parameter of
+     * one shape besides — its fields by name and in order, each member's family — whatever the widths inside it and
+     * whether a field says NOT NULL. {@code f(OBJECT(b INT))} and {@code f(OBJECT(a VARCHAR))} are overloads of
+     * {@code f(OBJECT(a INT))}, and {@code f(OBJECT(a NUMBER(10,2)))} is the same signature (live-verified).
+     */
     private boolean hasSameSignature(final List<Parameter> params1, final List<Parameter> params2) {
         if (params1.size() != params2.size()) {
             return false;
         }
 
         for (int i = 0; i < params1.size(); i++) {
-            if (!params1.get(i).getDataType().equals(params2.get(i).getDataType())) {
+            if (!sameSignatureType(params1.get(i).getDataType(), params2.get(i).getDataType(), false)) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    /**
+     * Whether two parameter lists are one signature to the letter: {@link #hasSameSignature}, and a structured field
+     * that says NOT NULL in one says it in the other. A plain CREATE finds its name taken only by such an overload, an
+     * overload competes with another by such types, and a temporary routine steps aside only for a permanent one of
+     * such a signature; one that differs from an overload of its lifetime by a field's NOT NULL alone is refused
+     * when it is added (live-verified).
+     */
+    private static boolean hasExactSignature(final List<Parameter> params1, final List<Parameter> params2) {
+        if (params1.size() != params2.size()) {
+            return false;
+        }
+        for (int i = 0; i < params1.size(); i++) {
+            if (!sameSignatureType(params1.get(i).getDataType(), params2.get(i).getDataType(), true)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether two parameter types are one in a signature: one type, and one shape when structured. */
+    private static boolean sameSignatureType(final DataType one, final DataType other, final boolean notNull) {
+        return one.equals(other) && shapeOf(one, notNull).equals(shapeOf(other, notNull));
     }
 
     private boolean matchesSignature(final List<Parameter> params, final List<DataType> argumentTypes) {
@@ -951,7 +1488,9 @@ public class Schema extends SqlObject {
         }
 
         for (int i = 0; i < params.size(); i++) {
-            if (!signatureFamily(params.get(i).getDataType()).equals(signatureFamily(argumentTypes.get(i)))) {
+            final DataType declared = params.get(i).getDataType();
+            if (!signatureFamily(declared).equals(signatureFamily(argumentTypes.get(i)))
+                    || !shapeOf(declared, false).equals(shapeOf(argumentTypes.get(i), false))) {
                 return false;
             }
         }
@@ -1025,27 +1564,34 @@ public class Schema extends SqlObject {
      * that has no shape.
      */
     private static String signatureShape(final DataType type) {
+        return shapeOf(type, true);
+    }
+
+    /** A type's shape (see {@link #signatureShape}), a field's NOT NULL in it or not. */
+    private static String shapeOf(final DataType type, final boolean notNull) {
         if (type instanceof StructuredObjectType) {
             final StringBuilder shape = new StringBuilder("OBJECT(");
             for (final StructuredField field : ((StructuredObjectType) type).getFields()) {
-                shape.append(field.getName()).append(' ').append(shapeMember(field.getDataType()))
-                    .append(field.isNotNull() ? " NOT NULL" : "").append(',');
+                shape.append(field.getName()).append(' ').append(shapeMember(field.getDataType(), notNull))
+                    .append(notNull && field.isNotNull() ? " NOT NULL" : "").append(',');
             }
             return shape.append(')').toString();
         }
         if (type instanceof MapType) {
-            return "MAP(" + shapeMember(((MapType) type).getKeyType()) + ","
-                + shapeMember(((MapType) type).getValueType()) + ")";
+            return "MAP(" + shapeMember(((MapType) type).getKeyType(), notNull) + ","
+                + shapeMember(((MapType) type).getValueType(), notNull)
+                + (notNull ? StructuredTypes.notNullMark(type) : "") + ")";
         }
         if (type instanceof StructuredArrayType) {
-            return "ARRAY(" + shapeMember(((StructuredArrayType) type).getElementType()) + ")";
+            return "ARRAY(" + shapeMember(((StructuredArrayType) type).getElementType(), notNull)
+                + (notNull ? StructuredTypes.notNullMark(type) : "") + ")";
         }
         return "";
     }
 
     /** A member of a shape: its own shape when it has one, else its family. */
-    private static String shapeMember(final DataType type) {
-        final String shape = signatureShape(type);
+    private static String shapeMember(final DataType type, final boolean notNull) {
+        final String shape = shapeOf(type, notNull);
         return shape.isEmpty() ? signatureFamily(type) : shape;
     }
 
@@ -1351,9 +1897,47 @@ public class Schema extends SqlObject {
         return sequences.containsKey(name);
     }
 
+    /**
+     * The sequence of exactly this canonical name, refused as missing when only another case of it exists.
+     *
+     * @param name the canonical name
+     * @return the sequence
+     */
+    public Sequence getSequenceExact(final String name) {
+        if (!sequences.containsKey(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
+        }
+        return sequences.get(name);
+    }
+
+    /**
+     * Drops the sequence of exactly this canonical name, refused as missing when only another case of it exists.
+     *
+     * @param name the canonical name
+     */
+    public void dropSequenceExact(final String name) {
+        if (!sequences.containsKey(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
+        }
+        dropSequence(name);
+    }
+
     // File formats
     public void addFileFormat(final FileFormat fileFormat) {
+        final FileFormat held = fileFormats.get(fileFormat.getName());
+        if (held != null && othersTemporary(held)) {
+            // Another session's temporary format holds the name; one session's never replaces another's.
+            throw new NameTakenException(SqlCompilationError.of(
+                "Object '" + SqlIdentifiers.spellCanonical(fileFormat.getName()) + "' already exists."));
+        }
         fileFormats.put(fileFormat.getName(), fileFormat);
+    }
+
+    /** Whether a file format is another session's temporary one, which a statement neither reaches nor lists. */
+    private static boolean othersTemporary(final FileFormat format) {
+        final Long current = StatementSession.current();
+        return format.isTemporary() && current != null && format.getCreatedInSession() != null
+            && !current.equals(format.getCreatedInSession());
     }
 
     public void dropFileFormat(final String name) {
@@ -1365,14 +1949,45 @@ public class Schema extends SqlObject {
     }
 
     public FileFormat getFileFormat(final String name) {
-        return fileFormats.get(keyFor(fileFormats, name));
+        final FileFormat format = fileFormats.get(keyFor(fileFormats, name));
+        return format == null || othersTemporary(format) ? null : format;
     }
 
     public boolean hasFileFormat(final String name) {
-        return fileFormats.containsKey(keyFor(fileFormats, name));
+        return getFileFormat(name) != null;
     }
 
+    /** Whether a file format carries exactly this canonical name; one differing only in case is another. */
+    public boolean hasFileFormatExact(final String name) {
+        final FileFormat format = fileFormats.get(name);
+        return format != null && !othersTemporary(format);
+    }
+
+    /**
+     * Drops the file format of exactly this canonical name, refused as missing when only another case of it exists.
+     *
+     * @param name the canonical name
+     */
+    public void dropFileFormatExact(final String name) {
+        if (!hasFileFormatExact(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", qualified(name)));
+        }
+        dropFileFormat(name);
+    }
+
+    /** The file formats a statement here lists: every one but another session's temporary ones. */
     public List<FileFormat> getFileFormats() {
+        final List<FileFormat> reached = new ArrayList<>();
+        for (final FileFormat format : fileFormats.values()) {
+            if (!othersTemporary(format)) {
+                reached.add(format);
+            }
+        }
+        return reached;
+    }
+
+    /** Every file format held here, every session's temporary ones included: the engine's bookkeeping reads these. */
+    public List<FileFormat> allFileFormats() {
         return new ArrayList<>(fileFormats.values());
     }
 
@@ -1483,6 +2098,7 @@ public class Schema extends SqlObject {
                 );
                 clonedProc.setComment(proc.getComment());
                 clonedProc.setReturnSized(proc.getReturnSized());
+                clonedProc.setReturnNotNull(proc.isReturnNotNull());
                 clonedProc.setImports(proc.getImports());
                 clonedProc.setEnvironment(proc.getEnvironment().copy());
                 clonedProc.setReturnsTable(proc.returnsTable());
@@ -1521,6 +2137,7 @@ public class Schema extends SqlObject {
                 );
                 clonedFunc.setComment(func.getComment());
                 clonedFunc.setReturnSized(func.getReturnSized());
+                clonedFunc.setReturnNotNull(func.isReturnNotNull());
                 clonedFunc.setNullHandling(func.getNullHandling());
                 clonedFunc.setVolatility(func.getVolatility());
                 clonedFunc.setSecure(func.isSecure());
@@ -1531,6 +2148,10 @@ public class Schema extends SqlObject {
                 if (func.isServiceFunction()) {
                     clonedFunc.setService(func.getServiceName(), func.getServiceEndpoint(), func.getMaxBatchRows());
                 }
+                if (func.isExternalFunction()) {
+                    clonedFunc.setExternal(func.getApiIntegration(), func.getExternalUrl());
+                }
+                clonedFunc.setAggregate(func.isAggregate());
                 clonedFunc.setOwner(func.getOwner());
                 copyTags(func, clonedFunc);
                 clonedOverloads.add(clonedFunc);
@@ -1664,8 +2285,11 @@ public class Schema extends SqlObject {
             clonedSchema.stages.put(stage.getName(), stage.copy());
         }
 
-        // Clone file formats
+        // Clone file formats; a temporary one is no part of a clone, as a temporary table is not.
         for (final FileFormat fileFormat : fileFormats.values()) {
+            if (fileFormat.isTemporary()) {
+                continue;
+            }
             final FileFormat clonedFormat = new FileFormat(fileFormat.getName(), fileFormat.getType());
             for (final Map.Entry<String, String> option : fileFormat.getOptions().entrySet()) {
                 clonedFormat.setOption(option.getKey(), option.getValue());
@@ -1731,12 +2355,15 @@ public class Schema extends SqlObject {
 
     public Stage getStage(final String name) {
         final Stage s = stages.get(keyFor(stages, name));
-        if (s == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
+        if (s == null || othersTemporary(s, s.isTemporary())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
+        }
         return s;
     }
 
     public boolean hasStage(final String name) {
-        return stages.containsKey(keyFor(stages, name));
+        final Stage stage = stages.get(keyFor(stages, name));
+        return stage != null && !othersTemporary(stage, stage.isTemporary());
     }
 
     /**
@@ -1744,10 +2371,35 @@ public class Schema extends SqlObject {
      * only in case is a different stage.
      */
     public boolean hasStageExact(final String name) {
-        return stages.containsKey(name);
+        final Stage stage = stages.get(name);
+        return stage != null && !othersTemporary(stage, stage.isTemporary());
     }
 
+    /**
+     * Drops the stage of exactly this canonical name, refused as missing when only another case of it exists.
+     *
+     * @param name the canonical name
+     */
+    public void dropStageExact(final String name) {
+        if (!hasStageExact(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
+        }
+        dropStage(name);
+    }
+
+    /** The stages a statement here lists: every one but another session's temporary ones. */
     public List<Stage> getStages() {
+        final List<Stage> reached = new ArrayList<>();
+        for (final Stage stage : stages.values()) {
+            if (!othersTemporary(stage, stage.isTemporary())) {
+                reached.add(stage);
+            }
+        }
+        return reached;
+    }
+
+    /** Every stage held here, every session's temporary ones included: the engine's own bookkeeping reads these. */
+    public List<Stage> allStages() {
         return new ArrayList<>(stages.values());
     }
 
@@ -1839,6 +2491,30 @@ public class Schema extends SqlObject {
         return tags.containsKey(name);
     }
 
+    /**
+     * The tag of EXACTLY this name, the one a statement names: a quoted name is that name alone (live-verified).
+     *
+     * @param name the tag's canonical name
+     * @return the tag
+     */
+    public Tag getTagExact(final String name) {
+        final Tag tag = tags.get(name);
+        if (tag == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
+        }
+        return tag;
+    }
+
+    /**
+     * Drops the tag of EXACTLY this name, as DROP TAG and a replacement do.
+     *
+     * @param name the tag's canonical name
+     */
+    public void dropTagExact(final String name) {
+        getTagExact(name);
+        tags.remove(name);
+    }
+
     public List<Tag> getTags() {
         return new ArrayList<>(tags.values());
     }
@@ -1903,8 +2579,8 @@ public class Schema extends SqlObject {
 
     /**
      * The kind of the policy that holds a name, as a refusal spells it, or null when no policy does: the
-     * policies of a schema — masking, row access, join, aggregation, projection and password policies — share
-     * one namespace (live-verified).
+     * policies of a schema — masking, row access, join, aggregation, projection, password and session policies —
+     * share one namespace (live-verified).
      *
      * @param name the policy's name
      * @return the holder's kind, e.g. {@code MASKING_POLICY}, or null
@@ -1925,7 +2601,10 @@ public class Schema extends SqlObject {
         if (hasProjectionPolicy(name)) {
             return "PROJECTION_POLICY";
         }
-        return getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name) != null ? "PASSWORD_POLICY" : null;
+        if (getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name) != null) {
+            return "PASSWORD_POLICY";
+        }
+        return getSecurityObjects().get(SecurityObjectKind.SESSION_POLICY, name) != null ? "SESSION_POLICY" : null;
     }
 
     /**
@@ -1948,6 +2627,9 @@ public class Schema extends SqlObject {
 
     /** Whether a TEMPORARY table of this name is here, shadowing whatever else holds the name. */
     public boolean hasTemporaryTable(final String name) {
+        if (holdsOwnTable(name)) {
+            return true;
+        }
         final Table table = tables.get(name);
         return table != null && table.isTemporary();
     }
@@ -1956,9 +2638,11 @@ public class Schema extends SqlObject {
     private boolean holds(final RelationKind kind, final String name, final boolean seesTemporary) {
         switch (kind) {
             case TABLE:
-                return tables.containsKey(name) && (seesTemporary || !tables.get(name).isTemporary());
+                return seesTemporary && holdsOwnTable(name)
+                    || tables.containsKey(name) && (seesTemporary || !tables.get(name).isTemporary());
             case VIEW:
-                return views.containsKey(name) && (seesTemporary || !views.get(name).isTemporary());
+                return seesTemporary && ownViews() != null && ownViews().containsKey(name)
+                    || views.containsKey(name) && (seesTemporary || !views.get(name).isTemporary());
             case MATERIALIZED_VIEW:
                 return materializedViews.containsKey(name);
             case DYNAMIC_TABLE:
@@ -1971,9 +2655,10 @@ public class Schema extends SqlObject {
     /** Whether the object holding the name is itself a temporary one. */
     private boolean holderIsTemporary(final RelationKind holder, final String name) {
         if (holder == RelationKind.TABLE) {
-            return tables.containsKey(name) && tables.get(name).isTemporary();
+            return holdsOwnTable(name) || tables.containsKey(name) && tables.get(name).isTemporary();
         }
-        return holder == RelationKind.VIEW && views.containsKey(name) && views.get(name).isTemporary();
+        return holder == RelationKind.VIEW && (ownViews() != null && ownViews().containsKey(name)
+            || views.containsKey(name) && views.get(name).isTemporary());
     }
 
     /**

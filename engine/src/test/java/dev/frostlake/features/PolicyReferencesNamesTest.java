@@ -39,6 +39,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  */
 public class PolicyReferencesNamesTest {
 
+    /** The privilege sentence a refusal of this engine's session ends with, up to the kind it asks on. */
+    private static final String HINT = " Your primary role SYSADMIN must have at least one privilege granted on ";
+
     private DatabaseEngine engine;
 
     @BeforeEach
@@ -108,7 +111,8 @@ public class PolicyReferencesNamesTest {
     public void aQuotedPartIsKeptAsWritten() {
         engine.execute("CREATE TABLE \"Mixed\" (s VARCHAR WITH MASKING POLICY mp)");
         assertEquals(List.of("PRN|PUBLIC|MP|Mixed|S"), byEntity("prn.public.\"Mixed\"", "TABLE"));
-        assertEquals("SQL compilation error:\nTable 'MIXED' does not exist or not authorized.",
+        assertEquals("SQL compilation error:\nTable 'MIXED' does not exist or not authorized."
+            + HINT + "TABLE MIXED.",
             entityRefusal("mixed", "TABLE"));
     }
 
@@ -119,20 +123,25 @@ public class PolicyReferencesNamesTest {
         engine.execute("ALTER VIEW v ADD ROW ACCESS POLICY rap ON (a)");
         engine.execute("USE SCHEMA prn.sec");
         assertEquals(List.of("PRN|PUBLIC|RAP|V|null"), byEntity("prn.public.v", "view"));
-        assertEquals("SQL compilation error:\nView 'PRN.PUBLIC.NOV' does not exist or not authorized.",
+        assertEquals("SQL compilation error:\nView 'PRN.PUBLIC.NOV' does not exist or not authorized."
+            + HINT + "TABLE PRN.PUBLIC.NOV.",
             entityRefusal("prn.public.nov", "VIEW"));
     }
 
     @Test
     public void aMissingEntityIsRefusedAsLiveRefusesIt() {
-        assertEquals("SQL compilation error:\nTable 'PRN.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized.",
-            entityRefusal("prn.public.no_such_table", "TABLE"), "named in full, with no privilege sentence");
-        assertEquals("SQL compilation error:\nTable 'PRN.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized.",
-            entityRefusal("public.no_such_table", "TABLE"), "a qualifier expands the name in full");
-        assertEquals("SQL compilation error:\nTable 'NO_SUCH_TABLE' does not exist or not authorized.",
-            entityRefusal("no_such_table", "TABLE"), "a bare name is reported as written");
-        assertEquals("SQL compilation error:\nTable 'NODB.PUBLIC.T' does not exist or not authorized.",
-            entityRefusal("nodb.public.t", "TABLE"), "a missing database misses the table");
+        final String missingInFull = "SQL compilation error:\nTable 'PRN.PUBLIC.NO_SUCH_TABLE' does not exist or not"
+            + " authorized." + HINT + "TABLE PRN.PUBLIC.NO_SUCH_TABLE.";
+        assertEquals(missingInFull, entityRefusal("prn.public.no_such_table", "TABLE"),
+            "named in full, with the privilege sentence");
+        assertEquals(missingInFull, entityRefusal("public.no_such_table", "TABLE"),
+            "a qualifier expands the name in full");
+        assertEquals("SQL compilation error:\nTable 'NO_SUCH_TABLE' does not exist or not authorized."
+            + HINT + "TABLE NO_SUCH_TABLE.", entityRefusal("no_such_table", "TABLE"),
+            "a bare name is reported as written");
+        assertEquals("SQL compilation error:\nDatabase 'NODB' does not exist or not authorized. Your primary role"
+            + " SYSADMIN must have USAGE or any other privilege granted on DATABASE NODB.",
+            entityRefusal("nodb.public.t", "TABLE"), "a missing database is named first");
     }
 
     @Test
@@ -145,8 +154,9 @@ public class PolicyReferencesNamesTest {
         assertEquals(List.of("PRN|SEC|MP|T2|S"), rows(String.format(sql, "sec.mp")),
             "POLICY_SCHEMA is where the policy lives");
         assertEquals(List.of("PRN|SEC|MP|T2|S"), rows(String.format(sql, "PRN.SEC.MP")));
-        assertEquals("SQL compilation error:\nPolicy 'PRN.SEC.NOSUCH' does not exist or not authorized.",
-            refusal(String.format(sql, "sec.nosuch")), "a missing policy is named in full, with no privilege sentence");
+        assertEquals("SQL compilation error:\nPolicy 'PRN.SEC.NOSUCH' does not exist or not authorized."
+            + HINT + "POLICY PRN.SEC.NOSUCH.", refusal(String.format(sql, "sec.nosuch")),
+            "a missing policy is named in full, with the privilege sentence");
     }
 
     @Test
@@ -157,9 +167,10 @@ public class PolicyReferencesNamesTest {
         assertEquals(List.of(), byEntity("v", "table"), "a view under 'table' answers no rows");
         assertEquals(List.of(), byEntity("t", "view"), "a table under 'view' answers no rows");
         assertEquals(List.of("PRN|PUBLIC|RAP|V|null"), byEntity("v", "view"));
-        assertEquals("SQL compilation error:\nView 'PRN.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized.",
-            entityRefusal("prn.public.no_such_table", "view"), "refused in the domain's word");
-        assertEquals("SQL compilation error:\nInvalid value 'STAGE' for argument 'ref_entity_domain' for function"
+        assertEquals("SQL compilation error:\nView 'PRN.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized."
+            + HINT + "TABLE PRN.PUBLIC.NO_SUCH_TABLE.", entityRefusal("prn.public.no_such_table", "view"),
+            "refused in the domain's word");
+        assertEquals("SQL compilation error: Invalid value 'STAGE' for argument 'ref_entity_domain' for function"
             + " 'information_schema.policy_references'", entityRefusal("t", "stage"));
     }
 }

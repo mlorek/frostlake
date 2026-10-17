@@ -205,6 +205,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
+        ScaledNumberReads.refuseInteger(getMetaData(), columnIndex, value, "int");
         if (value instanceof Number) {
             return ((Number) value).intValue();
         }
@@ -292,6 +293,16 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (value instanceof Number && !(value instanceof BigDecimal) && JdbcMarshaling.isClientDecimal(declared)) {
             // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
             return new BigDecimal(value.toString());
+        }
+        if (value instanceof BigDecimal && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                && ((NumericType) declared).getScale() == 0) {
+            // A scale-0 NUMBER is the Long its metadata names while its value fits one, as the HTTP transport and
+            // the account's driver read it, and a BigDecimal past it (live-verified).
+            final BigDecimal whole = (BigDecimal) value;
+            if (whole.signum() == 0
+                    || whole.stripTrailingZeros().scale() <= 0 && whole.toBigInteger().bitLength() < Long.SIZE) {
+                return Long.valueOf(whole.longValue());
+            }
         }
         return value;
     }
@@ -424,6 +435,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
+        ScaledNumberReads.refuseInteger(getMetaData(), columnIndex, value, "long");
         if (value instanceof Number) return ((Number) value).longValue();
         return Long.parseLong(value.toString());
     }

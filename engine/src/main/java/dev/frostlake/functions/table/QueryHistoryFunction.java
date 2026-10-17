@@ -23,6 +23,7 @@ import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.StatementResults;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DeclaredTypeFold;
@@ -36,6 +37,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * The INFORMATION_SCHEMA.QUERY_HISTORY() TABLE FUNCTION — Snowflake exposes query history ONLY this
@@ -119,8 +121,25 @@ public class QueryHistoryFunction extends TableFunction {
         return execute(named);
     }
 
+    /**
+     * The listing. A statement the write-ahead log keeps reads it again on replay as it first read it: the replay
+     * runs in a session of its own, after a history of its own (see {@link StatementResults}).
+     */
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
+        final String asked = "#" + scope.functionName() + new TreeMap<String, Object>(namedArgs);
+        final ResultSet replayed = StatementResults.replayed(asked);
+        if (replayed != null) {
+            return replayed.detachedCopy();
+        }
+        final ResultSet listed = listing(namedArgs);
+        if (StatementResults.isRecording()) {
+            StatementResults.record(asked, listed.detachedCopy());
+        }
+        return listed;
+    }
+
+    private ResultSet listing(final Map<String, Object> namedArgs) {
         final Object filter = scope.parameter() == null ? null : scopeValue(namedArgs.get(scope.parameter()));
         int limit = 100;
         final Object resultLimit = namedArgs.get("RESULT_LIMIT");

@@ -71,7 +71,6 @@ final class NamelessArgument {
             || expression instanceof FrostlakeParser.UnaryExprContext
             || expression instanceof FrostlakeParser.AdditiveExprContext
             || expression instanceof FrostlakeParser.MultiplicativeExprContext
-            || expression instanceof FrostlakeParser.ConcatExprContext
             || expression instanceof FrostlakeParser.CastExprContext
             || expression instanceof FrostlakeParser.CastExpr2Context
             || expression instanceof FrostlakeParser.TryCastExprContext

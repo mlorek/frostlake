@@ -34,6 +34,8 @@ public class UniqueConstraint {
     // Not final: ALTER TABLE … RENAME CONSTRAINT moves a declared constraint to a new name.
     private String constraintName;
     private final List<String> columnNames;
+    // The key's own RELY: null when unspecified. Two keys over one column each keep their own (live-verified).
+    private Boolean rely;
 
     /**
      * @param constraintName the name from an explicit {@code CONSTRAINT <name>} clause; null or blank when
@@ -41,9 +43,34 @@ public class UniqueConstraint {
      *                       {@code SYS_CONSTRAINT_<uuid>} the way Snowflake does (see {@link ConstraintNames}).
      */
     public UniqueConstraint(final String constraintName, final List<String> columnNames) {
+        this(constraintName, columnNames, null);
+    }
+
+    /**
+     * @param constraintName as for {@link #UniqueConstraint(String, List)}
+     * @param columnNames    the key's columns, in order
+     * @param rely           the key's own RELY, null when unspecified
+     */
+    public UniqueConstraint(final String constraintName, final List<String> columnNames, final Boolean rely) {
         this.constraintName = constraintName == null || constraintName.isEmpty()
             ? ConstraintNames.generate() : constraintName;
         this.columnNames = new ArrayList<>(columnNames);
+        this.rely = rely;
+    }
+
+    /** This key over other columns — the same name and RELY. */
+    public UniqueConstraint withColumns(final List<String> columns) {
+        return new UniqueConstraint(constraintName, columns, rely);
+    }
+
+    /** The key's own RELY: true for RELY, false for NORELY, null when unspecified. */
+    public Boolean getRely() {
+        return rely;
+    }
+
+    /** ALTER TABLE … {ALTER | MODIFY} CONSTRAINT … RELY | NORELY. */
+    public void setRely(final Boolean rely) {
+        this.rely = rely;
     }
 
     public String getConstraintName() {
@@ -80,6 +107,7 @@ public class UniqueConstraint {
 
     @Override
     public String toString() {
-        return "UniqueConstraint{constraintName='" + constraintName + "', columns=" + columnNames + "}";
+        return "UniqueConstraint{constraintName='" + constraintName + "', columns=" + columnNames + ", rely=" + rely
+            + "}";
     }
 }

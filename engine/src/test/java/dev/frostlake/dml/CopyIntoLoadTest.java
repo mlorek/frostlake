@@ -207,9 +207,12 @@ public class CopyIntoLoadTest {
         writeStageFile("a.json", "[{\"v\":1}, {\"v\":2}, {\"v\":3}]");
         engine.execute("CREATE TABLE arr (doc VARIANT)");
 
-        engine.execute("COPY INTO arr FROM @data_stage FILE_FORMAT = (TYPE = 'JSON')");
-
+        // A top-level array is one record unless STRIP_OUTER_ARRAY = TRUE splits it into its elements.
+        engine.execute("COPY INTO arr FROM @data_stage FILE_FORMAT = (TYPE = 'JSON' STRIP_OUTER_ARRAY = TRUE)");
         assertEquals(3, count("arr"));
+        engine.execute("TRUNCATE TABLE arr");
+        engine.execute("COPY INTO arr FROM @data_stage FILE_FORMAT = (TYPE = 'JSON') FORCE = TRUE");
+        assertEquals(1, count("arr"));
     }
 
     @Test

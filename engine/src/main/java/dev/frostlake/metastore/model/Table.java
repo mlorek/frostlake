@@ -33,9 +33,11 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class Table extends SqlObject {
@@ -96,6 +98,8 @@ public class Table extends SqlObject {
     private boolean hybrid;
     // Declared with CREATE EVENT TABLE: the fixed OpenTelemetry column set, reported by SHOW EVENT TABLES.
     private boolean eventTable;
+    // The names a VALUES clause's columns keep in the plan when an alias list renames them; null for any other table.
+    private List<String> planColumnNames;
     // Declared with CREATE ICEBERG TABLE: the Iceberg metadata SHOW ICEBERG TABLES reports; null for other tables.
     private IcebergTableMetadata icebergMetadata;
     private Instant lastDataChange;
@@ -143,6 +147,12 @@ public class Table extends SqlObject {
     // per-column flags cannot express. A bare column-level UNIQUE has no entry here; getUniqueConstraints()
     // synthesizes its single-column constraint from the flag.
     private final List<UniqueConstraint> uniqueConstraints = new ArrayList<>();
+    // The PRIMARY KEY's own RELY, null when unspecified: a key keeps its own, apart from any other key over its
+    // columns (live-verified).
+    private Boolean primaryKeyRely;
+    // The columns, upper-cased, whose own definition declared UNIQUE: each is a key of its own beside any
+    // table-level UNIQUE that spans it too (live-verified).
+    private final Set<String> ownUniqueColumns = new LinkedHashSet<>();
     // When a constraint an ALTER TABLE added was created, and when an ALTER last changed one, by upper-cased
     // constraint name. A constraint with no entry was made with the table and never altered since.
     private final Map<String, Instant> constraintCreated = new HashMap<>();
@@ -420,7 +430,9 @@ public class Table extends SqlObject {
     public Table likeCopy(final String newName, final boolean temporary, final boolean transientTable) {
         final List<TableColumn> likeColumns = new ArrayList<>(columns.size());
         for (final TableColumn column : columns) {
+            // An Iceberg column holds a table's type in the copy, and not the format's own (live-verified).
             final TableColumn like = column.copy();
+            like.setFormatType(null);
             like.setMaskingPolicyName(null);
             like.setMaskingPolicyArguments(null);
             like.setProjectionPolicyName(null);
@@ -444,9 +456,12 @@ public class Table extends SqlObject {
         }
         copy.checkConstraints.addAll(checkConstraints);
         for (final UniqueConstraint constraint : uniqueConstraints) {
-            copy.uniqueConstraints.add(new UniqueConstraint(constraint.getConstraintName(),
-                new ArrayList<>(constraint.getColumnNames())));
+            copy.uniqueConstraints.add(constraint.withColumns(new ArrayList<>(constraint.getColumnNames())));
         }
+        copy.ownUniqueColumns.addAll(ownUniqueColumns);
+        // The key in the order it was declared, which the copy's columns alone would not tell (live-verified).
+        copy.orderPrimaryKey(primaryKeys);
+        copy.primaryKeyRely = primaryKeyRely;
         copy.primaryKeyConstraintName = primaryKeyConstraintName;
         copy.uniqueConstraintNames.putAll(uniqueConstraintNames);
         copy.columnForeignKeyConstraintNames.putAll(columnForeignKeyConstraintNames);
@@ -521,13 +536,24 @@ public class Table extends SqlObject {
         }
         renameKeys(uniqueConstraintNames, namedThen);
         renameKeys(columnForeignKeyConstraintNames, namedThen);
+        final List<String> ownThen = new ArrayList<>();
+        for (final String column : ownUniqueColumns) {
+            if (namedThen.containsKey(column)) {
+                ownThen.add(namedThen.get(column).toUpperCase(Locale.ROOT));
+            }
+        }
+        ownUniqueColumns.clear();
+        ownUniqueColumns.addAll(ownThen);
+        if (primaryKeys.isEmpty()) {
+            primaryKeyRely = null;
+        }
         for (int i = uniqueConstraints.size() - 1; i >= 0; i--) {
             final UniqueConstraint constraint = uniqueConstraints.get(i);
             final List<String> named = namedAsThen(constraint.getColumnNames(), namedThen);
             if (named == null) {
                 uniqueConstraints.remove(i);
             } else {
-                uniqueConstraints.set(i, new UniqueConstraint(constraint.getConstraintName(), named));
+                uniqueConstraints.set(i, constraint.withColumns(named));
             }
         }
         for (int i = foreignKeys.size() - 1; i >= 0; i--) {
@@ -990,9 +1016,10 @@ public class Table extends SqlObject {
             }
         }
         for (final TableColumn column : columns) {
-            if (column.isUnique() && !coveredByDeclaredConstraint(column.getName())) {
+            if (column.isUnique()
+                    && (hasOwnUnique(column.getName()) || !coveredByDeclaredConstraint(column.getName()))) {
                 all.add(new UniqueConstraint(uniqueConstraintName(column.getName()),
-                    Collections.singletonList(column.getName())));
+                    Collections.singletonList(column.getName()), column.getRely()));
             }
         }
         return all;
@@ -1056,6 +1083,7 @@ public class Table extends SqlObject {
         final String key = columnName.toUpperCase(Locale.ROOT);
         uniqueConstraintNames.remove(key);
         columnForeignKeyConstraintNames.remove(key);
+        ownUniqueColumns.remove(key);
     }
 
     public void addForeignKey(final ForeignKeyConstraint foreignKey) {
@@ -1157,6 +1185,16 @@ public class Table extends SqlObject {
         return isTemporary;
     }
 
+    /**
+     * Whether this is a temporary table a session created: that session's own, which no other session reaches, lists
+     * or contends for (see Schema and StorageEngine). One the engine's own session created is everybody's.
+     *
+     * @return true for a session's temporary table
+     */
+    public boolean isSessionTemporary() {
+        return isTemporary && getCreatedInSession() != null;
+    }
+
     public boolean isTransient() {
         return isTransient;
     }
@@ -1171,6 +1209,21 @@ public class Table extends SqlObject {
     }
 
     /** Whether the table is an event table. */
+    /**
+     * The names a VALUES clause's columns keep in the plan when an alias list renames them — COLUMN1, COLUMN2, … —
+     * which a star argument's echo prints and a USING join matches by (live-verified: {@code FROM (VALUES (1)) AS
+     * w (id) JOIN fz USING (id)} is {@code Invalid identifier ID}); null for any other table.
+     *
+     * @return the names, or null
+     */
+    public List<String> getPlanColumnNames() {
+        return planColumnNames;
+    }
+
+    public void setPlanColumnNames(final List<String> planColumnNames) {
+        this.planColumnNames = planColumnNames;
+    }
+
     public boolean isEventTable() {
         return eventTable;
     }
@@ -1274,13 +1327,18 @@ public class Table extends SqlObject {
 
     /**
      * SYSTEM$LAST_CHANGE_COMMIT_TIME's token for this table: its last write's instant in nanoseconds since the
-     * epoch, or its creation's while nothing has written it. Below the millisecond the token counts the writes, so
-     * two writes in one millisecond give two tokens. The documentation calls the value a rough estimate of the last
-     * change time, to be compared between calls rather than read as a time.
+     * epoch, or its creation's while only statements that changed no row have written it, and 0 while no statement
+     * has (live-verified: a CREATE TABLE AS whose query holds no row, and an INSERT of none, end the 0). Below the
+     * millisecond the token counts the writes, so two writes in one millisecond give two tokens. The documentation
+     * calls the value a rough estimate of the last change time, to be compared between calls rather than read as a
+     * time.
      *
      * @return the token, the same until the table's rows change
      */
     public long getChangeToken() {
+        if (lastDataChange == null && lastDml == null) {
+            return 0L;
+        }
         final Instant at = lastDataChange != null ? lastDataChange : getCreatedTime();
         return at.toEpochMilli() * 1_000_000L + dataChanges.get() % 1_000_000L;
     }
@@ -1672,6 +1730,9 @@ public class Table extends SqlObject {
         // Renaming a column does not replace its constraints, so their generated names move with it.
         moveConstraintName(uniqueConstraintNames, was, newName);
         moveConstraintName(columnForeignKeyConstraintNames, was, newName);
+        if (ownUniqueColumns.remove(was.toUpperCase(Locale.ROOT))) {
+            ownUniqueColumns.add(newName.toUpperCase(Locale.ROOT));
+        }
         for (final UniqueConstraint declared : uniqueConstraints) {
             declared.renameColumn(was, newName);
         }
@@ -1779,6 +1840,7 @@ public class Table extends SqlObject {
         }
         primaryKeys.clear();
         primaryKeyConstraintName = null;   // a re-added PRIMARY KEY is a new constraint, with a new name
+        primaryKeyRely = null;
     }
 
     public void dropUnique(final List<String> columnNames) {
@@ -1802,6 +1864,7 @@ public class Table extends SqlObject {
             }
         }
         uniqueConstraintNames.remove(columnName.toUpperCase(Locale.ROOT));
+        ownUniqueColumns.remove(columnName.toUpperCase(Locale.ROOT));
     }
 
     // A UNIQUE constraint is all-or-nothing: once one of its columns stops being unique (dropped, or named
@@ -1870,6 +1933,129 @@ public class Table extends SqlObject {
             }
         }
         uniqueConstraints.add(constraint);
+    }
+
+    /** The PRIMARY KEY's own RELY: true for RELY, false for NORELY, null when unspecified. */
+    public Boolean getPrimaryKeyRely() {
+        return primaryKeyRely;
+    }
+
+    /** Sets the PRIMARY KEY's own RELY, as its declaration or an ALTER … CONSTRAINT writes it. */
+    public void setPrimaryKeyRely(final Boolean rely) {
+        this.primaryKeyRely = rely;
+    }
+
+    /**
+     * Records a column's own UNIQUE: a key of its own, beside any table-level UNIQUE that spans the column too.
+     *
+     * @param columnName the column
+     */
+    public void markOwnUnique(final String columnName) {
+        ownUniqueColumns.add(columnName.toUpperCase(Locale.ROOT));
+    }
+
+    /** Whether the column's own definition declared UNIQUE. */
+    public boolean hasOwnUnique(final String columnName) {
+        return ownUniqueColumns.contains(columnName.toUpperCase(Locale.ROOT));
+    }
+
+    /** The columns whose own definition declared UNIQUE, upper-cased — for persistence. */
+    public List<String> getOwnUniqueColumns() {
+        return new ArrayList<>(ownUniqueColumns);
+    }
+
+    /**
+     * Drops every UNIQUE key whose columns, in order, are the primary key's: the primary key takes its place, a key
+     * declared beside it or one it is added over alike, and the name of the key it replaced is free again
+     * (live-verified). A key over the same columns in another order stays.
+     */
+    public void absorbUniqueKeysIntoPrimaryKey() {
+        if (primaryKeys.isEmpty()) {
+            return;
+        }
+        final List<String> key = upperCased(primaryKeys);
+        final List<String> released = new ArrayList<>();
+        for (int i = uniqueConstraints.size() - 1; i >= 0; i--) {
+            if (upperCased(uniqueConstraints.get(i).getColumnNames()).equals(key)) {
+                released.addAll(uniqueConstraints.remove(i).getColumnNames());
+            }
+        }
+        if (key.size() == 1 && ownUniqueColumns.remove(key.get(0))) {
+            released.add(primaryKeys.get(0));
+            uniqueConstraintNames.remove(key.get(0));
+        }
+        for (final String column : released) {
+            if (!hasOwnUnique(column) && !coveredByAnyDeclared(column)) {
+                clearUniqueFlag(column);
+            }
+        }
+    }
+
+    private boolean coveredByAnyDeclared(final String columnName) {
+        for (final UniqueConstraint declared : uniqueConstraints) {
+            if (declared.covers(columnName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Refuses a UNIQUE key an ALTER TABLE … ADD would put over the columns of a key the table has, in the same order
+     * (live-verified): the primary key's ({@code Primary Key with the signature already exists on the table}) or
+     * another unique key's ({@code constraint with the same signature already exists on table 'T'}).
+     *
+     * @param columnNames the new key's columns, in order
+     */
+    public void requireNewUniqueSignature(final List<String> columnNames) {
+        final List<String> key = upperCased(columnNames);
+        if (!primaryKeys.isEmpty() && upperCased(primaryKeys).equals(key)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Primary Key with the signature already exists on the table"));
+        }
+        for (final UniqueConstraint unique : getUniqueConstraints()) {
+            if (upperCased(unique.getColumnNames()).equals(key)) {
+                throw new RuntimeException(SqlCompilationError.duplicateConstraintSignature(
+                    getName().toUpperCase(Locale.ROOT)));
+            }
+        }
+    }
+
+    /**
+     * Sets the RELY of the key named — ALTER TABLE … {ALTER | MODIFY} CONSTRAINT name RELY | NORELY — on that key
+     * alone: the primary key, a table-level UNIQUE or FOREIGN KEY, or the key a column's own definition declared.
+     *
+     * @param constraintName the key's name
+     * @param rely           RELY or NORELY
+     * @return whether a key carries that name
+     */
+    public boolean setKeyRely(final String constraintName, final boolean rely) {
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(constraintName)) {
+                unique.setRely(rely);
+                return true;
+            }
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equalsIgnoreCase(constraintName)) {
+                replaceForeignKey(foreignKey, new ForeignKeyConstraint(foreignKey.getConstraintName(),
+                    foreignKey.getColumnNames(), foreignKey.getReferencedTable(), foreignKey.getReferencedColumns(),
+                    foreignKey.getOnDelete(), foreignKey.getOnUpdate(), rely));
+                return true;
+            }
+        }
+        if (!primaryKeys.isEmpty() && constraintName.equalsIgnoreCase(primaryKeyConstraintName())) {
+            primaryKeyRely = rely;
+            return true;
+        }
+        final List<String> columnKeys = columnsNamed(uniqueConstraintNames, constraintName);
+        columnKeys.addAll(columnsNamed(columnForeignKeyConstraintNames, constraintName));
+        for (final String column : columnKeys) {
+            if (hasColumn(column)) {
+                getColumn(column).setRely(rely);
+            }
+        }
+        return !columnKeys.isEmpty();
     }
 
     @Override

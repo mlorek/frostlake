@@ -612,6 +612,55 @@ public class CatalogObjectPersistenceTest {
         second.shutdown();
     }
 
+    /**
+     * A warehouse keeps when it last changed state across a snapshot restart, as it keeps when it was created:
+     * SHOW WAREHOUSES reads the same resumed_on and updated_on afterwards.
+     */
+    @Test
+    public void aWarehouseKeepsWhenItLastChangedStateAcrossASnapshotRestart() {
+        final Path data = dir.resolve("warehouse-moments");
+        final DatabaseEngine first = snapshotEngine(data);
+        first.execute("CREATE WAREHOUSE wh_moments WITH INITIALLY_SUSPENDED = TRUE");
+        final String before = warehouseMoments(first);
+        first.shutdown();
+        final DatabaseEngine second = snapshotEngine(data);
+        assertEquals(before, warehouseMoments(second), "after a snapshot restart");
+        second.shutdown();
+    }
+
+    /**
+     * A task run that a statement inside an open transaction starts owes its checkpoint to the end of the
+     * transaction: after a restart with no checkpoint asked for, the run's row is there once.
+     */
+    @Test
+    public void aTaskRunInsideATransactionIsNotRunAgainByAWalRestart() {
+        final Path wal = dir.resolve("task-in-transaction").resolve("wal.log");
+        final DatabaseEngine first = walEngine(wal);
+        first.execute("CREATE DATABASE d1");
+        first.execute("CREATE SCHEMA d1.s1");
+        first.execute("USE SCHEMA d1.s1");
+        first.execute("CREATE TABLE log (a INT)");
+        first.execute("CREATE TASK tk_in_txn SCHEDULE = '60 MINUTE' AS INSERT INTO d1.s1.log VALUES (1)");
+        first.execute("BEGIN");
+        first.execute("EXECUTE TASK tk_in_txn");
+        first.execute("COMMIT");
+        assertEquals(1L, ((Number) first.executeQuery("SELECT COUNT(*) FROM d1.s1.log").getRows().get(0)
+            .getValue(0)).longValue());
+        first.shutdown();
+        final DatabaseEngine second = walEngine(wal);
+        assertEquals(1L, ((Number) second.executeQuery("SELECT COUNT(*) FROM d1.s1.log").getRows().get(0)
+            .getValue(0)).longValue(), "after a WAL restart");
+        second.shutdown();
+    }
+
+    /** When a warehouse was created, last resumed and last updated, as SHOW WAREHOUSES lists them. */
+    private static String warehouseMoments(final DatabaseEngine engine) {
+        engine.execute("SHOW WAREHOUSES LIKE 'WH_MOMENTS'");
+        final ResultSet moments = engine.executeQuery("SELECT \"created_on\", \"resumed_on\", \"updated_on\" "
+            + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))");
+        return String.valueOf(moments.getRows().get(0).getValues());
+    }
+
     // ------------------------------------------------------------------ the three restarts
 
     /**

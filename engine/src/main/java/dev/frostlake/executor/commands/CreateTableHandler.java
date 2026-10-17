@@ -29,6 +29,7 @@ import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.TransientRetentionLimit;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
@@ -318,7 +319,11 @@ public class CreateTableHandler implements CommandHandler {
                                 existingTable.getName());
                         }
                         final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
-                        queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                        // Another session's open transaction that wrote the replaced table commits into it, never
+                        // into the new one, which stays as the CREATE left it (live-verified).
+                        if (queryExecutor.getTransactionManager().setAsideIfWritten(fullyQualifiedName) == null) {
+                            queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                        }
                         // Discard buffered writes for the replaced table so pre-replace rows from this same
                         // transaction aren't flushed to (or resurrected in) the new table's storage at commit.
                         queryExecutor.getTransactionManager().discardBufferedWritesFor(fullyQualifiedName);
@@ -343,6 +348,13 @@ public class CreateTableHandler implements CommandHandler {
                 final String sourceTableName = copySourceName;
                 final Table sourceTable = copySource;
                 IcebergTables.requireCloneOfSameKind(ctx, sourceTable);
+                // A clone keeps its source's clustering: a key written beside it is refused (live-verified).
+                for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+                    if (tail.clusterByClause() != null) {
+                        throw new RuntimeException("Invalid clustering key "
+                            + firstKeyText(tail.clusterByClause()) + "\n");
+                    }
+                }
 
                 // Neither a temporary nor a transient table becomes a permanent one by cloning; each refusal is
                 // one line, with no break after the colon (live-verified). Every other combination is legal, and
@@ -561,6 +573,9 @@ public class CreateTableHandler implements CommandHandler {
                     }
                     queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).insert(typedRow);
                 }
+                // The statement wrote the table, a query that held no row too (live-verified: its change token is
+                // no longer 0).
+                table.markDmlRan(StatementClock.commitInstant());
 
                 // Table created + populated: now consume any stream the source SELECT read.
                 queryExecutor.consumeCtasStreams();
@@ -676,10 +691,14 @@ public class CreateTableHandler implements CommandHandler {
         ColumnDefinitionParser.rejectDuplicateConstraintNames(table.getName(), columnList);
         table.setPrimaryKeyConstraintName(columnParser.parsePrimaryKeyConstraintName(columnList));
         table.orderPrimaryKey(columnParser.parsePrimaryKeyColumns(columnList));
+        table.setPrimaryKeyRely(columnParser.parsePrimaryKeyRely(columnList));
         for (final UniqueConstraint unique : columnParser.parseUniqueConstraints(columnList)) {
             table.addUniqueConstraint(unique);
         }
+        columnParser.markOwnUniqueColumns(columnList, table);
         columnParser.applyInlineConstraintNames(columnList, table);
+        // A UNIQUE over the primary key's columns in its order is the primary key's (live-verified).
+        table.absorbUniqueKeysIntoPrimaryKey();
         final List<String> columnNames = new ArrayList<>();
         for (final TableColumn column : table.getColumns()) {
             columnNames.add(column.getName());
@@ -1304,5 +1323,14 @@ public class CreateTableHandler implements CommandHandler {
             }
         }
         return null;
+    }
+
+    /** A clustering key's first expression as the refusal names it: a bare column by its upper-cased name. */
+    private static String firstKeyText(final FrostlakeParser.ClusterByClauseContext clause) {
+        final FrostlakeParser.ExpressionContext first = clause.expressionList().expression(0);
+        return first instanceof FrostlakeParser.QualifiedNameExprContext
+            ? String.join(".", ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) first).qualifiedName()))
+            : ParseTreeText.getOriginalText(first).toUpperCase(Locale.ROOT);
     }
 }

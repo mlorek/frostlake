@@ -30,6 +30,7 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.DynamicTableColumn;
+import dev.frostlake.metastore.model.DynamicTableRefresh;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
@@ -96,6 +97,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -140,6 +142,17 @@ final class CatalogSnapshotReader {
             throws IOException, ClassNotFoundException {
         // Whatever the restore draws — a table's creation, a stream's offset — follows every history it restores.
         SnapshotSequence.advancePast(snapshot.snapshotSequence);
+        // And a row stored after it takes an identity no row before it had, a deleted one a stream still names too.
+        if (snapshot.nextRowId > 0) {
+            storageEngine.advanceRowIdsPast(snapshot.nextRowId - 1);
+        }
+        // The files each table had loaded, which a COPY of it skips again.
+        catalog.getCopyLoadedFiles().clear();
+        if (snapshot.copyLoadedFiles != null) {
+            for (final Map.Entry<String, List<String>> loaded : snapshot.copyLoadedFiles.entrySet()) {
+                catalog.getCopyLoadedFiles().put(loaded.getKey(), new HashSet<>(loaded.getValue()));
+            }
+        }
         // Load databases and schemas
         for (final DatabaseSnapshot dbSnapshot : snapshot.databases) {
             // Skip system database (will be created automatically)
@@ -194,6 +207,7 @@ final class CatalogSnapshotReader {
             wh.setResourceMonitor(whSnapshot.resourceMonitor);
             RestCatalogSnapshots.restoreWarehouse(whSnapshot, wh);
             wh.restoreCreatedAt(whSnapshot.createdAt);
+            wh.restoreLastStateChange(whSnapshot.lastStateChange);
         }
 
         // Load users
@@ -338,6 +352,19 @@ final class CatalogSnapshotReader {
         SnapshotTags.restore(db, dbSnapshot.tags);
     }
 
+    /** A key's RELY as a snapshot that kept it on the columns reads: true when one of its columns relies. */
+    private static Boolean relyOfColumns(final Table table, final List<String> columnNames) {
+        if (columnNames == null) {
+            return null;
+        }
+        for (final String columnName : columnNames) {
+            if (table.hasColumn(columnName) && Boolean.TRUE.equals(table.getColumn(columnName).getRely())) {
+                return Boolean.TRUE;
+            }
+        }
+        return null;
+    }
+
     /** The trigger a recorded run names in TASK_HISTORY's scheduled_from; a schedule when none matches. */
     /**
      * Binds each restored column default that names a sequence's NEXTVAL in full — the text a bound default is
@@ -441,6 +468,7 @@ final class CatalogSnapshotReader {
                     col.setMaskingPolicyArguments(colSnapshot.maskingPolicyArguments);
                     col.setProjectionPolicyName(colSnapshot.projectionPolicyName);
                     col.setCollation(colSnapshot.collation);
+                    col.setFormatType(colSnapshot.formatType);
                     col.setOrdinalPosition(colSnapshot.ordinalPosition);
                     SnapshotTags.restore(col, colSnapshot.tags);
                     // Column-level FOREIGN KEY (REFERENCES) and its RELY flag, when present.
@@ -512,10 +540,22 @@ final class CatalogSnapshotReader {
                 // of these are null on snapshots written before they were persisted, in which case the
                 // constraint auto-names itself again on first use.
                 table.setPrimaryKeyConstraintName(tableSnapshot.primaryKeyConstraintName);
+                // A snapshot without ownUniqueColumns kept a key's RELY on its columns: each key relies when one
+                // of its columns does, as it read then.
+                final boolean relyOnColumns = tableSnapshot.ownUniqueColumns == null;
                 if (tableSnapshot.uniqueConstraints != null) {
                     for (final UniqueConstraintSnapshot uniqueSnapshot : tableSnapshot.uniqueConstraints) {
                         table.addUniqueConstraint(new UniqueConstraint(uniqueSnapshot.constraintName,
-                            uniqueSnapshot.columnNames));
+                            uniqueSnapshot.columnNames, relyOnColumns
+                                ? relyOfColumns(table, uniqueSnapshot.columnNames) : uniqueSnapshot.rely));
+                    }
+                }
+                table.orderPrimaryKey(tableSnapshot.primaryKeyColumns);
+                table.setPrimaryKeyRely(relyOnColumns ? relyOfColumns(table, table.getPrimaryKeys())
+                    : tableSnapshot.primaryKeyRely);
+                if (tableSnapshot.ownUniqueColumns != null) {
+                    for (final String column : tableSnapshot.ownUniqueColumns) {
+                        table.markOwnUnique(column);
                     }
                 }
                 for (final ColumnSnapshot colSnapshot : tableSnapshot.columns) {
@@ -565,6 +605,7 @@ final class CatalogSnapshotReader {
                     view.restoreCreatedTime(viewSnapshot.createdAt);
                     view.restoreLastDdlTime(viewSnapshot.lastDdlAt);
                     view.setSecure(viewSnapshot.secure);
+                    view.setChangeTracking(viewSnapshot.changeTracking);
                     view.setRecursive(viewSnapshot.recursive);
                     view.setWrittenBody(viewSnapshot.writtenBody);
                     view.setOriginalDdl(viewSnapshot.originalDdl);
@@ -745,7 +786,7 @@ final class CatalogSnapshotReader {
                         for (final TaskExecutionSnapshot run : taskSnapshot.history) {
                             task.recordExecution(new TaskExecution(run.scheduledTime, run.startTime, run.endTime,
                                 TaskExecutionState.valueOf(run.state), run.errorMessage, run.rowsAffected,
-                                taskTrigger(run.scheduledFrom)));
+                                taskTrigger(run.scheduledFrom), run.attempt == null ? 1 : run.attempt.intValue()));
                         }
                     }
                     schema.addTask(task);
@@ -869,6 +910,7 @@ final class CatalogSnapshotReader {
                     }
                     fn.setSecure(fnSnapshot.secure);
                     fn.setReturnSized(fnSnapshot.returnSized);
+                    fn.setReturnNotNull(Boolean.TRUE.equals(fnSnapshot.returnNotNull));
                     fn.setMemoizable(fnSnapshot.memoizable);
                     fn.setImports(fnSnapshot.imports);
                     fn.setEnvironment(fnSnapshot.environment == null ? null : fnSnapshot.environment.copy());
@@ -880,6 +922,13 @@ final class CatalogSnapshotReader {
                     fn.restoreLastDdlTime(fnSnapshot.lastDdlAt);
                     if (fnSnapshot.serviceName != null) {
                         fn.setService(fnSnapshot.serviceName, fnSnapshot.serviceEndpoint, fnSnapshot.maxBatchRows);
+                    }
+                    if (fnSnapshot.apiIntegration != null) {
+                        fn.setExternal(fnSnapshot.apiIntegration, fnSnapshot.externalUrl);
+                    }
+                    fn.setAggregate(fnSnapshot.aggregate);
+                    if (fnSnapshot.aggregate) {
+                        catalog.noteAggregateFunction(fn.getName());
                     }
                     SnapshotTags.restore(fn, fnSnapshot.tags);
                     schema.addFunction(fn);
@@ -900,6 +949,7 @@ final class CatalogSnapshotReader {
                     }
                     proc.setImports(procSnapshot.imports);
                     proc.setReturnSized(procSnapshot.returnSized);
+                    proc.setReturnNotNull(Boolean.TRUE.equals(procSnapshot.returnNotNull));
                     proc.setEnvironment(procSnapshot.environment == null ? null : procSnapshot.environment.copy());
                     proc.setComment(procSnapshot.comment);
                     proc.setReturnsTable(procSnapshot.returnsTable);
@@ -970,6 +1020,14 @@ final class CatalogSnapshotReader {
                             dtSnapshot.firstRefreshedSequence != null ? dtSnapshot.firstRefreshedSequence : 0L,
                             dtSnapshot.firstRefreshedMillis != null ? dtSnapshot.firstRefreshedMillis : 0L,
                             dtSnapshot.refreshImage);
+                    }
+                    if (dtSnapshot.refreshSequences != null) {
+                        final List<DynamicTableRefresh> kept = new ArrayList<>();
+                        for (int r = 0; r < dtSnapshot.refreshSequences.size(); r++) {
+                            kept.add(new DynamicTableRefresh(dtSnapshot.refreshSequences.get(r).longValue(),
+                                dtSnapshot.refreshMillis.get(r).longValue(), dtSnapshot.refreshRows.get(r)));
+                        }
+                        dt.restoreRefreshes(kept);
                     }
                     if (dtSnapshot.resolvedColumns != null) {
                         dt.setResolvedColumns(derivedColumns(dtSnapshot.resolvedColumns));
@@ -1107,28 +1165,36 @@ final class CatalogSnapshotReader {
             ? storageEngine.getShadowedTableStorage(qualifiedName) : storageEngine.getTableStorage(qualifiedName);
 
         // Insert all rows — each row's values defensively copied, so a snapshot applied from memory
-        // never shares mutable lists with the engine it builds.
-        for (final List<Object> rowValues : dataSnapshot.rows) {
-            storage.insert(new Row(new ArrayList<>(rowValues)));
+        // never shares mutable lists with the engine it builds — under the identities they had.
+        final boolean keptIds = dataSnapshot.rowIds != null && dataSnapshot.rowIds.size() == dataSnapshot.rows.size();
+        for (int i = 0; i < dataSnapshot.rows.size(); i++) {
+            final Row row = new Row(new ArrayList<>(dataSnapshot.rows.get(i)));
+            if (keptIds) {
+                storage.insertRestored(row, dataSnapshot.rowIds.get(i));
+            } else {
+                storage.insert(row);
+            }
         }
         if (dataSnapshot.history != null) {
-            restoreHistory(storage, table, dataSnapshot.history);
+            restoreHistory(storage, table, dataSnapshot.history, keptIds);
         }
         logger.debug("Loaded table data: {}.{}.{} ({} rows)",
                     database, schema, table.getName(), dataSnapshot.rows.size());
     }
 
     /**
-     * Puts a table's time-travel history back on its storage, just filled with the saved rows. A saved identity keeps
-     * one new identity: a snapshot's row that is stored now is that stored row, and a past row an UPDATE rewrote
-     * shares its identity with the row stored now. The snapshots hold their rows in the table's current columns, as
-     * the saved ones did, so their shape is the one the table has now.
+     * Puts a table's time-travel history back on its storage, just filled with the saved rows. A saved identity is
+     * kept where the rows kept theirs, and is otherwise renumbered: a snapshot's row that is stored now is that stored
+     * row, and a past row an UPDATE rewrote shares its identity with the row stored now. The snapshots hold their rows
+     * in the table's current columns, as the saved ones did, so their shape is the one the table has now.
      *
      * @param storage the table's storage, holding the saved rows in their saved order
      * @param table   the table
      * @param history the saved history
+     * @param keptIds whether the stored rows took their saved identities
      */
-    static void restoreHistory(final TableStorage storage, final Table table, final TableHistorySnapshot history) {
+    static void restoreHistory(final TableStorage storage, final Table table, final TableHistorySnapshot history,
+                               final boolean keptIds) {
         final List<Long> ids = new ArrayList<>();
         final List<Row> current = storage.scanWithIds(ids);
         if (current.size() != history.currentRowIds.size()) {
@@ -1145,7 +1211,7 @@ final class CatalogSnapshotReader {
             final Long saved = history.pastRowIds.get(p);
             Long id = renumbered.get(saved);
             if (id == null) {
-                id = storage.freshRowId();
+                id = keptIds ? storage.keptRowId(saved) : storage.freshRowId();
                 renumbered.put(saved, id);
             }
             past.add(new Row(new ArrayList<>(history.pastRows.get(p))));

@@ -442,7 +442,7 @@ final class ShowSecurityExecutor {
      * than every other grants listing.
      */
     public ResultSet showGrantsOfRole(final String roleName) {
-        final Role role = catalog.getRole(roleName);
+        final Role role = catalog.getRoleExact(roleName);
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("role", StringType.VARCHAR),
@@ -563,12 +563,12 @@ final class ShowSecurityExecutor {
                     rows.add(new Row(Arrays.<Object>asList(
                         ShowResultHelpers.createdOn(user.getCreatedTime()),
                         privilege.displayName(), objectType, objectName, null,
-                        "USER", user.getName(), "false",
+                        "USER", user.getName(), String.valueOf(user.hasGrantOption(objectType, objectName, privilege)),
                         user.getPrivilegeGrantor(objectType, objectName, privilege))));
                 }
             }
         } else if ("ROLE".equals(targetType)) {
-            final Role role = catalog.getRole(targetName);
+            final Role role = catalog.getRoleExact(targetName);
             for (final String grantedRoleName : role.getGrantedRoles()) {
                 rows.add(new Row(Arrays.asList(
                     roleGrantedOn(role.getRoleGrantTime(grantedRoleName), role.getCreatedTime()),

@@ -31,11 +31,13 @@ public class JavaScriptResultSet {
 
     private final ResultSet resultSet;
     private final JavaScriptApiFailures failures;
+    private final String queryId;
     private int currentRow = -1;
 
-    JavaScriptResultSet(final ResultSet resultSet, final JavaScriptApiFailures failures) {
+    JavaScriptResultSet(final ResultSet resultSet, final JavaScriptApiFailures failures, final String queryId) {
         this.resultSet = resultSet;
         this.failures = failures;
+        this.queryId = queryId;
     }
 
     @HostAccess.Export
@@ -69,6 +71,67 @@ public class JavaScriptResultSet {
         }
         final Row row = resultSet.getRows().get(currentRow);
         return JavaScriptArgumentJson.ofColumn(index < row.size() ? row.getValue(index) : null);
+    }
+
+    /**
+     * What a column is asked for, before a row is read as after (see {@link JavaScriptColumns#about}); a column the
+     * result does not have is refused.
+     *
+     * @param column  the column as the handler gave it: a number or a text, or null for anything else
+     * @param spelled the column as the handler's language prints it, for the refusal
+     * @param what    the member asked
+     * @return the answer, or a led failure
+     */
+    @HostAccess.Export
+    public Object column(final Object column, final String spelled, final String what) {
+        final int index = indexOf(column);
+        return index < 0 ? failures.misuse("Given column name/index does not exist: " + spelled)
+            : JavaScriptColumns.about(resultSet.getColumns().get(index), what);
+    }
+
+    /**
+     * The current row's value in a column as text (see {@link JavaScriptColumns#asString}): refused before the first
+     * {@code next()} and for a column the result does not have, and the text {@code null} past the last row.
+     *
+     * @param column  the column as the handler gave it: a number or a text, or null for anything else
+     * @param spelled the column as the handler's language prints it, for the refusal
+     * @return the text, or a led failure
+     */
+    @HostAccess.Export
+    public String columnText(final Object column, final String spelled) {
+        if (currentRow < 0) {
+            return failures.misuse("ResultSet is empty or not prepared (call next() first).");
+        }
+        final int index = indexOf(column);
+        if (index < 0) {
+            return failures.misuse("Given column name/index does not exist: " + spelled);
+        }
+        if (currentRow >= resultSet.getRowCount()) {
+            return "null";
+        }
+        final Row row = resultSet.getRows().get(currentRow);
+        return JavaScriptColumns.asString(index < row.size() ? row.getValue(index) : null,
+            resultSet.getColumns().get(index).getDataType());
+    }
+
+    /** The id of the query that answered the rows. */
+    @HostAccess.Export
+    public String queryId() {
+        return queryId;
+    }
+
+    /** How many rows the statement inserted, updated and deleted; none for a query. */
+    @HostAccess.Export
+    public long affected() {
+        return JavaScriptColumns.count(resultSet, JavaScriptColumns.INSERTED)
+            + JavaScriptColumns.count(resultSet, JavaScriptColumns.UPDATED)
+            + JavaScriptColumns.count(resultSet, JavaScriptColumns.DELETED);
+    }
+
+    /** Whether the statement wrote rows. */
+    @HostAccess.Export
+    public boolean dml() {
+        return JavaScriptColumns.isDml(resultSet);
     }
 
     /** The zero-based column a number or a name stands for, or -1. */

@@ -21,14 +21,19 @@ import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.FoldedValues;
 import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.IntervalCells;
+import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.HexDoubleText;
@@ -221,7 +226,7 @@ public final class SetOperations {
         }
         for (int col = 0; col < unified.size(); col++) {
             final DataType target = unified.get(col).getStaticType();
-            if (!isStringCoercionTarget(target)) {
+            if (!isStringCoercionTarget(target) && !isSemiStructuredTarget(target)) {
                 continue;
             }
             // A NUMERIC unified type applies to EVERY branch, not only to the string ones: live
@@ -230,7 +235,7 @@ public final class SetOperations {
             // column unless some branch was a string, so a column declared with a scale handed back
             // values that did not carry it.
             if (!(target instanceof NumericType) && !isTimestampTarget(target) && !isZonedTimestampTarget(target)
-                    && !isLocalTimestampTarget(target)) {
+                    && !isLocalTimestampTarget(target) && !isSemiStructuredTarget(target)) {
                 boolean anyStringBranch = false;
                 for (final List<ResultSetColumn> columns : branchColumns) {
                     if (col < columns.size()
@@ -259,6 +264,73 @@ public final class SetOperations {
                 }
             }
         }
+    }
+
+    /**
+     * Converts the DATE arms' values of a set operation that is no UNION toward the timestamp the other arms hold, in
+     * place in {@code branchRows}: live widens a DATE beside a TIMESTAMP before it compares the rows, so {@code
+     * '2024-01-01'::DATE INTERSECT '2024-01-01 00:00:00'::TIMESTAMP_LTZ} keeps the one row, as the timestamp of its
+     * midnight, and EXCEPT drops it (live-verified). Only a column whose arms are DATEs and timestamps of one kind
+     * is touched: a widening cannot fail, so it needs none of the conversions a subtractive operator leaves undone
+     * over an empty left side.
+     *
+     * @param branchRows    the rows to convert, each list replaced row by row
+     * @param branchColumns every arm's own columns
+     */
+    public static void widenDateBranches(final List<List<Row>> branchRows,
+                                         final List<List<ResultSetColumn>> branchColumns) {
+        final int width = branchColumns.isEmpty() ? 0 : branchColumns.get(0).size();
+        for (int col = 0; col < width; col++) {
+            final DataType target = widenedTimestamp(branchColumns, col);
+            if (target == null) {
+                continue;
+            }
+            for (final List<Row> rows : branchRows) {
+                for (int r = 0; r < rows.size(); r++) {
+                    final Row row = rows.get(r);
+                    if (col < row.getValues().size() && row.getValue(col) instanceof LocalDate) {
+                        final List<Object> replaced = new ArrayList<>(row.getValues());
+                        replaced.set(col, toUnifiedColumnValue(row.getValue(col), target));
+                        rows.set(r, new Row(replaced));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The timestamp a column's DATE arms widen into: the type of its timestamp arms where every arm is a DATE or a
+     * timestamp of one kind, NTZ, LTZ or TZ, and both are there; otherwise null.
+     */
+    private static DataType widenedTimestamp(final List<List<ResultSetColumn>> branchColumns, final int col) {
+        DataType timestamp = null;
+        boolean date = false;
+        for (final List<ResultSetColumn> columns : branchColumns) {
+            final DataType type = col < columns.size() ? columns.get(col).getStaticType() : null;
+            if (!(type instanceof DateTimeType)) {
+                return null;
+            }
+            if ("DATE".equalsIgnoreCase(type.getName())) {
+                date = true;
+            } else if (isTimestampTarget(type) || isLocalTimestampTarget(type) || isZonedTimestampTarget(type)) {
+                if (timestamp != null && !timestamp.getName().equalsIgnoreCase(type.getName())) {
+                    return null;
+                }
+                timestamp = timestamp == null ? type : timestamp;
+            } else {
+                return null;
+            }
+        }
+        return date ? timestamp : null;
+    }
+
+    /**
+     * Whether the unified type is a semi-structured ARRAY or OBJECT, which a VARIANT branch's value converts into
+     * (see toUnifiedColumnValue); a structured one keeps its own rules.
+     */
+    private static boolean isSemiStructuredTarget(final DataType target) {
+        return target instanceof ArrayType && !(target instanceof StructuredArrayType)
+            || target instanceof ObjectType && !(target instanceof StructuredObjectType);
     }
 
     /** Whether the unified type is a TIMESTAMP_TZ, which a naive branch's value becomes at the session's offset. */
@@ -298,6 +370,13 @@ public final class SetOperations {
         }
         if (target instanceof UuidType) {
             return value instanceof CharSequence ? FoldedValues.presented(value, target) : value;
+        }
+        // A VARIANT branch's value under an ARRAY column becomes an array as TO_ARRAY makes one, 2 reading [2],
+        // {"a":1} reading [{"a":1}] and a JSON null reading NULL, and under an OBJECT column it must hold an object:
+        // 2 is "Failed to cast variant value 2 to OBJECT" (live-verified).
+        if (isSemiStructuredTarget(target)) {
+            return value instanceof VariantValue
+                ? ValueCaster.castValue(value, target instanceof ArrayType ? "ARRAY" : "OBJECT") : value;
         }
         if (target instanceof NumericType) {
             final NumericType numeric = (NumericType) target;

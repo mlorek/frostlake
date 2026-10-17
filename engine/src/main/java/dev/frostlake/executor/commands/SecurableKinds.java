@@ -20,6 +20,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.Locale;
+import org.antlr.v4.runtime.ParserRuleContext;
 
 /**
  * The kind of object a GRANT, a REVOKE or a SHOW GRANTS ON names, spelled as grants record it and SHOW GRANTS reports
@@ -38,6 +39,16 @@ final class SecurableKinds {
      * @return the words upper-cased and joined by underscores
      */
     static String of(final FrostlakeParser.SecurableKindContext kind) {
+        return joined(kind);
+    }
+
+    /**
+     * A relation kind SHOW GRANTS ON writes beside TABLE and VIEW, in words.
+     *
+     * @param kind the kind's words
+     * @return the words upper-cased and joined by underscores
+     */
+    static String joined(final ParserRuleContext kind) {
         final StringBuilder name = new StringBuilder();
         for (int i = 0; i < kind.getChildCount(); i++) {
             if (i > 0) {

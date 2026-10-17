@@ -17,13 +17,25 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.GrantedObject;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.DatabaseRole;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.StreamSourceType;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
+import dev.frostlake.security.SecurityManager;
+
+import org.antlr.v4.runtime.BailErrorStrategy;
+import org.antlr.v4.runtime.CommonTokenStream;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -65,11 +77,144 @@ final class OwnershipTransfer {
      */
     boolean transfer(final String objectType, final String[] parts, final Integer arity, final String writtenName,
                      final String roleName, final FrostlakeParser.CurrentGrantsContext tail) {
+        return move(objectType, parts, arity, writtenName, catalog.getRoleExact(roleName).getName(), tail);
+    }
+
+    /**
+     * Move one object to a database role, which then owns it under its qualified name: the roles that held it act
+     * as its owner no more, and a session acts as owner only while it holds the database role (live-verified).
+     *
+     * @param objectType  the kind the statement names, upper-case
+     * @param parts       the object's name, part by part
+     * @param arity       the number of argument types written after a routine's name, or null for none
+     * @param writtenName the name as the statement writes it, one of those a grant may be recorded under
+     * @param role        the database role that is to own the object
+     * @param tail        COPY or REVOKE CURRENT GRANTS, or null
+     * @return false for a kind whose owner is not recorded here, whose ownership stays a granted privilege
+     */
+    boolean transfer(final String objectType, final String[] parts, final Integer arity, final String writtenName,
+                     final DatabaseRole role, final FrostlakeParser.CurrentGrantsContext tail) {
+        return move(objectType, parts, arity, writtenName, role.getQualifiedName(), tail);
+    }
+
+    /**
+     * What moving a stream or a paused pipe asks of the rights that move it (live-verified): SELECT on the table a
+     * stream reads, refused {@code To grant use role with SELECT privilege on the target table DB.SCHEMA.T}, and
+     * INSERT on the table a paused pipe loads, which may still hold files to load: {@code Pipe may have pending files
+     * that could be loaded into table when resumed. To do grant, use role with INSERT privilege on the target table
+     * T}.
+     *
+     * @param objectType the kind the statement names, upper-case
+     * @param parts      the object's name, part by part
+     */
+    private void requirePrerequisites(final String objectType, final String[] parts) {
+        final SecurityManager security = executor.getSecurityManager();
+        if (security == null || !"STREAM".equals(objectType) && !"PIPE".equals(objectType)) {
+            return;
+        }
+        final String[] path = catalog.withoutAccount(parts, 3);
+        final Schema schema = schemaOrNull(path.length == 3 ? path[0] : catalog.getCurrentDatabase(),
+            path.length >= 2 ? path[path.length - 2] : catalog.getCurrentSchema());
+        final String name = path[path.length - 1];
+        if (schema == null) {
+            return;
+        }
+        if ("STREAM".equals(objectType)) {
+            if (!schema.hasStreamExact(name) || schema.getStream(name).getSourceType() != StreamSourceType.TABLE) {
+                return;
+            }
+            final String[] source = tablePath(schema, QualifiedName.parse(schema.getStream(name).getSourceTableName())
+                .parts());
+            final Table table = tableOrNull(source);
+            if (table != null && !security.holdsPrivilege(Privilege.SELECT, "TABLE", QualifiedName.join(source),
+                    table.getOwner())) {
+                throw new RuntimeException("To grant use role with SELECT privilege on the target table "
+                    + QualifiedName.join(source));
+            }
+            return;
+        }
+        final Pipe pipe = pipeOrNull(schema, name);
+        final FrostlakeParser.CopyIntoStatementContext copy = pipe == null || !pipe.isPaused() ? null
+            : copyOf(pipe.getCopyStatement());
+        if (copy == null || copy.qualifiedName() == null) {
+            return;
+        }
+        final String[] target = tablePath(schema, ParseTreeText.qualifiedNameParts(copy.qualifiedName()));
+        final Table table = tableOrNull(target);
+        if (table != null && !security.holdsPrivilege(Privilege.INSERT, "TABLE", QualifiedName.join(target),
+                table.getOwner())) {
+            throw new RuntimeException("Pipe may have pending files that could be loaded into table when resumed. To "
+                + "do grant, use role with INSERT privilege on the target table " + table.getName());
+        }
+    }
+
+    private static Pipe pipeOrNull(final Schema schema, final String name) {
+        try {
+            return schema.getPipe(name);
+        } catch (final RuntimeException missing) {
+            return null;
+        }
+    }
+
+    private Schema schemaOrNull(final String database, final String schema) {
+        if (database == null || schema == null) {
+            return null;
+        }
+        try {
+            return catalog.getDatabase(database).getSchema(schema);
+        } catch (final RuntimeException missing) {
+            return null;
+        }
+    }
+
+    /** A table's name completed to its full path from the schema the naming object lives in. */
+    private String[] tablePath(final Schema home, final String[] written) {
+        final String[] parts = catalog.withoutAccount(written, 3);
+        if (parts.length == 3) {
+            return parts;
+        }
+        if (parts.length == 2) {
+            return new String[] {home.getDatabaseName(), parts[0], parts[1]};
+        }
+        return new String[] {home.getDatabaseName(), home.getName(), parts[0]};
+    }
+
+    private Table tableOrNull(final String[] path) {
+        final Schema schema = schemaOrNull(path[0], path[1]);
+        if (schema == null) {
+            return null;
+        }
+        try {
+            return schema.getTable(path[2]);
+        } catch (final RuntimeException missing) {
+            return null;
+        }
+    }
+
+    /** A pipe's COPY statement as parsed, or null when its text is no COPY. */
+    private static FrostlakeParser.CopyIntoStatementContext copyOf(final String text) {
+        if (text == null) {
+            return null;
+        }
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
+        lexer.removeErrorListeners();
+        final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
+        parser.removeErrorListeners();
+        parser.setErrorHandler(new BailErrorStrategy());
+        try {
+            return parser.copyIntoStatement();
+        } catch (final RuntimeException unparsable) {
+            return null;
+        }
+    }
+
+    private boolean move(final String objectType, final String[] parts, final Integer arity, final String writtenName,
+                         final String owner, final FrostlakeParser.CurrentGrantsContext tail) {
         final GrantedObject granted = executor.grantedObject(objectType, parts, arity);
         if (granted == null) {
             return false;
         }
-        final String owner = catalog.getRole(roleName).getName();
+        requirePrerequisites(objectType, parts);
         final List<String> spellings = new ArrayList<>();
         spellings.add(writtenName);
         spellings.addAll(granted.getSpellings());

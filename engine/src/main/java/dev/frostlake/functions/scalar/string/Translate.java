@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.CodePointText;
 
@@ -33,9 +34,9 @@ public class Translate extends TextArgumentFunction {
             return null;
         }
         if (args.get(0) == null) return null;
-        final String str = args.get(0).toString();
-        final String from = args.get(1) == null ? "" : args.get(1).toString();
-        final String to   = args.get(2) == null ? "" : args.get(2).toString();
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
+        final String from = args.get(1) == null ? "" : SharedFunctionHelpers.textOf(args.get(1));
+        final String to   = args.get(2) == null ? "" : SharedFunctionHelpers.textOf(args.get(2));
         // Character by character, a supplementary one included: TRANSLATE('a😀b', 'ab', '😀') is 😀😀.
         final int[] fromPoints = CodePointText.codePoints(from);
         final int[] toPoints = CodePointText.codePoints(to);

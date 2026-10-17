@@ -57,16 +57,15 @@ public final class LikeMatcher {
     }
 
     /**
-     * The text a LIKE operand is matched as: a DATE, TIME or timestamp by its display text, the text
-     * {@code ||} gives it — live, {@code ts LIKE '% %'} is TRUE over {@code 2020-01-01 10:00:00.000}, and
-     * {@code TIME(9)} matches {@code '10:00:00'} exactly. Anything else by its ordinary text.
+     * The text a LIKE operand is matched as, the text {@code ||} gives it: a DATE, TIME or timestamp by its display
+     * text — live, {@code ts LIKE '% %'} is TRUE over {@code 2020-01-01 10:00:00.000}, and {@code TIME(9)} matches
+     * {@code '10:00:00'} exactly — and a number by its digits in place, {@code 0.0000001 LIKE '%E%'} being FALSE.
      *
      * @param value the operand, not NULL
      * @return the text matched
      */
     public static String likeText(final Object value) {
-        return SharedFunctionHelpers.isNativeTemporal(value) ? SharedFunctionHelpers.textOf(value)
-            : value.toString();
+        return value instanceof String ? (String) value : SharedFunctionHelpers.textOf(value);
     }
 
     /**

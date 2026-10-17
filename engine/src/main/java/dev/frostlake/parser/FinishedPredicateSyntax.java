@@ -112,8 +112,9 @@ public final class FinishedPredicateSyntax {
 
     /** The operator {@code node} applies to a finished predicate on its left, or null. */
     private static Token refusedOperator(final ParseTree node) {
-        if (node instanceof FrostlakeParser.ConcatExprContext) {
-            final FrostlakeParser.ConcatExprContext concat = (FrostlakeParser.ConcatExprContext) node;
+        if (node instanceof FrostlakeParser.AdditiveExprContext
+                && ((FrostlakeParser.AdditiveExprContext) node).PIPE_PIPE() != null) {
+            final FrostlakeParser.AdditiveExprContext concat = (FrostlakeParser.AdditiveExprContext) node;
             return refusedAfter(concat.expression(0), concat.PIPE_PIPE(), false);
         }
         if (node instanceof FrostlakeParser.CastExpr2Context) {

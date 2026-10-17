@@ -62,6 +62,8 @@ public class FunctionCallExpression implements Expression {
     private int callOrdinal;
     /** The canonical name of the method a call written {@code instance!method(…)} names, or null. */
     private String methodName;
+    /** The database a built-in's name was written under, {@code DB.INFORMATION_SCHEMA.F(…)}, or null. */
+    private String qualifierDatabase;
 
     public FunctionCallExpression(final String functionName, final List<Expression> arguments) {
         this(functionName, arguments, false, false);
@@ -101,6 +103,7 @@ public class FunctionCallExpression implements Expression {
         copy.quantifier = quantifier;
         copy.withinGroupKeys = withinGroupKeys;
         copy.methodName = methodName;
+        copy.qualifierDatabase = qualifierDatabase;
         return copy;
     }
 
@@ -118,7 +121,23 @@ public class FunctionCallExpression implements Expression {
         copy.withinGroupOrdered = withinGroupOrdered;
         copy.quantifier = quantifier;
         copy.withinGroupKeys = withinGroupKeys;
+        copy.qualifierDatabase = qualifierDatabase;
         return copy;
+    }
+
+    /**
+     * The database a built-in function's name was written under, {@code DB.INFORMATION_SCHEMA.F(…)}: looked up
+     * before the call runs, its name being no part of the function's (see InformationSchemaCalls).
+     *
+     * @return the database's canonical name, or null
+     */
+    public String getQualifierDatabase() {
+        return qualifierDatabase;
+    }
+
+    /** @param database the database a built-in's name was written under, or null */
+    public void setQualifierDatabase(final String database) {
+        this.qualifierDatabase = database;
     }
 
     public String getFunctionName() {

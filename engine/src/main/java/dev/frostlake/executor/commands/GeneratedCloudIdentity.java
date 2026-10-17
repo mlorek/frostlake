@@ -22,16 +22,16 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 
 /**
- * The identity an account generates for an object that reaches into a cloud account: the IAM user the account
- * acts as, one for every object of the account, and an external ID of the object's own, which the cloud role's
- * trust policy names. DESCRIBE shows both beside the role an integration or a storage location was given
- * (live-verified: {@code API_AWS_IAM_USER_ARN} and {@code API_AWS_EXTERNAL_ID}, the {@code GLUE_AWS_}, the
- * {@code SF_AWS_} and the {@code STORAGE_AWS_} pairs; for Google Cloud a service account, {@code API_GCP_SERVICE_ACCOUNT}
- * and {@code STORAGE_GCP_SERVICE_ACCOUNT}). Frostlake reaches no cloud account, so the user is a fixed
- * one and the external ID is derived from the object's kind, its name and the creation it comes from: an ID of
- * the account's shape, {@code <ACCOUNT>_SFCRole=1_<28 characters>}, that stays what it is for as long as the
- * object stands — through an ALTER and through a DROP undone — and is another once the object is created again,
- * by CREATE OR REPLACE or after a DROP (live-verified).
+ * The identity an account generates for an object that reaches into a cloud account: the IAM user the account acts as,
+ * one for every object of the account, and an external ID of the object's own, which the cloud role's trust policy
+ * names. DESCRIBE shows both beside the role an integration or a storage location was given (live-verified:
+ * {@code API_AWS_IAM_USER_ARN} and {@code API_AWS_EXTERNAL_ID}, the {@code GLUE_AWS_}, the {@code SF_AWS_} and the
+ * {@code STORAGE_AWS_} pairs; for Google Cloud a service account, {@code API_GCP_SERVICE_ACCOUNT},
+ * {@code GCP_PUBSUB_SERVICE_ACCOUNT} and {@code STORAGE_GCP_SERVICE_ACCOUNT}). Frostlake reaches no cloud account, so
+ * the user is a fixed one and the external ID is derived from the object's kind, its name and the creation it comes
+ * from: an ID of the account's shape, {@code <ACCOUNT>_SFCRole=1_<28 characters>}, that stays what it is for as long as
+ * the object stands — through an ALTER and through a DROP undone — and is another once the object is created again, by
+ * CREATE OR REPLACE or after a DROP (live-verified).
  */
 final class GeneratedCloudIdentity {
 

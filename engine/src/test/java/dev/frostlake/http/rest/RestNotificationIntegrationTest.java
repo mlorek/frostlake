@@ -37,7 +37,7 @@ public class RestNotificationIntegrationTest extends BaseRestTest {
             + "\"aws_sns_role_arn\":\"arn:r\"}}"));
         ok(post("/api/v2/notification-integrations", "{\"name\":\"rn_gcp\",\"enabled\":true,"
             + "\"notification_hook\":{\"type\":\"QUEUE_GCP_PUBSUB_INBOUND\","
-            + "\"gcp_pubsub_subscription_name\":\"projects/p/subscriptions/s\"}}"));
+            + "\"gcp_pubsub_subscription_name\":\"projects/project-1234/subscriptions/sub1\"}}"));
 
         final JsonNode mail = ok(get("/api/v2/notification-integrations/rn_mail"));
         assertEquals("EMAIL", mail.path("notification_hook").path("type").asString());

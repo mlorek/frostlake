@@ -63,6 +63,11 @@ public final class PythonLanguageRuntime implements UdfLanguageRuntime {
         return PythonTableFunctionExecutor.executePartition(function, rows);
     }
 
+    @Override
+    public Object executeAggregate(final Function function, final List<List<Object>> rows) {
+        return PythonExecutor.executePythonAggregate(function, rows);
+    }
+
     /**
      * A Python FUNCTION's body is compiled at CREATE — and a Python PROCEDURE's is not, which is why
      * {@code compileProcedure} is left at its no-op default. Both halves were measured on the same

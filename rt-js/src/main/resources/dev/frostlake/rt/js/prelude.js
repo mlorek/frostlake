@@ -341,6 +341,41 @@
             return named(this, dateToTimeString.call(this));
         };
 
+        // ---- a zone no formatter knows is refused in the account's engine's words -------------------------------
+        var RangeErrorType = RangeError;
+        var zonePrefix = 'Invalid time zone ';
+        var zoneFault = function zoneFault(fault) {
+            if (fault instanceof RangeErrorType && typeof fault.message === 'string'
+                    && fault.message.indexOf(zonePrefix) === 0
+                    && fault.message.indexOf(zonePrefix + 'specified: ') !== 0) {
+                return new RangeErrorType(zonePrefix + 'specified: ' + fault.message.substring(zonePrefix.length));
+            }
+            return fault;
+        };
+        var DateTimeFormatType = Intl.DateTimeFormat;
+        var DateTimeFormat = function DateTimeFormat(locales, options) {
+            try {
+                return new DateTimeFormatType(locales, options);
+            } catch (fault) {
+                throw zoneFault(fault);
+            }
+        };
+        DateTimeFormat.prototype = DateTimeFormatType.prototype;
+        DateTimeFormat.supportedLocalesOf = DateTimeFormatType.supportedLocalesOf;
+        Intl.DateTimeFormat = DateTimeFormat;
+        var zoneWorded = function zoneWorded(original) {
+            return function (locales, options) {
+                try {
+                    return original.call(this, locales, options);
+                } catch (fault) {
+                    throw zoneFault(fault);
+                }
+            };
+        };
+        Date.prototype.toLocaleString = zoneWorded(Date.prototype.toLocaleString);
+        Date.prototype.toLocaleDateString = zoneWorded(Date.prototype.toLocaleDateString);
+        Date.prototype.toLocaleTimeString = zoneWorded(Date.prototype.toLocaleTimeString);
+
         // ---- a formatter names its zone as the account's engine knows it ----------------------------------------
         var dateFormatResolved = Intl.DateTimeFormat.prototype.resolvedOptions;
         Intl.DateTimeFormat.prototype.resolvedOptions = function resolvedOptions() {

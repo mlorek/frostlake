@@ -40,10 +40,11 @@ import java.util.Locale;
  * External volumes ({@code external-volume.yaml}, {@code /api/v2/external-volumes}): list, create, fetch, delete
  * and {@code :undrop}.
  *
- * <p>A volume is read from {@code SHOW EXTERNAL VOLUMES} (name, allow_writes, comment) and its storage locations
- * from the STORAGE_LOCATION_n rows of {@code DESCRIBE EXTERNAL VOLUME}, whose values are JSON objects; the
+ * <p>A volume is read from {@code SHOW EXTERNAL VOLUMES} (name, allow_writes, comment), its storage locations
+ * from the STORAGE_LOCATION_n rows of {@code DESCRIBE EXTERNAL VOLUME}, whose values are JSON objects — the
  * encryption DESCRIBE flattens to ENCRYPTION_TYPE and ENCRYPTION_KMS_KEY_ID becomes the location's
- * {@code encryption} object again.
+ * {@code encryption} object again — and its creation time and owner from the OWNERSHIP row of
+ * {@code SHOW GRANTS ON EXTERNAL VOLUME}.
  */
 public final class ExternalVolumeResource implements RestResource {
 
@@ -103,6 +104,15 @@ public final class ExternalVolumeResource implements RestResource {
         RestJson.bool(node, "allow_writes", row, "allow_writes");
         RestJson.string(node, "comment", row, "comment");
         RestJson.nulls(node, "created_on", "owner", "owner_role_type");
+        // SHOW EXTERNAL VOLUMES carries no creation time and no owner: the OWNERSHIP row SHOW GRANTS ON lists does.
+        for (final RestRow grant : call.sql().show("SHOW GRANTS ON EXTERNAL VOLUME "
+                + RestIdentifier.quote(row.string("name")))) {
+            if ("OWNERSHIP".equals(grant.string("privilege"))) {
+                RestJson.timestamp(node, "created_on", grant, "created_on");
+                RestJson.string(node, "owner", grant, "grantee_name");
+                RestJson.string(node, "owner_role_type", grant, "granted_to");
+            }
+        }
         return node;
     }
 

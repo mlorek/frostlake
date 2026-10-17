@@ -33,9 +33,11 @@ import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -53,6 +55,13 @@ import java.util.TreeMap;
  * refusals carry, a missing policy as a missing table (live-verified).
  */
 public class PolicyReferencesFunction extends TableFunction {
+
+    /** The table-like domains POLICY_REFERENCES reads beside the ones TAG_REFERENCES knows. */
+    private static final Set<String> TABLE_LIKE_DOMAINS = new HashSet<String>(Arrays.asList("VIEW",
+        "MATERIALIZED VIEW", "EXTERNAL TABLE"));
+
+    /** The domains whose object POLICY_REFERENCES finds as TAG_REFERENCES does, listing no attachment of it. */
+    private static final Set<String> OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("TAG", "USER", "ACCOUNT"));
 
     /** Live's column order. */
     private static final String[] COLUMN_NAMES = {
@@ -110,14 +119,32 @@ public class PolicyReferencesFunction extends TableFunction {
             + " ref_entity_domain=>'domain').";
     }
 
+    /**
+     * The attachments on one entity. The domain is one TAG_REFERENCES knows, matched as written but for case, or it
+     * is {@code Unknown domain: <as written>.}; TABLE and VIEW list their kind's attachments, EXTERNAL TABLE none
+     * here, TAG, USER and ACCOUNT find their object as TAG_REFERENCES finds it and list none, and any other domain is
+     * an invalid value, named with underscores (live-verified).
+     */
     private void appendByEntity(final String entityName, final String entityDomain,
                                 final List<Row> rows) {
         final String domain = entityDomain.toUpperCase(Locale.ROOT);
-        if (!"TABLE".equals(domain) && !"VIEW".equals(domain)) {
-            throw new RuntimeException(SqlCompilationError.of("Invalid value '" + domain
+        final String words = domain.replace('_', ' ');
+        if (!TagReferencesFunction.isDomain(words) && !TABLE_LIKE_DOMAINS.contains(words)) {
+            throw new RuntimeException("Unknown domain: " + entityDomain + ".");
+        }
+        if ("EXTERNAL TABLE".equals(words)) {
+            return;
+        }
+        if (OBJECT_DOMAINS.contains(words)) {
+            new TagReferencesFunction(catalog).requireObject(entityName, words);
+            return;
+        }
+        if (!"TABLE".equals(words) && !"VIEW".equals(words)) {
+            throw new RuntimeException(SqlCompilationError.inline("Invalid value '" + words.replace(' ', '_')
                 + "' for argument 'ref_entity_domain' for function 'information_schema.policy_references'"));
         }
         final String[] written = SqlIdentifiers.canonicalTextParts(entityName);
+        requireContainers(written);
         final Schema schema = owningSchema(written);
         final String name = written[written.length - 1];
         final Table table = schema == null ? null : schema.tableExact(name);
@@ -141,11 +168,12 @@ public class PolicyReferencesFunction extends TableFunction {
      */
     private void appendByPolicy(final String policyName, final List<Row> rows) {
         final String[] written = SqlIdentifiers.canonicalTextParts(policyName);
+        requireContainers(written);
         final Schema schema = owningSchema(written);
         final String name = written[written.length - 1];
         if (schema == null || !policyExists(schema, name)) {
-            // Live names the policy in full however it was written, with no privilege sentence (live-verified).
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Policy",
+            // Live names the policy in full however it was written (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Policy",
                 QualifiedName.join(completed(written))));
         }
         for (final Database database : catalog.getAllDatabases()) {
@@ -167,6 +195,28 @@ public class PolicyReferencesFunction extends TableFunction {
         }
         rows.clear();
         rows.addAll(matching);
+    }
+
+    /**
+     * The database and the schema a name places its object in, which a miss names before the object: {@code
+     * Database 'D' does not exist or not authorized.} or {@code Schema 'D.S' …}, each asking for USAGE
+     * (live-verified).
+     *
+     * @param written the name's canonical parts
+     */
+    private void requireContainers(final String[] written) {
+        final String[] full = completed(written);
+        if (full.length != 3 || full[0] == null || full[1] == null) {
+            return;
+        }
+        final Database database = catalog.findDatabase(full[0]);
+        if (database == null || !database.getName().equals(full[0])) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Database", full[0]));
+        }
+        if (!database.hasSchemaExact(full[1])) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", QualifiedName.join(full[0],
+                full[1])));
+        }
     }
 
     private boolean policyExists(final Schema schema, final String name) {
@@ -206,8 +256,8 @@ public class PolicyReferencesFunction extends TableFunction {
     }
 
     /**
-     * The refusal for a REF_ENTITY_NAME that names nothing, worded as live words it, with no privilege sentence:
-     * {@code Table 'DB.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized.}, or {@code View '...'} under 'view'
+     * The refusal for a REF_ENTITY_NAME that names nothing, worded as live words it: {@code Table 'DB.PUBLIC.T' does
+     * not exist or not authorized.} with the privilege sentence on TABLE, or {@code View '...'} under 'view'
      * (live-verified). The name is the one a FROM reference reports: as written when it is bare, in full once any
      * qualifier is written.
      */
@@ -215,7 +265,7 @@ public class PolicyReferencesFunction extends TableFunction {
         final String[] full = completed(written);
         final String reported = written.length > 1 && full.length == 3 && full[0] != null
             ? QualifiedName.join(full) : QualifiedName.join(written);
-        return new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, reported));
+        return new RuntimeException(SqlCompilationError.doesNotExist(kind, reported));
     }
 
     /** The view of exactly that name, or null: a reference matches a name exactly, as for a table. */

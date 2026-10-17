@@ -196,8 +196,10 @@ final class MergeExecutor {
                     final String fullyQualifiedSourceName = executor.getFullyQualifiedTableName(sourceTableName);
                     // Overlay-aware: a stage table populated by THIS transaction must be visible as the
                     // merge source (a raw scan saw only the committed base — empty for a fresh stage). Read
-                    // when the match stage runs.
-                    sourceRows = new DeferredRows(new MemoizedRows(executor.transactionScan(fullyQualifiedSourceName)));
+                    // when the match stage runs, as a query reads it: its row access policy keeps the rows the
+                    // session may see and its masking policies mask them (live-verified).
+                    sourceRows = new DeferredRows(new MemoizedRows(
+                        executor.policedScan(sourceTable, fullyQualifiedSourceName)));
                     sourceDescription = "SCAN[" + sourceTable.getName() + "]";
                 }
             } else if (mergeSource instanceof FrostlakeParser.MergeSourceSubqueryContext) {

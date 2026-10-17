@@ -390,6 +390,22 @@ public final class TableFunctionArguments {
     }
 
     /**
+     * The parameter of FLATTEN a positional argument fills at its place among every argument the call writes: INPUT,
+     * PATH, OUTER, RECURSIVE and MODE in turn.
+     *
+     * @param index the argument's place, from 0
+     * @return the parameter, or null past the last one
+     */
+    public static String flattenParameterAt(final int index) {
+        return index < FLATTEN_PARAMETERS.size() ? FLATTEN_PARAMETERS.get(index) : null;
+    }
+
+    /** @return how many parameters FLATTEN takes */
+    public static int flattenParameterCount() {
+        return FLATTEN_PARAMETERS.size();
+    }
+
+    /**
      * The parameter a leading positional argument fills. INPUT for most, but not all — TO_QUERY's
      * first parameter is SQL, so a call naming it INPUT is missing its required argument.
      */

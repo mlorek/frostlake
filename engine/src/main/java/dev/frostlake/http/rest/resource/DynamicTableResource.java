@@ -29,6 +29,7 @@ import dev.frostlake.http.rest.RestShow;
 import dev.frostlake.http.rest.RestStatement;
 import dev.frostlake.http.rest.RestTags;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.storage.ResultSet;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -145,7 +146,27 @@ public final class DynamicTableResource implements RestResource {
         }
         final ObjectNode table = toJson(rows.get(0));
         table.set("columns", columns(call, name));
+        settings(call, table, name);
         return table;
+    }
+
+    /**
+     * What the body tells beyond the listing (live-verified): the retention SHOW TABLES reports for the table, the
+     * INITIALIZE mode its DDL tells, and the logging level and row timestamps a dynamic table here always has, OFF
+     * and false.
+     */
+    private static void settings(final RestCall call, final ObjectNode table, final RestIdentifier name) {
+        final List<RestRow> asTable = call.sql().showNamed("SHOW TABLES" + RestShow.likeName(name) + " IN SCHEMA "
+            + call.schemaSql(), name);
+        if (!asTable.isEmpty()) {
+            RestJson.integer(table, "data_retention_time_in_days", asTable.get(0), "retention_time");
+        }
+        final ResultSet ddl = call.sql().query("SELECT GET_DDL('TABLE', '"
+            + call.qualifiedSql(name).replace("'", "''") + "')");
+        table.put("initialize", RelationNames.initializeMode(ddl.getRows().isEmpty() ? null
+            : String.valueOf(ddl.getRows().get(0).getValue(0))));
+        table.put("log_level", "OFF");
+        table.put("row_timestamp", false);
     }
 
     private static ArrayNode columns(final RestCall call, final RestIdentifier name) {

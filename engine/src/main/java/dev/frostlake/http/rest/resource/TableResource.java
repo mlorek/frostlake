@@ -190,6 +190,48 @@ public final class TableResource implements RestResource {
     private static void details(final RestCall call, final ObjectNode table, final String tableSql) {
         table.set("columns", TableColumns.columns(call.sql(), "DESCRIBE TABLE " + tableSql, true));
         table.set("constraints", TableColumns.constraints(call.sql(), tableSql));
+        parameters(call, table, tableSql);
+    }
+
+    /**
+     * The table's own settings the body tells, read from SHOW PARAMETERS IN TABLE: the extension limit, the default
+     * collation (empty when none) and the data metric schedule, {@code {"minutes":60,"schedule_type":"MINUTES"}}
+     * for the account's default (live-verified).
+     */
+    private static void parameters(final RestCall call, final ObjectNode table, final String tableSql) {
+        for (final RestRow row : call.sql().show("SHOW PARAMETERS IN TABLE " + tableSql)) {
+            final String key = row.nonEmpty("key");
+            final String value = row.nonEmpty("value");
+            if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equals(key) && value != null) {
+                table.put("max_data_extension_time_in_days", Integer.parseInt(value));
+            } else if ("DEFAULT_DDL_COLLATION".equals(key)) {
+                table.put("default_ddl_collation", value == null ? "" : value);
+            } else if ("DATA_METRIC_SCHEDULE".equals(key)) {
+                final ObjectNode schedule = metricSchedule(value);
+                if (schedule != null) {
+                    table.set("data_metric_schedule", schedule);
+                }
+            }
+        }
+    }
+
+    /** A {@code <n> MINUTE[S]} schedule as the body tells it; null for a schedule of another form. */
+    private static ObjectNode metricSchedule(final String value) {
+        if (value == null) {
+            return null;
+        }
+        final String[] parts = value.trim().split(" ");
+        if (parts.length != 2 || !parts[1].toUpperCase(Locale.ROOT).startsWith("MINUTE")) {
+            return null;
+        }
+        final ObjectNode schedule = RestJson.object();
+        try {
+            schedule.put("minutes", Integer.parseInt(parts[0]));
+        } catch (final NumberFormatException notMinutes) {
+            return null;
+        }
+        schedule.put("schedule_type", "MINUTES");
+        return schedule;
     }
 
     private static ObjectNode toJson(final RestRow row) {

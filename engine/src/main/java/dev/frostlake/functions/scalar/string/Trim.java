@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.CodePointText;
 
@@ -35,9 +36,9 @@ public class Trim extends TextArgumentFunction {
             return null;
         }
         if (args.get(0) == null) return null;
-        final String str = args.get(0).toString();
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
         // Snowflake TRIM(expr [, chars]): trims every character in the set (default whitespace).
-        final String chars = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : null;
+        final String chars = args.size() > 1 && args.get(1) != null ? SharedFunctionHelpers.textOf(args.get(1)) : null;
         final int start = CodePointText.trimmedStart(str, chars);
         return str.substring(start, CodePointText.trimmedEnd(str, chars, start));
     }

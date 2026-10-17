@@ -24,8 +24,10 @@ import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AlertExecution;
 import dev.frostlake.metastore.model.AlertState;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.State;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
 import dev.frostlake.metastore.model.TaskExecutionState;
@@ -81,6 +83,12 @@ public class TaskScheduler {
     // The configuration of the graph run executing on this thread — the root's CONFIG with an EXECUTE TASK …
     // USING CONFIG merged over it — read by SYSTEM$GET_TASK_GRAPH_CONFIG in every task of the run.
     private static final ThreadLocal<String> CURRENT_GRAPH_CONFIG = new ThreadLocal<>();
+    // The attempt of its graph run the runs a retry starts on this thread belong to; unset, a run is attempt 1.
+    private static final ThreadLocal<Integer> CURRENT_ATTEMPT = new ThreadLocal<>();
+    /** How often a running scheduler looks for dynamic tables whose target lag has passed. */
+    private static final long DYNAMIC_TABLE_SWEEP_SECONDS = 10L;
+    /** The running scheduler's look for dynamic tables due a refresh, or null while stopped. */
+    private ScheduledFuture<?> dynamicTableSweep;
 
     /** The task whose body is executing on the current thread, or null outside a task run. */
     public static Task currentTask() {
@@ -150,7 +158,106 @@ public class TaskScheduler {
         running = true;
         armStartedTasks();
         armStartedAlerts();
+        dynamicTableSweep = scheduler.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                refreshDueDynamicTables(Instant.now());
+            }
+        }, DYNAMIC_TABLE_SWEEP_SECONDS, DYNAMIC_TABLE_SWEEP_SECONDS, TimeUnit.SECONDS);
         logger.info("Task scheduler started");
+    }
+
+    /**
+     * Refreshes every dynamic table whose target lag has passed since its last refresh — or, for one that never
+     * refreshed, since it was created — as the account's scheduler does. A suspended table and one whose lag is
+     * DOWNSTREAM wait: a DOWNSTREAM table refreshes when a table that reads it does (live-verified). A running
+     * scheduler looks every few seconds; a caller may look at any instant.
+     *
+     * @param now the instant to judge the lags at
+     * @return how many tables refreshed
+     */
+    public int refreshDueDynamicTables(final Instant now) {
+        final List<String[]> due = new ArrayList<>();
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                for (final DynamicTable table : new ArrayList<>(schema.getDynamicTables())) {
+                    if (isDue(table, now)) {
+                        due.add(new String[] {database.getName(), schema.getName(), table.getName()});
+                    }
+                }
+            }
+        }
+        int refreshed = 0;
+        for (final String[] name : due) {
+            try {
+                refreshOnSchedule(name[0], name[1], name[2]);
+                refreshed++;
+            } catch (final RuntimeException failed) {
+                logger.warn("Scheduled refresh of dynamic table {}.{}.{} failed: {}", name[0], name[1], name[2],
+                    failed.getMessage());
+            }
+        }
+        return refreshed;
+    }
+
+    /** Whether a dynamic table's target lag has passed since its last refresh, or since it was created. */
+    private static boolean isDue(final DynamicTable table, final Instant now) {
+        final long lag = lagSeconds(table.getTargetLag());
+        if (lag < 0 || table.getState() == State.SUSPENDED) {
+            return false;
+        }
+        final Instant since = table.getLastRefreshedTime() != null ? table.getLastRefreshedTime()
+            : table.getCreatedTime();
+        return since != null && !since.plusSeconds(lag).isAfter(now);
+    }
+
+    /** A target lag in seconds: {@code <n> seconds | minutes | hours | days}, or -1 for DOWNSTREAM. */
+    private static long lagSeconds(final String lag) {
+        if (lag == null) {
+            return -1L;
+        }
+        final String[] parts = lag.trim().toLowerCase(Locale.ROOT).split("\\s+");
+        if (parts.length != 2) {
+            return -1L;
+        }
+        final long count;
+        try {
+            count = Long.parseLong(parts[0]);
+        } catch (final NumberFormatException notACount) {
+            return -1L;
+        }
+        if (parts[1].startsWith("second")) {
+            return count;
+        }
+        if (parts[1].startsWith("minute")) {
+            return count * 60L;
+        }
+        if (parts[1].startsWith("hour")) {
+            return count * 3600L;
+        }
+        return parts[1].startsWith("day") ? count * 86400L : -1L;
+    }
+
+    /** One scheduled refresh, as a session of its own in the table's home. */
+    private void refreshOnSchedule(final String database, final String schema, final String table) {
+        final String[] priorScope = catalog.currentSessionScope();
+        catalog.beginSessionScope(database, schema);
+        try {
+            taskExecutor.runInOwnSession(new Runnable() {
+                @Override
+                public void run() {
+                    taskExecutor.execute("ALTER DYNAMIC TABLE " + quoted(database) + "." + quoted(schema) + "."
+                        + quoted(table) + " REFRESH");
+                }
+            });
+        } finally {
+            catalog.restoreSessionScope(priorScope);
+        }
+    }
+
+    /** A name as a quoted identifier, which names it exactly. */
+    private static String quoted(final String name) {
+        return "\"" + name.replace("\"", "\"\"") + "\"";
     }
 
     /** Arm every STARTED task in the catalog that is not already scheduled. */
@@ -176,6 +283,10 @@ public class TaskScheduler {
             return;
         }
         running = false;
+        if (dynamicTableSweep != null) {
+            dynamicTableSweep.cancel(false);
+            dynamicTableSweep = null;
+        }
 
         // Cancel all scheduled tasks
         for (final ScheduledFuture<?> future : scheduledTasks.values()) {
@@ -598,6 +709,8 @@ public class TaskScheduler {
         // recorded in the task history. On the final failed attempt, SUSPEND_TASK_AFTER_NUM_FAILURES
         // suspends the task once its CONSECUTIVE failure count reaches the threshold.
         CURRENT_TASK.set(task);
+        final Integer retried = CURRENT_ATTEMPT.get();
+        final int graphAttempt = retried == null ? 1 : retried.intValue();
         try {
             final int maxAttempts = 1 + Math.max(0, task.getTaskAutoRetryAttempts());
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -610,7 +723,7 @@ public class TaskScheduler {
                     final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
                     task.recordExecution(new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
-                        TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger));
+                        TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger, graphAttempt));
 
                     // Calculate next run time (only for interval-scheduled tasks — a CRON task
                     // stamps its next fire when it re-arms)
@@ -629,7 +742,7 @@ public class TaskScheduler {
 
                 } catch (final Exception e) {
                     task.recordExecution(new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
-                        TaskExecutionState.FAILED, e.getMessage(), 0, trigger));
+                        TaskExecutionState.FAILED, e.getMessage(), 0, trigger, graphAttempt));
                     logger.error("Task {} failed (attempt {}/{}): {}",
                         qualifiedTaskName, attempt, maxAttempts, e.getMessage());
 
@@ -796,11 +909,11 @@ public class TaskScheduler {
      * @throws RuntimeException when no graph run of the root has that id, or when it has no failed task run
      */
     private void retryGraphRunGroup(final String rootKey, final Task root, final Schema schema, final String group) {
-        final List<TaskExecution> rootRuns = root.getExecutionHistory();
-        for (int i = rootRuns.size() - 1; i >= 0; i--) {
-            final TaskExecution run = rootRuns.get(i);
+        final List<TaskExecution> graphRuns = TaskGraphs.graphRuns(root);
+        for (int i = graphRuns.size() - 1; i >= 0; i--) {
+            final TaskExecution run = graphRuns.get(i);
             if (group.equals(TaskGraphs.graphRunGroupId(root, TaskGraphs.runId(run.getScheduledTime())))) {
-                final LocalDateTime until = i + 1 < rootRuns.size() ? rootRuns.get(i + 1).getStartTime() : null;
+                final LocalDateTime until = i + 1 < graphRuns.size() ? graphRuns.get(i + 1).getStartTime() : null;
                 retryGraphRun(rootKey, root, schema, run, until);
                 return;
             }
@@ -809,53 +922,49 @@ public class TaskScheduler {
     }
 
     /**
-     * RETRY LAST: when the root's own last run failed the whole graph runs again; otherwise every task of the
-     * graph whose run in the last graph run failed runs again, cascading to its dependents.
+     * RETRY LAST: the latest graph run runs again from its failures, as one more attempt of it.
      *
-     * @throws RuntimeException when the last graph run has no failed task run
+     * @throws RuntimeException when the root never ran, or when the graph run's last attempt failed nowhere
      */
     private void retryLastGraphRun(final String rootKey, final Task root, final Schema schema) {
-        final List<TaskExecution> rootRuns = root.getExecutionHistory();
-        if (rootRuns.isEmpty()) {
+        final List<TaskExecution> graphRuns = TaskGraphs.graphRuns(root);
+        if (graphRuns.isEmpty()) {
             throw new RuntimeException("Cannot perform retry: no suitable run of graph with root task " + root.getName()
                 + " to retry.");
         }
-        retryGraphRun(rootKey, root, schema, rootRuns.get(rootRuns.size() - 1), null);
+        retryGraphRun(rootKey, root, schema, graphRuns.get(graphRuns.size() - 1), null);
     }
 
     /**
-     * Run one graph run again from its failures: the whole graph when the root's own run failed, otherwise
-     * every task of the graph whose run in it failed, cascading to its dependents.
+     * Run one graph run again from its failures, as its next attempt: the whole graph when the root's last run in
+     * it failed, otherwise every task of the graph whose last run in it failed, cascading to its dependents. Each
+     * run of the retry belongs to the attempt after the last one the graph run reached (live-verified).
      *
-     * @param run   the root's run that started the graph run
-     * @param until when the next graph run began, or null for the latest one
+     * @param graphRun the root's run that began the graph run
+     * @param until    when the next graph run began, or null for the latest one
      */
-    private void retryGraphRun(final String rootKey, final Task root, final Schema schema, final TaskExecution run,
-                               final LocalDateTime until) {
+    private void retryGraphRun(final String rootKey, final Task root, final Schema schema,
+                               final TaskExecution graphRun, final LocalDateTime until) {
+        final LocalDateTime graphStart = graphRun.getStartTime();
+        final int lastAttempt = TaskGraphs.lastAttempt(schema, root, graphStart, until);
         final String prior = CURRENT_GRAPH_CONFIG.get();
         CURRENT_GRAPH_CONFIG.set(root.getConfig());
+        CURRENT_ATTEMPT.set(Integer.valueOf(lastAttempt + 1));
         try {
-            if (TaskExecutionState.FAILED.name().equals(run.getState())) {
+            final TaskExecution rootRun = TaskGraphs.lastRunWithin(root, graphStart, until, 0);
+            if (rootRun != null && TaskExecutionState.FAILED.name().equals(rootRun.getState())) {
                 executeTask(rootKey, root, new HashSet<>(), TaskTrigger.MANUAL_RETRY);
                 return;
             }
-            final LocalDateTime graphStart = run.getStartTime();
             final List<Task> failed = new ArrayList<>();
             for (final Task candidate : TaskGraphs.descendants(schema, root, true)) {
-                TaskExecution last = null;
-                for (final TaskExecution candidateRun : candidate.getExecutionHistory()) {
-                    final LocalDateTime began = candidateRun.getStartTime();
-                    if (began != null && (graphStart == null || !began.isBefore(graphStart))
-                            && (until == null || began.isBefore(until))) {
-                        last = candidateRun;
-                    }
-                }
+                final TaskExecution last = TaskGraphs.lastRunWithin(candidate, graphStart, until, 0);
                 if (last != null && TaskExecutionState.FAILED.name().equals(last.getState())) {
                     failed.add(candidate);
                 }
             }
             if (failed.isEmpty()) {
-                throw new RuntimeException(noFailures(root, run));
+                throw new RuntimeException(noFailures(root, graphRun, lastAttempt));
             }
             final Set<String> visited = new HashSet<>();
             for (final Task task : failed) {
@@ -863,6 +972,7 @@ public class TaskScheduler {
                     TaskTrigger.MANUAL_RETRY);
             }
         } finally {
+            CURRENT_ATTEMPT.remove();
             if (prior == null) {
                 CURRENT_GRAPH_CONFIG.remove();
             } else {
@@ -871,12 +981,15 @@ public class TaskScheduler {
         }
     }
 
-    /** The refusal of a retry whose graph run failed nowhere, naming the run as the graph functions do. */
-    private static String noFailures(final Task root, final TaskExecution rootRun) {
-        final Long runId = rootRun.getScheduledTime() == null ? null
-            : Long.valueOf(ShowResultHelpers.createdOn(rootRun.getScheduledTime()).toInstant().toEpochMilli());
+    /**
+     * The refusal of a retry whose graph run's last attempt failed nowhere, naming the run and the attempt as the
+     * graph functions do.
+     */
+    private static String noFailures(final Task root, final TaskExecution graphRun, final int lastAttempt) {
+        final Long runId = graphRun.getScheduledTime() == null ? null
+            : Long.valueOf(ShowResultHelpers.createdOn(graphRun.getScheduledTime()).toInstant().toEpochMilli());
         return "Cannot perform retry: run (GRAPH_RUN_GROUP_ID = " + GraphRunGroup.id(root.getId(), runId)
-            + ", attempt = 1) of graph with root task " + root.getName() + " had no failures.";
+            + ", attempt = " + lastAttempt + ") of graph with root task " + root.getName() + " had no failures.";
     }
 
     public boolean isRunning() {

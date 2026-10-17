@@ -296,13 +296,15 @@ enum ShowListing {
             case STREAMLITS:
             case CONTACTS:
             case KEYS:
+            // A session policy is listed in the current schema as a password policy is; which of the two scopes
+            // live reads is not told apart, the policies measured being the current schema's.
+            case SESSION_POLICIES:
             // No object of these kinds can be created here, so either scope lists nothing.
             case INDEXES:
             case CHANNELS:
             case SNAPSHOTS:
             case GIT_REPOSITORIES:
             case SEMANTIC_VIEWS:
-            case SESSION_POLICIES:
             case AUTHENTICATION_POLICIES:
             case PACKAGES_POLICIES:
             case PRIVACY_POLICIES:

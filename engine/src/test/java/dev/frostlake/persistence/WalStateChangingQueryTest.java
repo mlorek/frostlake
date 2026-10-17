@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A query that changes what the write-ahead log must carry is logged: a SELECT of a sequence's NEXTVAL moves the
  * sequence, and SYSTEM$TASK_DEPENDENTS_ENABLE resumes a task graph. A statement reading the query its session ran
- * last by RESULT_SCAN has that query logged before it, so the replay reads the same rows again.
+ * last by RESULT_SCAN keeps the rows it read in its record, so the replay reads the same rows again.
  */
 public class WalStateChangingQueryTest {
 
@@ -48,13 +48,18 @@ public class WalStateChangingQueryTest {
 
     @AfterEach
     public void tearDown() throws IOException {
-        final File[] files = dir.toFile().listFiles();
-        if (files != null) {
-            for (final File file : files) {
-                Files.deleteIfExists(file.toPath());
+        deleteRecursively(dir.toFile());
+    }
+
+    /** Remove a test's data directory whole: the engine keeps its stages in a directory inside it. */
+    private static void deleteRecursively(final File file) {
+        final File[] children = file.listFiles();
+        if (children != null) {
+            for (final File child : children) {
+                deleteRecursively(child);
             }
         }
-        Files.deleteIfExists(dir);
+        file.delete();
     }
 
     private EngineConfig walConfig() {

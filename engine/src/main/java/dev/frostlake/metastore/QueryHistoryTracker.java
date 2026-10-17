@@ -20,6 +20,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -29,6 +31,8 @@ public class QueryHistoryTracker {
     private final ConcurrentLinkedQueue<QueryHistory> queryHistory;
     /** The statements that have begun and not ended, in the order they began. */
     private final ConcurrentLinkedQueue<QueryHistory> running = new ConcurrentLinkedQueue<>();
+    /** The replays of a former engine's logged statements, by the query ID each first answered with. */
+    private final Map<String, QueryHistory> anchors = new ConcurrentHashMap<>();
     private final int maxHistorySize;
     private static final int DEFAULT_MAX_HISTORY_SIZE = 10000;
 
@@ -109,7 +113,8 @@ public class QueryHistoryTracker {
     }
 
     /**
-     * Get query by ID
+     * Get query by ID: a query this engine ran, or one a former engine ran that the write-ahead log's replay ran again
+     * (see {@link #anchor}).
      */
     public QueryHistory getQueryById(final String queryId) {
         for (final QueryHistory query : queryHistory) {
@@ -117,7 +122,21 @@ public class QueryHistoryTracker {
                 return query;
             }
         }
-        return null;
+        return queryId == null ? null : anchors.get(queryId);
+    }
+
+    /**
+     * Lets a query ID a former engine answered a logged statement with name the statement's replay, for the
+     * time-travel points that name it: kept whatever {@link #forgetSession} forgets of the replay's sessions, so a
+     * statement run after the restart reads at that point too.
+     *
+     * @param originalId the ID the statement first answered with
+     * @param replayed   its replay's history, or null when none was recorded
+     */
+    public void anchor(final String originalId, final QueryHistory replayed) {
+        if (originalId != null && replayed != null) {
+            anchors.put(originalId, replayed);
+        }
     }
 
     /**

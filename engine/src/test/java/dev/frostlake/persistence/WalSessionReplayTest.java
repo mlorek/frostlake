@@ -50,13 +50,18 @@ public class WalSessionReplayTest {
 
     @AfterEach
     public void tearDown() throws IOException {
-        final File[] files = dir.toFile().listFiles();
-        if (files != null) {
-            for (final File file : files) {
-                Files.deleteIfExists(file.toPath());
+        deleteRecursively(dir.toFile());
+    }
+
+    /** Remove a test's data directory whole: the engine keeps its stages in a directory inside it. */
+    private static void deleteRecursively(final File file) {
+        final File[] children = file.listFiles();
+        if (children != null) {
+            for (final File child : children) {
+                deleteRecursively(child);
             }
         }
-        Files.deleteIfExists(dir);
+        file.delete();
     }
 
     private EngineConfig walConfig() {

@@ -151,6 +151,34 @@ public final class Base64Options {
         return out.toString();
     }
 
+    /**
+     * The text as a decoder reads it: the caller's alphabet rewritten to standard base64 and its line breaks
+     * dropped, which only a whole number of four-character groups passes. Live refuses {@code 'QQ'} and
+     * {@code 'QUJDRA'} unpadded, and {@code 'QQ =='} with a blank in it, as "not a legal base64-encoded value",
+     * where {@code 'QUJD\nRA=='} decodes (live-verified).
+     *
+     * @param text     the encoded text
+     * @param alphabet the alphabet it is written in
+     * @return the standard text to decode
+     * @throws IllegalArgumentException for a text of no whole number of groups
+     */
+    public static String decodable(final String text, final String alphabet) {
+        final String standard = toStandardAlphabet(text, alphabet);
+        final StringBuilder read = new StringBuilder(standard.length());
+        for (int i = 0; i < standard.length(); i++) {
+            if (standard.charAt(i) != '\n') {
+                read.append(standard.charAt(i));
+            }
+        }
+        if (read.length() % GROUP != 0) {
+            throw new IllegalArgumentException("not a whole number of groups");
+        }
+        return read.toString();
+    }
+
+    /** The characters one base64 group spells. */
+    private static final int GROUP = 4;
+
     /** The caller's alphabet rewritten back to standard base64, ready to decode. */
     public static String toStandardAlphabet(final String text, final String alphabet) {
         if (STANDARD.equals(alphabet)) {

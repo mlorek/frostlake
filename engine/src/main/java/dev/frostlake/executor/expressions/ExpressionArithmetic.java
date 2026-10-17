@@ -328,7 +328,8 @@ public final class ExpressionArithmetic {
         }
         // Date/time addition (commutative): temporal + integer (days) or temporal + INTERVAL. Normalize so
         // `temporal` is the DATE/TIMESTAMP operand and `other` is the integer/interval being added.
-        final Object temporal = asTemporal(left) != null ? left : (asTemporal(right) != null ? right : null);
+        final Object temporal = temporalBeside(left, right) != null ? left
+            : temporalBeside(right, left) != null ? right : null;
         if (temporal != null) {
             final Object other = temporal == left ? right : left;
             if (other instanceof IntervalValue) {
@@ -430,7 +431,7 @@ public final class ExpressionArithmetic {
         }
         // Date/time subtraction (NOT commutative — the left operand must be the DATE/TIMESTAMP):
         // temporal - integer (days), temporal - INTERVAL, or temporal - temporal (difference in days).
-        final LocalDateTime leftTemporal = asTemporal(left);
+        final LocalDateTime leftTemporal = temporalBeside(left, right);
         if (leftTemporal != null) {
             if (right instanceof IntervalValue) {
                 return applyInterval(left, (IntervalValue) right, -1);
@@ -459,6 +460,15 @@ public final class ExpressionArithmetic {
             return subtract(subtractCoerced[0], subtractCoerced[1]);
         }
         throw unreadableOperand(left, right, "Cannot subtract: " + left + " - " + right);
+    }
+
+    /**
+     * A temporal operand as the arithmetic reads it beside {@code other}: a DATE or a TIMESTAMP, or a text that spells
+     * one beside an INTERVAL or a temporal. Beside a number a text is read as the number it is not —
+     * {@code '2024-01-15' + 1} is "Numeric value '2024-01-15' is not recognized" (live-verified).
+     */
+    private static LocalDateTime temporalBeside(final Object operand, final Object other) {
+        return operand instanceof String && other instanceof Number ? null : asTemporal(operand);
     }
 
     /**

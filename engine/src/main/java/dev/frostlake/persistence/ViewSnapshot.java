@@ -37,6 +37,8 @@ public class ViewSnapshot implements Serializable {
     public Instant lastDdlAt;
     // SECURE VIEW flag. Primitive → old snapshots deserialize it as false (a plain view).
     public boolean secure;
+    /** Whether the view tracks its changes. */
+    public boolean changeTracking;
     // RECURSIVE VIEW flag and the body as written, which its DDL shows; `query` then holds the recursive CTE the view
     // runs as. False and null on snapshots written before recursive views, which were never recursive.
     public boolean recursive;

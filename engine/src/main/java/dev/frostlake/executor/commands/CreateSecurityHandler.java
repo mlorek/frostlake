@@ -95,8 +95,8 @@ public class CreateSecurityHandler implements CommandHandler {
         // A property written twice and a propagation mode that is none of the three are compilation errors,
         // refused before IF NOT EXISTS could forgive anything.
         TagPropagation.requireCompilable(ctx.tagSetProperty());
-        if (ctx.or_alter() != null && catalog.hasTag(tagName)) {
-            alterTagInPlace(ctx, catalog.getTag(tagName));
+        if (ctx.or_alter() != null && catalog.hasTagExact(tagName)) {
+            alterTagInPlace(ctx, catalog.getTagExact(tagName));
             return null;
         }
         final List<String> allowedValues = new ArrayList<>();
@@ -125,7 +125,7 @@ public class CreateSecurityHandler implements CommandHandler {
             queryExecutor.requireOwnership("TAG", qualifiedNameParts(ctx.qualifiedName(0)), null);
             // Asked before the tag a replacement drops is gone.
             ddl.checkCreatePrivilege(Privilege.CREATE_TAG, ddl.resolveSchemaFromQualifiedName(tagName));
-            try { catalog.dropTag(tagName); } catch (final RuntimeException ignored) {}
+            try { catalog.dropTagExact(tagName); } catch (final RuntimeException ignored) {}
         }
         try {
             DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists,
@@ -135,7 +135,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 ddl.resolveSchemaFromQualifiedName(tagName));
             catalog.createTag(tagName, allowedValues, comment);
             if (propagate != null) {
-                final Tag created = catalog.getTag(tagName);
+                final Tag created = catalog.getTagExact(tagName);
                 created.setPropagate(propagate);
                 created.setOnConflict(onConflict);
             }
@@ -264,7 +264,7 @@ public class CreateSecurityHandler implements CommandHandler {
             // The policy hands back what it was given: live refuses a signature whose argument and
             // return types disagree, before anything is attached.
             if (!params.isEmpty() && ctx.dataTypeName() != null) {
-                final DataType declaredReturn = columnParser.parseDataType(ctx.dataTypeName(),
+                final DataType declaredReturn = columnParser.parseRoutineDataType(ctx.dataTypeName(),
                     ctx.typeParameters());
                 if (!SqlTypeNames.sameFamily(params.get(0).getDataType(), declaredReturn)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX
@@ -272,7 +272,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 }
             }
             final DataType declaredReturnType = ctx.dataTypeName() != null
-                ? columnParser.parseDataType(ctx.dataTypeName(), ctx.typeParameters()) : null;
+                ? columnParser.parseRoutineDataType(ctx.dataTypeName(), ctx.typeParameters()) : null;
             PolicyObjectTagCalls.requireTagsIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition()
                 : ctx.booleanExpr(), catalog);
             PolicyBodyCheck.compile(queryExecutor, catalog, policyName, declaredReturnType,

@@ -57,6 +57,8 @@ public class QueryHistory {
     private int queuedTimeMs;
     /** The number of the session that ran the statement — QUERY_HISTORY's SESSION_ID — or null. */
     private Long sessionId;
+    /** Whether the statement was an ALTER DYNAMIC TABLE … REFRESH; see {@link #markDynamicTableRefresh}. */
+    private boolean dynamicTableRefresh;
 
     public QueryHistory(final String queryText, final String database, final String schema, final String warehouse,
                        final String user, final String role) {
@@ -252,6 +254,24 @@ public class QueryHistory {
     /** Records that the statement's changes are visible as of the latest snapshot taken now. */
     public void markVisibleSequence() {
         this.visibleSequence = SnapshotSequence.current();
+    }
+
+    /**
+     * Records that the statement refreshed a dynamic table. Unlike any other ALTER, such a statement anchors time
+     * travel, and at its start for AT as for BEFORE: the refresh it asked for is not part of the point
+     * (live-verified).
+     */
+    public void markDynamicTableRefresh() {
+        this.dynamicTableRefresh = true;
+    }
+
+    /**
+     * Whether the statement refreshed a dynamic table (see {@link #markDynamicTableRefresh}).
+     *
+     * @return whether it did
+     */
+    public boolean isDynamicTableRefresh() {
+        return dynamicTableRefresh;
     }
 
     public LocalDateTime getEndTime() {

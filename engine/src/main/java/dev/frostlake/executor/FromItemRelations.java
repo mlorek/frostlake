@@ -35,9 +35,8 @@ import org.antlr.v4.runtime.ParserRuleContext;
  * <p>A USING or NATURAL join merges its left input and its right side into one name scope (see
  * {@link JoinedRelations}), but its left input is its OWN item only: live refuses a bare {@code k} over
  * {@code K3, K1 JOIN K2 USING (b)} as ambiguous, because {@code K3} stays a relation of its own beside
- * the merged one, and answers it over {@code K1 JOIN K3 USING (k), K2}. The executor applies every comma
- * item before the explicit joins, and the joins inside a parenthesized item before the others, so a join's
- * left input holds the other items' relations too, and one item's joins need not run one after another;
+ * the merged one, and answers it over {@code K1 JOIN K3 USING (k), K2}. The executor joins the items and the
+ * explicit joins in the order they are written, so a join's left input holds the earlier items' relations too;
  * this record tells each relation's item apart.
  */
 final class FromItemRelations {

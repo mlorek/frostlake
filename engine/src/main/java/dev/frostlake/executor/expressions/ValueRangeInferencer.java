@@ -608,9 +608,15 @@ final class ValueRangeInferencer {
         if (folded != null) {
             return folded;
         }
+        // A shift count is no value the result is read through: BITSHIFTRIGHT(1, '2') keeps the declared width's
+        // [SB1] (live-verified).
+        final boolean shifts = call.getFunctionName().toUpperCase(Locale.ROOT).startsWith("BITSHIFT");
         boolean throughSixtyFourBits = false;
-        for (final Expression arg : args) {
-            final DataType type = visitor.inferStaticType(arg);
+        for (int i = 0; i < args.size(); i++) {
+            if (shifts && i == 1) {
+                continue;
+            }
+            final DataType type = visitor.inferStaticType(args.get(i));
             throughSixtyFourBits = throughSixtyFourBits || type instanceof StringType || NumericType.isApproximate(type);
         }
         final DataType declared = visitor.inferStaticType(call);
@@ -736,6 +742,10 @@ final class ValueRangeInferencer {
             return read != null && read.isEmpty() ? ValueRange.EMPTY : null;
         }
         switch (name) {
+            case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
+                // The token is answered while the statement compiles and tagged by its value: [SB8] for a written
+                // table's, [SB1] for the 0 of one never written (live-verified).
+                return foldedOverLiterals(call, args);
             case "IFF":
                 if (args.size() != 3) {
                     return null;
@@ -1041,25 +1051,29 @@ final class ValueRangeInferencer {
      * The part is one a function names — DAYOFYEAR, MONTH — or one EXTRACT or DATE_PART is asked for, and the
      * constant a cast of a literal, a TO_DATE over literals or a DATE_TRUNC of one:
      * {@code EXTRACT(dayofyear FROM TO_DATE('2024-05-06'))} and {@code DAYOFYEAR(DATE_TRUNC(month,
-     * '2024-05-06'::DATE))} are [SB1]. An epoch part is not folded: {@code EXTRACT(epoch_second FROM
-     * '2024-05-06'::DATE)} keeps its [SB8] (all live-verified). Null for any other call.
+     * '2024-05-06'::DATE))} are [SB1]. An epoch part is folded from a constant timestamp alone — {@code
+     * DATE_PART(epoch_second, '1970-01-01 00:01:00'::TIMESTAMP_NTZ)} is [SB1] and {@code DATE_PART(epoch_second,
+     * TO_TIMESTAMP('2024-03-15 10:20:30'))} [SB4] — while {@code EXTRACT(epoch_second FROM '2024-05-06'::DATE)}
+     * keeps its [SB8] (all live-verified). Null for any other call.
      */
     private ValueRange foldedDatePart(final FunctionCallExpression call, final String name,
                                       final List<Expression> args) {
         final Expression read;
+        boolean epoch = false;
         if (DatePartOperands.isOnePart(name) && args.size() == 1) {
             read = args.get(0);
         } else if ((name.equals("EXTRACT") || name.equals("DATE_PART")) && args.size() == 2) {
             read = args.get(1);
             final DataType declared = visitor.inferStaticType(call);
-            // Only a calendar part folds, which declares two digits or four.
-            if (!(declared instanceof NumericType) || ((NumericType) declared).getPrecision() > 4) {
+            // A calendar part folds, which declares two digits or four; an epoch part declares more.
+            if (!(declared instanceof NumericType)) {
                 return null;
             }
+            epoch = ((NumericType) declared).getPrecision() > 4;
         } else {
             return null;
         }
-        if (!isConstantDate(read)) {
+        if (epoch ? !isConstantTimestamp(read) : !isConstantDate(read)) {
             return null;
         }
         final Object part;
@@ -1142,12 +1156,70 @@ final class ValueRangeInferencer {
         if (operand instanceof BinaryOperationExpression) {
             final BinaryOperationExpression moved = (BinaryOperationExpression) operand;
             final boolean added = moved.getOperator() == BinaryOperator.ADD;
+            if ((added || moved.getOperator() == BinaryOperator.SUBTRACT)
+                    && moved.getRight() instanceof IntervalExpression) {
+                return movedByInterval(moved);
+            }
             if (added || moved.getOperator() == BinaryOperator.SUBTRACT) {
                 final ValueRange later = movedBy(moved.getLeft(), moved.getRight(), added);
                 return later != null || !added ? later : movedBy(moved.getRight(), moved.getLeft(), true);
             }
         }
         return null;
+    }
+
+    /**
+     * The days a date or a timestamp moved by an interval reaches: its own days, each end moved — the first from its
+     * first moment and the last from its last, so a move by part of a day may carry the last into the next day.
+     * {@code YEAR(t + INTERVAL '7 years')} over timestamps of the years 100 to 120 is [SB1], {@code '8 years'} [SB2]
+     * (live-verified).
+     */
+    private ValueRange movedByInterval(final BinaryOperationExpression moved) {
+        if (!keepsDays(visitor.inferStaticType(moved.getLeft()))) {
+            return null;
+        }
+        final ValueRange base = dayRange(moved.getLeft());
+        if (base == null || base.isEmpty() || base.getMin() == null || base.getMax() == null) {
+            return base;
+        }
+        final BigDecimal least = dayReached(moved, null, -1, LocalDate.ofEpochDay(base.getMin().longValue()), true);
+        final BigDecimal greatest = dayReached(moved, null, -1, LocalDate.ofEpochDay(base.getMax().longValue()), false);
+        return least == null || greatest == null ? null
+            : ValueRange.between(least, greatest).withNullable(base.isNullable());
+    }
+
+    /** Whether an amount is a number written out, signed or not: {@code 1}, {@code -10}. */
+    private static boolean isWrittenNumber(final Expression amount) {
+        final Expression written = amount instanceof UnaryOperationExpression
+            && ((UnaryOperationExpression) amount).getOperator() == UnaryOperator.NEGATE
+            ? ((UnaryOperationExpression) amount).getOperand() : amount;
+        return written instanceof LiteralExpression && ((LiteralExpression) written).getValue() instanceof Number;
+    }
+
+    /**
+     * The day a move reaches from the first or the last moment of a day: the moved operand replaced by that moment —
+     * the left operand of an operation, or the argument at {@code operandAt} of a call — and the move read.
+     */
+    private BigDecimal dayReached(final BinaryOperationExpression operation, final FunctionCallExpression call,
+                                  final int operandAt, final LocalDate day, final boolean first) {
+        final Expression moment = new CastExpression(new LiteralExpression(day + (first ? " 00:00:00"
+            : " 23:59:59.999999999"), LiteralType.STRING), "TIMESTAMP_NTZ");
+        final Expression move;
+        if (operation != null) {
+            move = new BinaryOperationExpression(moment, operation.getOperator(), operation.getRight());
+        } else {
+            final List<Expression> arguments = new ArrayList<>(call.getArguments());
+            arguments.set(operandAt, moment);
+            move = new FunctionCallExpression(call.getFunctionName(), arguments);
+        }
+        try {
+            final Object reached = move.accept(visitor);
+            return reached instanceof LocalDateTime
+                ? BigDecimal.valueOf(((LocalDateTime) reached).toLocalDate().toEpochDay())
+                : reached instanceof LocalDate ? BigDecimal.valueOf(((LocalDate) reached).toEpochDay()) : null;
+        } catch (final RuntimeException unread) {
+            return null;
+        }
     }
 
     /** The days a call over date operands answers within, or null for a call that is not read through. */
@@ -1184,6 +1256,21 @@ final class ValueRangeInferencer {
         }
         if ((name.equals("GREATEST") || name.equals("LEAST")) && !args.isEmpty()) {
             return extremeDays(args, name.equals("GREATEST"));
+        }
+        final boolean adds = (name.equals("DATEADD") || name.equals("TIMEADD") || name.equals("TIMESTAMPADD"))
+            && args.size() == 3;
+        if (adds && isWrittenNumber(args.get(1)) && !isDate(visitor.inferStaticType(args.get(2)))
+                && keepsDays(visitor.inferStaticType(args.get(2)))) {
+            // A timestamp moves from the first moment of its first day and the last of its last.
+            final ValueRange base = dayRange(args.get(2));
+            if (base == null || base.isEmpty() || base.getMin() == null || base.getMax() == null) {
+                return base;
+            }
+            final BigDecimal least = dayReached(null, read, 2, LocalDate.ofEpochDay(base.getMin().longValue()), true);
+            final BigDecimal greatest = dayReached(null, read, 2, LocalDate.ofEpochDay(base.getMax().longValue()),
+                false);
+            return least == null || greatest == null ? null
+                : ValueRange.between(least, greatest).withNullable(base.isNullable());
         }
         final int moved = name.equals("DATEADD") && args.size() == 3 ? 2 : name.equals("DATE_TRUNC") && args.size() == 2
             ? 1 : name.equals("LAST_DAY") && !args.isEmpty() && args.size() <= 2 ? 0 : -1;
@@ -1274,6 +1361,31 @@ final class ValueRangeInferencer {
         }
     }
 
+    /** Whether a value is a timestamp the plan holds as a constant: a cast of a literal, or a conversion of one. */
+    private boolean isConstantTimestamp(final Expression value) {
+        final DataType type = visitor.inferStaticType(value);
+        if (!(type instanceof DateTimeType) || !type.getName().toUpperCase(Locale.ROOT).startsWith("TIMESTAMP")) {
+            return false;
+        }
+        if (isConstantDate(value)) {
+            return true;
+        }
+        if (!(value instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) value;
+        if (call.getNameExpression() != null || call.getArguments().isEmpty()
+                || !call.getFunctionName().toUpperCase(Locale.ROOT).startsWith("TO_TIMESTAMP")) {
+            return false;
+        }
+        for (final Expression argument : call.getArguments()) {
+            if (!(argument instanceof LiteralExpression) || isBareNull(argument)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Whether a value is a date the plan holds as a constant: see {@link #foldedDatePart}. */
     private boolean isConstantDate(final Expression value) {
         if (value instanceof CastExpression) {
@@ -1340,10 +1452,36 @@ final class ValueRangeInferencer {
 
     /** A TO_NUMBER-family call's interval: its exact operand's, or the one value a constant folds to. */
     private ValueRange convertedRange(final FunctionCallExpression call, final List<Expression> args) {
+        if (readsByFormat(args)) {
+            return null;
+        }
         final ValueRange exact = exactOperandRange(args.get(0));
         final ValueRange kept = exact != null ? exact : foldedConversion(call, args);
         // What is always NULL converts to no number at all: TO_NUMBER over a text column of NULLs.
         return kept == null && alwaysNull(args.get(0)) ? ValueRange.EMPTY : kept;
+    }
+
+    /**
+     * Whether a conversion into a number reads its text by a format, which the plan leaves to the row: {@code
+     * TO_NUMBER('12', '99')} and {@code TO_NUMBER('$12.50', '$99.99', 5, 2)} keep their declared widths, [SB16] and
+     * [SB4], where a format of hexadecimal digits alone is folded, {@code TRY_TO_NUMBER('12', 'xx', 5, 0)} being
+     * [SB1] (live-verified).
+     */
+    private boolean readsByFormat(final List<Expression> args) {
+        if (args.size() < 2 || !(visitor.inferStaticType(args.get(1)) instanceof StringType)) {
+            return false;
+        }
+        final Expression format = args.get(1);
+        if (!(format instanceof LiteralExpression) || ((LiteralExpression) format).getType() != LiteralType.STRING) {
+            return true;
+        }
+        final String written = String.valueOf(((LiteralExpression) format).getValue());
+        for (int i = 0; i < written.length(); i++) {
+            if (written.charAt(i) != 'X' && written.charAt(i) != 'x') {
+                return true;
+            }
+        }
+        return written.isEmpty();
     }
 
     /**
@@ -1356,7 +1494,7 @@ final class ValueRangeInferencer {
      */
     private ValueRange foldedConversion(final Expression conversion, final List<Expression> operands) {
         for (final Expression operand : operands) {
-            if (!foldsAsConstant(operand)) {
+            if (!foldsAsConstant(operand) && !isPi(operand)) {
                 return null;
             }
         }
@@ -1370,10 +1508,46 @@ final class ValueRangeInferencer {
             return null;
         }
         if (folded == null) {
-            return ValueRange.EMPTY;
+            // A TRY conversion of a text that spells a number too wide for the target keeps the declared width:
+            // TRY_TO_NUMBER('123456', 5, 0) is [SB4] and TRY_TO_NUMBER('1e40') [SB16], where a text spelling no
+            // number answers a NULL's [SB1] (live-verified).
+            return overflows(conversion, operands) ? null : ValueRange.EMPTY;
         }
         final BigDecimal value = ValueRange.exactOf(folded);
         return value != null ? ValueRange.of(value) : null;
+    }
+
+    /** Whether a TRY conversion into a number answered NULL over a text that spells a number. */
+    private static boolean overflows(final Expression conversion, final List<Expression> operands) {
+        if (!(conversion instanceof FunctionCallExpression) || operands.isEmpty()
+                || !(operands.get(0) instanceof LiteralExpression)
+                || ((LiteralExpression) operands.get(0)).getType() != LiteralType.STRING) {
+            return false;
+        }
+        final String name = ((FunctionCallExpression) conversion).getFunctionName();
+        if (name == null || !name.toUpperCase(Locale.ROOT).startsWith("TRY_")) {
+            return false;
+        }
+        try {
+            new BigDecimal(String.valueOf(((LiteralExpression) operands.get(0)).getValue()).trim());
+            return true;
+        } catch (final NumberFormatException noNumber) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether an operand is PI(), which the plan holds as the constant it is where a conversion reads it directly:
+     * {@code PI()::NUMBER} and {@code TO_DECIMAL(PI(), 10, 2)} are tagged by their 3 and 3.14, where
+     * {@code PI()::FLOAT::NUMBER} and {@code (-PI())::NUMBER} keep the declared width (live-verified).
+     */
+    private static boolean isPi(final Expression operand) {
+        if (!(operand instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) operand;
+        return call.getNameExpression() == null && call.getArguments().isEmpty() && !call.isStar()
+            && "PI".equalsIgnoreCase(call.getFunctionName());
     }
 
     /**

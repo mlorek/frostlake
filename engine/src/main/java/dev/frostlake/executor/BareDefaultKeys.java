@@ -17,7 +17,9 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -57,19 +59,22 @@ public final class BareDefaultKeys {
             return null;
         }
         final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
+        // A bare DEFAULT is a value: a key that is a condition holds none.
         if (node instanceof FrostlakeParser.OrderItemContext) {
-            keys.add(((FrostlakeParser.OrderItemContext) node).expression());
+            addValue(keys, KeyContexts.of((FrostlakeParser.OrderItemContext) node));
         } else if (node instanceof FrostlakeParser.GroupByElementContext) {
             final FrostlakeParser.GroupByElementContext element = (FrostlakeParser.GroupByElementContext) node;
-            if (element.expression() != null) {
-                keys.add(element.expression());
-            }
+            addValue(keys, KeyContexts.of(element));
             if (element.groupByColumnList() != null) {
-                keys.addAll(element.groupByColumnList().expression());
+                for (final ParserRuleContext member : KeyContexts.members(element.groupByColumnList())) {
+                    addValue(keys, member);
+                }
             }
             if (element.groupingSetList() != null) {
                 for (final FrostlakeParser.GroupingSetContext set : element.groupingSetList().groupingSet()) {
-                    keys.addAll(set.expression());
+                    for (final ParserRuleContext member : KeyContexts.members(set)) {
+                        addValue(keys, member);
+                    }
                 }
             }
         }
@@ -89,6 +94,12 @@ public final class BareDefaultKeys {
     }
 
     /** The word of a key that is DEFAULT alone and unquoted, or null. */
+    private static void addValue(final List<FrostlakeParser.ExpressionContext> keys, final ParserRuleContext key) {
+        if (key instanceof FrostlakeParser.ExpressionContext) {
+            keys.add((FrostlakeParser.ExpressionContext) key);
+        }
+    }
+
     private static Token bareDefault(final FrostlakeParser.ExpressionContext key) {
         if (!(key instanceof FrostlakeParser.QualifiedNameExprContext)) {
             return null;

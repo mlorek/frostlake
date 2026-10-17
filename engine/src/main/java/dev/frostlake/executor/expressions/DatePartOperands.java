@@ -59,7 +59,9 @@ import java.util.Set;
  * </pre>
  *
  * <p>A TIME has an hour, a minute, a second and a nanosecond and nothing else, its epoch included; a DATE has
- * every part but those four and the two zone components.
+ * every part but those four, the two zone components and the epoch counted in units finer than a second —
+ * {@code DATE_PART(epoch_millisecond, d)} is "invalid value [EPOCH_MILLISECOND] for parameter 'DATE_PART date/time
+ * part'" where {@code DATE_PART(epoch_second, d)} answers (live-verified).
  */
 final class DatePartOperands {
 
@@ -67,6 +69,11 @@ final class DatePartOperands {
     private static final Set<String> ONE_PART = new HashSet<>(Arrays.asList(
         "YEAR", "QUARTER", "MONTH", "WEEK", "WEEKOFYEAR", "WEEKISO", "DAY", "DAYOFMONTH", "DAYOFWEEK",
         "DAYOFWEEKISO", "DAYOFYEAR", "HOUR", "MINUTE", "SECOND", "YEAROFWEEK", "YEAROFWEEKISO"));
+
+    /** The epoch parts counted finer than a second, by every spelling, which a DATE lacks. */
+    private static final Set<String> FINE_EPOCH_PARTS = new HashSet<>(Arrays.asList(
+        "EPOCH_MILLISECOND", "EPOCH_MILLISECONDS", "EPOCH_MICROSECOND", "EPOCH_MICROSECONDS", "EPOCH_NANOSECOND",
+        "EPOCH_NANOSECONDS"));
 
     /** The zone components, by every spelling. */
     private static final Set<String> ZONE_PARTS = new HashSet<>(Arrays.asList(
@@ -164,7 +171,8 @@ final class DatePartOperands {
         if (isTime(operand)) {
             return !ofTheClock;
         }
-        return isDate(operand) && (ofTheClock || ZONE_PARTS.contains(part.toUpperCase(Locale.ROOT)));
+        final String spelled = part.toUpperCase(Locale.ROOT);
+        return isDate(operand) && (ofTheClock || ZONE_PARTS.contains(spelled) || FINE_EPOCH_PARTS.contains(spelled));
     }
 
     static boolean isDate(final DataType type) {

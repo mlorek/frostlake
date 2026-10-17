@@ -17,7 +17,6 @@ DEFAULT_STREAMLIT_NOTEBOOK_WAREHOUSE	SYSTEM$STREAMLIT_NOTEBOOK_WH	STRING	B	The w
 ENABLE_CONSOLE_OUTPUT	false	BOOLEAN	B	Enable stdout/stderr fast path logging for anonyous stored procs. This is a public parameter (similar to LOG_LEVEL).
 ENABLE_DATA_COMPACTION	true	BOOLEAN	B	User-visible parameter that controls table storage optimization for managed Iceberg tables.
 ENABLE_HORIZON_IRC_UNMANAGED_CREDENTIAL_VENDING	false	BOOLEAN	D	If true, enables Horizon IRC access with credential vending for unmanaged Iceberg tables in this database. When false (default), the tables are not accessible via Horizon IRC with credential vending.
-ENABLE_ICEBERG_MANAGED_TABLE_REPLICATION	false	BOOLEAN	D	Whether to enable iceberg managed tables for replication in Failover group.
 ENABLE_ICEBERG_MERGE_ON_READ	true	BOOLEAN	B	Deprecated. Use ICEBERG_MERGE_ON_READ_BEHAVIOR to control merge-on-read on Iceberg tables.
 ENABLE_SYSTEM_SET_APP_VERSION_IN_CURRENT_CALL_CONTEXT	false	BOOLEAN	D	If enabled for an app package, allow usage of the system function SYSTEM$SET_APP_VERSION_IN_CURRENT_CALL_CONTEXT in its app code
 EVENT_TABLE	snowflake.telemetry.events	STRING	D	Event destination for the given target.

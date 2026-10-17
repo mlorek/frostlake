@@ -3,7 +3,9 @@ grammar Frostlake;
 // The word IDENTIFIER leaves the lexer as one of three tokens, the word MATCH_RECOGNIZE as its clause's opener or
 // as a name, FINAL and RUNNING inside that clause as a call's prefix or as names, and the | and $ of a row
 // pattern as tokens there alone: see the lexer members below.
-tokens { KW_IDENTIFIER_REF, KW_IDENTIFIER_OPEN, MATCH_RECOGNIZE_OPEN, ROW_PATTERN_SEMANTICS, BAR, DOLLAR }
+tokens {
+    KW_IDENTIFIER_REF, KW_IDENTIFIER_OPEN, MATCH_RECOGNIZE_OPEN, ROW_PATTERN_SEMANTICS, BAR, DOLLAR, TABLE_QUERY
+}
 
 @lexer::header {
 import java.util.ArrayList;
@@ -27,8 +29,15 @@ import java.util.List;
         final Token token = tokensAhead.isEmpty() ? read() : tokensAhead.remove(0);
         final int type = token.getType();
         final int before = previousType;
+        final int beforeThat = earlierType;
+        earlierType = previousType;
         previousType = type;
-        if (type == KW_IDENTIFIER && token instanceof WritableToken) {
+        if (before == Token.INVALID_TYPE || before == SEMI) {
+            statementOpener = type;
+        }
+        if (type == TABLE && token instanceof WritableToken && opensTableQuery(before, beforeThat)) {
+            ((WritableToken) token).setType(FrostlakeParser.TABLE_QUERY);
+        } else if (type == KW_IDENTIFIER && token instanceof WritableToken) {
             ((WritableToken) token).setType(identifierKeywordType());
         } else if (type == IDENTIFIER && token instanceof WritableToken) {
             final String word = token.getText();
@@ -68,6 +77,38 @@ import java.util.List;
     /** The type the lexer's rules gave the token handed out last. */
     private int previousType = Token.INVALID_TYPE;
 
+    /** The type the lexer's rules gave the token handed out before the last one. */
+    private int earlierType = Token.INVALID_TYPE;
+
+    /** The type of the token the statement being read opened with. */
+    private int statementOpener = Token.INVALID_TYPE;
+
+    /**
+     * Whether the word TABLE opens a query here (see selectOperand): at a statement's start, and where a query may
+     * begin — after a '(' that follows no name, a set operator, AS or EXPLAIN, or after an INSERT's target or a
+     * WITH's last CTE — with a name after it. Anywhere else it stays the word a statement names a table by, so that
+     * what a fault there is read as, and where its lines fall, stays as it was: CREATE TABLE t, DESCRIBE TABLE t, a
+     * signature's TABLE(…), (TABLE) and (TABLE x) after the object's name, a field named TABLE in OBJECT(TABLE INT).
+     */
+    private boolean opensTableQuery(final int before, final int beforeThat) {
+        if (before == Token.INVALID_TYPE || before == SEMI) {
+            return true;
+        }
+        final int next = typeAhead(0);
+        if (next != IDENTIFIER && next != QUOTED_IDENTIFIER && next != KW_IDENTIFIER) {
+            return false;
+        }
+        if (before == LPAREN) {
+            return beforeThat != IDENTIFIER && beforeThat != QUOTED_IDENTIFIER;
+        }
+        if (before == UNION || before == INTERSECT || before == EXCEPT || before == MINUS_KW || before == ALL
+                || before == DISTINCT || before == AS || before == EXPLAIN) {
+            return true;
+        }
+        return (before == IDENTIFIER || before == QUOTED_IDENTIFIER || before == RPAREN)
+            && (statementOpener == INSERT || statementOpener == EXPLAIN || statementOpener == WITH);
+    }
+
     /** Whether the text holds a caret: the one token an expression may write as an operator and never use. */
     private boolean caretRead;
 
@@ -83,6 +124,8 @@ import java.util.List;
     @Override
     public void reset() {
         previousType = Token.INVALID_TYPE;
+        earlierType = Token.INVALID_TYPE;
+        statementOpener = Token.INVALID_TYPE;
         caretRead = false;
         tokensAhead.clear();
         patternSymbols.clear();
@@ -637,11 +680,13 @@ import java.util.List;
 
     /** Whether an operand names a relation the way live reads one there, or calls a table function. */
     private boolean readsAsTableOperand(final ExpressionContext operand) {
+        // A class instance's method reads as a call too, and is then no table function (live-verified).
         if (operand instanceof SessionVarExprContext || operand instanceof BindVarExprContext
                 || operand instanceof FunctionCallExprContext || operand instanceof FunctionCallStarExprContext
                 || operand instanceof FunctionCallMixedArgsExprContext
                 || operand instanceof FunctionCallNamedArgsExprContext
-                || operand instanceof SystemUserTaskCancelExprContext) {
+                || operand instanceof SystemUserTaskCancelExprContext
+                || operand instanceof InstanceMethodCallExprContext) {
             return true;
         }
         if (!(operand instanceof LiteralExprContext)) {
@@ -760,6 +805,12 @@ import java.util.List;
         if (next != ACCOUNT && next != USER && next != DATABASE) {
             notifyErrorListeners(on, "unexpected '" + on.getText() + "'", new RefusedWordFault(this, listing, true));
         }
+    }
+
+    /** Refuses whatever follows a holder that takes nothing after it: SHOW SECRETS ON ACCOUNT names its end. */
+    private void refuseHolderTail(final ParserRuleContext holder) {
+        final Token next = _input.LT(1);
+        notifyErrorListeners(next, "unexpected '" + next.getText() + "'", new RefusedWordFault(this, holder, true));
     }
 
     private void refuseKindWord(final ParserRuleContext kind, final Token word, final String expected) {
@@ -1239,19 +1290,23 @@ streamlitUnsetProperty
     | SECRETS
     ;
 
-// Network rules, network policies, password policies and secrets. Their properties are read by name and checked
-// against each kind's documented set by the handler, which refuses any other as an invalid property of the
-// object's type. Attaching a password policy or a network policy to the account or to a user is recorded and never
-// enforced: the engine authenticates no one.
+// Network rules, network policies, password policies, session policies and secrets. Their properties are read by
+// name and checked against each kind's documented set by the handler, which refuses any other as an invalid property
+// of the object's type. Attaching a password policy or a network policy to the account or to a user is recorded and
+// never enforced: the engine authenticates no one. A session policy's DROP and DESCRIBE are read with the kinds that
+// model no object (unmodelledKind), whose readings of a signature and of a property they share.
 securityObjectStatement
     : CREATE (or_replace | or_alter)? NETWORK RULE if_not_exists? qualifiedName securityProperty* SEMI?
     | CREATE (or_replace | or_alter)? NETWORK POLICY if_not_exists? identifier securityProperty* SEMI?
     | CREATE or_replace? PASSWORD POLICY if_not_exists? qualifiedName securityProperty* SEMI?
+    | CREATE or_replace? SESSION POLICY if_not_exists? qualifiedName securityProperty* SEMI?
     | CREATE or_replace? SECRET if_not_exists? qualifiedName securityProperty* SEMI?
     | ALTER NETWORK RULE if_exists? qualifiedName (securityPropertyChange | RENAME TO qualifiedName) SEMI?
     | ALTER NETWORK POLICY if_exists? identifier (securityPropertyChange | RENAME TO identifier
       | (ADD | REMOVE) optionKey EQ securityPropertyValue | tagSet | tagUnset) SEMI?
     | ALTER PASSWORD POLICY if_exists? qualifiedName (securityPropertyChange | RENAME TO qualifiedName | tagSet
+      | tagUnset) SEMI?
+    | ALTER SESSION POLICY if_exists? qualifiedName (securityPropertyChange | RENAME TO qualifiedName | tagSet
       | tagUnset) SEMI?
     | ALTER SECRET if_exists? qualifiedName securityPropertyChange SEMI?
     | DROP NETWORK RULE if_exists? qualifiedName objectSignature? dropBehavior? SEMI?
@@ -1271,6 +1326,8 @@ securityProperty
 securityPropertyValue
     : STRING_LITERAL
     | MINUS? INTEGER_LITERAL
+    // A fraction is read, and refused by a whole number's property as no value of that parameter (live-verified).
+    | MINUS? FLOAT_LITERAL
     | identifier
     | LPAREN (STRING_LITERAL (COMMA STRING_LITERAL)*)? RPAREN
     ;
@@ -1284,13 +1341,13 @@ securityPropertyChange
 // The listings and descriptions of those four kinds, each with the modifiers the account takes: SHOW NETWORK
 // POLICIES takes a LIKE and SHOW SECRETS a STARTS WITH and a LIMIT, which their pages leave out.
 securityObjectListing
-    : SHOW NETWORK RULES (LIKE stringText)? securityListingScope? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
+    : SHOW NETWORK RULES (LIKE stringText)? (securityListingScope | securityHolder)? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
     | SHOW NETWORK POLICIES (LIKE stringText)? securityListingScope? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
     | SHOW PASSWORD POLICIES (LIKE stringText)?
         (securityListingScope | holderWord=ON {refusePolicyHolderWord($ctx, $holderWord);}
             (ACCOUNT | USER identifier | holderDatabase=DATABASE qualifiedName))?
-        (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL)? SEMI?
-    | SHOW SECRETS (LIKE stringText)? securityListingScope? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
+        (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
+    | SHOW SECRETS (LIKE stringText)? (securityListingScope | securityHolder)? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
     | (DESCRIBE | DESC) NETWORK RULE qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) NETWORK POLICY identifier objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) PASSWORD POLICY qualifiedName objectSignature? describeProperty* SEMI?
@@ -1301,11 +1358,18 @@ securityObjectListing
 // it is refused in the listing's own words. A table and a view need no name, and APPLICATION or CLASS written alone
 // is the name of a schema (live-verified).
 securityListingScope
-    : IN (ACCOUNT | DATABASE qualifiedName? | SCHEMA qualifiedName?
+    : IN (ACCOUNT accountName=qualifiedName? | DATABASE qualifiedName? | SCHEMA qualifiedName?
          | scopeKind=(TABLE | VIEW) qualifiedName?
          | scopeApplication=APPLICATION PACKAGE? qualifiedName
          | scopeClass=CLASS qualifiedName
          | qualifiedName)
+    ;
+
+// What SHOW NETWORK RULES and SHOW SECRETS read after ON: a name — USER among them — looked up as nothing a rule is
+// shown on, or as a secret's table; or ACCOUNT, after which every token is refused, the statement's end too
+// (live-verified).
+securityHolder
+    : ON (holderAccount=ACCOUNT {refuseHolderTail($ctx);} | holderUser=USER | qualifiedName)
     ;
 
 undropStatement
@@ -1315,6 +1379,8 @@ undropStatement
     | UNDROP DATABASE identifier SEMI?
     | UNDROP TAG qualifiedName SEMI?
     | UNDROP DYNAMIC TABLE qualifiedName SEMI?
+    // A session policy is read and restored by no UNDROP (live-verified).
+    | UNDROP SESSION POLICY qualifiedName SEMI?
     ;
 
 createStatement
@@ -1326,7 +1392,8 @@ createStatement
     // '<WORD> SCHEMA'." — a message that can only exist if the word was read. LOCAL and GLOBAL are the
     // boundary: `CREATE LOCAL TEMPORARY SCHEMA` IS a syntax error, so the pair below is deliberately
     // not the (LOCAL | GLOBAL)? group the TABLE alternative uses.
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | VOLATILE)? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause?)? schemaProperty* SEMI?
+    // A comma may stand between two properties, but not after WITH MANAGED ACCESS (refused in Java, at the comma).
+    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | VOLATILE)? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause?)? (schemaProperty (COMMA? schemaProperty)*)? SEMI?
     // A table must say what its columns ARE: an explicit column list, CLONE, LIKE, or CTAS. A body-less
     // `CREATE TABLE t`, `CREATE TABLE t TAG (…)` or `CREATE TABLE t CLUSTER BY (…)` is a syntax error in
     // Snowflake (live-verified), so the shape group below is NOT optional.
@@ -1336,8 +1403,8 @@ createStatement
     // follows the query (live-verified).
     | CREATE (or_replace | or_alter)? (TRANSIENT ICEBERG? | (LOCAL | GLOBAL)? (TEMPORARY | TEMP) | VOLATILE | HYBRID | ICEBERG)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? tableTailOption* | LIKE qualifiedName tableTailOption* | USING TEMPLATE selectStatement tableTailOption* | (columnListOptional tableTailOption*)? AS selectStatement) SEMI?
     // An event table's columns are the fixed OpenTelemetry set, so it is written without a column list.
-    // A clone of another event table takes no property of its own.
-    | CREATE or_replace? EVENT TABLE if_not_exists? objectName (CLONE qualifiedName | tableTailOption*) SEMI?
+    // A clone of another event table takes no property of its own, and may be of the source at a point of time.
+    | CREATE or_replace? EVENT TABLE if_not_exists? objectName (CLONE qualifiedName timeTravelClause? | tableTailOption*) SEMI?
     // TEMPORARY/TEMP/VOLATILE views, live-measured, including the keyword ORDER: SECURE comes
     // BEFORE the temporary keyword on a view (`CREATE SECURE TEMPORARY VIEW` parses,
     // `CREATE TEMPORARY SECURE VIEW` is a syntax error) — the opposite of a function, below.
@@ -1347,8 +1414,9 @@ createStatement
     // A clustering key may stand on either side of the view's COMMENT, and more than once; a COMMENT written
     // twice is read and then refused as a duplicate property (live-verified). Any other word among them is read as
     // a property's name, so that what follows it is what is refused: CLUSTER BY (x) COPY GRANTS AS … is a syntax
-    // error at GRANTS, and CLUSTER BY (x) SECURE AS … at the AS (live-verified).
-    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? objectName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? (commentClause | clusterByClause | viewProperty)* tagList? AS selectStatement SEMI?
+    // error at GRANTS, and CLUSTER BY (x) SECURE AS … at the AS, as is a second COPY GRANTS with no column list
+    // before it. The column list may follow the options instead, CLUSTER BY (a) (a, b) AS … (live-verified).
+    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? objectName copyGrants? (LPAREN viewColumnList RPAREN copyGrants?)? (commentClause | clusterByClause | viewProperty)* trailingViewColumns? tagList? AS selectStatement SEMI?
     // COMMENT is one of the pre-AS options; a trailing COMMENT after the query is a syntax error (live-verified).
     // A clone takes the source's definition and data; only the target lag and the warehouse may be given anew.
     | CREATE or_replace? TRANSIENT? DYNAMIC TABLE if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause? copyGrants? dynamicTableCloneOption* | dynamicTableColumns? dynamicTableOptions (LPAREN identifierList RPAREN)? AS selectStatement) SEMI?
@@ -1380,10 +1448,16 @@ createStatement
     | CREATE or_alter TAG qualifiedName tagProperties? tagSetProperty* SEMI?
     // An alert: a condition evaluated on a schedule and an action run when it returns rows, or a clone of one.
     | CREATE (or_replace | or_alter)? ALERT if_not_exists? qualifiedName alertDefinition SEMI?
+    // An external function: a call would reach a remote service through an API integration. Its options are
+    // read here and judged by the handler; a call is refused, as nothing outside the account is reached.
+    | CREATE or_replace? SECURE? EXTERNAL FUNCTION qualifiedName LPAREN parameterList? RPAREN RETURNS returnType
+        externalFunctionOption* (AS STRING_LITERAL)? SEMI?
+    // A Git repository clone: ORIGIN, API_INTEGRATION, GIT_CREDENTIALS and COMMENT, judged by the handler.
+    | CREATE or_replace? GIT REPOSITORY if_not_exists? qualifiedName gitRepositoryOption* SEMI?
     // A function takes the temporary keyword BEFORE SECURE and admits no LOCAL/GLOBAL prefix —
     // both live-measured, and both the reverse of the view rule above. Its options take EXECUTE AS last, as a
     // procedure's do, for the handler to refuse: a function has no invocation type.
-    | CREATE or_replace? (TEMPORARY | TEMP | VOLATILE)? SECURE? FUNCTION if_not_exists? qualifiedName LPAREN parameterList? RPAREN copyGrants? RETURNS returnType functionOption* (executeAsClause (functionOption | executeAsClause)*)? (AS bodyDefinition)? SEMI?
+    | CREATE or_replace? (TEMPORARY | TEMP | VOLATILE)? SECURE? AGGREGATE? FUNCTION if_not_exists? qualifiedName LPAREN parameterList? RPAREN copyGrants? RETURNS returnType functionOption* (executeAsClause (functionOption | executeAsClause)*)? (AS bodyDefinition)? SEMI?
     // A procedure takes a function's options, then EXECUTE AS last. An option or a second EXECUTE AS after it is
     // read here so the handler refuses it as the syntax error the account reports at that word.
     | CREATE or_replace? (TEMPORARY | TEMP | VOLATILE)? SECURE? PROCEDURE if_not_exists? qualifiedName LPAREN parameterList? RPAREN copyGrants? RETURNS returnType functionOption* (executeAsClause (functionOption | executeAsClause)*)? (AS bodyDefinition)?  SEMI?
@@ -1518,6 +1592,29 @@ executeAsClause
     : EXECUTE AS (OWNER | CALLER | {ClauseWords.isWord(_input.LT(1), "RESTRICTED")}? identifier CALLER)
     ;
 
+// An external function's options. API_INTEGRATION, HEADERS, CONTEXT_HEADERS, REQUEST_TRANSLATOR and
+// RESPONSE_TRANSLATOR are plain words, read by name and judged by the handler.
+externalFunctionOption
+    : nullHandlingClause
+    | volatilityClause
+    | commentClause
+    | MAX_BATCH_ROWS EQ INTEGER_LITERAL
+    | COMPRESSION EQ identifier
+    | optionName=identifier EQ (LPAREN externalFunctionList? RPAREN | qualifiedName)
+    ;
+
+// HEADERS = ('name' = 'value', ...) or CONTEXT_HEADERS = (CURRENT_USER, ...).
+externalFunctionList
+    : STRING_LITERAL EQ STRING_LITERAL (COMMA STRING_LITERAL EQ STRING_LITERAL)*
+    | identifier (COMMA identifier)*
+    ;
+
+// A Git repository's options, each a plain word but COMMENT, read by name and judged by the handler.
+gitRepositoryOption
+    : commentClause
+    | optionName=identifier EQ (STRING_LITERAL | qualifiedName)
+    ;
+
 nullHandlingClause
     : CALLED ON NULL INPUT
     | RETURNS NULL ON NULL INPUT
@@ -1614,6 +1711,11 @@ escapeOperand
     | DOLLAR_QUOTED_STRING
     | NULL
     | SESSION_VAR_REF
+    ;
+
+// A materialized view's column list written after its options.
+trailingViewColumns
+    : LPAREN viewColumnList RPAREN
     ;
 
 clusterByClause
@@ -1951,6 +2053,9 @@ commentStatement
     | COMMENT if_exists? ON SCHEMA qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON TABLE qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON DYNAMIC TABLE qualifiedName IS stringText SEMI?
+    // COMMENT ON ICEBERG TABLE is COMMENT ON TABLE (live-verified): it comments on any table, and an Iceberg
+    // table's comment is set by ALTER ICEBERG TABLE alone.
+    | COMMENT if_exists? ON ICEBERG TABLE qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON COLUMN qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON VIEW qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON MATERIALIZED VIEW qualifiedName IS stringText SEMI?
@@ -2019,8 +2124,12 @@ grantStatement
     // two-word privileges (CREATE DATABASE, MONITOR USAGE, APPLY TAG, …) bind as one globalPrivilege.
     | GRANT globalPrivilegeList ON ACCOUNT TO ROLE? principalName withGrantOption? SEMI?  // GRANT global_privs ON ACCOUNT TO ROLE role_name
     // The COPY / REVOKE CURRENT GRANTS tail parses after any object grant; the handler refuses it beside a
-    // privilege other than OWNERSHIP, in live's own sentence.
-    | GRANT privilegeList ON objectType? grantedObjectName (LPAREN identifierList? RPAREN)? TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON type name [(col1, col2)] TO USER/ROLE target_name
+    // privilege other than OWNERSHIP, in live's own sentence. A share and an application role are grantees too,
+    // and ROLE written alone names a role called ROLE (live-verified).
+    // GRANT privs ON type name [(col1, col2)] TO USER/ROLE target_name
+    | GRANT privilegeList ON objectType? grantedObjectName (LPAREN identifierList? RPAREN)?
+        TO ((USER | ROLE)? principalName | databaseRoleGrantee | SHARE principalName | APPLICATION ROLE referencedName
+            | ROLE) currentGrants? withGrantOption? SEMI?
     | GRANT OWNERSHIP ON objectType grantedObjectName TO (USER | ROLE)? principalName currentGrants? SEMI?  // GRANT OWNERSHIP ON type name TO USER/ROLE target_name
     | GRANT privilegeList ON ACCOUNT TO (USER | ROLE)? principalName withGrantOption? SEMI?  // GRANT privs ON ACCOUNT TO USER/ROLE target_name
     | GRANT privilegeList ON ALL bulkObjectType IN bulkScope TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON ALL <types> IN <scope>
@@ -2223,6 +2332,7 @@ securableKind
     | NETWORK RULE
     | PASSWORD POLICY
     | SECRET
+    | EXTERNAL VOLUME
     ;
 
 // What SHOW GRANTS ON names: a kind and its object, or a bare name, which live reads as a table or a view. A kind word
@@ -2232,7 +2342,20 @@ showGrantsTarget
     : securableKind qualifiedName (LPAREN dataTypeList? RPAREN)?
     // The account's own grants; a name after ACCOUNT names another account, which is never found.
     | ACCOUNT accountName=qualifiedName
+    | relationGrantsKind qualifiedName
+    // VOLUME alone names an external volume here (live-verified).
+    | VOLUME qualifiedName
     | bare=qualifiedName {bareGrantsNameAllowed($bare.ctx)}?
+    ;
+
+// The relation kinds SHOW GRANTS ON names beside TABLE and VIEW. Each finds the relation of the name, whatever its
+// own kind, as TABLE does (live-verified).
+relationGrantsKind
+    : MATERIALIZED VIEW
+    | DYNAMIC TABLE
+    | EVENT TABLE
+    | EXTERNAL TABLE
+    | ICEBERG TABLE
     ;
 
 userProperties
@@ -2305,8 +2428,9 @@ parameterList
 
 // An argument's name takes the words a variable's does (see variableName): live creates f(case INT), f(join INT)
 // and a masking policy over (join VARCHAR) alike (live-verified).
+// A default may be a condition, NOT TRUE or TRUE AND FALSE (live-verified).
 parameterDef
-    : variableName dataTypeName typeParameters? ((DEFAULT | COLON_EQ) expression)?
+    : variableName dataTypeName typeParameters? ((DEFAULT | COLON_EQ) booleanExpr)?
     ;
 
 // The argument types naming one overload. An argument may be written with its name, as a CREATE writes it, and a
@@ -2450,8 +2574,9 @@ pipeOption
     | COMMENT EQ STRING_LITERAL
     ;
 
+// A load's clauses may be separated by commas (live-verified for its options).
 copyIntoStatement
-    : COPY INTO qualifiedName copyIntoTableClause* SEMI?
+    : COPY INTO qualifiedName (copyIntoTableClause (COMMA? copyIntoTableClause)*)? SEMI?
     | COPY INTO stageRef copyIntoStageClause* SEMI?
     | COPY INTO STRING_LITERAL copyIntoStageClause* SEMI?
     ;
@@ -2603,9 +2728,10 @@ warehouseProperty
     | COMMENT EQ STRING_LITERAL
     ;
 
+// A comma may stand between two options, and neither before the first nor after the last (live-verified).
 stageProperties
-    : URL EQ STRING_LITERAL stageOption*
-    | stageOption+                       // internal stage declared by its options alone
+    : URL EQ STRING_LITERAL (COMMA? stageOption)*
+    | stageOption (COMMA? stageOption)*  // internal stage declared by its options alone
     ;
 
 stageOption
@@ -2760,13 +2886,15 @@ databaseAction
     : RENAME TO identifier
     | SWAP WITH identifier
     | SET COMMENT EQ STRING_LITERAL
-    | SET optionKey EQ (parenOptionList | copyOptionValue)
+    // SET takes several properties, apart or comma-separated, and UNSET a comma list of names, as
+    // ALTER TABLE does (live-verified).
+    | SET tableSetProperty (COMMA? tableSetProperty)*
     | SET READ_ONLY EQ booleanValue
     | UNSET READ_ONLY
     // UNSET restores a parameter's INHERITANCE: a schema falls back to its database's value and a
     // database to the account default — SHOW answers the container's CURRENT value afterwards
     // (live-verified for DATA_RETENTION_TIME_IN_DAYS).
-    | UNSET optionKey
+    | UNSET optionKey (COMMA optionKey)*
     | tagSet
     | tagUnset
     ;
@@ -2776,8 +2904,9 @@ schemaAction
     : RENAME TO qualifiedName
     | SWAP WITH qualifiedName
     | SET COMMENT EQ STRING_LITERAL
-    | SET optionKey EQ (parenOptionList | copyOptionValue)
-    | UNSET optionKey
+    // Several properties per SET and a comma list per UNSET, as for a database.
+    | SET tableSetProperty (COMMA? tableSetProperty)*
+    | UNSET optionKey (COMMA optionKey)*
     | tagSet
     | tagUnset
     | (ENABLE | DISABLE) MANAGED ACCESS
@@ -3037,15 +3166,23 @@ alterColumnItemAction
 
 viewAction
     : RENAME TO qualifiedName
-    | SET COMMENT EQ STRING_LITERAL
-    | UNSET COMMENT
+    | tagSet
+    | tagUnset
     // Makes the view secure, or plain again; neither takes another property beside it.
     | (SET | UNSET) SECURE
+    // Any other SET reads a list of properties and an UNSET a list of names, any name, judged in Java
+    // (AlteredViewProperties, live-verified).
+    | SET viewSetItem (COMMA? viewSetItem)*
+    | UNSET optionKey (COMMA optionKey)*
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
     | DROP ROW ACCESS POLICY qualifiedName
     | DROP ALL ROW ACCESS POLICIES
-    | tagSet
-    | tagUnset
+    ;
+
+// A property a view's SET gives: a name and its value. One written without a value is a syntax error where the
+// list begins (live-verified), which Java judges.
+viewSetItem
+    : optionKey (EQ copyOptionValue)?
     ;
 
 materializedViewAction
@@ -3057,9 +3194,9 @@ materializedViewAction
     | RESUME
     // The new name may carry a path, which places the view in the schema it names (live-verified).
     | RENAME TO qualifiedName
-    | SET COMMENT EQ STRING_LITERAL
-    | UNSET COMMENT
     | (SET | UNSET) SECURE
+    | SET viewSetItem (COMMA? viewSetItem)*
+    | UNSET optionKey (COMMA optionKey)*
     ;
 
 dynamicTableOptions
@@ -3612,12 +3749,19 @@ dateTimeLiteralType
 dataTypeName
     : INTEGER | INT | BIGINT | SMALLINT | TINYINT | BYTEINT | NUMBER | DECIMAL | NUMERIC | DEC | DECFLOAT | FLOAT | FLOAT4 | FLOAT8 | DOUBLE PRECISION? | REAL
     | VARCHAR | STRING | TEXT | BOOLEAN | DATE | DATETIME | TIME | TIMESTAMP_NTZ | TIMESTAMPNTZ | TIMESTAMP_LTZ | TIMESTAMP_TZ | VARIANT
-    | TIMESTAMPLTZ | TIMESTAMPTZ | TIMESTAMP WITH LOCAL TIME ZONE | TIMESTAMP     // TIMESTAMP last: the worded form must win the prediction
+    | TIMESTAMPLTZ | TIMESTAMPTZ | TIMESTAMP WITH LOCAL TIME ZONE
+    // The worded spellings of the other two (live-verified): TIMESTAMP WITH TIME ZONE is TIMESTAMP_TZ and TIMESTAMP
+    // WITHOUT TIME ZONE TIMESTAMP_NTZ, a precision written after the whole phrase. WITHOUT is no keyword: the word is
+    // read as a name and refused where it is another.
+    | TIMESTAMP WITH TIME ZONE
+    | TIMESTAMP without=IDENTIFIER {refuseKindWord($ctx, $without, "WITHOUT");} TIME ZONE
+    | TIMESTAMP     // TIMESTAMP last: the worded forms must win the prediction
     // `X VARYING` is only legal after the three FIXED-length spellings — live 2026-08-04,
     // `VARCHAR VARYING`, `NVARCHAR VARYING`, `NVARCHAR2 VARYING` and `VARCHAR2 VARYING` are all
     // syntax errors.
     | (CHAR | CHARACTER | NCHAR) VARYING? | NVARCHAR | NVARCHAR2 | VARCHAR2
-    | ARRAY (LPAREN dataTypeName typeParameters? RPAREN)?      // structured ARRAY(INT)
+    // A structured ARRAY(INT); its element may be declared NOT NULL, ARRAY(INT NOT NULL) (live-verified).
+    | ARRAY (LPAREN dataTypeName typeParameters? (NOT NULL)? RPAREN)?
     // Structured OBJECT(a CHAR NOT NULL, ...). The ZERO-FIELD spelling `OBJECT()` is legal and is its own
     // type — live-verified: `SYSTEM$TYPEOF(CAST(OBJECT_CONSTRUCT() AS OBJECT()))` is `OBJECT()[LOB]`, an
     // empty object casts to it, and a NON-empty one fails the schema check. OBJECT is the only one of the
@@ -3639,8 +3783,9 @@ dataTypeName
     // MAP(keyType, valueType); backed by OBJECT. Either type takes its parameters, as an ARRAY element and an
     // OBJECT field do (live-verified: `MAP(VARCHAR, NUMBER(10,2))` and `MAP(VARCHAR(5), NUMBER)` are types of
     // their own). The bare `MAP` spelling is a syntax error in Snowflake (live-verified: `NULL::MAP`).
+    // Its value may be declared NOT NULL, MAP(VARCHAR, NUMBER NOT NULL) (live-verified).
     | MAP LPAREN mapKey=dataTypeName mapKeyParameters=typeParameters?
-        COMMA mapValue=dataTypeName mapValueParameters=typeParameters? RPAREN
+        COMMA mapValue=dataTypeName mapValueParameters=typeParameters? (NOT NULL)? RPAREN
     | INTERVAL intervalTypeFields                         // INTERVAL DAY(3) TO SECOND(3), YEAR TO MONTH …
     ;
 
@@ -3780,20 +3925,23 @@ joinPolicyClause
     ;
 
 // CREATE TABLE tail modifiers, in any order: comments, clustering, tags, a row access policy.
+// A comma may follow a property written name = value, the last one's too, but no other option: CLUSTER BY (a),
+// COMMENT = 'x' is a syntax error at the comma (live-verified).
 tableTailOption
-    : commentClause
+    : commentClause COMMA?
     | copyGrants
     | clusterByClause
     | tagList
     | rowAccessPolicyClause
     | WITH? aggregationPolicyClause
     | WITH? joinPolicyClause
-    | optionKey EQ (parenOptionList | copyOptionValue)   // CHANGE_TRACKING=TRUE etc. — accepted, not modeled
+    | optionKey EQ (parenOptionList | copyOptionValue) COMMA?   // CHANGE_TRACKING=TRUE etc. — accepted, not modeled
     ;
 
-// CREATE VIEW key=value properties (CHANGE_TRACKING=TRUE, ...) — accepted, not modeled.
+// CREATE VIEW key=value properties (CHANGE_TRACKING=TRUE, ...) — accepted, not modeled. A comma may follow each,
+// before the column list or AS too (live-verified).
 viewProperty
-    : optionKey EQ copyOptionValue
+    : optionKey EQ copyOptionValue COMMA?
     ;
 
 dmlStatement
@@ -3944,6 +4092,18 @@ selectStatement
 selectOperand
     : selectClause
     | LPAREN selectStatement RPAREN
+    // TABLE <name> is a query of its own: every column of the table, as SELECT * FROM <name> answers them, time
+    // travel included, wherever a query may stand — a statement, a subquery, a set operation's operand, a CTE's or a
+    // view's body (live-verified). Nothing else follows the name: no alias, no WHERE, no SAMPLE. It is read as that
+    // SELECT (see TableQueries). The lexer types the word TABLE_QUERY only where a query may begin (see
+    // opensTableQuery), so a statement's TABLE is no query's start to the parser's recovery either.
+    | TABLE_QUERY tableQueryName {TableQueries.expand($ctx);}
+    ;
+
+// The relation TABLE <name> reads: a name, with time travel, or IDENTIFIER('<name>').
+tableQueryName
+    : tableQualifiedName timeTravelClause?
+    | KW_IDENTIFIER_REF LPAREN identifierArgument RPAREN
     ;
 
 withClause
@@ -4075,7 +4235,7 @@ tableSource
 // nothing a query's own clauses may be followed by changes.
 matchRecognizeClause
     : MATCH_RECOGNIZE_OPEN LPAREN
-        (PARTITION BY expression (COMMA expression)*)?
+        (PARTITION BY booleanExpr (COMMA booleanExpr)*)?
         (ORDER BY rowPatternOrderItem (COMMA rowPatternOrderItem)*)?
         ({ClauseWords.isWord(_input.LT(1), "MEASURES")}? identifier rowPatternMeasure (COMMA rowPatternMeasure)*)?
         rowsPerMatch?
@@ -4248,8 +4408,9 @@ pivotClause
       IN LPAREN pivotInList RPAREN (DEFAULT ON NULL LPAREN expression RPAREN)? RPAREN
     ;
 
-// The pivot column set: an explicit value list, ANY (dynamic: the distinct FOR-column values,
-// optionally ordered), or a subquery producing the values.
+// The pivot column set: an explicit value list, ANY (dynamic: the distinct FOR-column values, optionally ordered), or
+// a subquery producing the values. A value may be any constant expression, a scalar subquery among them: IN ((SELECT
+// 1)) is one value, named as the plan prints its query (live-verified), where IN (SELECT 1) reads the values.
 pivotInList
     : pivotValueList
     | ANY (ORDER BY orderItem (COMMA orderItem)*)?
@@ -4273,10 +4434,12 @@ pivotValueList
     : pivotValue (COMMA pivotValue)*
     ;
 
-// A bind parses among the values and is refused there as one nothing sets (live-verified).
+// A bind parses among the values and is refused there as one nothing sets (live-verified). A value written as an
+// expression — a cast, a call, an operator over constants — pivots on the constant it evaluates to (live-verified).
 pivotValue
     : literal (AS? identifier)?
     | COLON identifier
+    | booleanExpr (AS? identifier)?
     ;
 
 unpivotColumnList
@@ -4353,17 +4516,20 @@ groupByClause
 
 // The super-group forms come FIRST, and the order is load-bearing: rollup and cube are legal column
 // names live, so they are ordinary identifiers here too, and `ROLLUP(g)` would otherwise read as a
-// function call by the expression alternative alone. Matching the keyword form first leaves a bare
-// `GROUP BY rollup` — the column — to fall through to expression, which is what live does with both.
+// function call by the key alternative alone. Matching the keyword form first leaves a bare
+// `GROUP BY rollup` — the column — to fall through to the key, which is what live does with both.
+// A key is read as a select item is, so it may be a condition: NOT b, a AND b (live-verified). A value is
+// the condition's ValueExpr, one alternative and not a choice beside it, so that the reading of a value
+// key and the place of a fault after one stay as they are for a plain value.
 groupByElement
     : ROLLUP LPAREN groupByColumnList RPAREN             // ROLLUP(a, b, c)
     | CUBE LPAREN groupByColumnList RPAREN               // CUBE(a, b, c)
     | GROUPING SETS LPAREN groupingSetList RPAREN        // GROUPING SETS((a,b),(a),(b),())
-    | expression                                         // plain column/expression
+    | booleanExpr                                        // plain column/expression, or a condition
     ;
 
 groupByColumnList
-    : expression (COMMA expression)*
+    : booleanExpr (COMMA booleanExpr)*
     ;
 
 groupingSetList
@@ -4371,8 +4537,8 @@ groupingSetList
     ;
 
 groupingSet
-    : LPAREN (expression (COMMA expression)*)? RPAREN   // (a, b) or ()
-    | expression                                        // shorthand single column
+    : LPAREN (booleanExpr (COMMA booleanExpr)*)? RPAREN // (a, b) or ()
+    | booleanExpr                                       // shorthand single column
     ;
 
 havingClause
@@ -4420,7 +4586,8 @@ frameOffset
 
 partitionByClause
     : PARTITION BY LPAREN expressionList RPAREN
-    | PARTITION BY expressionList
+    // A key may be a condition, as a select item may: NOT b, a AND b (live-verified); a value is its ValueExpr.
+    | PARTITION BY booleanExprList
     ;
 
 orderByClause
@@ -4434,8 +4601,11 @@ orderByClause
         | allWord=ALL (ASC | DESC)? (NULLS (FIRST | LAST))? {refuseOrderByAll($ctx, $allWord);})
     ;
 
+// A key may be a condition, as a select item may: NOT b, a AND b, !EXISTS (…) (live-verified). A value is the
+// condition's ValueExpr, one alternative and not a choice beside it, so that a fault after a value key is placed
+// as it is after a plain value.
 orderItem
-    : expression (ASC | DESC)? (NULLS (FIRST | LAST))?
+    : booleanExpr (ASC | DESC)? (NULLS (FIRST | LAST))?
     ;
 
 topClause
@@ -4449,8 +4619,8 @@ topClause
 // syntax error at the literal).
 // A count written with a fraction keeps its whole part (live-verified: LIMIT 1.5 is one row, LIMIT 2.0 two).
 limitClause
-    : LIMIT (INTEGER_LITERAL | FLOAT_LITERAL | NULL | STRING_LITERAL | COLON identifier)
-      (OFFSET (INTEGER_LITERAL | FLOAT_LITERAL | NULL | STRING_LITERAL | COLON identifier))?
+    : LIMIT (INTEGER_LITERAL | FLOAT_LITERAL | NULL | STRING_LITERAL | COLON identifier | QUESTION)
+      (OFFSET (INTEGER_LITERAL | FLOAT_LITERAL | NULL | STRING_LITERAL | COLON identifier | QUESTION))?
     ;
 
 // NULL is a legal count and a legal offset in both spellings, and means "no limit" / "no offset"
@@ -4461,8 +4631,8 @@ limitClause
 // FETCH NEXT 2 ROWS ONLY, and OFFSET 1 [ROWS] FETCH … all run (live-verified); a bare OFFSET
 // without a FETCH stays a syntax error, exactly as on the account.
 fetchClause
-    : (OFFSET (INTEGER_LITERAL | FLOAT_LITERAL | NULL | COLON identifier) (ROW | ROWS)?)?
-      FETCH (FIRST | NEXT)? (INTEGER_LITERAL | FLOAT_LITERAL | NULL | COLON identifier) (ROW | ROWS)? ONLY?
+    : (OFFSET (INTEGER_LITERAL | FLOAT_LITERAL | NULL | COLON identifier | QUESTION) (ROW | ROWS)?)?
+      FETCH (FIRST | NEXT)? (INTEGER_LITERAL | FLOAT_LITERAL | NULL | COLON identifier | QUESTION) (ROW | ROWS)? ONLY?
     ;
 
 // WORK is the SQL-standard spelling of TRANSACTION and live accepts it on all three statements
@@ -4786,6 +4956,7 @@ showParametersScope
     | (DATABASE | WAREHOUSE | SCHEMA) qualifiedName?
     | TABLE objectName
     | (STREAM | TASK) objectName?
+    | ALERT objectName?
     | (ROLE | VIEW) identifier?
     | qualifiedName
     ;
@@ -4986,6 +5157,9 @@ letStatement
     : LET variableName CURSOR FOR cursorSource SEMI?
     | LET variableName RESULTSET ((COLON_EQ | DEFAULT) (LPAREN resultSetSource RPAREN | asyncJob))? SEMI?
     | LET variableName dataTypeName typeParameters? (COLON_EQ | DEFAULT) booleanExpr SEMI?
+    // A type and no value declares the variable NULL of its type, as a DECLARE section's item does (live-verified);
+    // its semicolon is required, so the statement after it is no part of it.
+    | LET variableName dataTypeName typeParameters? SEMI
     | LET variableName (COLON_EQ | DEFAULT) booleanExpr SEMI?
     ;
 
@@ -5209,6 +5383,9 @@ callArguments
 callArgument
     : namedArgument   // name => value
     | expression      // positional
+    // A NOT, AND or OR over values, positional: CALL p(NOT TRUE) and CALL p(TRUE AND FALSE) bind their BOOLEAN
+    // (live-verified). An expression stands first, so a plain value is read as one.
+    | booleanExpr
     ;
 
 // USING binds the text's placeholders from VARIABLES: each argument is a name, never a literal, a session variable
@@ -5399,10 +5576,11 @@ expression
     // syntax. The FOR tail is optional and repeats: it has to cover the FROM form whose operand
     // is not an identifier — EXTRACT('YEAR' FROM d) and TRIM(' ' FROM v) are refused there too.
     | functionName LPAREN expression FROM expression (FOR expression)* RPAREN  # AnsiSubstringExpr
-    // A star ARGUMENT may be qualified (COUNT(t.*)) and takes EXCLUDE and ILIKE only — RENAME and
-    // REPLACE are a select item's modifiers, refused here as live refuses them. Written with OVER the call is
-    // the ordinary one below, which carries the window: the gate keeps a window from being read after this one.
-    | {!callBeforeOver()}? functionName LPAREN DISTINCT? (starQualifiedName DOT)? STAR starArgumentModifier* RPAREN   # FunctionCallStarExpr
+    // A star ARGUMENT may be qualified (COUNT(t.*)) and takes one EXCLUDE or one ILIKE — RENAME and
+    // REPLACE are a select item's modifiers, and a second modifier is a syntax error, as live refuses them. Written
+    // with OVER the call is the ordinary one below, which carries the window: the gate keeps a window from being
+    // read after this one.
+    | {!callBeforeOver()}? functionName LPAREN DISTINCT? (starQualifiedName DOT)? STAR starArgumentModifier? RPAREN   # FunctionCallStarExpr
     // The braced star where a value stands is the row as an OBJECT — TO_JSON({*}), {t.* EXCLUDE (a)}:ID — read as the
     // star call it stands for, OBJECT_CONSTRUCT over the star's columns. It takes one of a star argument's modifiers at
     // most: a second one, a RENAME and a REPLACE are syntax errors (live-verified). As a whole select item it is the
@@ -5416,7 +5594,8 @@ expression
     // each is judged for the function it names, as the positional call's are (see NamedCallRewrite). What it writes
     // after its named arguments is read too, so that a positional argument there is refused by the call's name and
     // not as a syntax error (see strayArguments).
-    | functionName LPAREN (DISTINCT | ALL)? expression (COMMA expression)* (COMMA namedArgument)+ (COMMA strayArguments)?
+    | functionName LPAREN (DISTINCT | ALL)? (mixedStarArgument | expression) (COMMA expression)* (COMMA namedArgument)+
+          (COMMA strayArguments)?
           ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause? nullHandling? overClause?  # FunctionCallMixedArgsExpr
     | functionName LPAREN (DISTINCT | ALL)? namedArgumentList (COMMA strayArguments)?
           ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause? nullHandling? overClause?  # FunctionCallNamedArgsExpr
@@ -5472,9 +5651,10 @@ expression
     // one is refused while it compiles, `Unsupported feature '^'.`, and one left without an operand is the syntax
     // error it is (live-verified). Nothing this matches is ever accepted.
     | expression CARET expression                                # CaretExpr
-    | expression PIPE_PIPE expression                            # ConcatExpr
     | expression op=(STAR | SLASH | PERCENT) expression          # MultiplicativeExpr
-    | expression op=(PLUS | MINUS) expression                    # AdditiveExpr
+    // || shares the level of + and -, left-associative with them and below * / %: 1 + 2 || 'a' is (1 + 2) || 'a',
+    // 'a' || 1 + 2 is ('a' || 1) + 2 and 'x' || 2 * 3 is 'x' || (2 * 3) (live-verified).
+    | expression op=(PLUS | MINUS | PIPE_PIPE) expression        # AdditiveExpr
     | expression IS NOT? NULL                                    # IsNullExpr
     | expression IS NOT? DISTINCT FROM expression                # IsDistinctExpr
     // Snowflake has LIKE ANY, LIKE ALL and ILIKE ANY only: NOT LIKE ANY/ALL and ILIKE ALL are
@@ -5638,8 +5818,14 @@ functionArg
     | exprTuple
     | spreadArgument   // ** [a, b] — splices a constant array's elements as arguments
     | booleanExpr
-    | (starQualifiedName DOT)? STAR starArgumentModifier*   // star argument beside others, or under OVER
+    | (starQualifiedName DOT)? STAR starArgumentModifier?   // star argument beside others, or under OVER
     | {bareSubqueryArgument()}? selectStatement   // ABS(SELECT -1): a subquery as the call's whole argument list
+    ;
+
+// A star written first among a named call's positional arguments: SEARCH(*, 'q', SEARCH_MODE => 'EXACT')
+// (live-verified).
+mixedStarArgument
+    : (starQualifiedName DOT)? STAR starArgumentModifier?
     ;
 
 // The modifiers a star ARGUMENT takes: the column filters only. A select item's star also takes
@@ -5801,6 +5987,7 @@ columnDefName
 
 identifier
     : IDENTIFIER
+    | AGGREGATE     // AGGREGATE is no reserved word: only CREATE … AGGREGATE FUNCTION reads it
     | KW_IDENTIFIER  // the literal word "identifier" as a plain name (it lexes as KW_IDENTIFIER now)
     | KW_IDENTIFIER_REF  // IDENTIFIER('a') in an expression names a column through the IDENTIFIER call
     | ACCOUNTS      // Allow ACCOUNTS as identifier
@@ -6554,6 +6741,7 @@ CONTACT: C O N T A C T;
 METRIC: M E T R I C;
 OPTIMIZATION: O P T I M I Z A T I O N;
 PROJECTION: P R O J E C T I O N;
+AGGREGATE: A G G R E G A T E;
 AGGREGATION: A G G R E G A T I O N;
 ENTITY: E N T I T Y;
 BODY: B O D Y;

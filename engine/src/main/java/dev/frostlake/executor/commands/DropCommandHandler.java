@@ -32,12 +32,14 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TableShadows;
+import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurableObjectType;
+import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
@@ -157,6 +159,7 @@ public class DropCommandHandler implements CommandHandler {
                                            final Map<String, List<Row>> out,
                                            final Map<String, List<Row>> hiddenOut) {
         final StorageEngine storage = queryExecutor.getStorageEngine();
+        TemporaryObjects.releaseSessionTables(schema, storage, databaseName);
         for (final Table table : schema.getTables()) {
             final String fqn = QualifiedName.key(databaseName, schema.getName(), table.getName());
             if (!storage.hasTable(fqn)) {
@@ -306,6 +309,7 @@ public class DropCommandHandler implements CommandHandler {
      * DROP of a kind Frostlake has no statements for, so no object of it ever exists: the name resolves the way
      * any object's does — a missing database or schema is refused, IF EXISTS or not, and so is a name with too
      * many parts — and then the object is missing, which IF EXISTS forgives. CASCADE and RESTRICT change nothing.
+     * A session policy is read with these kinds and is modelled: one that is there is dropped.
      */
     private Object dropUnmodelled(final FrostlakeParser.DropClassStatementContext ctx, final UnmodelledDropKind kind) {
         final FrostlakeParser.ObjectNameContext instance = ctx.dropInstanceName().objectName();
@@ -314,6 +318,12 @@ public class DropCommandHandler implements CommandHandler {
         final String missing;
         if (kind.isSchemaObject()) {
             final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+            final boolean purged = DropPurge.written(ctx.dropBehavior());
+            if (kind == UnmodelledDropKind.SESSION_POLICY && new SecurityObjectCommandHandler(catalog, queryExecutor)
+                    .dropFound(SecurityObjectKind.SESSION_POLICY, owner, parts, purged)) {
+                // The one kind read here that is modelled: a session policy that is there is dropped.
+                return null;
+            }
             final boolean relationKind = kind == UnmodelledDropKind.EXTERNAL_TABLE
                 || kind == UnmodelledDropKind.SEMANTIC_VIEW;
             final RelationKind found = relationKind ? owner.relationKindOf(parts[parts.length - 1]) : null;
@@ -348,7 +358,7 @@ public class DropCommandHandler implements CommandHandler {
      * @param share the share's canonical name
      * @return the name between its quotes
      */
-    static String shareName(final String account, final String share) {
+    public static String shareName(final String account, final String share) {
         return "\"" + account + "." + share + "\"";
     }
 
@@ -588,7 +598,15 @@ public class DropCommandHandler implements CommandHandler {
                     catalog.recordDropped("TABLE:" + fullyQualifiedName, dropped);
 
                     schema.dropTable(table.getName());
-                    queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                    // Another session's open transaction that wrote the table commits into the dropped version, which
+                    // an UNDROP brings back with those changes (live-verified); the storage waits aside for it.
+                    final String setAside =
+                        queryExecutor.getTransactionManager().setAsideIfWritten(fullyQualifiedName);
+                    if (setAside == null) {
+                        queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                    } else {
+                        dropped.setStorageSetAside(setAside);
+                    }
                     if (!table.isTemporary()) {
                         MaterializedViewValidity.baseTableDropped(catalog, databaseName, schema.getName(),
                             table.getName());
@@ -645,7 +663,8 @@ public class DropCommandHandler implements CommandHandler {
                     rejectWrongKind(schema, viewName, RelationKind.VIEW);
                     checkDrop(SecurableObjectType.VIEW, qualifiedName);
                     queryExecutor.requireOwnership("VIEW", parts, null);
-                    schema.dropView(viewName);
+                    // A name that differs only in case is another view (live-verified).
+                    schema.dropViewExact(viewName);
                     logger.trace("Dropped view: {}", qualifiedName);
                 } catch (final RuntimeException e) {
                     // IF EXISTS forgives absence, never an access-control refusal and never a name
@@ -753,7 +772,7 @@ public class DropCommandHandler implements CommandHandler {
                 try {
                     final Schema schema = ddl.resolveSchemaFromQualifiedName(seqQn);
                     queryExecutor.requireOwnership("SEQUENCE", dropNameParts(ctx), null);
-                    schema.dropSequence(sequenceName);
+                    schema.dropSequenceExact(sequenceName);
                     logger.trace("Dropped sequence: {}", sequenceName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -800,7 +819,7 @@ public class DropCommandHandler implements CommandHandler {
                 try {
                     checkDrop(SecurableObjectType.STAGE, stageName);
                     queryExecutor.requireOwnership("STAGE", dropNameParts(ctx), null);
-                    catalog.dropStage(stageName);
+                    catalog.dropStageExact(stageName);
                     logger.trace("Dropped stage: {}", stageName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -812,7 +831,7 @@ public class DropCommandHandler implements CommandHandler {
 
                 try {
                     queryExecutor.requireOwnership("FILE_FORMAT", dropNameParts(ctx), null);
-                    catalog.dropFileFormat(fileFormatName);
+                    catalog.dropFileFormatExact(fileFormatName);
                     logger.trace("Dropped file format: {}", fileFormatName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -930,8 +949,8 @@ public class DropCommandHandler implements CommandHandler {
                 try {
                     checkDrop(SecurableObjectType.TAG, tagName);
                     queryExecutor.requireOwnership("TAG", dropNameParts(ctx), null);
-                    final Tag droppedTag = catalog.getTag(tagName);
-                    catalog.dropTag(tagName);
+                    final Tag droppedTag = catalog.getTagExact(tagName);
+                    catalog.dropTagExact(tagName);
                     final String[] tagParts = dropNameParts(ctx);
                     final String tagDb = tagParts.length == 3 ? tagParts[0] : catalog.getCurrentDatabase();
                     final String tagSchema = tagParts.length == 3 ? tagParts[1]

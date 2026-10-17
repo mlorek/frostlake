@@ -23,6 +23,7 @@ import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Database;
@@ -30,6 +31,8 @@ import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SequenceDefault;
+import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
@@ -38,6 +41,7 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.system.InformationSchemaColumns;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.ColumnTypeJson;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
@@ -588,7 +592,8 @@ final class ShowRelationalExecutor {
                         dt.getRefreshedRows(),
                         0L,
                         ShowResultHelpers.text(dt.getOwner()),
-                        effectiveRetention(databaseOrNull(dbName), schema, null),
+                        dt.isDataRetentionSet() ? String.valueOf(dt.getDataRetentionDays())
+                            : effectiveRetention(databaseOrNull(dbName), schema, null),
                         "OFF",
                         // A dynamic table tracks its changes whether it was asked to or not: the
                         // refresh that keeps it current is what reads them.
@@ -789,7 +794,7 @@ final class ShowRelationalExecutor {
                         : view.getListedText() != null ? view.getListedText() : view.ddl(scName + "." + view.getName()),
                     // These two read "true"/"false" on a real account, not the Y/N used elsewhere.
                     String.valueOf(view.isSecure()), "false",
-                    ShowResultHelpers.ownerRoleType(view.getOwner()), "OFF"
+                    ShowResultHelpers.ownerRoleType(view.getOwner()), view.isChangeTracking() ? "ON" : "OFF"
                 )));
             }
             for (final MaterializedView mv : schema.getMaterializedViews()) {
@@ -1082,6 +1087,13 @@ final class ShowRelationalExecutor {
                 relationDatabase(name), relationSchema(name)));
             return new ResultSet(columns, rows);
         }
+        final Stream stream = findStreamOrNull(name);
+        if (stream != null) {
+            requireSeen("STREAM", catalog.resolveOwningSchema(name), stream.getName(), stream.getOwner(), name, kind);
+            if (addStreamColumnRows(rows, stream)) {
+                return new ResultSet(columns, rows);
+            }
+        }
         // Nothing derived by that name: the table path owns the lookup and its refusal, which echoes
         // the name as the statement WROTE it and speaks the named kind.
         final Table table = catalog.resolveTableAsWritten(name, kind);
@@ -1183,6 +1195,53 @@ final class ShowRelationalExecutor {
         return rows;
     }
 
+    /**
+     * The rows SHOW COLUMNS lists for a stream on a table or a view: its source's columns under the source's own
+     * name, then the three change-tracking columns, each with its comment — METADATA$ISUPDATE, METADATA$ACTION and
+     * METADATA$ROW_ID in that order and typed as the account declares them, whatever a query over the stream reads
+     * them as (live-verified, for a standard and an append-only stream).
+     *
+     * @param rows   the rows to add to
+     * @param stream the stream
+     * @return whether the stream's source was found and its rows added
+     */
+    private boolean addStreamColumnRows(final List<Row> rows, final Stream stream) {
+        final Schema home = StreamSources.homeOf(catalog, stream);
+        final String relation;
+        final Schema holder;
+        if (stream.getSourceType() == StreamSourceType.TABLE) {
+            final Table source = StreamSources.sourceOf(catalog, home, stream);
+            holder = source == null ? null : StreamSources.holderOf(catalog, source);
+            if (holder == null) {
+                return false;
+            }
+            relation = source.getName();
+            addTableColumnRows(rows, source, holder.getName(), holder.getDatabaseName());
+        } else if (stream.getSourceType() == StreamSourceType.VIEW) {
+            final String viewName = StreamSources.fullName(home, stream);
+            final View view = findViewOrNull(viewName);
+            holder = view == null ? null : catalog.resolveOwningSchema(viewName);
+            if (holder == null) {
+                return false;
+            }
+            relation = view.getName();
+            rows.addAll(viewColumnRows(relation, view.getResolvedColumns(), view.getColumnNames(),
+                holder.getDatabaseName(), holder.getName()));
+        } else {
+            return false;
+        }
+        rows.add(viewColumnRow(relation, holder.getDatabaseName(), holder.getName(), "METADATA$ISUPDATE",
+            ColumnTypeJson.render(new BooleanType(), false, null), false,
+            "whether this row was the result of an update"));
+        rows.add(viewColumnRow(relation, holder.getDatabaseName(), holder.getName(), "METADATA$ACTION",
+            ColumnTypeJson.render(new StringType("VARCHAR", 16), false, null), false,
+            "the action that resulted in this row"));
+        rows.add(viewColumnRow(relation, holder.getDatabaseName(), holder.getName(), "METADATA$ROW_ID",
+            ColumnTypeJson.render(new StringType("VARCHAR", 40), false, null), false,
+            "a unique identifier that can be used to track the lineage of this row"));
+        return true;
+    }
+
     private Row viewColumnRow(final String relationName, final String databaseName, final String schemaName,
                               final String columnName, final String dataType, final boolean nullable,
                               final String comment) {
@@ -1271,10 +1330,11 @@ final class ShowRelationalExecutor {
                 if (!seen("MATERIALIZED_VIEW", schema, mv.getName(), mv.getOwner())) {
                     continue;
                 }
+                // A materialized view counts the rows it materialized, as SHOW MATERIALIZED VIEWS does.
                 byName.put(scName + "." + mv.getName(),
                     objectRow(ShowResultHelpers.createdOn(mv.getCreatedTime()), mv.getName(),
                     dbName, scName, "VIEW", ShowResultHelpers.text(mv.getComment()),
-                    "", 0L, ShowResultHelpers.text(mv.getOwner()),
+                    "", mv.getMaterializedRows(), ShowResultHelpers.text(mv.getOwner()),
                     effectiveRetention(databaseOrNull(dbName), schema, null), false, false));
             }
             for (final DynamicTable dt : schema.getDynamicTables()) {
@@ -1419,6 +1479,15 @@ final class ShowRelationalExecutor {
         try {
             return resolveView(name);
         } catch (final RuntimeException notAView) {
+            return null;
+        }
+    }
+
+    /** The stream by that name, or null — a name that reaches no stream is the table path's. */
+    private Stream findStreamOrNull(final String name) {
+        try {
+            return catalog.resolveStream(name);
+        } catch (final RuntimeException notAStream) {
             return null;
         }
     }

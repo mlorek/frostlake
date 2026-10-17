@@ -38,7 +38,13 @@ import java.util.Set;
  *   NULLIF(NULL, NULL)                                                  conditionals over NULLs alone
  *   IFF(TRUE, NULL, NULL)  IFF(NULL, 'a', 'b')  CASE WHEN NULL THEN 'a' END
  *   DECODE(NULL, NULL, NULL)  DECODE(1, 1, NULL, 'x')                   a conditional a literal settles
+ *   CASE 1 WHEN 1 THEN 'a' ELSE 'b' END  DECODE(1, 1, 'a', 'b')         by its first match and a default
  * </pre>
+ *
+ * <p>A TRUE or FALSE condition settles nothing — {@code IFF(TRUE, 'a', 'b')} is {@code IFF(CAST(TRUE AS BOOLEAN),
+ * 'a', 'b')} and {@code CASE WHEN FALSE THEN 'a' ELSE 'b' END} {@code CASE_FLATTENED(CAST(FALSE AS BOOLEAN), 'a',
+ * 'b')} — nor does a simple CASE or a DECODE whose first search is no match, {@code DECODE(1, 2, 'a', 'b')}, or
+ * whose first match has no default after it, {@code DECODE(1, 1, 'a')} being the nullable constant.
  *
  * <p>It does not fold a comparison, so {@code IFF(1 = 1, NULL, 'x')} is no constant — though two NULL results
  * leave the condition nothing to choose, {@code IFF(1 = 1, NULL, NULL)} and {@code NVL2(NULL, NULL, NULL)} — nor
@@ -152,21 +158,33 @@ final class FoldedVariableName {
     private static Expression foldedCase(final CaseExpression chosen) {
         for (final WhenClause when : chosen.getWhenClauses()) {
             if (when.isOperandMatch()) {
-                // A NULL operand matches no WHEN, and the ELSE answers; any other operand is not folded.
-                if (when.getCondition() instanceof BinaryOperationExpression
-                        && isNull(((BinaryOperationExpression) when.getCondition()).getLeft())) {
+                if (!(when.getCondition() instanceof BinaryOperationExpression)) {
+                    return null;
+                }
+                final BinaryOperationExpression match = (BinaryOperationExpression) when.getCondition();
+                // A NULL operand matches no WHEN, and the ELSE answers.
+                if (isNull(match.getLeft())) {
                     continue;
                 }
-                return null;
+                // Only a first WHEN that matches settles the CASE, and only with an ELSE or over a NULL result.
+                if (!sameConstant(match.getLeft(), match.getRight())) {
+                    return null;
+                }
+                final Expression result = textOrFolded(when.getResult());
+                return chosen.getElseExpression() != null || isNull(result) ? result : null;
             }
-            if (isTrue(when.getCondition())) {
-                return textOrFolded(when.getResult());
-            }
-            if (!isNull(when.getCondition()) && !isFalse(when.getCondition())) {
+            // A NULL condition is never met; a TRUE or FALSE one is converted where it stands, and settles nothing.
+            if (!isNull(when.getCondition())) {
                 return null;
             }
         }
         return chosen.getElseExpression() == null ? nullLiteral() : textOrFolded(chosen.getElseExpression());
+    }
+
+    /** Whether two operands are one literal value, as a simple CASE matches them; a NULL matches nothing. */
+    private static boolean sameConstant(final Expression left, final Expression right) {
+        return left instanceof LiteralExpression && right instanceof LiteralExpression && !isNull(left)
+            && !isNull(right) && sameLiteral((LiteralExpression) left, (LiteralExpression) right);
     }
 
     private static Expression foldedCall(final FunctionCallExpression call) {
@@ -214,11 +232,8 @@ final class FoldedVariableName {
             return nullLiteral();
         }
         if ("IFF".equals(name) && args.size() == 3) {
-            final Expression condition = args.get(0);
-            if (isTrue(condition)) {
-                return textOrFolded(args.get(1));
-            }
-            return isNull(condition) || isFalse(condition) ? textOrFolded(args.get(2)) : null;
+            // A NULL condition is never met; a TRUE or FALSE one is converted where it stands, and settles nothing.
+            return isNull(args.get(0)) ? textOrFolded(args.get(2)) : null;
         }
         if ("DECODE".equals(name) && args.size() >= 3) {
             return foldedDecode(args);
@@ -236,21 +251,18 @@ final class FoldedVariableName {
             && isConstant(((BinaryOperationExpression) condition).getRight());
     }
 
-    /** DECODE over literals alone: the result of the first search its subject equals, a NULL equal to a NULL. */
+    /**
+     * DECODE over literals: the result of a first search its subject equals, a NULL equal to a NULL, where a default
+     * follows or the result is NULL; nothing else settles it.
+     */
     private static Expression foldedDecode(final List<Expression> args) {
         final Expression subject = args.get(0);
-        if (!(subject instanceof LiteralExpression)) {
+        if (!(subject instanceof LiteralExpression) || !(args.get(1) instanceof LiteralExpression)
+                || !sameLiteral((LiteralExpression) subject, (LiteralExpression) args.get(1))) {
             return null;
         }
-        for (int i = 1; i + 1 < args.size(); i += 2) {
-            if (!(args.get(i) instanceof LiteralExpression)) {
-                return null;
-            }
-            if (sameLiteral((LiteralExpression) subject, (LiteralExpression) args.get(i))) {
-                return textOrFolded(args.get(i + 1));
-            }
-        }
-        return args.size() % 2 == 0 ? textOrFolded(args.get(args.size() - 1)) : nullLiteral();
+        final Expression result = textOrFolded(args.get(2));
+        return args.size() % 2 == 0 || isNull(result) ? result : null;
     }
 
     private static boolean sameLiteral(final LiteralExpression subject, final LiteralExpression search) {
@@ -301,10 +313,6 @@ final class FoldedVariableName {
 
     private static boolean isTrue(final Expression expr) {
         return expr instanceof LiteralExpression && Boolean.TRUE.equals(((LiteralExpression) expr).getValue());
-    }
-
-    private static boolean isFalse(final Expression expr) {
-        return expr instanceof LiteralExpression && Boolean.FALSE.equals(((LiteralExpression) expr).getValue());
     }
 
     private static boolean isTrueOrNull(final Expression expr) {

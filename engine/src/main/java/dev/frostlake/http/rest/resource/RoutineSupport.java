@@ -445,8 +445,9 @@ public final class RoutineSupport {
         final RestIdentifier name = RestJson.identifier(body, "name", true);
         final RestCreateMode mode = call.createMode();
         final StringBuilder sql = new StringBuilder("CREATE").append(mode.orReplace());
-        if (Boolean.TRUE.equals(RestJson.bool(body, "is_aggregate"))) {
-            throw RestException.notImplemented("Aggregate user-defined functions are not supported.");
+        final boolean aggregate = Boolean.TRUE.equals(RestJson.bool(body, "is_aggregate"));
+        if (procedure && aggregate) {
+            throw RestException.notImplemented("Aggregate procedures are not supported.");
         }
         if (procedure) {
             if (Boolean.TRUE.equals(RestJson.bool(body, "is_secure"))) {
@@ -460,7 +461,7 @@ public final class RoutineSupport {
             if (Boolean.TRUE.equals(RestJson.bool(body, "is_secure"))) {
                 sql.append(" SECURE");
             }
-            sql.append(" FUNCTION");
+            sql.append(aggregate ? " AGGREGATE FUNCTION" : " FUNCTION");
         }
         sql.append(mode.ifNotExists()).append(' ').append(call.qualifiedSql(name)).append('(');
         final JsonNode arguments = body.get("arguments");

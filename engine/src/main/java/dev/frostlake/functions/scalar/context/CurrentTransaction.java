@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.StatementAnswers;
 import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.StringType;
@@ -52,8 +53,9 @@ public class CurrentTransaction extends BuiltInFunction {
         }
         final Transaction open = transactionManager.getCurrentTransaction();
         // The transaction's PUBLIC id — the number SHOW TRANSACTIONS and SHOW LOCKS list for it, so a
-        // listing can be filtered by it — never the engine's internal counter.
-        return open == null ? null : String.valueOf(open.getPublicId());
+        // listing can be filtered by it — never the engine's internal counter. A replayed statement answers the
+        // transaction it first ran in (see StatementAnswers).
+        return StatementAnswers.answered(getName(), open == null ? null : String.valueOf(open.getPublicId()));
     }
 
     @Override

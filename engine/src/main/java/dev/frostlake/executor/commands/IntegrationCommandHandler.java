@@ -120,14 +120,14 @@ public final class IntegrationCommandHandler {
     private void alter(final Integration integration, final FrostlakeParser.IntegrationActionContext action) {
         if (action.tagSet() != null) {
             for (final FrostlakeParser.TagAssignContext assign : action.tagSet().tagAssign()) {
-                final Tag tag = catalog.getTag(ParseTreeText.getQualifiedName(assign.qualifiedName()));
+                final Tag tag = catalog.getTagExact(ParseTreeText.getQualifiedName(assign.qualifiedName()));
                 final String value = TagValues.text(assign.qualifiedName(), assign.tagValue(), queryExecutor);
                 TagValues.requireAllowed(tag, value);
                 TagAssignments.set(integration, tag, value);
             }
         } else if (action.tagUnset() != null) {
             for (final FrostlakeParser.QualifiedNameContext tagName : action.tagUnset().qualifiedName()) {
-                TagAssignments.unset(integration, catalog.getTag(ParseTreeText.getQualifiedName(tagName)));
+                TagAssignments.unset(integration, catalog.getTagExact(ParseTreeText.getQualifiedName(tagName)));
             }
         } else if (action.SET() != null) {
             final Map<String, PropertyValue> properties = ObjectProperties.read(action.objectProperty());
@@ -264,6 +264,10 @@ public final class IntegrationCommandHandler {
             // The client's secret is never told, masked or not.
             shown.add("OAUTH_CLIENT_SECRET");
         }
+        if (inboundPubSub(integration)) {
+            // An inbound Pub/Sub queue lists its subscription and its service account, not its provider.
+            shown.add("NOTIFICATION_PROVIDER");
+        }
         for (final String[] row : layout(integration)) {
             shown.add(row[0]);
             rows.add(new Row(Arrays.asList((Object) row[0], row[1], value(integration, row[0]), row[2])));
@@ -371,8 +375,18 @@ public final class IntegrationCommandHandler {
             return concat(head, new String[][] {{"AZURE_STORAGE_QUEUE_PRIMARY_URI", "String", ""},
                 {"AZURE_TENANT_ID", "String", ""}});
         }
-        return concat(head, new String[][] {{"OUTBOUND".equals(direction(integration)) ? "GCP_PUBSUB_TOPIC_NAME"
-            : "GCP_PUBSUB_SUBSCRIPTION_NAME", "String", ""}});
+        if (inboundPubSub(integration)) {
+            return new String[][] {enabled, direction, {"GCP_PUBSUB_SUBSCRIPTION_NAME", "String", ""},
+                {"GCP_PUBSUB_SERVICE_ACCOUNT", "String", ""}};
+        }
+        return concat(head, new String[][] {{"GCP_PUBSUB_TOPIC_NAME", "String", ""}});
+    }
+
+    /** Whether the integration is a Pub/Sub queue read into the account (live-verified DESCRIBE layout). */
+    private static boolean inboundPubSub(final Integration integration) {
+        return integration.getKind() == IntegrationKind.NOTIFICATION
+            && "GCP_PUBSUB".equals(integration.text("NOTIFICATION_PROVIDER"))
+            && !"OUTBOUND".equals(direction(integration));
     }
 
     private static String[][] concat(final String[][] first, final String[][] second) {
@@ -407,7 +421,7 @@ public final class IntegrationCommandHandler {
             if (key.endsWith("_AWS_EXTERNAL_ID")) {
                 return externalId(integration);
             }
-            if ("API_GCP_SERVICE_ACCOUNT".equals(key)) {
+            if ("API_GCP_SERVICE_ACCOUNT".equals(key) || "GCP_PUBSUB_SERVICE_ACCOUNT".equals(key)) {
                 return GeneratedCloudIdentity.SERVICE_ACCOUNT;
             }
             if ("GLUE_REGION".equals(key)) {

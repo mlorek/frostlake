@@ -71,7 +71,7 @@ public class EpochSecondWidthTest extends BaseDatabaseTest {
     public void aTableBuiltOverThePartDeclaresItsWidth() {
         engine.execute("CREATE TABLE ep AS SELECT DATE_PART(epoch_second, '2024-01-01'::DATE) s,"
             + " EXTRACT(epoch FROM '2024-01-01 10:00:00'::TIMESTAMP_NTZ) t,"
-            + " DATE_PART(epoch_millisecond, '2024-01-01'::DATE) ms");
+            + " DATE_PART(epoch_millisecond, '2024-01-01'::TIMESTAMP_NTZ) ms");
         assertEquals("NUMBER(18,0)", describeCell("ep", "S", "type"));
         assertEquals("NUMBER(18,0)", describeCell("ep", "T", "type"));
         assertEquals("NUMBER(38,0)", describeCell("ep", "MS", "type"));

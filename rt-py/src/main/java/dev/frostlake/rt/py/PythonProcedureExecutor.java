@@ -128,6 +128,7 @@ public final class PythonProcedureExecutor {
                 pythonCode += "__result = __temp_func()";
             }
 
+            PythonHandlerCheck.forget(handlerName);
             PythonRuntime.eval(pythonCode);
 
             // A procedure that answers a value answers it as its declared RETURNS type, converted as Python
@@ -182,10 +183,15 @@ public final class PythonProcedureExecutor {
                 // already, and the interpreter is as sound as it was.
                 throw typedFailure;
             }
-            PythonRuntime.discardContext();
+            // Worded before the context is settled: a discarded context answers nothing more of its failure, so the
+            // refusal then travels as text alone.
+            final String refusal = PythonRuntimeDiagnostics.describeFailure(
+                "procedure", procedure.getName(), procedure.getRuntimeVersion(), procedure.getBody(), e);
             logger.error("Error executing Python procedure: {}", procedure.getName(), e);
-            throw new RuntimeException(PythonRuntimeDiagnostics.describeFailure(
-                "procedure", procedure.getName(), procedure.getRuntimeVersion(), procedure.getBody(), e), e);
+            if (!PythonRuntime.settleAfter(e)) {
+                throw new RuntimeException(refusal);
+            }
+            throw new RuntimeException(refusal, e);
         }
     }
 

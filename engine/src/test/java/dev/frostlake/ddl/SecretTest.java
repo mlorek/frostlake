@@ -132,6 +132,25 @@ public class SecretTest extends BaseDatabaseTest {
             "invalid property 'NAME' for 'SECRET'"));
     }
 
+    /** The integration a secret names is looked up before its type judges the property; an ALTER takes none. */
+    @Test
+    public void theIntegrationIsJudgedFirstAndNeverAltered() {
+        engine.execute("CREATE OR REPLACE SECRET s_ia TYPE = GENERIC_STRING SECRET_STRING = 'x'");
+        final String missing = "SQL compilation error:\nIntegration 'NOSUCH_INT' does not exist or not authorized.";
+        assertEquals(missing, refusal("CREATE OR REPLACE SECRET s_ib TYPE = GENERIC_STRING SECRET_STRING = 'x'"
+            + " API_AUTHENTICATION = nosuch_int"));
+        assertEquals(missing, refusal("CREATE OR REPLACE SECRET s_ic TYPE = OAUTH2 API_AUTHENTICATION = nosuch_int"
+            + " OAUTH_SCOPES = ('a')"));
+        assertEquals("SQL compilation error:\ninvalid property 'API_AUTHENTICATION' for 'SECRET'",
+            refusal("ALTER SECRET s_ia SET API_AUTHENTICATION = nosuch_int"));
+        assertEquals("SQL compilation error:\ninvalid type of property 'OAUTH_SCOPES' for 'GENERIC_STRING'",
+            refusal("ALTER SECRET s_ia SET OAUTH_SCOPES = ('a')"));
+        assertEquals("SQL compilation error:\ninvalid property 'NOPE' for 'SECRET'",
+            refusal("ALTER SECRET s_ia SET NOPE = 1"));
+        engine.execute("ALTER SECRET s_ia SET SECRET_STRING = 'y'");
+        engine.execute("ALTER SECRET s_ia SET COMMENT = 'c'");
+    }
+
     @Test
     public void alterChangesWhatTheTypeAllows() {
         Assumptions.assumeFalse(isLiveSnowflake(), NO_INTEGRATION);

@@ -22,6 +22,7 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Privilege;
@@ -33,6 +34,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.TableStorage;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
@@ -151,6 +153,14 @@ final class EventTableCommandHandler {
                 // A table is no clone of itself, replaced or not.
                 throw alreadyExists(parts);
             }
+            if (ctx.timeTravelClause() != null) {
+                // AT | BEFORE judges the point as a table's clone does: one to come is "Future data is not yet
+                // available", a value of another type the point's own refusal (live-verified).
+                final TableStorage sourceStorage = queryExecutor.getStorageEngine().getTableStorage(
+                    ddl.resolveFullyQualifiedName(sourceName));
+                queryExecutor.versionAtClonePoint(source, sourceStorage,
+                    queryExecutor.clonePoint(ctx.timeTravelClause(), source));
+            }
         }
         if (exists) {
             schema.dropTable(tableName);
@@ -161,7 +171,8 @@ final class EventTableCommandHandler {
             }
         }
         final Table table = new Table(tableName, columns(), false, false);
-        table.setOwner(catalog.currentRoleForOwner());
+        // The grants ON FUTURE EVENT TABLES cover it, held as a table's (live-verified).
+        table.setOwner(FutureGrants.ownerOfNew(catalog, "EVENT_TABLE", "TABLE", schema, tableName));
         table.setEventTable(true);
         if (source != null) {
             table.setComment(source.getComment());
@@ -188,7 +199,8 @@ final class EventTableCommandHandler {
 
     /**
      * Refuse what a CREATE EVENT TABLE … CLONE cannot copy. Only another event table is a source: a table, a
-     * dynamic table, a view and a stream are each refused in a sentence of their own (live-verified).
+     * dynamic table, a materialized view, a view and a stream are each refused in a sentence of their own
+     * (live-verified).
      *
      * @param kind   the kind of relation the source's name reaches when it is no table, or null
      * @param source the table it reaches, or null
@@ -200,6 +212,10 @@ final class EventTableCommandHandler {
         if ("DYNAMIC_TABLE".equals(kind)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Invalid operation Cannot clone an Event table from a dynamic table."));
+        }
+        if ("MATERIALIZED_VIEW".equals(kind)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Invalid operation Cannot clone an Event table from a materialized view."));
         }
         if ("STREAM".equals(kind)) {
             throw new RuntimeException(SqlCompilationError.inline("A clone operation cannot be performed on a "

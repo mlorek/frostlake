@@ -16,90 +16,71 @@
 
 package dev.frostlake.executor.expressions;
 
-import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.storage.Row;
 
-import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * A correlated aggregate subquery's value for each key of its correlating equality, computed once over the inner
- * relation grouped by its key (see {@link dev.frostlake.executor.EqualityCorrelation}), so each outer row looks its
- * value up instead of running the subquery again. Like {@link PreparedInSet}, it answers only a probe of the kind
- * every key is, where hashing is the comparison's own: numbers numerically and scale-insensitively, texts by their
- * characters. A probe no key equals reads the aggregate over no rows, kept once the first such probe computed it.
+ * A correlated aggregate subquery's value for each combination of keys of its correlating equalities, computed once
+ * over the inner relation grouped by its keys (see {@link dev.frostlake.executor.EqualityCorrelation}), so each outer
+ * row looks its value up instead of running the subquery again. Like {@link PreparedKeySet}, it answers only a probe
+ * whose values are each of the one kind its column's keys hold (see {@link CorrelationKeys}). A probe no key equals
+ * reads the aggregate over no rows, kept once the first such probe computed it.
  */
 public final class PreparedKeyedValues {
 
-    private final Map<String, Object> numericValues = new HashMap<>();
-    private final Map<String, Object> textValues = new HashMap<>();
-    private boolean onlyNumbers = true;
-    private boolean onlyTexts = true;
+    private final Map<List<String>, Object> values = new HashMap<>();
+    private final String[] kinds;
     private boolean emptyKnown;
     private Object emptyValue;
 
-    private PreparedKeyedValues() {
+    private PreparedKeyedValues(final int width) {
+        kinds = new String[width];
     }
 
     /**
-     * @param rows one row for each key, the key first and the value second; a NULL key, which no probe equals,
-     *             is left out
+     * @param rows  one row for each combination of keys, the keys first and the value after them; a NULL key,
+     *              which no probe equals, is left out
+     * @param width how many keys a row holds
      * @return the values by key
      */
-    public static PreparedKeyedValues build(final List<Row> rows) {
-        final PreparedKeyedValues values = new PreparedKeyedValues();
+    public static PreparedKeyedValues build(final List<Row> rows, final int width) {
+        final PreparedKeyedValues keyed = new PreparedKeyedValues(width);
         for (final Row row : rows) {
-            final Object key = DeferredFault.read(row.getValue(0));
-            if (key == null) {
-                continue;
-            }
-            if (key instanceof Number) {
-                final String numeric = numericKey(key);
-                values.onlyTexts = false;
-                if (numeric == null) {
-                    values.onlyNumbers = false;
-                } else {
-                    values.numericValues.put(numeric, row.getValue(1));
-                }
-            } else if (key instanceof String) {
-                values.onlyNumbers = false;
-                values.textValues.put((String) key, row.getValue(1));
-            } else {
-                values.onlyNumbers = false;
-                values.onlyTexts = false;
+            final List<Object> key = PreparedKeySet.keyOf(row, width);
+            if (key != null && KeyColumnKinds.note(keyed.kinds, key)) {
+                keyed.values.put(CorrelationKeys.canonical(key), row.getValue(width));
             }
         }
-        return values;
+        return keyed;
     }
 
     /**
-     * Whether the values settle a probe: a number against keys that are all numbers, a text against keys that are
-     * all texts.
+     * Whether the values settle a probe: each of its values of the kind its column's keys hold.
      *
-     * @param probe the outer row's key, not NULL
+     * @param probe the outer row's keys, none NULL
      * @return whether {@link #holds} and {@link #valueOf} answer it
      */
-    public boolean answers(final Object probe) {
-        return probe instanceof Number ? onlyNumbers && numericKey(probe) != null
-            : probe instanceof String && onlyTexts;
+    public boolean answers(final List<Object> probe) {
+        return KeyColumnKinds.answers(kinds, probe);
     }
 
     /**
      * @param probe an answered probe
-     * @return whether some inner key equals it
+     * @return whether some inner keys equal it
      */
-    public boolean holds(final Object probe) {
-        return probe instanceof Number ? numericValues.containsKey(numericKey(probe)) : textValues.containsKey(probe);
+    public boolean holds(final List<Object> probe) {
+        return values.containsKey(CorrelationKeys.canonical(probe));
     }
 
     /**
-     * @param probe an answered probe some inner key equals
-     * @return the aggregate's value over the rows of that key, as its cell holds it
+     * @param probe an answered probe some inner keys equal
+     * @return the aggregate's value over the rows of those keys, as its cell holds it
      */
-    public Object valueOf(final Object probe) {
-        return probe instanceof Number ? numericValues.get(numericKey(probe)) : textValues.get(probe);
+    public Object valueOf(final List<Object> probe) {
+        return values.get(CorrelationKeys.canonical(probe));
     }
 
     /** @return whether the aggregate's value over no rows is known yet */
@@ -120,14 +101,5 @@ public final class PreparedKeyedValues {
     public void recordEmptyValue(final Object value) {
         emptyValue = value;
         emptyKnown = true;
-    }
-
-    /** Canonical key for numeric equality, or null for values BigDecimal can't parse (NaN/Infinity). */
-    private static String numericKey(final Object number) {
-        try {
-            return new BigDecimal(number.toString()).stripTrailingZeros().toPlainString();
-        } catch (final NumberFormatException e) {
-            return null;
-        }
     }
 }

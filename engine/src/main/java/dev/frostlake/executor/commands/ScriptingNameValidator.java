@@ -22,9 +22,15 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QuotedBindName;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.expressions.DateTimeUnitSlot;
+import dev.frostlake.executor.procedural.ForStatement;
 import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.BooleanType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -241,6 +247,11 @@ final class ScriptingNameValidator {
                 if (item instanceof FrostlakeParser.DeclarationItemContext) {
                     final FrostlakeParser.DeclarationItemContext typed = (FrostlakeParser.DeclarationItemContext) item;
                     declare(typed.identifier(), scope, counters);
+                    if (holdsPlainValue(typed)) {
+                        // A plain value holds no fields: y.v over an INT y is "invalid identifier 'Y'"
+                        // (live-verified).
+                        scope.add(NO_FIELDS + canonical(text(typed.identifier())));
+                    }
                     if (compiler != null && typed.dataTypeName() != null && typed.identifier() != null) {
                         compiler.declare(canonical(text(typed.identifier())), typed.dataTypeName(), typed.typeParameters());
                     }
@@ -480,6 +491,10 @@ final class ScriptingNameValidator {
                 final Token at = loop.expression(0).getStart();
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                     invalidIdentifier(text(alone.nameStartPart()), false)));
+            }
+            if (loop.TO() == null && iteratesPlainValue(loop.expression(0), scope)) {
+                // A loop over a literal or a plain variable is refused while the block compiles (live-verified).
+                throw new RuntimeException(ForStatement.NOT_ITERABLE);
             }
             // The bounds are evaluated OUTSIDE the loop, so they cannot see the loop variable.
             for (final FrostlakeParser.ExpressionContext bound : loop.expression()) {
@@ -1162,6 +1177,42 @@ final class ScriptingNameValidator {
      * anything other than a cursor's or a RESULTSET's name, which has no fields: {@code r.v} there is "invalid
      * identifier 'R.V'", at the name (live-verified).
      */
+    /** Whether a typed declaration gives its variable a plain value: a number, a text, a BOOLEAN or a date. */
+    private static boolean holdsPlainValue(final FrostlakeParser.DeclarationItemContext typed) {
+        if (typed.dataTypeName() == null || typed.identifier() == null) {
+            return false;
+        }
+        try {
+            final DataType type = DataTypeParser.parse(typed.dataTypeName(), typed.typeParameters());
+            return type instanceof NumericType || type instanceof StringType || type instanceof BooleanType
+                || type instanceof DateTimeType;
+        } catch (final RuntimeException unknownType) {
+            return false;
+        }
+    }
+
+    /** Whether a loop's iterable is a literal, or a variable declared with a plain value (see holdsPlainValue). */
+    private static boolean iteratesPlainValue(final FrostlakeParser.ExpressionContext iterable,
+                                              final Set<String> scope) {
+        FrostlakeParser.ExpressionContext unwrapped = iterable;
+        while (unwrapped instanceof FrostlakeParser.ParenExprContext) {
+            final FrostlakeParser.BooleanExprContext inner = ((FrostlakeParser.ParenExprContext) unwrapped).booleanExpr();
+            if (!(inner instanceof FrostlakeParser.ValueExprContext)) {
+                break;
+            }
+            unwrapped = ((FrostlakeParser.ValueExprContext) inner).expression();
+        }
+        if (unwrapped instanceof FrostlakeParser.LiteralExprContext) {
+            return ((FrostlakeParser.LiteralExprContext) unwrapped).literal().NULL() == null;
+        }
+        if (unwrapped instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final FrostlakeParser.QualifiedNameContext name = ((FrostlakeParser.QualifiedNameExprContext) unwrapped)
+                .qualifiedName();
+            return name.namePart().isEmpty() && scope.contains(NO_FIELDS + canonical(text(name.nameStartPart())));
+        }
+        return false;
+    }
+
     private static void requireRootOf(final FrostlakeParser.QualifiedNameContext name,
                                       final Set<String> scope) {
         if (name == null || name.nameStartPart() == null) {

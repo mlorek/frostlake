@@ -25,6 +25,8 @@ import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Locale;
 
@@ -68,6 +70,9 @@ public class ToTime extends BuiltInFunction {
         }
         if (v instanceof LocalTime) return v;
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
+        // A zoned timestamp's time is its own wall clock's, TIMESTAMP_TZ and TIMESTAMP_LTZ alike (live-verified).
+        if (v instanceof ZonedDateTime) return ((ZonedDateTime) v).toLocalTime();
+        if (v instanceof OffsetDateTime) return ((OffsetDateTime) v).toLocalTime();
         // A written 'AUTO' reads by the session's input format first, then by AUTO.
         return args.size() > 1 ? SharedFunctionHelpers.toLocalTimeAuto(v.toString())
             : SharedFunctionHelpers.toLocalTime(v.toString());

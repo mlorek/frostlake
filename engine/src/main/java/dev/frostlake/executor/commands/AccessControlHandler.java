@@ -384,7 +384,7 @@ public final class AccessControlHandler {
             final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.grantDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         } else {
-            final Role holder = catalog.getRole(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.grantDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         }
         return null;
@@ -400,7 +400,7 @@ public final class AccessControlHandler {
             final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else {
-            final Role holder = catalog.getRole(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
         }
         return null;
@@ -420,7 +420,7 @@ public final class AccessControlHandler {
 
     private void applyTagSet(final Taggable target, final FrostlakeParser.TagSetContext set) {
         for (final FrostlakeParser.TagAssignContext assign : set.tagAssign()) {
-            final Tag tag = catalog.getTag(visitor.getText(assign.qualifiedName()));
+            final Tag tag = catalog.getTagExact(visitor.getText(assign.qualifiedName()));
             final String value = TagValues.text(assign.qualifiedName(), assign.tagValue(), queryExecutor);
             TagValues.requireAllowed(tag, value);
             TagAssignments.set(target, tag, value);
@@ -429,7 +429,7 @@ public final class AccessControlHandler {
 
     private void applyTagUnset(final Taggable target, final FrostlakeParser.TagUnsetContext unset) {
         for (final FrostlakeParser.QualifiedNameContext name : unset.qualifiedName()) {
-            TagAssignments.unset(target, catalog.getTag(visitor.getText(name)));
+            TagAssignments.unset(target, catalog.getTagExact(visitor.getText(name)));
         }
     }
 
@@ -438,7 +438,7 @@ public final class AccessControlHandler {
     private ResultSet grantsListing(final FrostlakeParser.AccessControlStatementContext ctx) {
         final AccessControlListings listings = new AccessControlListings(catalog);
         if (ctx.ON() != null && ctx.qualifiedName() == null) {
-            return listings.grantsOnRole(catalog.getRole(visitor.getText(ctx.identifier())));
+            return listings.grantsOnRole(catalog.getRoleExact(visitor.getText(ctx.identifier())));
         }
         final DatabaseRole role = databaseRole(catalog, ctx.qualifiedName());
         if (ctx.ON() != null) {
@@ -464,7 +464,7 @@ public final class AccessControlHandler {
         if (ctx.qualifiedName() != null) {
             return listings.futureGrants(null, null, databaseRole(catalog, ctx.qualifiedName()));
         }
-        return listings.futureGrants(null, null, catalog.getRole(visitor.getText(ctx.identifier())));
+        return listings.futureGrants(null, null, catalog.getRoleExact(visitor.getText(ctx.identifier())));
     }
 
     /** The canonical name of the schema a scope names, {@code DB.SCHEMA}, which must exist. */

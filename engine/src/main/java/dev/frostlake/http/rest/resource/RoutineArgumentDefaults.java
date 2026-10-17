@@ -63,8 +63,8 @@ final class RoutineArgumentDefaults {
             return defaults;
         }
         for (final FrostlakeParser.ParameterDefContext parameter : created.parameterList().parameterDef()) {
-            final String written = parameter.expression() == null ? null
-                : ParseTreeText.getOriginalText(parameter.expression()).trim();
+            final String written = parameter.booleanExpr() == null ? null
+                : ParseTreeText.getOriginalText(parameter.booleanExpr()).trim();
             defaults.add(written == null || "NULL".equalsIgnoreCase(written) ? null : written);
         }
         return defaults;

@@ -66,7 +66,8 @@ public class Role implements Taggable {
      * @param createdTime when it was created, on the host's wall clock
      */
     public Role(final String name, final LocalDateTime createdTime) {
-        this.name = name.toUpperCase(Locale.ROOT);
+        // The canonical name the statement resolved: an unquoted name in upper case, a quoted one as written.
+        this.name = name;
         this.objectPrivileges = new HashMap<>();
         this.columnPrivileges = new HashMap<>();
         this.grantedRoles = new HashSet<>();
@@ -159,16 +160,16 @@ public class Role implements Taggable {
     }
 
     public void grantRole(final String roleName) {
-        grantedRoles.add(roleName.toUpperCase(Locale.ROOT));
+        grantedRoles.add(roleName);
     }
 
     public void revokeRole(final String roleName) {
-        grantedRoles.remove(roleName.toUpperCase(Locale.ROOT));
-        roleGrantTimes.remove(roleName.toUpperCase(Locale.ROOT));
+        grantedRoles.remove(roleName);
+        roleGrantTimes.remove(roleName);
     }
 
     public boolean hasRole(final String roleName) {
-        return grantedRoles.contains(roleName.toUpperCase(Locale.ROOT));
+        return grantedRoles.contains(roleName);
     }
 
     public Set<String> getGrantedRoles() {
@@ -207,9 +208,9 @@ public class Role implements Taggable {
 
     public void grantRole(final String roleName, final String grantor) {
         grantRole(roleName);
-        roleGrantors.put(roleName.toUpperCase(Locale.ROOT), grantor);
+        roleGrantors.put(roleName, grantor);
         // The grant is stamped with the statement's own instant, which a replay restores.
-        roleGrantTimes.put(roleName.toUpperCase(Locale.ROOT), StatementClock.instant());
+        roleGrantTimes.put(roleName, StatementClock.instant());
     }
 
     /** When each role in grantedRoles was granted, by role name; none for a grant made with no moment recorded. */
@@ -222,7 +223,7 @@ public class Role implements Taggable {
      * @return the moment, or null for a grant with none recorded
      */
     public Instant getRoleGrantTime(final String roleName) {
-        return roleGrantTimes.get(roleName.toUpperCase(Locale.ROOT));
+        return roleGrantTimes.get(roleName);
     }
 
     /**
@@ -233,14 +234,14 @@ public class Role implements Taggable {
      */
     public void restoreRoleGrantTime(final String roleName, final Instant granted) {
         if (granted != null) {
-            roleGrantTimes.put(roleName.toUpperCase(Locale.ROOT), granted);
+            roleGrantTimes.put(roleName, granted);
         } else {
-            roleGrantTimes.remove(roleName.toUpperCase(Locale.ROOT));
+            roleGrantTimes.remove(roleName);
         }
     }
 
     public String getRoleGrantor(final String roleName) {
-        return roleGrantors.getOrDefault(roleName.toUpperCase(Locale.ROOT), "SYSADMIN");
+        return roleGrantors.getOrDefault(roleName, "SYSADMIN");
     }
 
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
@@ -507,7 +508,7 @@ public class Role implements Taggable {
     public void rename(final String newName) {
         // Match the constructor, which upper-cases the name; a verbatim rename would
         // otherwise leave getName() inconsistent with every freshly-created role.
-        this.name = newName.toUpperCase(Locale.ROOT);
+        this.name = newName;
     }
 
     /**

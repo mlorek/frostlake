@@ -31,6 +31,7 @@ import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.executor.expressions.StrayArguments;
 import dev.frostlake.executor.udf.ImportLocalizer;
 import dev.frostlake.executor.udf.JarHandlerLoader;
+import dev.frostlake.executor.udf.JavaAggregateFunctions;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.JavaHandlerInstances;
@@ -202,6 +203,9 @@ final class RoutineBodyCompiler {
         // The caret between two values is refused as the procedure is created, in a block and in a statement
         // written without one (see CaretOperator).
         CaretOperator.rejectIn(written);
+        // So is a positional argument written after a named one, at the argument in the body's own text
+        // (live-verified).
+        StrayArguments.require(queryExecutor.uncompiledScriptOf(body));
         // A bare stage where none is taken is refused at CREATE, in the body's own frame (see StageArgumentSyntax).
         StageArgumentSyntax.requirePlacement(queryExecutor.routineBodyScript(body), body);
         // So is what the account's own readings refuse of a body the grammar takes: a DROP's or a DESCRIBE's
@@ -1568,6 +1572,12 @@ final class RoutineBodyCompiler {
     static void compileFunctionBody(final Function function) {
         if (function == null || !judgeable(function.getUdfLanguage(), function.getBody(),
                 function.getImports().isEmpty())) {
+            return;
+        }
+        if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isAggregate()) {
+            // An aggregate's handler is a class whose initialize, accumulate, merge and finish methods are each
+            // required, judged as the function is created (live-verified).
+            JavaAggregateFunctions.check(function, null, null);
             return;
         }
         if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isTableFunction()) {

@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.CallDepth;
+import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.transaction.TransactionManager;
 
 /**
@@ -34,7 +35,8 @@ import dev.frostlake.transaction.TransactionManager;
  * block or a procedure that left its own open 90232 / 25000; a body ended past the depth bodies run to 90235 /
  * 42601; an expression a VALUES clause does not take 2014 / 22000 and a text that is no JSON 100069 / 22P02; an
  * OPEN of an open cursor 92215 / P0000 and a CLOSE of one that is not open 92201 / P0000; a RESULTSET read before
- * anything was given to it 92212 / P0000. A refusal of no known family reads 100351 / P0000.
+ * anything was given to it 92212 / P0000. A refusal of no known family reads 100351 / P0000. A hybrid table's
+ * primary key already held is 200001 / 22000 and a foreign key it breaks 200009 / 22000 (documented).
  */
 final class HandlerErrorCode {
 
@@ -62,6 +64,12 @@ final class HandlerErrorCode {
         }
         if (message.startsWith("Compilation of SQL UDF failed")) {
             return new HandlerErrorCode(90203, "42601");
+        }
+        if (message.equals(HybridKeys.primaryKeyExists())) {
+            return new HandlerErrorCode(200001, "22000");
+        }
+        if (message.startsWith("Foreign key constraint \"SYS_INDEX_") && message.endsWith("\" was violated.")) {
+            return new HandlerErrorCode(200009, "22000");
         }
         if (message.contains("syntax error line ")) {
             return new HandlerErrorCode(1003, "42000");

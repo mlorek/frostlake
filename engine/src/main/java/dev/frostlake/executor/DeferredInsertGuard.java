@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.transaction.TransactionWriteSet;
@@ -39,7 +40,8 @@ import java.util.Set;
  * flag is on and the table declares a key; UNIQUE enforcement only under the opt-in
  * {@code constraints.enforce.uniqueKey} flag (off by default — UNIQUE is otherwise informational,
  * matching Snowflake). UNIQUE is modeled per column, so a composite UNIQUE is enforced column by
- * column; PK columns are covered by the primary-key check and NULLs are unconstrained. Pending
+ * column; PK columns are covered by the primary-key check and NULLs are unconstrained. A hybrid table holds
+ * its keys whatever the switches say, each UNIQUE key whole, one over several columns as one. Pending
  * UPDATEs are deliberately not consulted, and the committed base is walked by position — resolution
  * prefetch over a scan, unique indexes are intentionally not implemented.
  */
@@ -53,6 +55,9 @@ public final class DeferredInsertGuard {
     private final int[] uniqueColumnIndexes;
     private final List<TableColumn> uniqueColumns;
     private final List<Set<Object>> uniqueSeenValues;
+    /** A hybrid table's UNIQUE keys and the values each holds, every key whole (see HybridKeys.uniqueKeys). */
+    private final List<UniqueConstraint> hybridKeys = new ArrayList<>();
+    private final List<Set<List<Object>>> hybridSeenKeys = new ArrayList<>();
 
     public DeferredInsertGuard(final Table table, final TableStorage base,
                                final TransactionWriteSet writeSet, final String fullyQualifiedName,
@@ -74,7 +79,27 @@ public final class DeferredInsertGuard {
         }
         uniqueColumns = new ArrayList<>();
         uniqueSeenValues = new ArrayList<>();
-        if (!enforceUniqueKey && !table.isHybrid()) {
+        if (table.isHybrid()) {
+            uniqueColumnIndexes = new int[0];
+            final List<Row> held = new ArrayList<>();
+            for (int r = 0; r < base.getRowCount(); r++) {
+                held.add(base.getRow(r));
+            }
+            held.addAll(writeSet.pendingInserts(fullyQualifiedName));
+            for (final UniqueConstraint key : HybridKeys.uniqueKeys(table)) {
+                final Set<List<Object>> seen = new HashSet<>();
+                for (final Row existing : held) {
+                    final List<Object> value = HybridKeys.keyOf(table, key.getColumnNames(), existing);
+                    if (value != null) {
+                        seen.add(value);
+                    }
+                }
+                hybridKeys.add(key);
+                hybridSeenKeys.add(seen);
+            }
+            return;
+        }
+        if (!enforceUniqueKey) {
             uniqueColumnIndexes = new int[0];
             return;
         }
@@ -134,9 +159,14 @@ public final class DeferredInsertGuard {
                 continue;
             }
             if (!uniqueSeenValues.get(u).add(value)) {
-                throw new RuntimeException(table.isHybrid()
-                    ? HybridKeys.uniqueViolated(table, uniqueColumns.get(u).getName())
-                    : "Duplicate unique key on column '" + uniqueColumns.get(u).getName() + "': " + value);
+                throw new RuntimeException(
+                    "Duplicate unique key on column '" + uniqueColumns.get(u).getName() + "': " + value);
+            }
+        }
+        for (int k = 0; k < hybridKeys.size(); k++) {
+            final List<Object> value = HybridKeys.keyOf(table, hybridKeys.get(k).getColumnNames(), row);
+            if (value != null && !hybridSeenKeys.get(k).add(value)) {
+                throw new RuntimeException(HybridKeys.uniqueViolated(table, hybridKeys.get(k)));
             }
         }
     }

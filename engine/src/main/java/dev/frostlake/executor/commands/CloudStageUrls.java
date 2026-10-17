@@ -21,16 +21,27 @@ import dev.frostlake.executor.SqlCompilationError;
 import java.util.Locale;
 
 /**
- * What an S3 or GCS stage location must spell before a stage may stand on it, as CREATE STAGE and ALTER STAGE ... SET
- * URL judge it (live-verified). The scheme, in any case, is followed by {@code //}, or the location is no URL at all:
- * {@code invalid URL: s3:x/}. The bucket, everything up to the next slash, is not empty and holds only letters, digits,
- * hyphens, periods and underscores; any other character, a space or a {@code ?} included, is refused in the account's
- * own sentence, which names the bucket as written.
+ * What an S3, GCS or Azure stage location must spell before a stage may stand on it, as CREATE STAGE and ALTER
+ * STAGE ... SET URL judge it (live-verified). The scheme, in any case, is followed by {@code //}, or the location is
+ * no URL at all: {@code invalid URL: s3:x/}. The bucket, everything up to the next slash, is not empty and holds only
+ * letters, digits, hyphens, periods and underscores; any other character, a space or a {@code ?} included, is refused
+ * in the account's own sentence, which names the bucket as written. An Azure location names a storage account's host
+ * and a container (see requireAzure).
  */
 final class CloudStageUrls {
 
     /** The schemes whose location starts with a bucket. */
     private static final String[] BUCKET_SCHEMES = {"s3", "s3gov", "s3china", "gcs"};
+
+    /** The one Azure endpoint a stage stands on: the blob service of the public cloud. */
+    private static final String AZURE_BLOB = "blob.core.windows.net";
+
+    /** The Data Lake endpoint, which the account knows and refuses by its name. */
+    private static final String AZURE_DATA_LAKE = "dfs.core.windows.net";
+
+    /** The blob endpoints of the Government and China clouds, refused for this deployment. */
+    private static final String AZURE_GOVERNMENT_BLOB = "blob.core.usgovcloudapi.net";
+    private static final String AZURE_CHINA_BLOB = "blob.core.chinacloudapi.cn";
 
     private CloudStageUrls() {
     }
@@ -45,19 +56,65 @@ final class CloudStageUrls {
             return;
         }
         final int colon = url.indexOf(':');
-        if (colon <= 0 || !isBucketScheme(url.substring(0, colon))) {
+        final boolean azure = colon > 0 && "azure".equalsIgnoreCase(url.substring(0, colon));
+        if (colon <= 0 || !azure && !isBucketScheme(url.substring(0, colon))) {
             return;
         }
         if (!url.startsWith("//", colon + 1)) {
             throw new RuntimeException(SqlCompilationError.of("invalid URL: " + url));
         }
         final int start = colon + 3;
+        if (azure) {
+            requireAzure(url, start);
+            return;
+        }
         final int slash = url.indexOf('/', start);
         final String bucket = slash < 0 ? url.substring(start) : url.substring(start, slash);
         if (!isBucketName(bucket)) {
             throw new RuntimeException("Bucket name '" + bucket + "' in the stage location is not supported. Valid"
                 + " bucket names must consist of lowercase letters, digits, hyphens '-', and periods '.'.");
         }
+    }
+
+    /**
+     * An Azure location is {@code azure://<account>.<endpoint>/<container>}, a path after it optional: a location
+     * without a storage account, an endpoint or a container is "Invalid location format or value '…'.". The endpoint,
+     * in any case, is then the public cloud's blob service: the Data Lake endpoint is "Provided Azure storage endpoint
+     * 'dfs.core.windows.net' is currently not supported.", a Government or China cloud's blob service is refused for
+     * this deployment, and any other host is named whole as an unsupported endpoint (live-verified).
+     *
+     * @param url   the location as written
+     * @param start where its host starts, after the {@code //}
+     */
+    private static void requireAzure(final String url, final int start) {
+        final int slash = url.indexOf('/', start);
+        final String host = slash < 0 ? url.substring(start) : url.substring(start, slash);
+        final int containerEnd = slash < 0 ? -1 : url.indexOf('/', slash + 1);
+        final String container = slash < 0 ? ""
+            : containerEnd < 0 ? url.substring(slash + 1) : url.substring(slash + 1, containerEnd);
+        final int dot = host.indexOf('.');
+        if (dot <= 0 || dot == host.length() - 1 || container.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid location format or value '" + url + "'."));
+        }
+        final String endpoint = host.substring(dot + 1);
+        final String lower = endpoint.toLowerCase(Locale.ROOT);
+        if (AZURE_BLOB.equals(lower)) {
+            return;
+        }
+        if (AZURE_DATA_LAKE.equals(lower)) {
+            throw new RuntimeException(SqlCompilationError.of("Provided Azure storage endpoint '" + endpoint
+                + "' is currently not supported."));
+        }
+        if (AZURE_GOVERNMENT_BLOB.equals(lower)) {
+            throw new RuntimeException(SqlCompilationError.PREFIX
+                + " on non-Government deployments, using an Azure Government storage location is not allowed.");
+        }
+        if (AZURE_CHINA_BLOB.equals(lower)) {
+            throw new RuntimeException(SqlCompilationError.PREFIX
+                + " on non-China deployments, using an Azure China storage location is not allowed.");
+        }
+        throw new RuntimeException(SqlCompilationError.of("Provided Azure storage endpoint '" + host
+            + "' is currently not supported."));
     }
 
     private static boolean isBucketScheme(final String scheme) {

@@ -17,6 +17,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
@@ -153,6 +154,60 @@ final class CreatedObjectProperties {
             }
         }
         requireMetricSchedule(names, values, true);
+        for (final Integer i : order) {
+            refuseOtherTableKindParameter(ParameterRegistry.canonical(names.get(i)), values.get(i), ctx);
+        }
+    }
+
+    /**
+     * Refuses a parameter a plain table takes no value of: one of an Iceberg table, of a table in a catalog-linked
+     * database, of another kind of table, or a staging format no format of the name answers (live-verified).
+     */
+    private static void refuseOtherTableKindParameter(final String key, final FrostlakeParser.CopyOptionValueContext
+            value, final FrostlakeParser.CreateStatementContext ctx) {
+        final String text = value == null ? null : value.STRING_LITERAL() != null
+            ? SqlStringLiterals.decode(value.STRING_LITERAL().getText()) : value.getText();
+        switch (key) {
+            case "CATALOG":
+                throw new RuntimeException(text == null || text.isEmpty()
+                    ? SqlCompilationError.inline("Iceberg tables require a catalog integration to be specified")
+                    : "Catalog integration cannot be set for legacy iceberg tables");
+            case "EXTERNAL_VOLUME":
+                throw new RuntimeException(text == null || text.isEmpty()
+                    ? "Iceberg table null must have the table parameter EXTERNAL_VOLUME defined on the table, schema,"
+                        + " database, or account."
+                    : "EXTERNAL_VOLUME is not supported on table " + createdName(ctx) + ".");
+            case "CATALOG_SYNC":
+                throw new RuntimeException("Catalog integration " + text
+                    + " is not valid. Please ensure required properties are valid.");
+            case "PURGE_ON_DROP_TABLE":
+                throw new RuntimeException(SqlCompilationError.of(
+                    "invalid parameter 'PURGE_ON_DROP_TABLE can only be set on tables in a catalog-linked database'"));
+            case "REPLACE_INVALID_CHARACTERS":
+                throw new RuntimeException(SqlCompilationError.of(
+                    "invalid type of property 'REPLACE_INVALID_CHARACTERS' for 'TABLE'"));
+            case "STORAGE_SERIALIZATION_POLICY":
+                throw new RuntimeException("SQL Compilation error:\nSetting storage serialization policy is only"
+                    + " supported for Iceberg tables using Snowflake catalog.");
+            case "TARGET_FILE_SIZE":
+                throw new RuntimeException("SQL Compilation error:\nSetting target file size is only supported for"
+                    + " Iceberg tables.");
+            case "STAGE_FILE_FORMAT":
+                // A number names a format by its digits, which no format of the schema answers.
+                if (value != null && value.INTEGER_LITERAL() != null) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("File format", value.getText()));
+                }
+                return;
+            default:
+                return;
+        }
+    }
+
+    /** The name a CREATE TABLE makes, as its last written part reads. */
+    private static String createdName(final FrostlakeParser.CreateStatementContext ctx) {
+        final String[] parts = ctx.objectName() != null && ctx.objectName().qualifiedName() != null
+            ? ParseTreeText.qualifiedNameParts(ctx.objectName().qualifiedName()) : new String[] {""};
+        return parts[parts.length - 1];
     }
 
     /** Judges the properties written before a CREATE VIEW's query, for a view made in the named schema. */
@@ -333,7 +388,7 @@ final class CreatedObjectProperties {
      * The order the names of a property list are judged in: that of a table hashed by name — the slot the name
      * falls in first, the written order within a slot — not the written one (live-verified).
      */
-    private static List<Integer> judgedOrder(final List<String> names) {
+    static List<Integer> judgedOrder(final List<String> names) {
         int slots = 16;
         while (names.size() * 4 > slots * 3) {
             slots *= 2;
@@ -348,6 +403,11 @@ final class CreatedObjectProperties {
             }
         }
         return order;
+    }
+
+    /** Whether a name is a parameter the account knows, of any level. */
+    static boolean isParameter(final String key) {
+        return PARAMETER_TYPES.containsKey(key);
     }
 
     /** A name that is neither a property nor a parameter is refused as it is written, as a table's. */

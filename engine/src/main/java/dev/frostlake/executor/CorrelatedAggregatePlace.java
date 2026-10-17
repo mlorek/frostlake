@@ -20,6 +20,7 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -90,10 +91,10 @@ final class CorrelatedAggregatePlace {
         }
         if (clause.groupByClause() != null) {
             places.add(clause.groupByClause());
-            final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
+            final List<ParserRuleContext> keys = new ArrayList<>();
             for (final FrostlakeParser.GroupByElementContext element : clause.groupByClause().groupByElement()) {
-                if (element.expression() != null) {
-                    keys.add(element.expression());
+                if (KeyContexts.of(element) != null) {
+                    keys.add(KeyContexts.of(element));
                 }
             }
             addKeyedItems(clause, keys, places);
@@ -111,11 +112,11 @@ final class CorrelatedAggregatePlace {
             // A grouped or DISTINCT query's ORDER BY holds no subquery at all, and says so in its own
             // sentence (see OrderByExecutor.rejectSubqueryInGroupedOrderKey); every other key is judged here.
             final boolean grouped = clause.groupByClause() != null || clause.DISTINCT() != null;
-            final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
+            final List<ParserRuleContext> keys = new ArrayList<>();
             for (final FrostlakeParser.OrderItemContext item : statement.orderByClause().orderItem()) {
-                keys.add(item.expression());
-                if (!grouped || !holdsScalarSubquery(item.expression())) {
-                    places.add(item.expression());
+                keys.add(KeyContexts.of(item));
+                if (!grouped || !holdsScalarSubquery(KeyContexts.of(item))) {
+                    places.add(KeyContexts.of(item));
                 }
             }
             addKeyedItems(clause, keys, places);
@@ -138,6 +139,7 @@ final class CorrelatedAggregatePlace {
                     rule = new CorrelatedSubqueryRule(executor, offeredNames(table, aliasToTable, allTables));
                 }
                 final List<ParserRuleContext> aggregates = rule.outerAggregates(subquery);
+                aggregates.removeAll(rule.unreadDerivedOuterCalls(subquery));
                 if (!aggregates.isEmpty()) {
                     // Each call's arguments are typed before its place is judged, in the order written: an AVG
                     // over a BOOLEAN is refused for the type whichever call stands first (live-verified).
@@ -175,8 +177,8 @@ final class CorrelatedAggregatePlace {
 
     /** The select items the keys name by position or alias, which stand where the keys do. */
     private static void addKeyedItems(final FrostlakeParser.SelectClauseContext clause,
-                                      final List<FrostlakeParser.ExpressionContext> keys, final List<ParseTree> into) {
-        for (final FrostlakeParser.ExpressionContext key : keys) {
+                                      final List<ParserRuleContext> keys, final List<ParseTree> into) {
+        for (final ParserRuleContext key : keys) {
             final ParseTree item = CorrelatedSubqueryRule.groupedItem(clause, key);
             if (item != key) {
                 into.add(item);

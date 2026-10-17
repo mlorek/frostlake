@@ -407,7 +407,7 @@ final class ShowRoutineExecutor {
                 ShowResultHelpers.createdOn(func.getCreatedTime()),
                 func.getName(),
                 schema.getName(),
-                "N", "N", "N",
+                "N", func.isAggregate() ? "Y" : "N", "N",
                 func.getParameters().size(), func.getParameters().size(),
                 sig,
                 routineDescription(func.getComment(), "user-defined function"),
@@ -418,8 +418,8 @@ final class ShowRoutineExecutor {
                 // names none (live-verified).
                 func.getEnvironment().secretsText(dbName, schema.getName()),
                 integrationsText(func.getEnvironment()),
-                "N",
-                func.getLanguage(),
+                func.isExternalFunction() ? "Y" : "N",
+                func.isExternalFunction() ? "EXTERNAL" : func.getLanguage(),
                 func.isMemoizable() ? "Y" : "N", "N", "N"
             )));
         }
@@ -667,9 +667,11 @@ final class ShowRoutineExecutor {
         final Function fn = owner.getFunctionByWrittenSignature(parts[parts.length - 1], argumentTypes);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", describedSignature(fn.getParameters()))));
+        // A RETURNS type written NOT NULL says so here, and in no DDL (live-verified).
         rows.add(new Row(Arrays.asList("returns", fn.isTableFunction()
             ? "TABLE " + routineSignature(fn.getReturnColumns())
-            : SqlTypeNames.routineType(fn.getReturnType(), fn.getReturnSized()))));
+            : SqlTypeNames.routineType(fn.getReturnType(), fn.getReturnSized())
+                + (fn.isReturnNotNull() ? " NOT NULL" : ""))));
         rows.add(new Row(Arrays.asList("language", fn.getLanguage() != null ? fn.getLanguage() : "SQL")));
         if (!isSqlLanguage(fn.getLanguage())) {
             rows.add(new Row(Arrays.asList("null handling", fn.getNullHandling())));
@@ -683,7 +685,7 @@ final class ShowRoutineExecutor {
                 fn.isSecure() && !ownership.actsAsOwner(fn.getOwner()) ? null : fn.getBody())));
         }
         RoutineDescriptionRows.add(rows, fn.getLanguage(), fn.getHandler(), fn.getRuntimeVersion(), fn.getImports(),
-            fn.getEnvironment(), true);
+            fn.getEnvironment(), Boolean.valueOf(fn.isAggregate()));
         if (fn.isServiceFunction()) {
             rows.add(new Row(Arrays.asList("service", fn.getServiceName())));
             rows.add(new Row(Arrays.asList("endpoint", fn.getServiceEndpoint())));
@@ -711,7 +713,8 @@ final class ShowRoutineExecutor {
         rows.add(new Row(Arrays.asList("signature", describedSignature(proc.getParameters()))));
         rows.add(new Row(Arrays.asList("returns", proc.returnsTable()
             ? "TABLE " + routineSignature(proc.getReturnColumns())
-            : SqlTypeNames.routineType(proc.getReturnType(), proc.getReturnSized()))));
+            : SqlTypeNames.routineType(proc.getReturnType(), proc.getReturnSized())
+                + (proc.isReturnNotNull() ? " NOT NULL" : ""))));
         rows.add(new Row(Arrays.asList("language", proc.getLanguage() != null ? proc.getLanguage() : "SQL")));
         if (!isSqlLanguage(proc.getLanguage())) {
             // A procedure declares neither, so the two rows carry the account's own defaults - which is
@@ -731,7 +734,7 @@ final class ShowRoutineExecutor {
         final RoutineEnvironment environment = proc.getEnvironment().copy();
         environment.setPackages(proc.getPackages());
         RoutineDescriptionRows.add(rows, proc.getLanguage(), proc.getHandler(), proc.getRuntimeVersion(),
-            proc.getImports(), environment, false);
+            proc.getImports(), environment, null);
         return propertyValueResult(rows);
     }
 

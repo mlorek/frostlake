@@ -21,6 +21,7 @@ import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.TableStructure;
+import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ExactValues;
@@ -296,6 +297,33 @@ public class TableStorage {
     }
 
     public void insert(final Row written) {
+        insertAs(written, -1);
+    }
+
+    /**
+     * Stores a restored row under the identity it had: a row's METADATA$ROW_ID is the same after a restart from a
+     * snapshot as before it, as an immutable row id is on the account, and a stream's pending change still names it.
+     *
+     * @param written the row
+     * @param id      its identity
+     */
+    public void insertRestored(final Row written, final long id) {
+        engine.advanceRowIdsPast(id);
+        insertAs(written, id);
+    }
+
+    /**
+     * A restored history row's identity, kept as it was saved.
+     *
+     * @param id the identity it had
+     * @return the same identity, which no row stored later takes
+     */
+    public long keptRowId(final long id) {
+        engine.advanceRowIdsPast(id);
+        return id;
+    }
+
+    private void insertAs(final Row written, final long id) {
         // Validate row (columnCount avoids the defensive column-list copy getColumns() makes)
         if (written.getValues().size() != metadata.columnCount()) {
             throw new RuntimeException("Row column count mismatch");
@@ -315,8 +343,21 @@ public class TableStorage {
         }
 
         // Enforce UNIQUE columns when opted in (constraints.enforce.uniqueKey). No unique index is
-        // maintained (indexes are intentionally not implemented), so scan for a duplicate value.
-        if (engine.enforceUniqueKey || metadata.isHybrid()) {
+        // maintained (indexes are intentionally not implemented), so scan for a duplicate value. A hybrid table
+        // holds each UNIQUE key whole, one over several columns as one (documented).
+        if (metadata.isHybrid()) {
+            for (final UniqueConstraint key : HybridKeys.uniqueKeys(metadata)) {
+                final List<Object> value = HybridKeys.keyOf(metadata, key.getColumnNames(), row);
+                if (value == null) {
+                    continue;
+                }
+                for (final Row existing : rows) {
+                    if (value.equals(HybridKeys.keyOf(metadata, key.getColumnNames(), existing))) {
+                        throw new RuntimeException(HybridKeys.uniqueViolated(metadata, key));
+                    }
+                }
+            }
+        } else if (engine.enforceUniqueKey) {
             final List<TableColumn> cols = metadata.getColumns();
             for (int i = 0; i < cols.size(); i++) {
                 if (!cols.get(i).isUnique() || cols.get(i).isPrimaryKey() || i >= row.getValues().size()) {
@@ -328,16 +369,15 @@ public class TableStorage {
                 }
                 for (final Row existing : rows) {
                     if (i < existing.getValues().size() && value.equals(existing.getValue(i))) {
-                        throw new RuntimeException(metadata.isHybrid()
-                            ? HybridKeys.uniqueViolated(metadata, cols.get(i).getName())
-                            : "Duplicate unique key on column '" + cols.get(i).getName() + "': " + value);
+                        throw new RuntimeException(
+                            "Duplicate unique key on column '" + cols.get(i).getName() + "': " + value);
                     }
                 }
             }
         }
 
         rows.add(row);
-        rowIds.add(engine.nextRowId());
+        rowIds.add(id >= 0 ? id : engine.nextRowId());
         written();
     }
 

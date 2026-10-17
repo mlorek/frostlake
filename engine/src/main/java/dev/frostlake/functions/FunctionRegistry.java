@@ -236,6 +236,7 @@ import dev.frostlake.functions.scalar.math.Tanh;
 import dev.frostlake.functions.scalar.math.Trunc;
 import dev.frostlake.functions.scalar.math.Uniform;
 import dev.frostlake.functions.scalar.math.WidthBucket;
+import dev.frostlake.functions.scalar.math.Zipf;
 import dev.frostlake.functions.scalar.semistructured.ArrayAppend;
 import dev.frostlake.functions.scalar.semistructured.ArrayCat;
 import dev.frostlake.functions.scalar.semistructured.ArrayCompact;
@@ -488,6 +489,12 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class FunctionRegistry {
 
+    /**
+     * The names of the functions the engine builds in, as every registry has registered them: what a call's name is
+     * judged by where no registry is at hand, the reading of an expression's text ({@link #isBuiltInName}).
+     */
+    private static final Set<String> BUILT_IN_NAMES = ConcurrentHashMap.newKeySet();
+
     private final Map<String, BuiltInFunction> functions;
     private final Map<String, AggregateFunction> aggregateFunctions;
     private final Map<String, TableFunction> tableFunctions;
@@ -496,6 +503,8 @@ public class FunctionRegistry {
     private final Catalog catalog;
     /** Installed after construction by the executor; see {@link #setQueryRunner}. */
     private QueryRunner queryRunner;
+    /** Finds the aggregate functions users create; installed by the engine (see {@link #setUserAggregates}). */
+    private volatile UserAggregateLookup userAggregates;
     private final SessionContext sessionContext;
     private final EngineConfig config;
     /** Held so the task scheduler can be handed over once it exists — it is built after this. */
@@ -520,6 +529,19 @@ public class FunctionRegistry {
         this.sessionContext = sessionContext;
         this.config = config;
         registerBuiltInFunctions();
+        BUILT_IN_NAMES.addAll(functions.keySet());
+        BUILT_IN_NAMES.addAll(aggregateFunctions.keySet());
+        BUILT_IN_NAMES.addAll(tableFunctions.keySet());
+    }
+
+    /**
+     * Whether a name is a built-in function's, scalar, aggregate or table, as the registries built so far know them.
+     *
+     * @param name the name, upper-cased
+     * @return whether a function is built in under it
+     */
+    public static boolean isBuiltInName(final String name) {
+        return name != null && BUILT_IN_NAMES.contains(name);
     }
 
     private void registerBuiltInFunctions() {
@@ -637,6 +659,7 @@ public class FunctionRegistry {
         register(new Random());
         register(new Uniform());
         register(new Normal());
+        register(new Zipf());
 
         // Date/Time functions
         register(new CurrentDate());
@@ -1194,8 +1217,51 @@ public class FunctionRegistry {
         return functions.get(name.toUpperCase(Locale.ROOT));
     }
 
+    /**
+     * Hand over what finds the aggregate functions users create, which a call no built-in answers to may name.
+     *
+     * @param userAggregates the lookup
+     */
+    public void setUserAggregates(final UserAggregateLookup userAggregates) {
+        this.userAggregates = userAggregates;
+    }
+
+    /**
+     * The aggregate a call of this name means: a built-in, else an aggregate function the user created that the
+     * name finds (see {@link UserAggregateLookup}).
+     *
+     * @param name the name as the call writes it
+     * @return the aggregate, or null when the name means none
+     */
     public AggregateFunction getAggregateFunction(final String name) {
-        return aggregateFunctions.get(name.toUpperCase(Locale.ROOT));
+        final String upper = name.toUpperCase(Locale.ROOT);
+        final AggregateFunction builtIn = aggregateFunctions.get(upper);
+        final UserAggregateLookup users = userAggregates;
+        // A built-in of any kind answers to its own name before a user's function does.
+        if (builtIn != null || users == null || functions.containsKey(upper) || tableFunctions.containsKey(upper)) {
+            return builtIn;
+        }
+        return users.find(upper);
+    }
+
+    /**
+     * Whether a call of this name calls an aggregate function a user created (see {@link #getAggregateFunction}).
+     *
+     * @param name the name as the call writes it
+     * @return whether it does
+     */
+    public boolean isUserAggregateFunction(final String name) {
+        return !aggregateFunctions.containsKey(name.toUpperCase(Locale.ROOT)) && getAggregateFunction(name) != null;
+    }
+
+    /**
+     * Whether a built-in aggregate goes by this name, a user's aggregate function aside.
+     *
+     * @param name the name as the call writes it
+     * @return whether one does
+     */
+    public boolean hasBuiltInAggregateFunction(final String name) {
+        return aggregateFunctions.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public TableFunction getTableFunction(final String name) {
@@ -1207,7 +1273,7 @@ public class FunctionRegistry {
     }
 
     public boolean hasAggregateFunction(final String name) {
-        return aggregateFunctions.containsKey(name.toUpperCase(Locale.ROOT));
+        return getAggregateFunction(name) != null;
     }
 
     public boolean hasTableFunction(final String name) {

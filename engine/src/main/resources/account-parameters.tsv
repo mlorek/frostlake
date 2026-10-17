@@ -95,6 +95,7 @@ EVENT_TABLE	snowflake.telemetry.events	Event destination for the given target.	S
 EXEMPT_DISABLE_RISKY_USER	false	When true, exempts the target from automatic disablement of risky users	BOOLEAN
 EXTERNAL_OAUTH_ADD_PRIVILEGED_ROLES_TO_BLOCKED_LIST	true	If true, automatically adds the ACCOUNTADMIN and SECURITYADMIN roles the blocked roles set	BOOLEAN
 EXTERNAL_VOLUME		Name of an external volume that will be used for persisted Iceberg metadata and data files.	STRING
+FEATURE_COMMENT_PROPAGATION	DISABLED	When ENABLED, column comments propagate automatically along column lineage. Account admins set DISABLED to turn the feature off for their account, which also turns off the producer-side emission and consumer-side handler gates for COLUMN_COMMENT_CHANGED and LINEAGE_NODE_CREATED.	STRING
 FEATURE_CORTEX_CODE_SANDBOX	DISABLED_PRIVATE_PREVIEW	Enable Cortex Code sandbox (microVM isolation for code execution). When ENABLED or ENABLED_PUBLIC_PREVIEW, the Cortex Code CLI auto-activates sandbox mode for the account without requiring the CORTEX_CODE_EXPERIMENTAL_FEATURES environment variable.	STRING
 FEATURE_ENABLE_REQUEST_ACCESS_FOR_WORKSPACES	DISABLED	Enables the workspace access request system functions. Setting this to ENABLED also enables ENABLE_GRANT_APPROVAL, ENABLE_LINEAGE_AWARE_RECIPIENT_CASCADE, ENABLE_REQUEST_ACCESS_FOR_WORKSPACES, ENABLE_ACCESS_REQUEST_HIERARCHICAL_APPROVER_ROUTING, ENABLE_ACCESS_REQUEST_REVIEWER_NOMINATION, and UI_ENABLE_WORKSPACE_ACCESS_REQUESTS. ENABLE_GRANT_APPROVAL_EXPIRY_CLEANER must be set separately at system level.	STRING
 FEATURE_RBAC_INHERITED_GRANTS	DISABLED	This is feature parameter for RBAC Inherited Grants	STRING
@@ -105,7 +106,6 @@ ICEBERG_MERGE_ON_READ_BEHAVIOR	auto	Controls merge-on-read behavior on Iceberg t
 ICEBERG_VERSION_DEFAULT	2	Default Iceberg version for new managed Iceberg table creation. Overridden by table-level ICEBERG_VERSION property if specified. Note: the default value must be synced with the default value of ICEBERG_VERSION	NUMBER
 INCLUDE_PROTECTED_USER_DATA	true	When true, ALL_USER_DETAILS returns the display name, the first name, the last name and the email. When false it returns the user names only.	BOOLEAN
 INITIAL_REPLICATION_SIZE_LIMIT_IN_TB	10.0	Soft limit for the size of initial replication operation in terabytes. If set to zero, replication operation is not blocked based on size.	FLOAT
-JS_QUERY_RESULT_FORMAT	JSON	Format used to serialize query result to send back to the JavaScript driver	STRING
 LISTING_AUTO_FULFILLMENT_INITIAL_REFRESH_SIZE_LIMIT_IN_TB	10.0	Limit on the total size in terabytes allowed for an initial listing auto-fulfillment refresh. Setting this to 0 disables the limit.	FLOAT
 LISTING_AUTO_FULFILLMENT_REPLICATION_REFRESH_SCHEDULE	1440 MINUTE	Listing auto fulfillment replication refresh schedule for listings that do not have a defined refresh schedule	STRING
 LOGIN_IDP_REDIRECT		Mapping between interfaces and IdP to redirect to when authenticating into a specific Snowflake interface such as Streamlit or Snowflake Intelligence. The format is a JSON object where keys are interface names (e.g., 'SNOWFLAKE_INTELLIGENCE', 'STREAMLIT') and values are IdP names as defined in the SSO integration (e.g., 'Okta', 'AzureAD'). Example: '{"SNOWFLAKE_INTELLIGENCE": "Okta", "STREAMLIT": "AzureAD"}'. This is a parameter that will only be set when LOGIN_IDP_REDIRECT account property is set.	STRING
@@ -140,6 +140,7 @@ SAML_IDENTITY_PROVIDER		Authentication attributes for the SAML Identity provider
 SERVERLESS_TASK_MAX_STATEMENT_SIZE	X2Large	The maximum warehouse size to use for a serverless Task	STRING
 SERVERLESS_TASK_MIN_STATEMENT_SIZE	XSMALL	The minimum warehouse size to use for a serverless Task	STRING
 SERVICE_CALLER_TOKEN_VALIDITY_SECS	120	Maximum validity period in seconds for service caller tokens. Can be set at the service, schema, database, or account level.	NUMBER
+SNOWFLAKE_LEARNING_ENVIRONMENT_OPT_OPTIONS	unset	Snowflake Learning Environment opt options	STRING
 SNOWSIGHT_USE_DASHED_CLASSIC_UI_URL	false	Use dashed version of account or alias when constructing classic-ui url	BOOLEAN
 SNOWSIGHT_USE_REGIONLESS_CLASSIC_UI_URL	false	Use regionless mode when constructing classic-ui url	BOOLEAN
 SNOWWORK_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for SnowWork usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
@@ -153,6 +154,7 @@ SUSPEND_ALERT_AFTER_NUM_FAILURES	0	Customer-configurable threshold for the numbe
 SUSPEND_TASK_AFTER_NUM_FAILURES	10	How many times a task must fail in a row before it is automatically suspended. 0 disables auto-suspending.	NUMBER
 TARGET_FILE_SIZE	AUTO	Target file size for iceberg tables.	STRING
 TASK_AUTO_RETRY_ATTEMPTS	0	Maximum Automatic Retries Allowed For A User Task	NUMBER
+UI_ENABLE_TUTORIALS_PAGE	false	Enables tutorials content on the Learn Page.	BOOLEAN
 UI_FORCE_S3_REGIONAL_DOTTED_ENDPOINTS	false	UI param to force resolving to S3 dotted regional endpoints	BOOLEAN
 UI_NOTIFICATIONS	false	Whether UI notifications are shown in the UI	BOOLEAN
 USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE	Medium	The initial size of warehouse to use for managed warehouses in the absence of history	STRING

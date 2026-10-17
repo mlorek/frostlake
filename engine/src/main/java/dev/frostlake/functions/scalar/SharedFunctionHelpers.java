@@ -20,6 +20,7 @@ import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.SessionInputFormats;
 import dev.frostlake.executor.SessionOutputFormats;
 import dev.frostlake.executor.SessionTimestampMapping;
+import dev.frostlake.executor.SessionWeek;
 import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.executor.expressions.RawOverflowKind;
@@ -534,6 +535,7 @@ public final class SharedFunctionHelpers {
     public static LocalDate toLocalDate(final Object v) {
         if (v == null) return null;
         if (v instanceof LocalDate) return (LocalDate) v;
+        refuseStructuredVariant(v, "DATE");
         // A TIMESTAMP_TZ truncates to the date its OWN wall clock names, never to the UTC one.
         if (v instanceof ZonedDateTime) return ((ZonedDateTime) v).toLocalDate();
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalDate();
@@ -548,6 +550,23 @@ public final class SharedFunctionHelpers {
         // Live names the TYPE it could not read the text as — "Date '...' is not recognized" —
         // where java.time's own message says "Text '...' could not be parsed".
         throw new RuntimeException("Date '" + s + "' is not recognized");
+    }
+
+    /**
+     * A VARIANT holding an OBJECT or an ARRAY is no date and no timestamp: converted row by row it is refused in the
+     * VARIANT's own words, {@code Failed to cast variant value {"x":"2024-01-02"} to DATE} (live-verified).
+     *
+     * @param v      the value
+     * @param target the type it is converted to, as the refusal names it
+     */
+    private static void refuseStructuredVariant(final Object v, final String target) {
+        if (!(v instanceof VariantValue)) {
+            return;
+        }
+        final VariantValue held = (VariantValue) v;
+        if (held.node().isObject() || held.node().isArray()) {
+            throw new RuntimeException("Failed to cast variant value " + held.text() + " to " + target);
+        }
     }
 
     /**
@@ -588,6 +607,9 @@ public final class SharedFunctionHelpers {
     public static LocalDateTime toLocalDateTime(final Object v, final boolean targetCarriesZone) {
         if (v == null) return null;
         if (v instanceof LocalDateTime) return (LocalDateTime) v;
+        if (!targetCarriesZone) {
+            refuseStructuredVariant(v, "TIMESTAMP_NTZ");
+        }
         // A TIMESTAMP_LTZ arrives with its offset ALREADY applied, so its wall clock is the answer —
         // re-applying the offset here would move the instant a second time.
         if (v instanceof OffsetDateTime) return ((OffsetDateTime) v).toLocalDateTime();
@@ -1287,14 +1309,18 @@ public final class SharedFunctionHelpers {
         }
         switch (unit) {
             case "YEAR": case "Y": case "YY": case "YYY": case "YYYY": case "YR": return dt.getYear();
-            case "YEAROFWEEK": case "YEAROFWEEKISO": case "YEAROFWEEK_ISO": return dt.get(IsoFields.WEEK_BASED_YEAR);
+            // The week parts follow the session's WEEK_START and WEEK_OF_YEAR_POLICY; the ISO ones do not.
+            case "YEAROFWEEK": return SessionWeek.yearOfWeek(dt.toLocalDate());
+            case "YEAROFWEEKISO": case "YEAROFWEEK_ISO": return dt.get(IsoFields.WEEK_BASED_YEAR);
             case "QUARTER": case "Q": case "QTR":
                 return (dt.getMonthValue() - 1) / 3 + 1;
             case "MONTH": case "MM": case "MON": case "MONS": return dt.getMonthValue();
-            case "WEEK": case "W": case "WY": case "WOY": case "WEEKOFYEAR": case "WEEKISO": case "WEEK_ISO":
+            case "WEEK": case "W": case "WY": case "WOY": case "WEEKOFYEAR":
+                return SessionWeek.weekOfYear(dt.toLocalDate());
+            case "WEEKISO": case "WEEK_ISO":
                 return dt.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
             case "DAY": case "DD": case "D": case "DAYOFMONTH": return dt.getDayOfMonth();
-            case "DAYOFWEEK": case "DOW": case "DW": case "WEEKDAY": return (long) dt.getDayOfWeek().getValue() % 7;
+            case "DAYOFWEEK": case "DOW": case "DW": case "WEEKDAY": return SessionWeek.dayOfWeek(dt.toLocalDate());
             case "DAYOFWEEKISO": case "DAYOFWEEK_ISO": case "WEEKDAY_ISO": case "DOW_ISO": case "DW_ISO":
                 return dt.getDayOfWeek().getValue();
             case "DAYOFYEAR": case "DOY": case "YEARDAY": case "DY": return dt.getDayOfYear();

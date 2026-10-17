@@ -199,6 +199,10 @@ public class IntegrationReferenceTest extends BaseDatabaseTest {
             refusal(oauth + "ir_hook OAUTH_SCOPES = ('a')"));
         assertEquals("SQL compilation error: Integration 'IR_HOOK' is not of type API Authentication.",
             refusal(cloud + "ir_hook"));
+        // A type that takes no integration still looks the one it is given up first.
+        assertEquals("SQL compilation error: Integration 'IR_HOOK' is not of type API Authentication.",
+            refusal("CREATE OR REPLACE SECRET ir_s3 TYPE = GENERIC_STRING SECRET_STRING = 'x'"
+                + " API_AUTHENTICATION = ir_hook"));
         assertEquals(PREFIX + "invalid value [IR_IAM] for parameter 'API_AUTHENTICATION'",
             refusal(oauth + "ir_iam OAUTH_REFRESH_TOKEN = 'x' OAUTH_REFRESH_TOKEN_EXPIRY_TIME = '2030-01-01 00:00:00'"));
         assertEquals(PREFIX + "invalid value [IR_SEC] for parameter 'API_AUTHENTICATION'", refusal(cloud + "ir_sec"));

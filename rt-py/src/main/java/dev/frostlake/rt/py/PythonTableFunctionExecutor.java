@@ -124,10 +124,14 @@ public final class PythonTableFunctionExecutor {
             }
 
         } catch (final Exception e) {
-            PythonRuntime.discardContext();
+            // Worded before the context is settled (see PythonRuntime.settleAfter).
+            final String refusal = "Error executing Python table function " + function.getName() + ": "
+                + e.getMessage();
             logger.error("Error executing Python table function {}: {}", function.getName(), e.getMessage(), e);
-            throw new RuntimeException("Error executing Python table function " + function.getName()
-                + ": " + e.getMessage(), e);
+            if (!PythonRuntime.settleAfter(e)) {
+                throw new RuntimeException(refusal);
+            }
+            throw new RuntimeException(refusal, e);
         }
 
         return new TablePartitionRows(writtenPerRow, atEnd);

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 
@@ -32,7 +33,7 @@ public class BitLength extends TextArgumentFunction {
         if (args.get(0) instanceof BinaryValue) {
             return (long) ((BinaryValue) args.get(0)).length() * 8;
         }
-        return (long) args.get(0).toString().getBytes(StandardCharsets.UTF_8).length * 8;
+        return (long) SharedFunctionHelpers.textOf(args.get(0)).getBytes(StandardCharsets.UTF_8).length * 8;
     }
 
     @Override

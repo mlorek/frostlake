@@ -29,7 +29,6 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -77,7 +76,8 @@ public class SecurityManager {
 
         // The object's owner role has full control over the object (ownership confers all privileges).
         final String ownerRole = catalog.getObjectOwnerRole(objectType, objectName);
-        if (ownerRole != null && effectiveRoles.contains(ownerRole.toUpperCase(Locale.ROOT))) {
+        if (ownerRole != null && (effectiveRoles.contains(catalog.resolveRoleName(ownerRole))
+                || holdsOwningDatabaseRole(effectiveRoles, ownerRole))) {
             return;
         }
 
@@ -152,7 +152,24 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        return getEffectiveRoles().contains(owner.toUpperCase(Locale.ROOT));
+        final Set<String> roles = getEffectiveRoles();
+        return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner);
+    }
+
+    /**
+     * Whether an owner that is a database role, named by its qualified name, is held under these roles: granted to
+     * one of them, or to a database role granted to one, however far down.
+     */
+    private boolean holdsOwningDatabaseRole(final Set<String> roles, final String owner) {
+        if (owner.indexOf('.') < 0) {
+            return false;
+        }
+        for (final Role holder : holdersUnder(roles)) {
+            if (holder instanceof DatabaseRole && owner.equals(((DatabaseRole) holder).getQualifiedName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -175,8 +192,9 @@ public class SecurityManager {
             return true;
         }
         final Set<String> roles = askedRoles();
-        return roles.contains(owner.toUpperCase(Locale.ROOT)) || holdsExactly(holdersUnder(roles), objectType,
-            GrantNames.of(catalog, objectType, objectName), privilege);
+        return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)
+            || holdsExactly(holdersUnder(roles), objectType, GrantNames.of(catalog, objectType, objectName),
+                privilege);
     }
 
     /**
@@ -240,7 +258,7 @@ public class SecurityManager {
         if (executableOwner == null) {
             return askedRoles();
         }
-        final Set<String> roles = rolesUnder(executableOwner.toUpperCase(Locale.ROOT));
+        final Set<String> roles = rolesUnder(catalog.resolveRoleName(executableOwner));
         roles.add("PUBLIC");
         return roles;
     }
@@ -260,7 +278,7 @@ public class SecurityManager {
 
     private boolean holdAny(final Set<String> roles, final String objectType, final String objectName,
                             final String owner) {
-        if (roles.contains(owner.toUpperCase(Locale.ROOT))) {
+        if (roles.contains(catalog.resolveRoleName(owner))) {
             return true;
         }
         final String recorded = GrantNames.of(catalog, objectType, objectName);
@@ -285,7 +303,7 @@ public class SecurityManager {
         }
         final String executableOwner = sessionContext.getExecutableOwner();
         if (executableOwner != null) {
-            roles.addAll(rolesUnder(executableOwner.toUpperCase(Locale.ROOT)));
+            roles.addAll(rolesUnder(catalog.resolveRoleName(executableOwner)));
         }
         return roles;
     }
@@ -325,13 +343,13 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        final String ownerRole = owner.toUpperCase(Locale.ROOT);
+        final String ownerRole = catalog.resolveRoleName(owner);
         final String rightsOwner = ownerRights.get();
         final String acting = rightsOwner != null ? rightsOwner : sessionContext.getCreatingRole();
         if (acting == null || !catalog.roleExists(ownerRole)) {
             return true;
         }
-        final Set<String> roles = rolesUnder(acting.toUpperCase(Locale.ROOT));
+        final Set<String> roles = rolesUnder(catalog.resolveRoleName(acting));
         roles.add("PUBLIC");
         return roles.contains(ownerRole) || holds(holdersUnder(roles), containerType,
             GrantNames.of(catalog, containerType, containerName), createPrivilege);
@@ -345,7 +363,8 @@ public class SecurityManager {
      * @return whether an asked role owns it
      */
     public boolean ownedByAskedRole(final String owner) {
-        return owner == null || !sessionContext.isSecurityEnabled() || askedRoles().contains(owner.toUpperCase(Locale.ROOT));
+        return owner == null || !sessionContext.isSecurityEnabled()
+            || askedRoles().contains(catalog.resolveRoleName(owner));
     }
 
     /**
@@ -370,7 +389,7 @@ public class SecurityManager {
 
     private boolean uses(final Set<String> roles, final String containerType, final String containerName) {
         final String owner = catalog.getObjectOwnerRole(containerType, containerName);
-        if (owner == null || roles.contains(owner.toUpperCase(Locale.ROOT))) {
+        if (owner == null || roles.contains(catalog.resolveRoleName(owner))) {
             return true;
         }
         return holds(holdersUnder(roles), containerType, GrantNames.of(catalog, containerType, containerName),
@@ -451,8 +470,8 @@ public class SecurityManager {
      */
     public String enterOwnerRights(final String ownerRole) {
         final String previous = ownerRights.get();
-        if (ownerRole != null && catalog.roleExists(ownerRole.toUpperCase(Locale.ROOT))) {
-            ownerRights.set(ownerRole.toUpperCase(Locale.ROOT));
+        if (ownerRole != null && catalog.roleExists(catalog.resolveRoleName(ownerRole))) {
+            ownerRights.set(catalog.resolveRoleName(ownerRole));
         }
         return previous;
     }

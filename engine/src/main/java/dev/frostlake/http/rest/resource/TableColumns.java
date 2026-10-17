@@ -238,15 +238,19 @@ final class TableColumns {
 
     // ---- response ----------------------------------------------------------------------------------------
 
-    /** The {@code cluster_by} keys and the raw {@code cluster_by_raw} of a SHOW row's {@code cluster_by} cell. */
+    /**
+     * The {@code cluster_by} keys and the {@code cluster_by_raw} of a SHOW row's {@code cluster_by} cell: the raw
+     * text is the key list as written, in its parentheses and without the LINEAR the listing puts before it, and
+     * each key is named as the account names it, an unquoted identifier in upper case (live-verified).
+     */
     static void clusterBy(final ObjectNode node, final RestRow row) {
         final String raw = row.nonEmpty("cluster_by");
         if (raw == null) {
             return;
         }
-        node.put("cluster_by_raw", raw);
         final int open = raw.indexOf('(');
         final String inner = open >= 0 && raw.endsWith(")") ? raw.substring(open + 1, raw.length() - 1) : raw;
+        node.put("cluster_by_raw", "(" + inner + ")");
         final ArrayNode keys = RestJson.array();
         final StringBuilder key = new StringBuilder();
         int depth = 0;
@@ -261,16 +265,30 @@ final class TableColumns {
                 depth--;
             }
             if (c == ',' && depth == 0 && !quoted) {
-                keys.add(key.toString().trim());
+                keys.add(keyName(key.toString().trim()));
                 key.setLength(0);
             } else {
                 key.append(c);
             }
         }
         if (key.length() > 0) {
-            keys.add(key.toString().trim());
+            keys.add(keyName(key.toString().trim()));
         }
         node.set("cluster_by", keys);
+    }
+
+    /** A clustering key as the account names it: an unquoted identifier in upper case, another key as written. */
+    private static String keyName(final String key) {
+        if (key.isEmpty() || !(Character.isLetter(key.charAt(0)) || key.charAt(0) == '_')) {
+            return key;
+        }
+        for (int i = 1; i < key.length(); i++) {
+            final char c = key.charAt(i);
+            if (!(Character.isLetterOrDigit(c) || c == '_' || c == '$')) {
+                return key;
+            }
+        }
+        return key.toUpperCase(Locale.ROOT);
     }
 
     /** The {@code columns} array of a relation, read from {@code DESCRIBE <kind> <name>}. */

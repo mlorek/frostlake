@@ -277,10 +277,10 @@ public class ConcurrentDatabaseEngine {
             // The scopes are cleared in execute()'s finally.
             // The current warehouse is the session's own too: a USE WAREHOUSE in one session moved every
             // session's CURRENT_WAREHOUSE() while the engine kept a single one. A session that has run no
-            // statement yet starts from the engine's.
+            // statement yet starts from its user's DEFAULT_WAREHOUSE, or from the engine's.
             final Catalog catalog = engine.getCatalog();
             catalog.beginSessionScope(session.getCurrentDatabase(), session.getCurrentSchema(),
-                session.isWarehouseSettled() ? session.getCurrentWarehouse() : catalog.getCurrentWarehouse());
+                session.isWarehouseSettled() ? session.getCurrentWarehouse() : catalog.sessionStartWarehouse());
             engine.getTransactionManager().beginSessionAutoCommit(session.isAutoCommit());
             // LAST_QUERY_ID must follow the SESSION, not the pool thread that happens to serve this
             // statement: consecutive requests of one session land on different threads, and a
@@ -370,6 +370,21 @@ public class ConcurrentDatabaseEngine {
      * @param session the session to end
      */
     public void endSession(final SessionContext session) {
+        // A request of the session's that is still running ends first. A transaction it opened is the session's only
+        // once the request captures it as it ends, so a session aborted while its request waits for a table lock is
+        // judged after that request: the abort ends the wait at once.
+        final SessionState state = sessionStates.get(session.getSessionId());
+        if (state == null) {
+            endSessionNow(session);
+            return;
+        }
+        synchronized (state) {
+            endSessionNow(session);
+        }
+    }
+
+    /** {@link #endSession}'s work, once no request of the session is running. */
+    private void endSessionNow(final SessionContext session) {
         if (session.isInTransaction()) {
             try {
                 // Through execute(), under the engine's lock like any request: the idle sweep's thread is not

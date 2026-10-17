@@ -18,10 +18,12 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ClonePoint;
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.ExpressionColumns;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
@@ -260,8 +262,12 @@ public class DDLCommandHandler implements CommandHandler {
                 return securityHandler.handleCreateAggregationPolicy(ctx, ifNotExists);
             } else if (ctx.JOIN() != null && ctx.POLICY() != null) {
                 return securityHandler.handleCreateJoinPolicy(ctx, ifNotExists);
+            } else if (ctx.FUNCTION() != null && ctx.EXTERNAL() != null) {
+                return routineHandler.handleCreateExternalFunction(ctx);
             } else if (ctx.FUNCTION() != null) {
                 return routineHandler.handleCreateFunction(ctx, ifNotExists);
+            } else if (ctx.GIT() != null && ctx.REPOSITORY() != null) {
+                return infraHandler.handleCreateGitRepository(ctx);
             } else if (ctx.PROCEDURE() != null) {
                 return routineHandler.handleCreateProcedure(ctx, ifNotExists);
             } else if (ctx.USER() != null) {
@@ -596,8 +602,9 @@ public class DDLCommandHandler implements CommandHandler {
             } else if (sourceDynamicTable != null) {
                 start.forDynamicTable(stream, sourceSchema, sourceDynamicTable, ctx.streamPoint(), showInitialRows);
             } else if (sourceView != null) {
-                // A stream on a view turns change tracking on for the tables it reads (live-verified), each read
-                // where the view lives.
+                // A stream on a view turns change tracking on for the view and for the tables it reads
+                // (live-verified), each read where the view lives.
+                sourceView.setChangeTracking(true);
                 final List<Table> viewTables = StreamSources.viewBases(catalog, sourceSchema, viewBaseTables);
                 if (viewTables != null) {
                     for (final Table baseTable : viewTables) {
@@ -628,16 +635,7 @@ public class DDLCommandHandler implements CommandHandler {
         return null;
     }
 
-    /** Rows as their value lists. */
-    private static List<List<Object>> rowValues(final List<Row> rows) {
-        final List<List<Object>> values = new ArrayList<>();
-        for (final Row row : rows) {
-            values.add(new ArrayList<>(row.getValues()));
-        }
-        return values;
-    }
-
-    public Object handleAlterStatement(final FrostlakeParser.AlterStatementContext ctx) {
+        public Object handleAlterStatement(final FrostlakeParser.AlterStatementContext ctx) {
         if (ctx.VIEW() != null && ctx.MATERIALIZED() != null) {
             return handleAlterMaterializedView(ctx);
         } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
@@ -717,6 +715,9 @@ public class DDLCommandHandler implements CommandHandler {
                 schema.removeFunction((Function) routine);
                 routine.setName(newSimple);
                 destination.addFunction((Function) routine);
+                if (((Function) routine).isAggregate()) {
+                    catalog.noteAggregateFunction(newSimple);
+                }
             } else {
                 schema.removeProcedure((Procedure) routine);
                 routine.setName(newSimple);
@@ -935,6 +936,16 @@ public class DDLCommandHandler implements CommandHandler {
         return schema != null && parts.length <= 3 && schema.hasMaterializedView(parts[parts.length - 1]);
     }
 
+    /**
+     * The schema holding the materialized view a name finds (see {@link #materializedViewExists}).
+     *
+     * @param parts the name's parts
+     * @return the schema
+     */
+    public Schema materializedViewHome(final String[] parts) {
+        return dynamicTableSchema(parts);
+    }
+
     private Object handleAlterMaterializedView(final FrostlakeParser.AlterStatementContext ctx) {
         final String qualifiedName = queryExecutor.alterTargetName(ctx);
         final String[] parts = queryExecutor.alterTargetNameParts(ctx);
@@ -962,14 +973,10 @@ public class DDLCommandHandler implements CommandHandler {
         final FrostlakeParser.MaterializedViewActionContext action = ctx.materializedViewAction();
 
         if (action.RECLUSTER() != null) {
-            // Only a clustered view has reclustering to pause; the refusal is the table's own (live-verified).
-            if (mv.getClusterKeys().isEmpty()) {
-                throw new RuntimeException("Table '" + mv.getName().toUpperCase(Locale.ROOT) + "' is not clustered\n");
-            }
-            mv.setReclusterSuspended(action.SUSPEND() != null);
+            recluster(mv, action.SUSPEND() != null);
         } else if (action.clusterByClause() != null) {
-            mv.setClusterKeys(MaterializedViewKeys.read(action.clusterByClause(), mv.getResolvedColumns(), this,
-                queryExecutor));
+            mv.setClusterKeys(MaterializedViewKeys.read(action.clusterByClause().expressionList(),
+                mv.getResolvedColumns(), this, queryExecutor));
             mv.setReclusterSuspended(false);
         } else if (action.CLUSTERING() != null) {
             // Dropping the key of a view that has none is no fault (live-verified).
@@ -988,33 +995,25 @@ public class DDLCommandHandler implements CommandHandler {
             }
             logger.trace("Resumed materialized view: {}", qualifiedName);
         } else if (action.RENAME() != null) {
-            // A new name written with a path places the view in the schema it names; a bare one renames it where
-            // it is. A name a relation there holds — the view's own included — is refused as written, and the
-            // schema is then asked for the privilege to create a materialized view (live-verified).
-            final String[] target = qualifiedNameParts(action.qualifiedName());
-            final String newName = target[target.length - 1];
-            final Schema destination = target.length == 1 ? schema
-                : catalog.databaseExact(target.length == 3 ? target[0] : catalog.getCurrentDatabase())
-                    .schemaExact(target[target.length - 2]);
-            refuseTakenName(true, destination.relationKindOf(newName) != null, target);
-            checkCreatePrivilege(Privilege.CREATE_MATERIALIZED_VIEW, destination);
-            // Re-key the schema map (drop old, add under new name) — otherwise the MV stays
-            // findable only by its old name. Mirrors Catalog.renameTable's drop/rename/add.
-            final String grantedBefore = schema.qualifiedName(mv.getName());
-            schema.dropMaterializedView(mvName);
-            mv.rename(newName);
-            destination.addMaterializedView(mv);
-            GrantNames.renamed(catalog, "MATERIALIZED_VIEW", grantedBefore, destination.qualifiedName(mv.getName()));
-            logger.trace("Renamed materialized view {} to {}", qualifiedName, newName);
+            renameMaterializedView(schema, mv, qualifiedNameParts(action.qualifiedName()));
+            logger.trace("Renamed materialized view {}", qualifiedName);
         } else if (action.SECURE() != null) {
             mv.setSecure(action.SET() != null);
-        } else if (action.SET() != null && action.COMMENT() != null) {
-            final String comment = extractStringLiteral(action.STRING_LITERAL());
-            mv.setComment(comment);
-            logger.trace("Set comment on materialized view: {}", qualifiedName);
-        } else if (action.UNSET() != null) {
-            mv.setComment(null);
-            logger.trace("Unset comment on materialized view: {}", qualifiedName);
+        } else if (!action.viewSetItem().isEmpty()) {
+            // Judged before the view was looked for; of a COMMENT written twice the last one stands (live-verified).
+            final String comment = AlteredViewProperties.judgeSet(action.viewSetItem(), true, mv.getName(),
+                getOriginalText(ctx));
+            if (comment != null) {
+                mv.setComment(comment);
+                logger.trace("Set comment on materialized view: {}", qualifiedName);
+            }
+        } else if (!action.optionKey().isEmpty()) {
+            if (AlteredViewProperties.judgeUnset(action.optionKey(),
+                    action.COMMA().isEmpty() ? null : action.COMMA(0).getSymbol(), true, mv.getName(),
+                    getOriginalText(ctx))) {
+                mv.setComment(null);
+                logger.trace("Unset comment on materialized view: {}", qualifiedName);
+            }
         }
 
         return null;
@@ -1099,6 +1098,149 @@ public class DDLCommandHandler implements CommandHandler {
         logger.trace("Renamed dynamic table {} to {}", was, destination.qualifiedName(newName));
     }
 
+    /**
+     * ALTER TABLE over a dynamic table (live-verified): its comment, its clustering key and its reclustering are a
+     * dynamic table's to change through ALTER TABLE as well; a column the key reads keeps its name, {@code Cannot
+     * rename column 'A' which belongs to a clustering key}; a SWAP is refused naming the other table's kind; every
+     * other action is refused as one a dynamic table does not take, {@code Object found is of type 'DYNAMIC_TABLE',
+     * not specified type 'TABLE'.}
+     *
+     * @param dt     the dynamic table the name finds
+     * @param action what the statement does
+     */
+    /** Pauses or resumes a materialized view's reclustering: only a clustered view has any, as a table's. */
+    private static void recluster(final MaterializedView mv, final boolean suspend) {
+        if (mv.getClusterKeys().isEmpty()) {
+            // The refusal is the table's own (live-verified).
+            throw new RuntimeException("Table '" + mv.getName().toUpperCase(Locale.ROOT) + "' is not clustered\n");
+        }
+        mv.setReclusterSuspended(suspend);
+    }
+
+    /**
+     * Renames a materialized view, whichever statement names it: ALTER MATERIALIZED VIEW, ALTER TABLE or ALTER VIEW
+     * (live-verified). A new name written with a path places the view in the schema it names, and a bare one in the
+     * session's schema, as a created name is placed: a view of another schema renamed to a bare name MOVES. A name a
+     * relation there holds — the view's own included — is refused as written, and the schema is then asked for the
+     * privilege to create a materialized view.
+     *
+     * @param schema the view's schema
+     * @param mv     the view
+     * @param target the new name, part by part
+     */
+    public void renameMaterializedView(final Schema schema, final MaterializedView mv, final String[] target) {
+        final String newName = target[target.length - 1];
+        final Schema destination = target.length == 1
+            ? (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null ? schema
+                : catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema()))
+            : catalog.databaseExact(target.length == 3 ? target[0] : catalog.getCurrentDatabase())
+                .schemaExact(target[target.length - 2]);
+        refuseTakenName(true, destination.relationKindOf(newName) != null, target);
+        checkCreatePrivilege(Privilege.CREATE_MATERIALIZED_VIEW, destination);
+        // Re-key the schema map (drop old, add under new name) — otherwise the MV stays
+        // findable only by its old name. Mirrors Catalog.renameTable's drop/rename/add.
+        final String grantedBefore = schema.qualifiedName(mv.getName());
+        schema.dropMaterializedView(mv.getName());
+        mv.rename(newName);
+        destination.addMaterializedView(mv);
+        GrantNames.renamed(catalog, "MATERIALIZED_VIEW", grantedBefore, destination.qualifiedName(mv.getName()));
+    }
+
+    /**
+     * ALTER TABLE over a materialized view (live-verified): the view takes the clustering actions — CLUSTER BY, DROP
+     * CLUSTERING KEY, SUSPEND and RESUME RECLUSTER — and RENAME TO, as ALTER MATERIALIZED VIEW gives them. A search
+     * optimization is {@code Invalid object type: 'MV0'}, a parameter set on it {@code Insufficient privileges to
+     * operate on materialized_view 'MV0'.}, and any other action is refused by the view's kind.
+     *
+     * @param parts  the view's name, part by part
+     * @param action what the statement does
+     */
+    public void alterMaterializedViewAsTable(final String[] parts, final FrostlakeParser.TableActionContext action) {
+        final Schema schema = materializedViewHome(parts);
+        final MaterializedView mv = schema.getMaterializedView(parts[parts.length - 1]);
+        if (action.RECLUSTER() != null) {
+            recluster(mv, action.SUSPEND() != null);
+        } else if (action.CLUSTER() != null && action.expressionList() != null) {
+            mv.setClusterKeys(MaterializedViewKeys.read(action.expressionList(), mv.getResolvedColumns(), this,
+                queryExecutor));
+            mv.setReclusterSuspended(false);
+        } else if (action.DROP() != null && action.CLUSTERING() != null) {
+            mv.setClusterKeys(null);
+        } else if (action.RENAME() != null && action.wholeObjectName() != null) {
+            renameMaterializedView(schema, mv, queryExecutor.resolveWholeObjectNameParts(action.wholeObjectName()));
+        } else if (action.ADD() != null && action.SEARCH() != null) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid object type: '" + mv.getName() + "'"));
+        } else if (setsTableParameter(action)) {
+            throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("materialized_view",
+                mv.getName()));
+        } else {
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType("MATERIALIZED_VIEW", "TABLE"));
+        }
+        mv.markDdl(catalog.currentUserForDdl());
+    }
+
+    /** Whether an ALTER TABLE … SET names a parameter among its properties. */
+    private static boolean setsTableParameter(final FrostlakeParser.TableActionContext action) {
+        for (final FrostlakeParser.TableSetPropertyContext property : action.tableSetProperty()) {
+            if (ParameterRegistry.isTableParameter(ParameterRegistry.canonical(property.optionKey().getText()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void alterDynamicTableAsTable(final DynamicTable dt, final FrostlakeParser.TableActionContext action) {
+        if (action.SWAP() != null) {
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType("TABLE", "DYNAMIC_TABLE"));
+        }
+        if (action.RECLUSTER() != null) {
+            if (dt.getClusterKeys().isEmpty()) {
+                // The sentence ends with a newline, as the plain table's does.
+                throw new RuntimeException("Table '" + dt.getName() + "' is not clustered\n");
+            }
+            dt.setReclusterSuspended(action.SUSPEND() != null);
+        } else if (action.CLUSTER() != null && action.expressionList() != null) {
+            final List<String> keys = new ArrayList<>();
+            for (final FrostlakeParser.ExpressionContext key : action.expressionList().expression()) {
+                keys.add(getOriginalText(key));
+            }
+            dt.setClusterKeys(keys);
+        } else if (action.CLUSTERING() != null) {
+            dt.setClusterKeys(new ArrayList<String>());
+        } else if (action.SET() != null && action.COMMENT() != null && action.STRING_LITERAL() != null) {
+            dt.setComment(extractStringLiteral(action.STRING_LITERAL()));
+        } else if (action.tableUnsetProperties() != null && unsetsCommentAlone(action.tableUnsetProperties())) {
+            dt.setComment(null);
+        } else if (action.RENAME() != null && action.COLUMN() != null
+                && keyReads(dt, SqlIdentifiers.canonical(action.identifier(0)))) {
+            throw new RuntimeException("Cannot rename column '" + SqlIdentifiers.canonical(action.identifier(0))
+                + "' which belongs to a clustering key\n");
+        } else {
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType("DYNAMIC_TABLE", "TABLE"));
+        }
+        dt.markDdl(catalog.currentUserForDdl());
+    }
+
+    /** Whether an UNSET names the COMMENT alone. */
+    private static boolean unsetsCommentAlone(final FrostlakeParser.TableUnsetPropertiesContext unset) {
+        for (final FrostlakeParser.OptionKeyContext key : unset.optionKey()) {
+            if (!"COMMENT".equalsIgnoreCase(key.getText())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether a dynamic table's clustering key reads a column. */
+    private static boolean keyReads(final DynamicTable dt, final String column) {
+        for (final String key : dt.getClusterKeys()) {
+            if (ExpressionColumns.reads(key, column)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private Object handleAlterDynamicTable(final FrostlakeParser.AlterStatementContext ctx) {
         final String qn = getText(ctx.qualifiedName());
         DynamicTableProperties.rejectUntakeable(ctx.dynamicTableAction());
@@ -1138,17 +1280,8 @@ public class DDLCommandHandler implements CommandHandler {
             dt.setLastSuspendedOn(null);
             logger.trace("Resumed dynamic table: {}", qn);
         } else if (action.REFRESH() != null) {
-            dt.setLastRefreshedTime(StatementClock.instant());
             // What the refresh holds is what a listing counts from now on, and what the next refresh compares.
-            final List<Row> refreshed = queryExecutor.dynamicTableRows(schema, dt);
-            final long[] changed = queryExecutor.recordDynamicTableRefresh(dt, refreshed);
-            // A stream on the table records what the refresh changed.
-            final String qualified = schema.getDatabaseName() + "." + schema.getName() + "." + dt.getName();
-            if (queryExecutor.getStreamManager() != null && !queryExecutor.getStreamManager()
-                    .streamsOver(schema.getDatabaseName(), StreamSourceType.DYNAMIC_TABLE, qualified).isEmpty()) {
-                queryExecutor.getStreamManager().trackDynamicTableRefresh(schema.getDatabaseName(), qualified,
-                    rowValues(refreshed));
-            }
+            final long[] changed = queryExecutor.refreshDynamicTableNow(schema, dt);
             logger.trace("Refreshed dynamic table: {}", qn);
             return refreshResult(schema.qualifiedName(dt.getName()), changed);
         } else if (action.SET() != null) {
@@ -1270,7 +1403,7 @@ public class DDLCommandHandler implements CommandHandler {
             } else {
                 throw new RuntimeException("Invalid sequence name: " + qualifiedName);
             }
-            sequence = schema.getSequence(parts[parts.length - 1]);
+            sequence = schema.getSequenceExact(parts[parts.length - 1]);
         } catch (final RuntimeException absent) {
             // IF EXISTS forgives the sequence's absence, and nothing the action itself refuses.
             if (ctx.if_exists() != null) {
@@ -1482,6 +1615,18 @@ public class DDLCommandHandler implements CommandHandler {
         // Every name is matched EXACTLY, as SQL matches a live object: a schema created as "s1" and one created as S1
         // are two (live-verified), and an object dropped from one comes back into that one or nowhere. The container is
         // resolved before the dropped version is taken, and a version the UNDROP cannot put back stays for a later one.
+        if (ctx.SESSION() != null) {
+            // No dropped session policy is kept: a name a policy holds is taken, and any other is refused as the kind
+            // no UNDROP restores (live-verified).
+            final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+            final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+            if (owner.policyKindHolding(parts[parts.length - 1]) != null) {
+                throw new RuntimeException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellAlreadyCanonicalPath(String.join(".", parts)) + "' already exists."));
+            }
+            throw new RuntimeException(
+                "Unsupported feature 'UNDROP not supported for objects of type SESSION_POLICY'.");
+        }
         if (ctx.DYNAMIC() != null) {
             final String name = getText(ctx.qualifiedName());
             final String[] parts = qualifiedNameParts(ctx.qualifiedName());
@@ -1531,8 +1676,14 @@ public class DDLCommandHandler implements CommandHandler {
                 catalog.recordDropped("TABLE:" + fqName, dropped);
                 throw taken;
             }
-            queryExecutor.getStorageEngine().createTable(fqName, table);
-            refill(queryExecutor.getStorageEngine().getTableStorage(fqName), table, dropped.getRows());
+            // A version another session's transaction wrote after the drop comes back with what it committed there.
+            final String setAside = dropped.getStorageSetAside();
+            if (setAside != null && queryExecutor.getStorageEngine().restoreRetired(setAside, fqName)) {
+                queryExecutor.getTransactionManager().tablesMoved(Collections.singletonMap(setAside, fqName));
+            } else {
+                queryExecutor.getStorageEngine().createTable(fqName, table);
+                refill(queryExecutor.getStorageEngine().getTableStorage(fqName), table, dropped.getRows());
+            }
             // So do its stage's files, which waited where a table that took the name meanwhile did not reach them.
             queryExecutor.bringBackStages("TABLE:" + fqName, dropped);
             // UNDROP is a DDL: LAST_DDL and LAST_DDL_BY move to it, and LAST_ALTERED with them.

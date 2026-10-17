@@ -27,6 +27,7 @@ import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.parser.BangOperator;
 import dev.frostlake.parser.FrostlakeBaseVisitor;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.parser.OperandRefusals;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.types.DataType;
@@ -498,9 +499,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         if (readsPatternList(ctx)) {
             return comparisonChain(ctx);
         }
-        final BinaryOperator op = ctx.op.getType() == FrostlakeParser.PLUS
-            ? BinaryOperator.ADD
-            : BinaryOperator.SUBTRACT;
+        final BinaryOperator op = ctx.op.getType() == FrostlakeParser.PLUS ? BinaryOperator.ADD
+            : ctx.op.getType() == FrostlakeParser.MINUS ? BinaryOperator.SUBTRACT : BinaryOperator.CONCAT;
         return binary(ctx.expression(0), op, ctx.expression(1), ctx.op);
     }
 
@@ -508,15 +508,6 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     @Override
     public Expression visitCaretExpr(final FrostlakeParser.CaretExprContext ctx) {
         throw CaretOperator.refusal();
-    }
-
-    @Override
-    public Expression visitConcatExpr(final FrostlakeParser.ConcatExprContext ctx) {
-        if (readsPatternList(ctx)) {
-            return comparisonChain(ctx);
-        }
-        return binary(ctx.expression(0), BinaryOperator.CONCAT, ctx.expression(1),
-            ctx.PIPE_PIPE() != null ? ctx.PIPE_PIPE().getSymbol() : null);
     }
 
     /**
@@ -806,11 +797,6 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         while (ComparisonLevelChain.valueOperand(first) != base) {
             first = ComparisonLevelChain.valueOperand(first);
         }
-        if (first instanceof FrostlakeParser.ConcatExprContext) {
-            final FrostlakeParser.ConcatExprContext concat = (FrostlakeParser.ConcatExprContext) first;
-            return PatternRowOperator.beside("||", visit(concat.expression(1)),
-                keywordPosition(concat.PIPE_PIPE().getSymbol()));
-        }
         if (first instanceof FrostlakeParser.AdditiveExprContext) {
             final FrostlakeParser.AdditiveExprContext sum = (FrostlakeParser.AdditiveExprContext) first;
             return PatternRowOperator.beside(sum.op.getText(), visit(sum.expression(1)), keywordPosition(sum.op));
@@ -977,13 +963,30 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         return node;
     }
 
-    /** The patterns a LIKE ANY lists, each built as written. */
+    /**
+     * The patterns a LIKE ANY lists, each built as written. A list of one ROW is the list of its values, in as many
+     * parentheses as it is written: {@code 'a' LIKE ANY (('a', 'b'))} is {@code 'a' LIKE ANY ('a', 'b')}, where a ROW
+     * beside another pattern stays a ROW, which is refused by its type (live-verified).
+     */
     private List<Expression> patternsOf(final FrostlakeParser.LikeAnyAllExprContext ctx) {
         final List<Expression> patterns = new ArrayList<>();
-        for (final FrostlakeParser.ExpressionContext patternCtx : ctx.patterns) {
+        final FrostlakeParser.RowExprContext row = ctx.patterns.size() == 1 ? rowBehind(ctx.patterns.get(0)) : null;
+        for (final FrostlakeParser.ExpressionContext patternCtx : row != null ? row.rowValues : ctx.patterns) {
             patterns.add(visit(patternCtx));
         }
         return patterns;
+    }
+
+    /** The ROW an expression is, behind any parentheses around it; null for any other expression. */
+    private static FrostlakeParser.RowExprContext rowBehind(final ParserRuleContext written) {
+        if (written instanceof FrostlakeParser.RowExprContext) {
+            return (FrostlakeParser.RowExprContext) written;
+        }
+        if (written instanceof FrostlakeParser.ValueExprContext) {
+            return rowBehind(((FrostlakeParser.ValueExprContext) written).expression());
+        }
+        return written instanceof FrostlakeParser.ParenExprContext
+            ? rowBehind(((FrostlakeParser.ParenExprContext) written).booleanExpr()) : null;
     }
 
     /** A LIKE ANY, LIKE ALL or ILIKE ANY over the subject a comparison-level chain gave it. */
@@ -1137,6 +1140,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             Quantifier.valueOf(ctx.quantifier().getText().toUpperCase(Locale.ROOT)),
             positionedSubquery(ctx.selectStatement()));
         quantified.setPosition(keywordPosition(ctx.op));
+        quantified.setQuantifierPosition(keywordPosition(ctx.quantifier().getStart()));
         if (isBangSpelled(ctx.op)) {
             quantified.markBangSpelled();
         }
@@ -1605,7 +1609,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                               final boolean distinctCall) {
         final List<Expression> partition = new ArrayList<>();
         if (over.partitionByClause() != null) {
-            for (final FrostlakeParser.ExpressionContext key : over.partitionByClause().expressionList().expression()) {
+            for (final ParserRuleContext key : KeyContexts.partitionKeys(over.partitionByClause())) {
                 partition.add(visit(key));
             }
         }
@@ -1614,7 +1618,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final List<Boolean> nullsFirst = new ArrayList<>();
         if (over.orderByClause() != null) {
             for (final FrostlakeParser.OrderItemContext item : over.orderByClause().orderItem()) {
-                order.add(visit(item.expression()));
+                order.add(visit(KeyContexts.of(item)));
                 ascending.add(Boolean.valueOf(item.DESC() == null));
                 nullsFirst.add(item.NULLS() == null ? null : Boolean.valueOf(item.FIRST() != null));
             }
@@ -1681,7 +1685,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 // expands it exactly as the plain star call is expanded.
                 final FrostlakeParser.FunctionArgContext star = ctx.functionArgList().functionArg(0);
                 final FunctionCallExpression starCall = starCall(ctx.functionName().getText().toUpperCase(Locale.ROOT),
-                    ctx.DISTINCT() != null, star.starQualifiedName(), star.starArgumentModifier());
+                    ctx.DISTINCT() != null, star.starQualifiedName(),
+                    StarArgument.modifiers(star.starArgumentModifier()));
                 starCall.setPosition(window.getPosition());
                 window.describeStar(starCall);
             }
@@ -1715,11 +1720,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             // CANONICAL, not blind upper-case: a quoted function name keeps its case, so `"sum"(a)`
             // resolves to nothing — live answers Unknown function "sum". — where `"SUM"(a)` and
             // `sum(a)` both find SUM. Upper-casing through the quotes made all three one call.
-            SqlIdentifiers.canonicalText(ctx.functionName().getText()),
+            calledName(ctx.functionName()),
             argList(ctx.functionArgList()),
             ctx.DISTINCT() != null,
             false);
-        call.setNameParts(functionNameParts(ctx.functionName()));
+        nameCall(call, ctx.functionName());
         call.setPosition(new SourcePosition(
             ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
         call.describeWithinGroup(withinGroupOrdered(ctx));
@@ -1742,7 +1747,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
         final List<Expression> keys = new ArrayList<>();
         for (final FrostlakeParser.OrderItemContext item : clause.orderByClause().orderItem()) {
-            keys.add(visit(item.expression()));
+            keys.add(visit(KeyContexts.of(item)));
         }
         return keys;
     }
@@ -1918,11 +1923,35 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
         final List<FrostlakeParser.OrderItemContext> items =
             ctx.withinGroupClause().orderByClause().orderItem();
-        return items.size() == 1 ? visit(items.get(0).expression()) : null;
+        return items.size() == 1 ? visit(KeyContexts.of(items.get(0))) : null;
     }
 
     /** Canonical per-identifier parts of a function name, or null when it has no identifier parts
      *  (LIKE/ILIKE keyword calls) — the flattened text spelling stands alone then. */
+    /**
+     * The name a call is built with: its canonical text, or a built-in's own name where the call names one under
+     * INFORMATION_SCHEMA (see InformationSchemaCalls).
+     */
+    private String calledName(final FrostlakeParser.FunctionNameContext nameCtx) {
+        final String builtIn = InformationSchemaCalls.builtIn(functionNameParts(nameCtx));
+        return builtIn != null ? builtIn : SqlIdentifiers.canonicalText(nameCtx.getText());
+    }
+
+    /**
+     * Gives a call its name's canonical parts — a built-in named under INFORMATION_SCHEMA its own name alone, the
+     * database written before the schema kept to be looked up.
+     */
+    private void nameCall(final FunctionCallExpression call, final FrostlakeParser.FunctionNameContext nameCtx) {
+        final List<String> parts = functionNameParts(nameCtx);
+        final String builtIn = InformationSchemaCalls.builtIn(parts);
+        if (builtIn == null) {
+            call.setNameParts(parts);
+            return;
+        }
+        call.setNameParts(new ArrayList<>(Collections.singletonList(builtIn)));
+        call.setQualifierDatabase(InformationSchemaCalls.database(parts));
+    }
+
     private List<String> functionNameParts(final FrostlakeParser.FunctionNameContext nameCtx) {
         final String[] parts = ParseTreeText.functionNameParts(nameCtx);
         return parts == null ? null : new ArrayList<>(Arrays.asList(parts));
@@ -1989,6 +2018,14 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final List<Expression> args = new ArrayList<>();
         final List<String> names = new ArrayList<>();
         final List<SourcePosition> places = new ArrayList<>();
+        if (ctx.mixedStarArgument() != null) {
+            // A star first among the positional arguments rides along whole, as a star argument does.
+            final ColumnReferenceExpression star = new ColumnReferenceExpression("*");
+            star.describeStar(StarArgument.of(ctx.mixedStarArgument()));
+            args.add(star);
+            names.add(null);
+            places.add(keywordPosition(ctx.mixedStarArgument().getStart()));
+        }
         for (final FrostlakeParser.ExpressionContext positional : ctx.expression()) {
             args.add(visit(positional));
             names.add(null);
@@ -2004,10 +2041,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 ctx.withinGroupClause());
         }
         final FunctionCallExpression namedCall =
-            new FunctionCallExpression(
-                SqlIdentifiers.canonicalText(ctx.functionName().getText()), args, names);
+            new FunctionCallExpression(calledName(ctx.functionName()), args, names);
         namedCall.describeShape(quantifier(ctx.DISTINCT(), ctx.ALL()), withinGroupKeys(ctx.withinGroupClause()));
-        namedCall.setNameParts(functionNameParts(ctx.functionName()));
+        nameCall(namedCall, ctx.functionName());
         namedCall.setArgumentPositions(places);
         namedCall.setPosition(new SourcePosition(
             ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
@@ -2086,7 +2122,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         // COUNT(*) / COUNT(DISTINCT *) / COUNT(t.*) — a star call, with its qualifier and its EXCLUDE /
         // ILIKE filters carried for the star-aware callers.
         final FunctionCallExpression call = starCall(ctx.functionName().getText().toUpperCase(Locale.ROOT),
-            ctx.DISTINCT() != null, ctx.starQualifiedName(), ctx.starArgumentModifier());
+            ctx.DISTINCT() != null, ctx.starQualifiedName(), StarArgument.modifiers(ctx.starArgumentModifier()));
         // The parse tree's canonical parts, so a user-defined function resolves by its exact name.
         call.setNameParts(functionNameParts(ctx.functionName()));
         // Positioned like any other call, so the star's expanded-arity refusal can point at it.
@@ -2140,11 +2176,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             return namedArgumentWindowCall(ctx, ctx.functionName(), args, ctx.overClause(), ctx.DISTINCT(), ctx.ALL(),
                 ctx.withinGroupClause());
         }
-        final FunctionCallExpression namedCall = new FunctionCallExpression(
-            SqlIdentifiers.canonicalText(ctx.functionName().getText()), args, names);
+        final FunctionCallExpression namedCall = new FunctionCallExpression(calledName(ctx.functionName()), args,
+            names);
         namedCall.describeShape(quantifier(ctx.DISTINCT(), ctx.ALL()), withinGroupKeys(ctx.withinGroupClause()));
         // The parse tree's canonical parts, so a user-defined function resolves by its exact name.
-        namedCall.setNameParts(functionNameParts(ctx.functionName()));
+        nameCall(namedCall, ctx.functionName());
         namedCall.setArgumentPositions(places);
         // Positioned like any other call, so a refusal of its arguments points at it the way live does.
         namedCall.setPosition(new SourcePosition(
@@ -2403,6 +2439,10 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
         if (type.NVARCHAR2() != null || type.VARCHAR2() != null) {
             return "VARCHAR";
+        }
+        // The worded timestamp spellings are the types they name; their words run together otherwise.
+        if (type.TIMESTAMP() != null && type.ZONE() != null) {
+            return type.LOCAL() != null ? "TIMESTAMP_LTZ" : type.WITH() != null ? "TIMESTAMP_TZ" : "TIMESTAMP_NTZ";
         }
         return type.getText();
     }

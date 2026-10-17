@@ -77,6 +77,12 @@ final class ShowSessionExecutor {
      */
     private static final LocalDateTime ACCOUNT_CREATED_ON = LocalDateTime.of(2020, 1, 1, 0, 0, 0);
 
+    /** The parameters a task carries that an alert does not: the task's own (see {@link #showParametersInTask}). */
+    private static final Set<String> TASK_ONLY = new HashSet<>(Arrays.asList("SERVERLESS_TASK_MAX_STATEMENT_SIZE",
+        "SERVERLESS_TASK_MIN_STATEMENT_SIZE", "SUSPEND_TASK_AFTER_NUM_FAILURES", "TASK_AUTO_RETRY_ATTEMPTS",
+        "USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE", "USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS",
+        "USER_TASK_TIMEOUT_MS"));
+
     private final AccountIdentity identity;
     private final Catalog catalog;
     private final ShowCommandExecutor facade;
@@ -182,9 +188,17 @@ final class ShowSessionExecutor {
         return new ResultSet(columns, rows);
     }
 
-    /** Every parameter the account lists: a session's own and the ones only the account carries, by name. */
+    /**
+     * Every parameter the account lists: a session's own and the ones only the account carries, by name. A session
+     * parameter no longer in use, TELEMETRY_ENABLE_INTERACTIVE_MODE, is a session's alone (live-verified).
+     */
     private static List<SessionParameterRow> accountRows() {
-        final List<SessionParameterRow> rows = new ArrayList<>(SessionParameterCatalog.rows());
+        final List<SessionParameterRow> rows = new ArrayList<>();
+        for (final SessionParameterRow row : SessionParameterCatalog.rows()) {
+            if (!"TELEMETRY_ENABLE_INTERACTIVE_MODE".equals(row.getName())) {
+                rows.add(row);
+            }
+        }
         rows.addAll(SessionParameterCatalog.accountOnlyRows());
         Collections.sort(rows, new Comparator<SessionParameterRow>() {
             @Override
@@ -330,6 +344,36 @@ final class ShowSessionExecutor {
     }
 
     /**
+     * SHOW PARAMETERS IN ALERT: the session parameters a task carries for its runs, in the task listing's order,
+     * without the task's own (live-verified); an alert sets none of them, so each is the account's value or its
+     * default. SUSPEND_ALERT_AFTER_NUM_FAILURES is a property of the alert and no parameter: it is not listed.
+     *
+     * @param written     the alert as written
+     * @param likePattern the LIKE filter, or null
+     * @return the listing
+     */
+    public ResultSet showParametersInAlert(final SchemaObjectName written, final String likePattern) {
+        if (!written.schema().hasAlert(written.name())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Alert",
+                written.schema().qualifiedName(written.name())));
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final String key : SessionParameterCatalog.taskScopeNames()) {
+            if (TASK_ONLY.contains(key) || !matchesParameterFilter(key, likePattern)) {
+                continue;
+            }
+            final SessionParameterRow row = SessionParameterCatalog.find(key);
+            if (row == null) {
+                continue;
+            }
+            final String setByAccount = AccountParameters.value(catalog, key);
+            rows.add(new Row(Arrays.asList(key, setByAccount != null ? setByAccount : row.getDefaultValue(),
+                row.getDefaultValue(), levelOf(null, setByAccount), row.getDescription(), row.getType())));
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    /**
      * SHOW PARAMETERS IN WAREHOUSE: the warehouse-scoped parameters. As with tasks, the level is
      * WAREHOUSE where the warehouse set the parameter itself and empty where it inherits.
      */
@@ -338,7 +382,11 @@ final class ShowSessionExecutor {
         if (warehouse == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", warehouseName));
         }
+        // ENABLE_USE_STABLE_PATH and FALLBACK_WAREHOUSE are listed at their defaults; a warehouse sets neither here.
         final Object[][] params = {
+            {"ENABLE_USE_STABLE_PATH", "false", "false", "BOOLEAN", "Add support for stable path"},
+            {"FALLBACK_WAREHOUSE", "", "", "STRING",
+                "If not null, the warehouse to use as a fallback for statements that timed out"},
             {"MAX_CONCURRENCY_LEVEL", String.valueOf(warehouse.getMaxConcurrencyLevel()), "8", "NUMBER",
                 "Maximum number of SQL statements a warehouse cluster can execute concurrently "
                     + "before queuing them. Small SQL statements count as a fraction of 1."},
@@ -472,6 +520,9 @@ final class ShowSessionExecutor {
         }
         if ("DEFAULT_DDL_COLLATION".equals(key)) {
             return table.getDefaultDdlCollation();
+        }
+        if ("DATA_METRIC_SCHEDULE".equals(key)) {
+            return table.getDataMetricSchedule();
         }
         return null;
     }
@@ -676,8 +727,9 @@ final class ShowSessionExecutor {
      * statement touched — UPDATE / DELETE / MERGE / TRUNCATE, while an append-only INSERT holds no
      * lock — with {@code type=PARTITIONS} and {@code status=HOLDING}, the resource as the table's
      * fully qualified name, and the lock's own {@code acquired_on} / {@code query_id} beside the
-     * owning transaction's id and start. {@code IN ACCOUNT} prepends a {@code session} column; the
-     * rows are otherwise identical.
+     * owning transaction's id and start; and one row with {@code status=WAITING}, no {@code acquired_on} and
+     * the waiting statement's query ID for a table a statement waits for (live-verified). {@code IN ACCOUNT}
+     * prepends a {@code session} column; the rows are otherwise identical.
      */
     public ResultSet showLocks(final boolean inAccount) {
         final List<ResultSetColumn> columns = new ArrayList<>();
@@ -696,7 +748,12 @@ final class ShowSessionExecutor {
             if (txn.getState() != TransactionState.ACTIVE) {
                 continue;
             }
+            final String waitingFor = txn.getWaitingFor();
+            final String waitingQueryId = txn.getWaitingQueryId();
             for (final Map.Entry<String, TableLock> entry : txn.getAllTableLocks().entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(waitingFor)) {
+                    continue;   // the lock its statement waits for is not held yet
+                }
                 final List<Object> cells = new ArrayList<>();
                 if (inAccount) {
                     cells.add(sessionNumberOf(txn));
@@ -708,6 +765,20 @@ final class ShowSessionExecutor {
                 cells.add("HOLDING");
                 cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(entry.getValue().getAcquiredOn())));
                 cells.add(entry.getValue().getQueryId());
+                rows.add(new Row(cells));
+            }
+            if (waitingFor != null) {
+                final List<Object> cells = new ArrayList<>();
+                if (inAccount) {
+                    cells.add(sessionNumberOf(txn));
+                }
+                cells.add(waitingFor);
+                cells.add("PARTITIONS");
+                cells.add(transactionDisplayId(txn));
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));
+                cells.add("WAITING");
+                cells.add(null);
+                cells.add(waitingQueryId);
                 rows.add(new Row(cells));
             }
         }
@@ -933,17 +1004,16 @@ final class ShowSessionExecutor {
                     for (final String columnName : table.getPrimaryKeys()) {
                         if (table.hasColumn(columnName)) {
                             rows.add(keyRow(dbName, schema, table, table.getColumn(columnName).getName(), seq++,
-                                table.primaryKeyConstraintName(), table.getColumn(columnName).getRely()));
+                                table.primaryKeyConstraintName(), table.getPrimaryKeyRely()));
                         }
                     }
                 } else {
                     for (final UniqueConstraint unique : table.getUniqueConstraints()) {
                         int seq = 1;
+                        // RELY is the key's own, whatever other key spans its columns (live-verified).
                         for (final String columnName : unique.getColumnNames()) {
-                            final Boolean rely = table.hasColumn(columnName)
-                                ? table.getColumn(columnName).getRely() : null;
                             rows.add(keyRow(dbName, schema, table, columnName, seq++,
-                                unique.getConstraintName(), rely));
+                                unique.getConstraintName(), unique.getRely()));
                         }
                     }
                 }

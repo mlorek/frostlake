@@ -17,6 +17,8 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
@@ -25,6 +27,8 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.FileType;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.GeometryType;
+import dev.frostlake.types.IcebergNumericType;
+import dev.frostlake.types.IcebergTypes;
 import dev.frostlake.types.IntervalDayTimeType;
 import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.MapType;
@@ -54,15 +58,16 @@ import java.util.List;
  *   BINARY, unsized or (67108864)                                BINARY(67108864)
  *   any other length                                             For Iceberg tables, only max length (67,108,864) is
  *                                                                supported for 'BINARY(L)'. Alternatively, use BINARY directly.
- *   INT / INTEGER                                                NUMBER(10,0)
- *   BIGINT                                                       NUMBER(19,0)
+ *   INT / INTEGER                                                NUMBER(10,0), the format's int
+ *   BIGINT                                                       NUMBER(19,0), the format's long
  *   NUMBER(p,s) / DECIMAL(p,s) / NUMERIC(p,s)                    as written
  *   NUMBER / NUMBER(p) / DECIMAL / BYTEINT                       data type 'NUMBER/DECIMAL' without precision and scale is
  *                                                                not supported for Iceberg tables.
  *   TIME / TIMESTAMP_NTZ / TIMESTAMP_LTZ, unsized or (6)         the type at scale 6
  *   any other scale                                              Invalid time type scale specified for column 'C' with
  *                                                                data type 'TIME(3)'. ...
- *   FLOAT family, BOOLEAN, DATE, UUID                            as a table's
+ *   FLOAT / FLOAT4 / FLOAT8, DOUBLE / REAL                       FLOAT, the format's float and double
+ *   BOOLEAN, DATE, UUID                                          as a table's
  *   CHAR / NCHAR / SMALLINT / TINYINT / VARBINARY / VECTOR ...   Unsupported data type 'char(3)' for iceberg tables.
  *   VARIANT / OBJECT / ARRAY / GEOGRAPHY / TIMESTAMP_TZ          Unsupported data type 'TIMESTAMP_TZ(9)' for iceberg tables.
  * </pre>
@@ -189,6 +194,55 @@ final class IcebergColumnTypes {
             parser.parseDataType(column.dataTypeName(), column.typeParameters()));
     }
 
+    /**
+     * Refuses a change of an Iceberg table's column to a type the format does not promote the column's to
+     * (live-verified). A column a column definition typed changes to its own type, an int to a long, a float to a
+     * double and a decimal to a wider one of the same scale, and is refused in the format's lowercase names —
+     * {@code cannot change column A from type long to decimal(19, 0)}. A column a query or LIKE gave the table, and
+     * a change to or from a structured type, keeps a table's type it had and is refused in a table's names. A
+     * structured type changed to another is judged as any table's is.
+     *
+     * @param named   the column as the refusal names it
+     * @param column  the column
+     * @param written the type the change gives it, in the format's own terms
+     */
+    static void requirePromotion(final String named, final TableColumn column, final DataType written) {
+        final DataType held = column.isFormatTyped() ? column.getFormatType() : column.getDataType();
+        final boolean structuredHeld = IcebergTypes.isStructured(held);
+        final boolean structuredWritten = IcebergTypes.isStructured(written);
+        if (structuredHeld && structuredWritten) {
+            return;
+        }
+        if (!column.isFormatTyped() || structuredHeld || structuredWritten) {
+            final String from = SqlTypeNames.canonical(held);
+            final String to = SqlTypeNames.canonical(written);
+            if (!from.equals(to)) {
+                throw new RuntimeException(SqlCompilationError.trailing("cannot change column " + named
+                    + " from type " + from + " to " + to));
+            }
+            return;
+        }
+        final String from = IcebergTypes.formatName(held);
+        final String to = IcebergTypes.formatName(written);
+        if (!from.equals(to) && !("int".equals(from) && "long".equals(to))
+                && !("float".equals(from) && "double".equals(to)) && !widensDecimal(held, written)) {
+            throw new RuntimeException(SqlCompilationError.trailing("cannot change column " + named + " from type "
+                + from + " to " + to));
+        }
+    }
+
+    /** Whether a change takes a decimal to one of the same scale and no narrower. */
+    private static boolean widensDecimal(final DataType held, final DataType written) {
+        if (!(held instanceof NumericType) || !(written instanceof NumericType) || held instanceof IcebergNumericType
+                || written instanceof IcebergNumericType || NumericType.isApproximate(held)
+                || NumericType.isApproximate(written)) {
+            return false;
+        }
+        final NumericType from = (NumericType) held;
+        final NumericType to = (NumericType) written;
+        return from.getScale() == to.getScale() && to.getPrecision() >= from.getPrecision();
+    }
+
     private static DataType written(final FrostlakeParser.DataTypeNameContext name,
                                     final FrostlakeParser.TypeParametersContext parameters, final DataType parsed) {
         if (name.MAP() != null && parsed instanceof MapType) {
@@ -223,10 +277,16 @@ final class IcebergColumnTypes {
             throw unsupported(sourceText(name, parameters));
         }
         if (name.INTEGER() != null || name.INT() != null) {
-            return new NumericType("NUMBER", 10, 0);
+            return IcebergNumericType.integer();
         }
         if (name.BIGINT() != null) {
-            return new NumericType("NUMBER", 19, 0);
+            return IcebergNumericType.longInteger();
+        }
+        if (name.FLOAT() != null || name.FLOAT4() != null || name.FLOAT8() != null) {
+            return IcebergNumericType.singleFloat();
+        }
+        if (name.DOUBLE() != null || name.REAL() != null) {
+            return IcebergNumericType.doubleFloat();
         }
         if (name.BYTEINT() != null || name.NUMBER() != null || name.DECIMAL() != null || name.NUMERIC() != null
                 || name.DEC() != null) {

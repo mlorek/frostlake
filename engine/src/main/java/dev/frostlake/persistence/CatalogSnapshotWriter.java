@@ -27,6 +27,7 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.DynamicTableColumn;
+import dev.frostlake.metastore.model.DynamicTableRefresh;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
@@ -139,6 +140,7 @@ final class CatalogSnapshotWriter {
             whSnapshot.autoResume = wh.isAutoResume();
             whSnapshot.comment = wh.getComment();
             whSnapshot.createdAt = wh.getCreatedAt();
+            whSnapshot.lastStateChange = wh.getLastStateChange();
             whSnapshot.scalingPolicy = wh.getScalingPolicy() != null ? wh.getScalingPolicy().name() : null;
             whSnapshot.minClusterCount = wh.getMinClusterCount();
             whSnapshot.maxClusterCount = wh.getMaxClusterCount();
@@ -193,8 +195,15 @@ final class CatalogSnapshotWriter {
             snapshot.roles.add(RestCatalogSnapshots.saveRole(role));
         }
 
+        // The files each table has loaded, so a COPY after a restore, in a clone or a restored state skips them.
+        snapshot.copyLoadedFiles = new HashMap<>();
+        for (final Map.Entry<String, Set<String>> loaded : catalog.getCopyLoadedFiles().entrySet()) {
+            snapshot.copyLoadedFiles.put(loaded.getKey(), new ArrayList<>(loaded.getValue()));
+        }
+
         // Every history saved above drew its numbers by now.
         snapshot.snapshotSequence = SnapshotSequence.current();
+        snapshot.nextRowId = storageEngine.nextRowIdentity();
         return snapshot;
     }
 
@@ -301,6 +310,7 @@ final class CatalogSnapshotWriter {
                 colSnapshot.identityIncrement = col.getIdentityIncrement();
                 colSnapshot.identityOrdered = col.isIdentityOrdered();
                 colSnapshot.collation = col.getCollation();
+                colSnapshot.formatType = col.getFormatType();
                 colSnapshot.ordinalPosition = col.getOrdinalPosition();
                 colSnapshot.tags = SnapshotTags.of(col);
                 colSnapshot.referencedTable = col.getReferencedTable();
@@ -323,12 +333,16 @@ final class CatalogSnapshotWriter {
             tableSnapshot.highestOrdinal = table.getHighestOrdinal();
             tableSnapshot.nextIdentityValue = table.getNextIdentityValue();
             tableSnapshot.primaryKeyConstraintName = table.primaryKeyConstraintName();
+            tableSnapshot.primaryKeyColumns = new ArrayList<>(table.getPrimaryKeys());
+            tableSnapshot.primaryKeyRely = table.getPrimaryKeyRely();
+            tableSnapshot.ownUniqueColumns = table.getOwnUniqueColumns();
             if (!table.getDeclaredUniqueConstraints().isEmpty()) {
                 tableSnapshot.uniqueConstraints = new ArrayList<>();
                 for (final UniqueConstraint unique : table.getDeclaredUniqueConstraints()) {
                     final UniqueConstraintSnapshot uniqueSnapshot = new UniqueConstraintSnapshot();
                     uniqueSnapshot.constraintName = unique.getConstraintName();
                     uniqueSnapshot.columnNames = new ArrayList<>(unique.getColumnNames());
+                    uniqueSnapshot.rely = unique.getRely();
                     tableSnapshot.uniqueConstraints.add(uniqueSnapshot);
                 }
             }
@@ -403,6 +417,7 @@ final class CatalogSnapshotWriter {
             viewSnapshot.lastDdlAt = view.getLastDdlTime();
             viewSnapshot.owner = view.getOwner();
             viewSnapshot.secure = view.isSecure();
+            viewSnapshot.changeTracking = view.isChangeTracking();
             viewSnapshot.recursive = view.isRecursive();
             viewSnapshot.writtenBody = view.getWrittenBody();
             viewSnapshot.originalDdl = view.getOriginalDdl();
@@ -555,6 +570,7 @@ final class CatalogSnapshotWriter {
                 run.errorMessage = execution.getErrorMessage();
                 run.rowsAffected = execution.getRowsAffected();
                 run.scheduledFrom = execution.getScheduledFrom();
+                run.attempt = Integer.valueOf(execution.getAttempt());
                 taskSnapshot.history.add(run);
             }
             schemaSnapshot.tasks.add(taskSnapshot);
@@ -630,8 +646,11 @@ final class CatalogSnapshotWriter {
             schemaSnapshot.maskingPolicies.add(policySnapshot);
         }
 
-        // Save file formats (TYPE + options map)
-        for (final FileFormat ff : schema.getFileFormats()) {
+        // Save file formats (TYPE + options map). A temporary one ends with its session, which no restore brings back.
+        for (final FileFormat ff : schema.allFileFormats()) {
+            if (ff.isTemporary()) {
+                continue;
+            }
             final FileFormatSnapshot ffSnapshot = new FileFormatSnapshot();
             ffSnapshot.name = ff.getName();
             ffSnapshot.type = ff.getType();
@@ -644,7 +663,7 @@ final class CatalogSnapshotWriter {
         }
 
         // Save user-defined functions (all languages, scalar and table)
-        for (final Function fn : schema.getFunctions()) {
+        for (final Function fn : schema.allFunctions()) {
             final FunctionSnapshot fnSnapshot = new FunctionSnapshot();
             fnSnapshot.name = fn.getName();
             fnSnapshot.tags = SnapshotTags.of(fn);
@@ -652,6 +671,7 @@ final class CatalogSnapshotWriter {
             fnSnapshot.returnType = fn.getReturnType() != null ? fn.getReturnType().getName() : null;
             fnSnapshot.returnDataType = fn.getReturnType();
             fnSnapshot.returnSized = fn.getReturnSized();
+            fnSnapshot.returnNotNull = fn.isReturnNotNull() ? Boolean.TRUE : null;
             fnSnapshot.returnColumns = snapshotParameters(fn.getReturnColumns());
             fnSnapshot.body = fn.getBody();
             fnSnapshot.tableFunction = fn.isTableFunction();
@@ -671,11 +691,14 @@ final class CatalogSnapshotWriter {
             fnSnapshot.serviceName = fn.getServiceName();
             fnSnapshot.serviceEndpoint = fn.getServiceEndpoint();
             fnSnapshot.maxBatchRows = fn.getMaxBatchRows();
+            fnSnapshot.aggregate = fn.isAggregate();
+            fnSnapshot.apiIntegration = fn.getApiIntegration();
+            fnSnapshot.externalUrl = fn.getExternalUrl();
             schemaSnapshot.functions.add(fnSnapshot);
         }
 
         // Save stored procedures (all languages)
-        for (final Procedure proc : schema.getProcedures()) {
+        for (final Procedure proc : schema.allProcedures()) {
             final ProcedureSnapshot procSnapshot = new ProcedureSnapshot();
             procSnapshot.name = proc.getName();
             procSnapshot.tags = SnapshotTags.of(proc);
@@ -683,6 +706,7 @@ final class CatalogSnapshotWriter {
             procSnapshot.returnType = proc.getReturnType() != null ? proc.getReturnType().getName() : null;
             procSnapshot.returnDataType = proc.getReturnType();
             procSnapshot.returnSized = proc.getReturnSized();
+            procSnapshot.returnNotNull = proc.isReturnNotNull() ? Boolean.TRUE : null;
             procSnapshot.body = proc.getBody();
             procSnapshot.language = proc.getLanguage();
             procSnapshot.handler = proc.getHandler();
@@ -751,6 +775,15 @@ final class CatalogSnapshotWriter {
                     dtSnapshot.refreshImage.add(new ArrayList<>(row));
                 }
             }
+            // The refreshes it keeps for time travel, so a read at a point before a restart still reaches them.
+            dtSnapshot.refreshSequences = new ArrayList<>();
+            dtSnapshot.refreshMillis = new ArrayList<>();
+            dtSnapshot.refreshRows = new ArrayList<>();
+            for (final DynamicTableRefresh refresh : dt.getRefreshes()) {
+                dtSnapshot.refreshSequences.add(Long.valueOf(refresh.getSequence()));
+                dtSnapshot.refreshMillis.add(Long.valueOf(refresh.getMillis()));
+                dtSnapshot.refreshRows.add(refresh.getRows());
+            }
             if (dt.getResolvedColumns() != null) {
                 dtSnapshot.resolvedColumns = derivedColumnSnapshots(dt.getResolvedColumns());
             }
@@ -771,7 +804,7 @@ final class CatalogSnapshotWriter {
             dtSnapshot.definitionSchema = dt.getDefinitionSchema();
             dtSnapshot.schedulingState = dt.getSchedulingState();
             dtSnapshot.lastSuspendedOn = dt.getLastSuspendedOn();
-            dtSnapshot.dataRetentionDays = dt.getDataRetentionDays();
+            dtSnapshot.dataRetentionDays = dt.isDataRetentionSet() ? Integer.valueOf(dt.getDataRetentionDays()) : null;
             dtSnapshot.maxDataExtensionDays = dt.getMaxDataExtensionDays();
             dtSnapshot.reclusterSuspended = dt.isReclusterSuspended();
             dtSnapshot.clone = dt.isClone();
@@ -931,6 +964,7 @@ final class CatalogSnapshotWriter {
         for (final Row row : current) {
             dataSnapshot.rows.add(new ArrayList<>(row.getValues()));
         }
+        dataSnapshot.rowIds = new ArrayList<>(ids);
         dataSnapshot.history = buildHistory(storage, current, ids);
         return dataSnapshot;
     }

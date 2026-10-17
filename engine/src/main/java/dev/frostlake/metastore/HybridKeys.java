@@ -16,8 +16,14 @@
 
 package dev.frostlake.metastore;
 
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.UniqueConstraint;
+import dev.frostlake.storage.Row;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * The keys a hybrid table holds to (documented, and the primary-key rule live-verified): it must declare a PRIMARY
@@ -46,6 +52,45 @@ public final class HybridKeys {
     public static String uniqueViolated(final Table table, final String column) {
         return "Duplicate key value violates unique constraint \"SYS_INDEX_" + table.getName() + "_UNIQUE_" + column
             + "\"";
+    }
+
+    /**
+     * The refusal of a row whose UNIQUE key repeats one the table holds, the index named by the key's columns in
+     * turn as a foreign key's is.
+     */
+    public static String uniqueViolated(final Table table, final UniqueConstraint key) {
+        return uniqueViolated(table, String.join("_", key.getColumnNames()));
+    }
+
+    /**
+     * The UNIQUE keys a hybrid table holds rows to: every UNIQUE constraint, a key over several columns held as one,
+     * but not one over primary-key columns alone, which the primary key holds.
+     */
+    public static List<UniqueConstraint> uniqueKeys(final Table table) {
+        final List<UniqueConstraint> keys = new ArrayList<>();
+        for (final UniqueConstraint key : table.getUniqueConstraints()) {
+            if (!table.getPrimaryKeys().containsAll(key.getColumnNames())) {
+                keys.add(key);
+            }
+        }
+        return keys;
+    }
+
+    /**
+     * A row's values under a key's columns, compared as values are, or null when one of them is NULL: such a row
+     * repeats no key and names no parent.
+     */
+    public static List<Object> keyOf(final Table table, final List<String> columns, final Row row) {
+        final List<Object> values = new ArrayList<>();
+        for (final String column : columns) {
+            final int slot = table.getColumnIndex(column);
+            final Object value = slot >= 0 && slot < row.getValues().size() ? row.getValue(slot) : null;
+            if (value == null) {
+                return null;
+            }
+            values.add(ValueComparisons.canonicalGroupKeyValue(value));
+        }
+        return values;
     }
 
     /** The refusal of a row whose foreign key no parent row holds, a NULL one included. */

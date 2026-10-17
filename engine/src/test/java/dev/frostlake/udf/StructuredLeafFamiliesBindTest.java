@@ -27,8 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A structured argument binds a structured parameter only when their leaves are of the same FAMILY, as the
- * binding rule says. The leaves were compared by Java class, so a TIME leaf bound a DATE parameter and a FLOAT
- * leaf an INT one: both are one class in the engine.
+ * binding rule says, the numbers excepted: an exact and an approximate leaf bind each other (live-verified). The
+ * leaves were compared by Java class, so a TIME leaf bound a DATE parameter: both are one class in the engine.
  */
 public class StructuredLeafFamiliesBindTest {
 
@@ -65,8 +65,6 @@ public class StructuredLeafFamiliesBindTest {
     public void aLeafOfAnotherFamilyIsRefused() {
         assertTrue(refusal("SELECT fd({'x':'10:00:00'}::OBJECT(x TIME))").contains("Invalid argument types"),
             "a TIME leaf for a DATE parameter");
-        assertTrue(refusal("SELECT fi({'x':1.5}::OBJECT(x FLOAT))").contains("Invalid argument types"),
-            "an approximate leaf for an exact one");
         engine.execute("CREATE FUNCTION fn(o OBJECT(x TIMESTAMP_NTZ)) RETURNS VARCHAR AS $$ 'ntz-param' $$");
         assertTrue(refusal("SELECT fn({'x':'2024-01-01 10:00:00'}::OBJECT(x TIMESTAMP_LTZ))")
             .contains("Invalid argument types"), "each timestamp flavour is a family of its own");
@@ -76,6 +74,8 @@ public class StructuredLeafFamiliesBindTest {
     public void aLeafOfTheSameFamilyBindsWhateverItsWidth() {
         assertEquals("date-param", first("SELECT fd({'x':'2024-01-01'}::OBJECT(x DATE))"));
         assertEquals("int-param", first("SELECT fi({'x':1}::OBJECT(x NUMBER(10,0)))"));
+        assertEquals("int-param", first("SELECT fi({'x':1.5}::OBJECT(x FLOAT))"),
+            "an approximate leaf for an exact one");
         engine.execute("CREATE FUNCTION fv(o ARRAY(VARCHAR)) RETURNS VARCHAR AS $$ 'text-param' $$");
         assertEquals("text-param", first("SELECT fv(['a']::ARRAY(VARCHAR(10)))"));
     }

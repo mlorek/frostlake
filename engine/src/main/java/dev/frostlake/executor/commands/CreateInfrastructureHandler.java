@@ -34,6 +34,7 @@ import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StatementSession;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.CortexSearchService;
@@ -474,8 +475,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
         if (ctx.or_replace() != null || ifNotExists || !sequenceSchema.hasSequenceExact(sequenceName)) {
             ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, sequenceSchema);
         }
-        if (ctx.or_replace() != null) {
-            try { sequenceSchema.dropSequence(sequenceName); } catch (final RuntimeException ignored) {}
+        if (ctx.or_replace() != null && sequenceSchema.hasSequenceExact(sequenceName)) {
+            // A sequence whose name differs only in case is another sequence, which OR REPLACE leaves alone.
+            sequenceSchema.dropSequenceExact(sequenceName);
         }
         try {
             long startValue = 1;
@@ -797,13 +799,55 @@ public class CreateInfrastructureHandler implements CommandHandler {
         }
     }
 
+    /**
+     * CREATE [OR REPLACE] GIT REPOSITORY: ORIGIN and API_INTEGRATION are required, each missing one named (live's
+     * {@code Missing option(s): [ORIGIN]}), then the API integration is judged ({@link ExternalFunctions}). A
+     * repository whose integration passes is refused all the same: it would be cloned from its ORIGIN, which this
+     * engine does not reach.
+     *
+     * @param ctx the statement
+     * @return null, as every CREATE handler answers
+     */
+    public Object handleCreateGitRepository(final FrostlakeParser.CreateStatementContext ctx) {
+        final String repositoryName = getText(ctx.qualifiedName(0));
+        ddl.resolveSchemaFromQualifiedName(repositoryName);
+        boolean origin = false;
+        FrostlakeParser.QualifiedNameContext integration = null;
+        for (final FrostlakeParser.GitRepositoryOptionContext option : ctx.gitRepositoryOption()) {
+            if (option.optionName == null) {
+                continue;
+            }
+            final String name = SqlIdentifiers.canonical(option.optionName);
+            if ("ORIGIN".equals(name) && option.STRING_LITERAL() != null) {
+                origin = true;
+            } else if ("API_INTEGRATION".equals(name) && option.qualifiedName() != null) {
+                integration = option.qualifiedName();
+            } else if (!"GIT_CREDENTIALS".equals(name) || option.qualifiedName() == null) {
+                throw ExternalFunctions.unknownOption(option.optionName.getStart());
+            }
+        }
+        final List<String> missing = new ArrayList<>();
+        if (!origin) {
+            missing.add("ORIGIN");
+        }
+        if (integration == null) {
+            missing.add("API_INTEGRATION");
+        }
+        if (!missing.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): " + missing));
+        }
+        ExternalFunctions.requireGitIntegration(catalog, integration);
+        throw new RuntimeException(SqlCompilationError.of("Git repository "
+            + SqlIdentifiers.spellCanonical(ddl.extractObjectName(repositoryName))
+            + " cannot be created: its ORIGIN is not reached from this engine."));
+    }
+
     public Object handleCreateStage(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String stageName = getText(ctx.qualifiedName(0));
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("STAGE", qualifiedNameParts(ctx.qualifiedName(0)), null);
             // Asked before the stage a replacement drops is gone.
             requireCreateUnlessTemporary(ctx, Privilege.CREATE_STAGE, stageName);
-            try { catalog.dropStage(stageName); } catch (final RuntimeException ignored) {}
         }
         try {
             DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists
@@ -895,7 +939,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         } else if ("DIRECTORY".equals(key)) {
                             directory = StageDirectoryOptions.read(option.parenOptionList(), true);
                         } else if ("COPY_OPTIONS".equals(key) && option.parenOptionList() != null) {
-                            collectParenOptions(option.parenOptionList(), copyOptions);
+                            copyOptions.putAll(StageCopyOptions.read(option.parenOptionList()));
                         }
                     }
                 }
@@ -909,6 +953,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             CloudStageUrls.require(url);
             refuseLocalUrlUnlessEnabled(url);
+            // A replacement drops the stage it replaces once the new one is judged whole, so a refused statement
+            // leaves that stage as it was (live-verified).
+            if (ctx.or_replace() != null) {
+                try {
+                    catalog.dropStageExact(stageName);
+                } catch (final RuntimeException ignored) {
+                    // No stage of that name to replace.
+                }
+            }
 
             final StageType type = (url == null || url.startsWith("file://")) ? StageType.INTERNAL : StageType.EXTERNAL;
             catalog.createStage(stageName, type, url, fileFormat, encryption, comment);
@@ -1059,11 +1112,19 @@ public class CreateInfrastructureHandler implements CommandHandler {
             requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
         }
         try {
+            // A file format whose name differs only in case is another one (live-verified).
             DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists
-                    && !TemporaryObjectStatements.isTemporary(ctx), catalog.hasFileFormat(name), nameParts);
+                    && !TemporaryObjectStatements.isTemporary(ctx), catalog.hasFileFormatExact(name), nameParts);
             requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
             final FileFormat fileFormat = new FileFormat(simpleName, "CSV");
-            fileFormat.setOwner(catalog.currentRoleForOwner());
+            if (TemporaryObjectStatements.isTemporary(ctx)) {
+                // Its session's alone, and gone when that session ends (live-verified).
+                fileFormat.markTemporary(StatementSession.current());
+            }
+            // The future grants of the schema or its database cover the new format (live-verified).
+            fileFormat.setOwner(TemporaryObjectStatements.isTemporary(ctx) ? catalog.currentRoleForOwner()
+                : FutureGrants.ownerOfNew(catalog, "FILE_FORMAT", catalog.requireOwningSchema(
+                    QualifiedName.of(nameParts)), simpleName));
             applyFileFormatOptions(fileFormat, ctx.copyFormatOption());
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
@@ -1073,14 +1134,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 // The options are judged before the format a replacement drops is gone: a refused CREATE OR REPLACE
                 // leaves the old one as it was (live-verified).
                 try {
-                    catalog.dropFileFormat(name);
+                    catalog.dropFileFormatExact(name);
                 } catch (final RuntimeException ignored) {
                     // OR REPLACE: nothing to drop
                 }
             }
             // The options are judged BEFORE existence: an invalid option refuses even over an existing
             // format, IF NOT EXISTS or not (live-verified).
-            if (catalog.hasFileFormat(name)) {
+            if (catalog.hasFileFormatExact(name)) {
                 throw new NameTakenException(SqlCompilationError.of("Object '"
                     + SqlIdentifiers.spellCanonical(catalog.getFileFormat(name).getName()) + "' already exists."));
             }

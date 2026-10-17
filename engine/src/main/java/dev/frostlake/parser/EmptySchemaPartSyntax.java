@@ -332,7 +332,6 @@ public final class EmptySchemaPartSyntax {
             || node instanceof FrostlakeParser.AndExprContext
             || node instanceof FrostlakeParser.OrExprContext
             || node instanceof FrostlakeParser.UnaryExprContext
-            || node instanceof FrostlakeParser.ConcatExprContext
             || node instanceof FrostlakeParser.MultiplicativeExprContext
             || node instanceof FrostlakeParser.AdditiveExprContext
             || node instanceof FrostlakeParser.IsNullExprContext

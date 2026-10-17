@@ -20,6 +20,7 @@ import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -182,10 +183,10 @@ final class PercentileCallRules {
         // that does not exist. An invalid identifier outranks every other complaint here, as it does
         // everywhere else, so it is judged first.
         executor.validateClauseScope(
-            ParseTreeText.getOriginalText(withinGroup.orderItem(0).expression()),
+            ParseTreeText.getOriginalText(KeyContexts.of(withinGroup.orderItem(0))),
             table, aliasToTable, allTables, siblingSelectAliases(call),
-            withinGroup.orderItem(0).expression());
-        rejectTemporalKey(call, withinGroup.orderItem(0).expression(), table, aliasToTable, allTables);
+            KeyContexts.of(withinGroup.orderItem(0)));
+        rejectTemporalKey(call, KeyContexts.of(withinGroup.orderItem(0)), table, aliasToTable, allTables);
         final List<FrostlakeParser.BooleanExprContext> args =
             ParseTreeText.functionBooleanArgs(call.functionArgList());
         if (args.size() > 1) {

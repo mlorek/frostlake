@@ -32,9 +32,6 @@ import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.metastore.HybridKeys;
-import dev.frostlake.metastore.QualifiedName;
-import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
@@ -266,6 +263,11 @@ final class InsertExecutor {
             // the same transaction-aware path as TRUNCATE: clearing the base store directly left rows this
             // transaction had inserted earlier in place, so the OVERWRITE appended to them.
             if (isOverwrite) {
+                // An INSERT OVERWRITE that removes rows waits for another session's transaction that holds the table,
+                // as a TRUNCATE does, where a plain INSERT never waits (live-verified).
+                if (executor.getStorageEngine().getTableStorage(fullyQualifiedName).getRowCount() > 0) {
+                    executor.requireTableUnlocked(fullyQualifiedName, table.getName());
+                }
                 executor.emptyTableContents(fullyQualifiedName);
                 logger.trace("Truncated table {} due to INSERT OVERWRITE", tableName);
             }
@@ -741,103 +743,10 @@ final class InsertExecutor {
         storeInsertedRow(table, fullyQualifiedName, row, guard);
     }
 
-    /**
-     * A hybrid table's foreign keys hold row by row (documented): a row whose key no row of the parent holds, a NULL
-     * key included, is refused, the parent rows this transaction has written counted.
-     */
-    private void refuseOrphanRow(final Table table, final String fullyQualifiedName, final Row row) {
-        if (!table.isHybrid()) {
-            return;
-        }
-        for (final ForeignKeyConstraint key : foreignKeysOf(table, fullyQualifiedName)) {
-            final List<Object> values = new ArrayList<>();
-            boolean missing = false;
-            for (final String column : key.getColumnNames()) {
-                final int index = table.getColumnIndex(column);
-                final Object value = index >= 0 && index < row.getValues().size() ? row.getValue(index) : null;
-                missing = missing || value == null;
-                values.add(value);
-            }
-            if (missing || !parentHolds(key, values)) {
-                throw new RuntimeException(HybridKeys.foreignKeyViolated(table, key));
-            }
-        }
-    }
-
-    /**
-     * Every foreign key a table holds: those declared on the table, and the one-column key each column declares with
-     * REFERENCES - the same key, spelled on the column (documented). A column's parent is read from the table's
-     * schema, and its referenced column is the parent's primary key where the column names none.
-     */
-    private List<ForeignKeyConstraint> foreignKeysOf(final Table table, final String fullyQualifiedName) {
-        final List<ForeignKeyConstraint> keys = new ArrayList<>(table.getForeignKeys());
-        final String[] home = QualifiedName.parse(fullyQualifiedName).parts();
-        for (final TableColumn column : table.getColumns()) {
-            if (column.getReferencedTable() == null || home.length != 3) {
-                continue;
-            }
-            final String[] written = QualifiedName.parse(column.getReferencedTable()).parts();
-            final String parent = written.length >= 3 ? column.getReferencedTable()
-                : written.length == 2 ? QualifiedName.join(home[0], written[0], written[1])
-                : QualifiedName.join(home[0], home[1], written[0]);
-            final String referenced = column.getReferencedColumn() != null ? column.getReferencedColumn()
-                : primaryKeyColumn(parent);
-            if (referenced != null) {
-                keys.add(new ForeignKeyConstraint(table.columnForeignKeyConstraintName(column.getName()),
-                    Arrays.asList(column.getName()), parent, Arrays.asList(referenced), null, null));
-            }
-        }
-        return keys;
-    }
-
-    /** The first primary-key column of a parent table, or null when it has none or is gone. */
-    private String primaryKeyColumn(final String parentName) {
-        final Table parent;
-        try {
-            parent = executor.getCatalog().resolveTable(parentName);
-        } catch (final RuntimeException gone) {
-            return null;
-        }
-        for (final TableColumn column : parent.getColumns()) {
-            if (column.isPrimaryKey()) {
-                return column.getName();
-            }
-        }
-        return null;
-    }
-
-    /** Whether a row of the key's parent holds these values in its referenced columns. */
-    private boolean parentHolds(final ForeignKeyConstraint key, final List<Object> values) {
-        final String parentName = key.getReferencedTable();
-        final Table parent = executor.getCatalog().resolveTable(parentName);
-        final String parentStorage = executor.getFullyQualifiedTableName(parentName);
-        final List<Integer> slots = new ArrayList<>();
-        for (final String column : key.getReferencedColumns()) {
-            slots.add(parent.getColumnIndex(column));
-        }
-        final List<Row> candidates = new ArrayList<>(executor.getStorageEngine().getTableStorage(parentStorage).scan());
-        if (executor.isDeferredApply()) {
-            candidates.addAll(executor.getTransactionManager().getCurrentTransaction().getWriteSet()
-                .pendingInserts(parentStorage));
-        }
-        for (final Row candidate : candidates) {
-            boolean match = true;
-            for (int i = 0; i < slots.size() && match; i++) {
-                final int slot = slots.get(i);
-                final Object held = slot >= 0 && slot < candidate.getValues().size() ? candidate.getValue(slot) : null;
-                match = held != null && ValueComparisons.compareValues(held, values.get(i)) == 0;
-            }
-            if (match) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /** Write a row whose constraints have been enforced: buffered in the transaction's write set, or at once. */
     private void storeInsertedRow(final Table table, final String fullyQualifiedName, final Row row,
                                   final DeferredInsertGuard guard) {
-        refuseOrphanRow(table, fullyQualifiedName, row);
+        new HybridKeyGuard(executor).refuseOrphanRow(table, fullyQualifiedName, row);
         if (executor.isDeferredApply()) {
             final TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
             final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
@@ -930,6 +839,11 @@ final class InsertExecutor {
                     final String tableName = executor.getQualifiedName(into.qualifiedName());
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
                     if (truncated.add(fqn)) {
+                        // Each target that loses rows waits for a transaction holding it, as INSERT OVERWRITE does.
+                        if (executor.getStorageEngine().getTableStorage(fqn).getRowCount() > 0) {
+                            executor.requireTableUnlocked(fqn,
+                                executor.getCatalog().resolveTableAsWritten(tableName, "Table").getName());
+                        }
                         executor.emptyTableContents(fqn);
                     }
                 }

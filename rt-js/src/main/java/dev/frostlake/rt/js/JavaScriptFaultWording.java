@@ -66,7 +66,8 @@ final class JavaScriptFaultWording {
     /** Sentences that differ around one value: this engine's pattern, then the account's with $1 for the value. */
     private static final String[] AROUND = {
         "TypeError: Assignment to constant \"(.*)\"", "TypeError: Assignment to constant variable.",
-        "RangeError: Invalid time zone (.*)", "RangeError: Invalid time zone specified: $1",
+        // The prelude words a formatter's own refusal already; only a sentence it did not reach is worded here.
+        "RangeError: Invalid time zone (?!specified: )(.*)", "RangeError: Invalid time zone specified: $1",
         "TypeError: Cannot add new property \"(.*)\" to non-extensible .*",
         "TypeError: Cannot add property $1, object is not extensible",
         "TypeError: Not a symbol: (.*)", "TypeError: $1 is not a symbol",

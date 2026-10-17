@@ -25,6 +25,8 @@ public class QuantifiedComparisonExpression implements Expression {
     private final Quantifier quantifier;
     private final Expression subquery;
     private SourcePosition position;
+    /** Where the quantifier stands: ANY, SOME or ALL. */
+    private SourcePosition quantifierPosition;
     /** Whether the inequality was written {@code !=} rather than {@code <>}. */
     private boolean bangSpelled;
 
@@ -74,6 +76,15 @@ public class QuantifiedComparisonExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /** Where the quantifier stands, which a refusal of the query points at; null when unknown. */
+    public SourcePosition getQuantifierPosition() {
+        return quantifierPosition;
+    }
+
+    public void setQuantifierPosition(final SourcePosition quantifierPosition) {
+        this.quantifierPosition = quantifierPosition;
     }
 
     @Override

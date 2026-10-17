@@ -131,12 +131,14 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
 
     @Override
     public void setTime(final int parameterIndex, final Time x) throws SQLException {
-        parameters.put(parameterIndex, x);
+        // The time its moment shows in UTC, whatever the client's zone or the session's (live-verified).
+        parameters.put(parameterIndex, JdbcMarshaling.timeAtUtc(x));
     }
 
     @Override
     public void setTimestamp(final int parameterIndex, final Timestamp x) throws SQLException {
-        parameters.put(parameterIndex, x);
+        // Its moment, as the account's driver binds it (see JdbcMarshaling.boundMoment).
+        parameters.put(parameterIndex, JdbcMarshaling.boundMoment(x));
     }
 
     @Override
@@ -166,7 +168,8 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
 
     @Override
     public void setObject(final int parameterIndex, final Object x) throws SQLException {
-        parameters.put(parameterIndex, x);
+        JdbcMarshaling.requireBindable(x);
+        parameters.put(parameterIndex, JdbcMarshaling.boundObject(x));
     }
 
     @Override

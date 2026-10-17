@@ -89,21 +89,6 @@ public final class WalStatementKinds {
         return false;
     }
 
-    /**
-     * Whether a statement reads a result by RESULT_SCAN, so the query that answered it must run before it on replay.
-     *
-     * @param sql the statement's text
-     * @return true when it calls RESULT_SCAN
-     */
-    public static boolean readsResultScan(final String sql) {
-        for (final Token token : tokens(sql)) {
-            if ("RESULT_SCAN".equalsIgnoreCase(token.getText())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static List<Token> tokens(final String sql) {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         lexer.removeErrorListeners();
@@ -122,5 +107,38 @@ public final class WalStatementKinds {
             && statement.showStatement() == null
             && statement.describeStatement() == null
             && statement.transactionStatement() == null;
+    }
+
+    /**
+     * Whether a statement commits work in a session of its own, whatever transaction runs it: EXECUTE TASK, EXECUTE
+     * ALERT and ALTER PIPE … REFRESH. A block or a procedure that runs one has it logged in a record of its own.
+     *
+     * @param statement the statement
+     * @return whether it runs work in a session of its own
+     */
+    public static boolean runsInOwnSession(final FrostlakeParser.StatementContext statement) {
+        if (statement == null) {
+            return false;
+        }
+        if (statement.taskStatement() != null) {
+            return true;
+        }
+        final FrostlakeParser.AlterStatementContext alter =
+            statement.ddlStatement() == null ? null : statement.ddlStatement().alterStatement();
+        return alter != null && alter.PIPE() != null && alter.pipeAction() != null
+            && alter.pipeAction().REFRESH() != null;
+    }
+
+    /**
+     * {@link #runsInOwnSession(FrostlakeParser.StatementContext)} for a text: whether it is one such statement.
+     *
+     * @param script the text's parse
+     * @return whether it is a single statement that runs work in a session of its own
+     */
+    public static boolean runsInOwnSession(final FrostlakeParser.SqlScriptContext script) {
+        if (script == null || script.flowChain().size() != 1 || script.flowChain().get(0).statement().size() != 1) {
+            return false;
+        }
+        return runsInOwnSession(script.flowChain().get(0).statement().get(0));
     }
 }

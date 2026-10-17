@@ -195,18 +195,45 @@ final class JavaScriptHandler {
         if (name === null || hasOwn.call(self, name)) { return; }
         defineOwn(self, name, {enumerable: true, configurable: true, get: function () {
         var led = host.columnValue(index, text(index)); return failed(led) ? undefined : arrive(led); }}); };
+        var asked = function (which) { return typeof which === 'number' || typeof which === 'string' ? which : null; };
+        var kinds = ['Array', 'Binary', 'Boolean', 'Date', 'Number', 'Object', 'Text', 'Time', 'Timestamp',
+        'Variant'];
+        var describe = function (self, about, owner) {
+        var told = function (member, what) { self[member] = function (which) {
+        return about(which, what, owner + '.' + member, self[member]); }; };
+        told('getColumnType', 'type'); told('getColumnSqlType', 'sqlType'); told('getColumnScale', 'scale');
+        told('isColumnNullable', 'nullable');
+        for (var k = 0; k < kinds.length; k++) { told('isColumn' + kinds[k], kinds[k].toLowerCase()); } };
         var ResultSet = function ResultSet(api, host) { var self = this, named = false;
+        var about = function (which, what, method, below) {
+        return answered(api, host.column(asked(which), text(which), what), method, below); };
         this.next = function () { var more = host.next();
         if (more && !named) { named = true; var count = host.getColumnCount();
         for (var i = 1; i <= count; i++) { column(self, host, i); } }
         return more; };
         this.getColumnValue = function (which) {
-        var asked = typeof which === 'number' || typeof which === 'string' ? which : null;
-        return arrive(answered(api, host.columnValue(asked, text(which)), 'ResultSet.getColumnValue',
+        return arrive(answered(api, host.columnValue(asked(which), text(which)), 'ResultSet.getColumnValue',
         self.getColumnValue)); };
+        this.getColumnValueAsString = function (which) {
+        return answered(api, host.columnText(asked(which), text(which)), 'ResultSet.getColumnValueAsString',
+        self.getColumnValueAsString); };
         this.getRowCount = function () { return host.getRowCount(); };
-        this.getColumnCount = function () { return host.getColumnCount(); }; };
+        this.getColumnCount = function () { return host.getColumnCount(); };
+        this.getColumnName = function (which) {
+        return about(which, 'name', 'ResultSet.getColumnName', self.getColumnName); };
+        this.getColumnDescription = function (which) {
+        return parse(about(which, 'description', 'ResultSet.getColumnDescription', self.getColumnDescription)); };
+        describe(self, about, 'ResultSet');
+        this.getQueryId = function () { return host.queryId(); };
+        this.getNumRowsAffected = function () { return host.affected(); };
+        this.getSqlcode = function () { return 0; };
+        this.isDml = function () { return host.dml(); };
+        this.getOutParameterValues = function () { return {}; }; };
         var Statement = function Statement(api, host) { var self = this;
+        var about = function (which, what, method, below) {
+        return answered(api, host.column(asked(which), text(which), what), method, below); };
+        var written = function (what, method, below) { return answered(api, host.written(what), method, below); };
+        var executed = function (method, below) { answered(api, host.ran(), method, below); };
         this.execute = function () {
         return new ResultSet(api, answered(api, host.execute(), 'Statement.execute', self.execute)); };
         this.getColumnCount = function () {
@@ -215,7 +242,31 @@ final class JavaScriptHandler {
         return answered(api, host.getColumnName(index), 'Statement.getColumnName', self.getColumnName); };
         this.getRowCount = function () {
         return answered(api, host.getRowCount(), 'Statement.getRowCount', self.getRowCount); };
-        this.getSqlText = function () { return host.getSqlText(); }; };
+        this.getSqlText = function () { return host.getSqlText(); };
+        describe(self, about, 'Statement');
+        this.getQueryId = function () {
+        return answered(api, host.queryId(), 'Statement.getQueryId', self.getQueryId); };
+        this.getStatus = function () { return host.status(); };
+        this.getPersistedStatus = function () { return host.status(); };
+        this.isDml = function () { return written('dml', 'Statement.isDml', self.isDml); };
+        this.getNumRowsAffected = function () {
+        return written('affected', 'Statement.getNumRowsAffected', self.getNumRowsAffected); };
+        this.getNumRowsInserted = function () {
+        return written('inserted', 'Statement.getNumRowsInserted', self.getNumRowsInserted); };
+        this.getNumRowsUpdated = function () {
+        return written('updated', 'Statement.getNumRowsUpdated', self.getNumRowsUpdated); };
+        this.getNumRowsDeleted = function () {
+        return written('deleted', 'Statement.getNumRowsDeleted', self.getNumRowsDeleted); };
+        this.getNumDuplicateRowsUpdated = function () {
+        return written('duplicate', 'Statement.getNumDuplicateRowsUpdated', self.getNumDuplicateRowsUpdated); };
+        this.getOutParameterValues = function () {
+        executed('Statement.getOutParameterValues', self.getOutParameterValues); return {}; };
+        this.getProcedureStack = function () {
+        executed('Statement.getProcedureStack', self.getProcedureStack); return ''; };
+        this.getRequestId = function () { return undefined; };
+        this.getStatementId = function () { return undefined; };
+        this.wait = function () { return undefined; };
+        this.cancel = function () { return undefined; }; };
         var ran = function (api, options, method, below) { unread(api, options, method, below);
         return new ResultSet(api, answered(api, api.execute(options), method, below)); };
         var made = function (api, options, below) { unread(api, options, 'Snowflake.createStatement', below);

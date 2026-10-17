@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -64,7 +65,7 @@ public class Soundex extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final String text = args.get(0).toString();
+        final String text = SharedFunctionHelpers.textOf(args.get(0));
         if (text.isEmpty()) return "0000";
         final int first = text.codePointAt(0);
         final StringBuilder code = new StringBuilder().appendCodePoint(first);

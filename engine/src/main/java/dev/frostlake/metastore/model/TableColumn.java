@@ -103,6 +103,10 @@ public class TableColumn implements Taggable {
     // isCollationExplicit); false for every other column, a catalog column's among them.
     private boolean collationExplicit;
 
+    // The type in the Iceberg format's own terms of an Iceberg table's column a column definition typed (see
+    // getFormatType); null for every other column.
+    private DataType formatType;
+
     public TableColumn(final String name, final DataType dataType, final boolean nullable,
                  final Object defaultValue, final boolean primaryKey, final boolean unique,
                  final boolean autoIncrement) {
@@ -195,6 +199,37 @@ public class TableColumn implements Taggable {
 
     public void setValueRange(final ValueRange valueRange) {
         this.valueRange = valueRange;
+    }
+
+    /**
+     * The type in the Iceberg format's own terms of an Iceberg table's column a column definition typed — in the
+     * list of CREATE ICEBERG TABLE or by ADD COLUMN: an int, a long, a float or a double where {@link #getDataType()}
+     * holds the NUMBER or the FLOAT it reports. GET_DDL spells it in the format's names, a change of the column's
+     * type is judged by the format's promotions, and a value written is held to it (see {@code IcebergTypes}). A
+     * column a query or LIKE gave the table has none.
+     *
+     * @return the format's type, or null
+     */
+    public DataType getFormatType() {
+        return formatType;
+    }
+
+    /**
+     * Gives the column its type in the Iceberg format's own terms.
+     *
+     * @param formatType the format's type, or null for none
+     */
+    public void setFormatType(final DataType formatType) {
+        this.formatType = formatType;
+    }
+
+    /**
+     * Whether the column has a type in the Iceberg format's own terms.
+     *
+     * @return true when {@link #getFormatType()} is not null
+     */
+    public boolean isFormatTyped() {
+        return formatType != null;
     }
 
     /**
@@ -350,6 +385,7 @@ public class TableColumn implements Taggable {
         copy.foldedDouble = foldedDouble;
         copy.untypedNull = untypedNull;
         copy.nullText = nullText;
+        copy.formatType = formatType;
         return copy;
     }
 

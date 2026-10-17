@@ -500,9 +500,9 @@ as the statement is: `Pipe Notifications bind failure "Cannot set AWS SNS topic 
 
 | endpoint | runs |
 |---|---|
-| `listExternalVolumes` `GET /external-volumes` | `SHOW EXTERNAL VOLUMES [LIKE]` + `DESCRIBE EXTERNAL VOLUME` per row |
+| `listExternalVolumes` `GET /external-volumes` | `SHOW EXTERNAL VOLUMES [LIKE]` + `DESCRIBE EXTERNAL VOLUME` + `SHOW GRANTS ON EXTERNAL VOLUME` per row |
 | `createExternalVolume` `POST /external-volumes` | `CREATE [OR REPLACE] EXTERNAL VOLUME [IF NOT EXISTS] … STORAGE_LOCATIONS = ((NAME = … STORAGE_PROVIDER = … STORAGE_BASE_URL = … [ENCRYPTION = (…)]), …) [ALLOW_WRITES] [COMMENT]` |
-| `fetchExternalVolume` `GET /external-volumes/{name}` | `SHOW EXTERNAL VOLUMES LIKE` + `DESCRIBE EXTERNAL VOLUME` (each `STORAGE_LOCATION_n` row is a JSON object) |
+| `fetchExternalVolume` `GET /external-volumes/{name}` | `SHOW EXTERNAL VOLUMES LIKE` + `DESCRIBE EXTERNAL VOLUME` (each `STORAGE_LOCATION_n` row is a JSON object) + `SHOW GRANTS ON EXTERNAL VOLUME` |
 | `deleteExternalVolume` | `DROP EXTERNAL VOLUME [IF EXISTS]` |
 | `undropExternalVolume` `POST /external-volumes/{name}:undrop` | `UNDROP EXTERNAL VOLUME` |
 
@@ -512,8 +512,9 @@ VOLUMES [LIKE]` (`name, allow_writes, comment`) and `DESC[RIBE] EXTERNAL VOLUME`
 property_type, property_value, property_default`). Frostlake never reaches the storage: the `ACTIVE` location is
 empty, and the identity a real account generates for a location is a stand-in — `STORAGE_AWS_IAM_USER_ARN` reads one
 fixed IAM user, `STORAGE_AWS_EXTERNAL_ID` the id that was written or else the one generated for this creation of
-the volume (another after a CREATE OR REPLACE, the same after a DROP that is undone), and a GCS location's `STORAGE_GCP_SERVICE_ACCOUNT` one fixed service account. `created_on` /
-`owner` are null in the API's body, as the listing does not carry them.
+the volume (another after a CREATE OR REPLACE, the same after a DROP that is undone), and a GCS location's `STORAGE_GCP_SERVICE_ACCOUNT` one fixed service account. `created_on`,
+`owner` and `owner_role_type` are the OWNERSHIP row's of `SHOW GRANTS ON EXTERNAL VOLUME` (or `ON VOLUME`), as the
+listing does not carry them; GRANT and REVOKE take `USAGE` on a volume, and GRANT OWNERSHIP moves it.
 
 ### Streams and tasks (`stream.yaml`, `task.yaml`)
 
@@ -617,9 +618,9 @@ or `TABLE` with its `column_list`), `language_config` (`language`, `runtime_vers
 `called_on_null_input` is left out), `comment`, `body` and, for a procedure, `execute_as` become
 the statement's clauses, and so do `external_access_integrations`, `secrets` (`'variable' = secret`),
 `target_path`, `artifact_repository` and `artifact_repository_packages` (written with the packages). The
-`copyGrants` parameter is left out. `is_aggregate: true` answers `501` (no aggregate UDFs), as does a secure
-procedure. A fetch reports what SHOW, DESCRIBE and the DDL carry, with the account's defaults for
-what they do not (`called_on_null_input` true, `nullable: true`, `log_level` and `trace_level` `OFF`; for a
+`copyGrants` parameter is left out. `is_aggregate: true` creates an AGGREGATE FUNCTION; on a procedure it answers
+`501`, as does a secure procedure. A fetch reports what SHOW, DESCRIBE and the DDL carry, with the account's defaults
+for what they do not (`called_on_null_input` true, `nullable: true`, `log_level` and `trace_level` `OFF`; for a
 function `is_temporary: false` and `is_volatile` true; and `is_builtin: true` for a procedure, as the account reports
 it);
 each argument's `default_value` is its default as the DDL spells it — printed from its plan, so

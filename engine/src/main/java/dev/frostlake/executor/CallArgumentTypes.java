@@ -20,7 +20,10 @@ import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.BindVariableExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
+import dev.frostlake.executor.expressions.PredicateExpressions;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Parameter;
@@ -41,6 +44,7 @@ import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
 import dev.frostlake.values.VariantValue;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 
 import java.math.BigDecimal;
@@ -77,17 +81,22 @@ import java.util.Set;
  *   parameter          refuses
  *   VARCHAR            OBJECT, ARRAY, BINARY
  *   NUMBER             BOOLEAN, DATE, TIME, TIMESTAMP_*, BINARY, OBJECT, ARRAY
- *   FLOAT              BOOLEAN, DATE, TIMESTAMP_*
- *   BOOLEAN            DATE, TIME, TIMESTAMP_*
- *   DATE               NUMBER, FLOAT, BOOLEAN, TIME
- *   TIMESTAMP_NTZ/LTZ  TIMESTAMP_TZ, NUMBER, FLOAT, BOOLEAN
- *   TIMESTAMP_TZ       NUMBER, FLOAT, BOOLEAN
- *   TIME               NUMBER, DATE
- *   BINARY             VARCHAR, NUMBER
- *   VARIANT            VARCHAR, DATE
- *   OBJECT             NUMBER, VARCHAR, ARRAY
- *   ARRAY              NUMBER, VARCHAR, OBJECT, BINARY
+ *   FLOAT              BOOLEAN, DATE, TIME, TIMESTAMP_*, BINARY, OBJECT, ARRAY
+ *   BOOLEAN            DATE, TIME, TIMESTAMP_*, BINARY, OBJECT, ARRAY
+ *   DATE               NUMBER, FLOAT, BOOLEAN, TIME, BINARY, OBJECT, ARRAY
+ *   TIMESTAMP_NTZ/LTZ  TIMESTAMP_TZ, NUMBER, FLOAT, BOOLEAN, BINARY, OBJECT, ARRAY
+ *   TIMESTAMP_TZ       NUMBER, FLOAT, BOOLEAN, BINARY, OBJECT, ARRAY
+ *   TIME               NUMBER, FLOAT, BOOLEAN, DATE, BINARY, OBJECT, ARRAY
+ *   BINARY             VARCHAR, NUMBER, FLOAT, BOOLEAN, DATE, TIME, TIMESTAMP_*, OBJECT, ARRAY
+ *   VARIANT            VARCHAR, DATE, TIME, TIMESTAMP_*, BINARY
+ *   OBJECT             NUMBER, FLOAT, VARCHAR, BOOLEAN, DATE, TIME, TIMESTAMP_*, BINARY, ARRAY
+ *   ARRAY              NUMBER, FLOAT, VARCHAR, BOOLEAN, DATE, TIME, TIMESTAMP_*, OBJECT, BINARY
  * </pre>
+ *
+ * <p>A TIME into a timestamp parameter has a sentence of its own, {@code incompatible types: [TIME(9)] and
+ * [TIMESTAMP_NTZ(9)]}, and a PREDICATE — a comparison, an IS NULL, an IN and the like — is refused by every
+ * parameter but a BOOLEAN one as a BOOLEAN, a text and a VARIANT parameter included, which take a BOOLEAN value
+ * ({@code TRUE}, {@code NOT TRUE}, {@code TRUE AND FALSE}).
  *
  * Live-verified, every cell. Choosing among a procedure's overloads is not modelled here. A CALL a block or
  * another procedure's body runs is judged the same way, each {@code :name} by the type its variable is declared
@@ -104,17 +113,17 @@ final class CallArgumentTypes {
     static {
         refuse("TEXT", "OBJECT", "ARRAY", "BINARY");
         refuse("FIXED", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "OBJECT", "ARRAY");
-        refuse("FLOAT", "BOOLEAN", "DATE", "NTZ", "LTZ", "TZ");
-        refuse("BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ");
-        refuse("DATE", "FIXED", "FLOAT", "BOOLEAN", "TIME");
-        refuse("NTZ", "TZ", "FIXED", "FLOAT", "BOOLEAN");
-        refuse("LTZ", "TZ", "FIXED", "FLOAT", "BOOLEAN");
-        refuse("TZ", "FIXED", "FLOAT", "BOOLEAN");
-        refuse("TIME", "FIXED", "DATE");
-        refuse("BINARY", "TEXT", "FIXED");
-        refuse("VARIANT", "TEXT", "DATE");
-        refuse("OBJECT", "FIXED", "TEXT", "ARRAY");
-        refuse("ARRAY", "FIXED", "TEXT", "OBJECT", "BINARY");
+        refuse("FLOAT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "OBJECT", "ARRAY");
+        refuse("BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "OBJECT", "ARRAY");
+        refuse("DATE", "FIXED", "FLOAT", "BOOLEAN", "TIME", "BINARY", "OBJECT", "ARRAY");
+        refuse("NTZ", "TZ", "FIXED", "FLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
+        refuse("LTZ", "TZ", "FIXED", "FLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
+        refuse("TZ", "FIXED", "FLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
+        refuse("TIME", "FIXED", "FLOAT", "BOOLEAN", "DATE", "BINARY", "OBJECT", "ARRAY");
+        refuse("BINARY", "TEXT", "FIXED", "FLOAT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "OBJECT", "ARRAY");
+        refuse("VARIANT", "TEXT", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY");
+        refuse("OBJECT", "FIXED", "FLOAT", "TEXT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "ARRAY");
+        refuse("ARRAY", "FIXED", "FLOAT", "TEXT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "OBJECT", "BINARY");
     }
 
     /** What a parameter of a type no pair has been measured for weighs: more than any conversion. */
@@ -164,8 +173,9 @@ final class CallArgumentTypes {
         }
         final List<String> spelled = new ArrayList<String>();
         boolean refused = false;
+        String timeForTimestamp = null;
         for (int i = 0; i < arguments.size(); i++) {
-            final FrostlakeParser.ExpressionContext value = arguments.get(i).expression();
+            final ParserRuleContext value = positionalValue(arguments.get(i));
             if (value == null) {
                 return;   // a bare subquery, refused on its own
             }
@@ -177,8 +187,13 @@ final class CallArgumentTypes {
             if (type == null) {
                 return;   // an argument this pass cannot type refuses nothing
             }
+            if (timeForTimestamp == null && isTimeForTimestamp(params.get(i).getDataType(), type)) {
+                timeForTimestamp = SqlCompilationError.of("incompatible types: [" + SqlTypeNames.refusalSpelling(type)
+                    + "] and [" + SqlTypeNames.refusalSpelling(params.get(i).getDataType()) + "]");
+            }
             spelled.add(SqlTypeNames.refusalSpelling(type));
-            refused |= refuses(params.get(i).getDataType(), type);
+            refused |= refuses(params.get(i).getDataType(), type) || refusesPredicate(params.get(i).getDataType(),
+                value);
         }
         for (int i = arguments.size(); i < params.size(); i++) {
             refused |= !params.get(i).hasDefault();
@@ -186,6 +201,9 @@ final class CallArgumentTypes {
         if (refused) {
             throw new RuntimeException(SqlCompilationError.at(0, -1, "Invalid argument types for function '"
                 + procName + "': (" + String.join(", ", spelled) + ")"));
+        }
+        if (timeForTimestamp != null) {
+            throw new RuntimeException(timeForTimestamp);
         }
     }
 
@@ -229,7 +247,7 @@ final class CallArgumentTypes {
         if (values != null) {
             for (final FrostlakeParser.ExpressionContext value : values) {
                 final boolean bare = isUntypedNull(value, typer);
-                final DataType type = bare ? null : staticType(value, typer);
+                final DataType type = bare ? null : compiledType(value, typer);
                 if (!bare && type == null) {
                     return;   // an argument this pass cannot type refuses nothing
                 }
@@ -388,7 +406,7 @@ final class CallArgumentTypes {
             if (type == null) {
                 return;
             }
-            refused |= refuses(param.getDataType(), type);
+            refused |= refuses(param.getDataType(), type) || refusesPredicate(param.getDataType(), value);
         }
         if (refused) {
             throw new RuntimeException(SqlCompilationError.at(0, -1, "named arguments ["
@@ -441,17 +459,20 @@ final class CallArgumentTypes {
             }
         }
         final List<String> argumentFamilies = new ArrayList<String>();
+        final List<DataType> argumentTypes = new ArrayList<DataType>();
         final List<String> spelled = new ArrayList<String>();
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
             final FrostlakeParser.ExpressionContext value = argument.namedArgument() != null
                 ? argument.namedArgument().expression() : argument.expression();
             if (value == null || isUntypedNull(value, typer)) {
                 argumentFamilies.add(null);
+                argumentTypes.add(null);
                 spelled.add("NULL");
                 continue;
             }
             final DataType type = staticType(value, typer);
             argumentFamilies.add(family(type));
+            argumentTypes.add(type);
             spelled.add(type == null ? "NULL" : SqlTypeNames.refusalSpelling(type));
         }
         if (!names.isEmpty() && names.size() == arguments.size()) {
@@ -482,7 +503,8 @@ final class CallArgumentTypes {
         long bestWeight = Long.MAX_VALUE;
         String bestSignature = null;
         for (final Procedure overload : counted) {
-            final long weight = weight(overload.getParameters(), null, argumentFamilies);
+            final long weight = bindsShapes(overload.getParameters(), argumentTypes)
+                ? weight(overload.getParameters(), null, argumentFamilies) : -1;
             if (weight < 0) {
                 continue;
             }
@@ -629,7 +651,63 @@ final class CallArgumentTypes {
     }
 
     /** Whether live refuses to bind an argument of type {@code argument} to a parameter of {@code parameter}. */
+    /** A positional argument's value as written: an expression, or a NOT, AND or OR over values; null for none. */
+    private static ParserRuleContext positionalValue(final FrostlakeParser.CallArgumentContext argument) {
+        return argument.expression() != null ? argument.expression() : argument.booleanExpr();
+    }
+
+    /**
+     * Whether a TIME is given for a timestamp parameter, which has a sentence of its own when no other argument is
+     * refused: {@code incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]}; beside a refused argument the CALL is
+     * the argument-type refusal over every argument (live-verified).
+     */
+    private static boolean isTimeForTimestamp(final DataType parameter, final DataType argument) {
+        final String parameterFamily = family(parameter);
+        return "TIME".equals(family(argument))
+            && ("NTZ".equals(parameterFamily) || "LTZ".equals(parameterFamily) || "TZ".equals(parameterFamily));
+    }
+
+    /**
+     * Whether a parameter refuses an argument for being a predicate: every parameter but a BOOLEAN one does, a
+     * text and a VARIANT parameter among them, which take a BOOLEAN value — {@code CALL p(1 = 1)} and {@code CALL
+     * p(CURRENT_USER() IS NULL)} into a VARCHAR are refused where {@code CALL p(TRUE)} binds (live-verified).
+     */
+    private static boolean refusesPredicate(final DataType parameter, final ParserRuleContext value) {
+        final String family = family(parameter);
+        if (family == null || "BOOLEAN".equals(family)) {
+            return false;
+        }
+        try {
+            return PredicateExpressions.isPredicate(ExpressionEvaluator.parse(ParseTreeText.getOriginalText(value)));
+        } catch (final RuntimeException unread) {
+            return false;
+        }
+    }
+
+    /** Whether each argument written by position binds the structured parameter it fills (see {@link #refuses}). */
+    private static boolean bindsShapes(final List<Parameter> params, final List<DataType> argumentTypes) {
+        for (int i = 0; i < argumentTypes.size() && i < params.size(); i++) {
+            if (refusesShape(params.get(i).getDataType(), argumentTypes.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a structured parameter refuses an argument: only one of its own shape binds it, its numbers' leaves
+     * reading each other (see {@link StructuredTypes#sameBindingShape}). {@code p(x OBJECT(a INT))} takes an
+     * {@code OBJECT(a FLOAT)} and refuses an {@code OBJECT(b INT)} and a plain OBJECT (live-verified).
+     */
+    private static boolean refusesShape(final DataType parameter, final DataType argument) {
+        return argument != null && StructuredTypes.isStructured(parameter)
+            && !StructuredTypes.sameBindingShape(argument, parameter);
+    }
+
     private static boolean refuses(final DataType parameter, final DataType argument) {
+        if (refusesShape(parameter, argument)) {
+            return true;
+        }
         final String parameterFamily = family(parameter);
         final String argumentFamily = family(argument);
         if (parameterFamily == null || argumentFamily == null) {
@@ -684,8 +762,7 @@ final class CallArgumentTypes {
      * {@code CALL p(DATEADD(day, 1, :d))} over a NULL DATE variable bind into any parameter and are spelled
      * {@code NULL}, where over a date they are a DATE (live-verified). Arithmetic over a NULL number stays a NUMBER.
      */
-    private static boolean isUntypedNull(final FrostlakeParser.ExpressionContext value,
-                                         final ExpressionEvaluator typer) {
+    private static boolean isUntypedNull(final ParserRuleContext value, final ExpressionEvaluator typer) {
         if (value instanceof FrostlakeParser.LiteralExprContext
                 && ((FrostlakeParser.LiteralExprContext) value).literal().NULL() != null) {
             return true;
@@ -761,6 +838,19 @@ final class CallArgumentTypes {
      * @param typer   types the argument
      * @return whether the CALL binds a VARIANT there
      */
+    /**
+     * Whether an argument is an exact number by its static type, whatever carrier its value arrives in.
+     *
+     * @param written the argument as written
+     * @param typer   the evaluator whose static typing reads it
+     * @return whether it is an exact NUMBER
+     */
+    public static boolean isExactNumber(final FrostlakeParser.ExpressionContext written,
+                                        final ExpressionEvaluator typer) {
+        final DataType type = staticType(written, typer);
+        return type instanceof NumericType && !NumericType.isApproximate(type);
+    }
+
     public static boolean bindsAVariant(final FrostlakeParser.ExpressionContext written,
                                         final ExpressionEvaluator typer) {
         try {
@@ -790,8 +880,29 @@ final class CallArgumentTypes {
      * An argument's static type, or null when it cannot be read. A variable of a block that holds a text or a binary
      * value is typed at that value's own width, as a literal of it is; holding NULL it keeps its declared width.
      */
-    private static DataType staticType(final FrostlakeParser.ExpressionContext value,
-                                       final ExpressionEvaluator typer) {
+    /**
+     * A FROM-form argument's type, the argument compiled with the statement: what its compilation refuses — a name that
+     * is not there, a function that is not there — is the statement's own refusal, placed where the argument stands
+     * (live-verified), where it used to come back from inside the procedure's CALL. Anything else this pass cannot type
+     * answers null.
+     */
+    private static DataType compiledType(final ParserRuleContext value, final ExpressionEvaluator typer) {
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(value.getStart().getLine(), value.getStart().getCharPositionInLine()));
+        try {
+            return typer.inferStaticType(ExpressionEvaluator.parse(ParseTreeText.getOriginalText(value))) == null
+                ? null : staticType(value, typer);
+        } catch (final RuntimeException refused) {
+            if (SqlCompilationError.isCompilationError(refused.getMessage())) {
+                throw refused;
+            }
+            return null;
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    private static DataType staticType(final ParserRuleContext value, final ExpressionEvaluator typer) {
         try {
             final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(value));
             final DataType declared = typer.inferStaticType(parsed);

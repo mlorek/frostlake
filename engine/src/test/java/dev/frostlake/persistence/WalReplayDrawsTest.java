@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A statement replayed from the write-ahead log draws what it first drew: a UUID_STRING default, RANDOM, UNIFORM and
- * the rows SAMPLE picks come from a stream its recorded instant seeds, and an IDENTITY or a sequence hands each
+ * the rows SAMPLE picks come from a stream the seed recorded with it starts, and an IDENTITY or a sequence hands each
  * statement the values it first handed it - so a transaction that committed after another session's insert keeps the
  * ids it drew, and the counter goes on past both.
  */
@@ -50,13 +50,18 @@ public class WalReplayDrawsTest {
 
     @AfterEach
     public void tearDown() throws IOException {
-        final File[] files = dir.toFile().listFiles();
-        if (files != null) {
-            for (final File file : files) {
-                Files.deleteIfExists(file.toPath());
+        deleteRecursively(dir.toFile());
+    }
+
+    /** Remove a test's data directory whole: the engine keeps its stages in a directory inside it. */
+    private static void deleteRecursively(final File file) {
+        final File[] children = file.listFiles();
+        if (children != null) {
+            for (final File child : children) {
+                deleteRecursively(child);
             }
         }
-        Files.deleteIfExists(dir);
+        file.delete();
     }
 
     private EngineConfig walConfig() {

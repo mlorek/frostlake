@@ -39,6 +39,7 @@ import dev.frostlake.metastore.model.SecurityObject;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.SecurityPropertySpec;
 import dev.frostlake.metastore.model.SecurityPropertySpecs;
+import dev.frostlake.metastore.model.SecurityPropertyType;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamType;
 import dev.frostlake.metastore.model.Tag;
@@ -502,6 +503,34 @@ final class ObjectDdl {
             sb.append(spec.getName()).append('=').append(value == null ? spec.getDefaultValue() : value).append(' ');
         }
         return sb.append(';').toString();
+    }
+
+    /**
+     * {@code create or replace session policy P SESSION_IDLE_TIMEOUT_MINS=240 … ALLOWED_SECONDARY_ROLES=('ALL')
+     * BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL ;} — every property but the comment, each
+     * followed by a space, its default where the policy set none and a role list in parentheses (live-verified).
+     */
+    static String sessionPolicy(final SecurityObject policy, final String name) {
+        final StringBuilder sb = new StringBuilder("create or replace session policy ").append(name).append(' ');
+        for (final SecurityPropertySpec spec : SecurityPropertySpecs.of(SecurityObjectKind.SESSION_POLICY)) {
+            if ("COMMENT".equals(spec.getName())) {
+                continue;
+            }
+            sb.append(spec.getName()).append('=');
+            if (spec.getType() == SecurityPropertyType.TEXT_LIST) {
+                final List<String> roles = policy.list(spec.getName());
+                sb.append('(');
+                for (int i = 0; i < roles.size(); i++) {
+                    sb.append(i > 0 ? ", " : "").append(quoted(roles.get(i)));
+                }
+                sb.append(')');
+            } else {
+                final Object value = policy.getProperty(spec.getName());
+                sb.append(value == null ? spec.getDefaultValue() : value);
+            }
+            sb.append(' ');
+        }
+        return sb.append(SecurityPropertySpecs.AGENT_RESTRICTED_SESSION_SCOPE).append("=NULL ;").toString();
     }
 
     // ─────────────────────────── CONTACT / STREAMLIT ───────────────────────────

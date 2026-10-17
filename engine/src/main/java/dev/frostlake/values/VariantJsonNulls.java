@@ -80,6 +80,12 @@ public final class VariantJsonNulls {
         VALUE_AGGREGATES.add("ARRAY_UNIQUE_AGG");
         VALUE_AGGREGATES.add("OBJECT_AGG");
         VALUE_AGGREGATES.add("HASH_AGG");
+        // A JSON null sorts after every number for the ordering aggregates over a VARIANT, and APPROX_COUNT_DISTINCT
+        // counts it as a value of its own (live-verified).
+        VALUE_AGGREGATES.add("MEDIAN");
+        VALUE_AGGREGATES.add("PERCENTILE_CONT");
+        VALUE_AGGREGATES.add("PERCENTILE_DISC");
+        VALUE_AGGREGATES.add("APPROX_COUNT_DISTINCT");
     }
 
     private VariantJsonNulls() {

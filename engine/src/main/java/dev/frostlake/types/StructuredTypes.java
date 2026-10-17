@@ -58,10 +58,12 @@ public final class StructuredTypes {
      * {@code OBJECT(x INT)} argument fails "Invalid argument types", and so do a plain {@code OBJECT},
      * a {@code VARIANT}, an {@code OBJECT(y VARCHAR)} and a wider {@code OBJECT(x VARCHAR, y INT)}.
      *
-     * <p>A leaf's family is {@link SqlTypeNames#sameFamily}'s: the exact and the approximate numerics are two,
-     * and so are DATE, TIME and each timestamp flavour, text and UUID. Comparing the leaves' Java classes
-     * lumped each of those pairs together, so an {@code OBJECT(x TIME)} bound an {@code OBJECT(x DATE)}
-     * parameter and an {@code OBJECT(x FLOAT)} an {@code OBJECT(x INT)} one.
+     * <p>A leaf's family is {@link SqlTypeNames#sameFamily}'s, but for the numbers: an exact and an approximate
+     * leaf bind each other, {@code OBJECT(x FLOAT)} an {@code OBJECT(x INT)} parameter and {@code OBJECT(x INT)} an
+     * {@code OBJECT(x FLOAT)} one, as {@code ARRAY(FLOAT)} binds {@code ARRAY(INT)}. DATE, TIME and each timestamp
+     * flavour are families of their own, as are text, BOOLEAN and UUID: an {@code OBJECT(x TIME)} or
+     * {@code OBJECT(x TIMESTAMP_NTZ)} does not bind {@code OBJECT(x DATE)}, nor a text or a BOOLEAN leaf a number
+     * (live-verified).
      */
     public static boolean sameBindingShape(final DataType source, final DataType target) {
         if (source == null || target == null) {
@@ -92,8 +94,10 @@ public final class StructuredTypes {
         if (isStructured(source) || isStructured(target)) {
             return false;   // one side structured, the other not (or a different structured family)
         }
-        // Leaf types bind by FAMILY: VARCHAR(10) and VARCHAR(134217728) are the same parameter type.
-        return SqlTypeNames.sameFamily(source, target);
+        // Leaf types bind by FAMILY: VARCHAR(10) and VARCHAR(134217728) are the same parameter type, and any two
+        // numbers bind.
+        return SqlTypeNames.sameFamily(source, target)
+            || source instanceof NumericType && target instanceof NumericType;
     }
 
     /**
@@ -140,12 +144,26 @@ public final class StructuredTypes {
         }
         if (type instanceof MapType) {
             return "MAP(" + signatureText(((MapType) type).getKeyType()) + ", "
-                + signatureText(((MapType) type).getValueType()) + ")";
+                + signatureText(((MapType) type).getValueType()) + notNullMark(type) + ")";
         }
         if (type instanceof StructuredArrayType) {
-            return "ARRAY(" + signatureText(((StructuredArrayType) type).getElementType()) + ")";
+            return "ARRAY(" + signatureText(((StructuredArrayType) type).getElementType()) + notNullMark(type) + ")";
         }
         return type.getName();
+    }
+
+    /**
+     * The NOT NULL an ARRAY's element or a MAP's value is declared with, as every spelling of the type writes it
+     * after the member: {@code ARRAY(NUMBER(38,0) NOT NULL)}, {@code MAP(VARCHAR, NUMBER NOT NULL)}; empty for any
+     * other type.
+     *
+     * @param type a structured type
+     * @return the mark, with its leading blank, or empty
+     */
+    public static String notNullMark(final DataType type) {
+        final boolean notNull = type instanceof StructuredArrayType && ((StructuredArrayType) type).isElementNotNull()
+            || type instanceof MapType && ((MapType) type).isValueNotNull();
+        return notNull ? " NOT NULL" : "";
     }
 
     /** A type as Snowflake spells it in an argument-type / cast error message. */
@@ -170,10 +188,10 @@ public final class StructuredTypes {
         }
         if (type instanceof MapType) {
             return "MAP(" + describe(((MapType) type).getKeyType()) + ", "
-                + describe(((MapType) type).getValueType()) + ")";
+                + describe(((MapType) type).getValueType()) + notNullMark(type) + ")";
         }
         if (type instanceof StructuredArrayType) {
-            return "ARRAY(" + describe(((ArrayType) type).getElementType()) + ")";
+            return "ARRAY(" + describe(((ArrayType) type).getElementType()) + notNullMark(type) + ")";
         }
         if (type instanceof UuidType) {
             // A UUID is a type of its own and takes no length (UuidType).

@@ -1356,7 +1356,7 @@ public class GetDdlSchemaDatabaseTest extends BaseDatabaseTest {
             "CREATE DYNAMIC TABLE dt1 TARGET_LAG = '1 hour' WAREHOUSE = COMPUTE_WH INITIALIZE = ON_SCHEDULE "
                 + "AS SELECT SQ.NEXTVAL AS N FROM SRC",
             "CREATE DYNAMIC TABLE dt2 TARGET_LAG = '1 hour' WAREHOUSE = COMPUTE_WH INITIALIZE = ON_SCHEDULE "
-                + "AS SELECT GET_DDL('SCHEMA', 'TEST_SCHEMA') AS D");
+                + "AS SELECT GET_DDL('SCHEMA', 'TEST_SCHEMA') AS D FROM SRC");
         final Object before = engine.executeQuery("SELECT SQ.NEXTVAL").getRows().get(0).getValue(0);
         ddl("TABLE", "DT1");
         ddl("TABLE", "DT1");

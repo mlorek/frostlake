@@ -130,9 +130,6 @@ public final class ComparisonLevelChain {
      * @return the operand, or null
      */
     static FrostlakeParser.ExpressionContext valueOperand(final FrostlakeParser.ExpressionContext node) {
-        if (node instanceof FrostlakeParser.ConcatExprContext) {
-            return ((FrostlakeParser.ConcatExprContext) node).expression(0);
-        }
         if (node instanceof FrostlakeParser.AdditiveExprContext) {
             return ((FrostlakeParser.AdditiveExprContext) node).expression(0);
         }

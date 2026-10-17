@@ -19,6 +19,7 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.commands.DataTypeParser;
+import dev.frostlake.executor.udf.UserAggregateFunction;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.datetime.DateDifferenceWidths;
@@ -128,6 +129,11 @@ final class TypeInferencer {
     private final Deque<Map<String, DataType>> lambdaTypes = new ArrayDeque<>();
     /** The width a text or VARIANT value is converted to by the interpolating and picking percentiles, live: NUMBER(9,0). */
     private static final int COERCED_WHOLE_DIGITS = 9;
+    /**
+     * What SUM, AVG and the variances read an untyped NULL as: SUM(NULL) declares NUMBER(30,0) and AVG(NULL)
+     * NUMBER(36,6), the widths a NUMBER(18,0) argument gives (live-verified).
+     */
+    private static final NumericType UNTYPED_NULL_AGGREGATED = new NumericType("NUMBER", 18, 0);
 
     private static final Object UNDETERMINED = new Object();
 
@@ -299,9 +305,16 @@ final class TypeInferencer {
                 ((SystemStreamHasDataExpression) expr).getStreamNameExpr(), visitor);
             return BooleanType.BOOLEAN;
         }
+        if (expr instanceof SystemUserTaskCancelExpression) {
+            // The cancellation's sentence is a VARCHAR(1), whatever it says (live-verified, over NULL too).
+            return new StringType("VARCHAR", 1);
+        }
         if (expr instanceof FoldedConstantExpression) {
             // A conversion the plan folded keeps its target's type, whatever digits its value has.
             return ((FoldedConstantExpression) expr).getDeclaredType();
+        }
+        if (expr instanceof NullableConstantExpression) {
+            return infer(((NullableConstantExpression) expr).getValue());
         }
         if (expr instanceof LiteralExpression) {
             switch (((LiteralExpression) expr).getType()) {
@@ -619,6 +632,11 @@ final class TypeInferencer {
             if ("SYSTEM$LAST_CHANGE_COMMIT_TIME".equals(funcName)) {
                 return new NumericType("NUMBER", 38, 0);
             }
+            // A stream's table stamp and a reference are a VARCHAR(1) to SYSTEM$TYPEOF and as a column, whatever
+            // they hold, and a table built over one keeps the width and the whole text (live-verified).
+            if (ONE_CHARACTER_SYSTEM_CALLS.contains(funcName)) {
+                return new StringType("VARCHAR", 1);
+            }
             if (CONDITIONAL_FUNCTIONS.contains(funcName)) {
                 return conditionalFoldType(funcName, foldedBranches(funcName, call.getArguments()));
             }
@@ -634,7 +652,9 @@ final class TypeInferencer {
                     // NULLIFZERO is the exception within the pass-through family: a VARCHAR argument
                     // comes back at the UNKNOWN length, not its own — live declares NULLIFZERO over a
                     // VARCHAR(16777216) column as VARCHAR(134217728), where MIN keeps VARCHAR(5).
-                    if ("NULLIFZERO".equals(funcName) && passed instanceof StringType) {
+                    // A VARCHAR of no width stays one: NULLIFZERO(NULL::VARCHAR) is a bare VARCHAR.
+                    if ("NULLIFZERO".equals(funcName) && passed instanceof StringType
+                            && !(passed instanceof WidthlessStringType)) {
                         return new StringType("VARCHAR", DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR);
                     }
                     // REVERSE is not really one of them: it is a STRING function that happens to hand
@@ -678,6 +698,10 @@ final class TypeInferencer {
             final DataType uniform = uniformResultType(funcName, call.getArguments());
             if (uniform != null) {
                 return uniform;
+            }
+            final DataType zipf = zipfResultType(funcName, call.getArguments());
+            if (zipf != null) {
+                return zipf;
             }
             if (UntypedNullFold.foldsToUntypedNull(call)) {
                 return null;
@@ -792,6 +816,12 @@ final class TypeInferencer {
             if (staged != null) {
                 return staged;
             }
+            // LPAD and RPAD hand a BINARY back as a BINARY no plan sizes, whatever the length asked for
+            // (live-verified: BINARY in SYSTEM$TYPEOF).
+            if ((funcName.equals("LPAD") || funcName.equals("RPAD")) && !call.getArguments().isEmpty()
+                    && infer(call.getArguments().get(0)) instanceof BinaryType) {
+                return BinaryType.UNSIZED;
+            }
             if (declared instanceof StringType && !(declared instanceof UuidType)) {
                 // The registry declares one nominal VARCHAR for every string function; live computes a
                 // width from the arguments. See StringResultWidths for the measured table.
@@ -856,6 +886,10 @@ final class TypeInferencer {
         "SYSTEM$TYPEOF", "SYSTEM$WAIT", "SYSTEM$GET_TAG", "SYSTEM$GET_TAG_ALLOWED_VALUES",
         "SYSTEM$ABORT_TRANSACTION", "SYSTEM$CLUSTERING_INFORMATION", "SYSTEM$ALLOWLIST", "SYSTEM$WHITELIST",
         "SYSTEM$GET_SNOWFLAKE_PLATFORM_INFO", "SYSTEM$CURRENT_USER_TASK_NAME");
+
+    /** The SYSTEM$ functions that answer a VARCHAR(1), whatever the text they answer. */
+    private static final Set<String> ONE_CHARACTER_SYSTEM_CALLS = Set.of(
+        "SYSTEM$STREAM_GET_TABLE_TIMESTAMP", "SYSTEM$QUERY_REFERENCE", "SYSTEM$REFERENCE");
 
     /**
      * The value-choosing functions, whose result is one of their branches rather than a fixed type.
@@ -1443,11 +1477,14 @@ final class TypeInferencer {
     /**
      * The width a bitwise function declares, which follows its arguments' INTEGER digits rather than
      * the family's NUMBER(38,0) (live-measured cell by cell): a NUMBER(p,s) counts p - s and a literal its
-     * own digits. BITAND and BITXOR take the wider argument, at least two digits, a FLOAT counting for
-     * nothing and a text for thirteen — the integer part of the NUMBER(18,5) a text reads as — and a text
-     * in SECOND place caps the width at thirty-three. BITOR is one digit wider, capped at thirty-eight,
-     * with a FLOAT or a text counting eighteen. BITNOT and BITSHIFTRIGHT keep the argument's width, at
-     * least two; BITSHIFTLEFT is always thirty-eight. Null for an argument of any other kind.
+     * own digits, a fraction rounded to a whole number of two digits at the least ({@code BITOR(1.5, 2)} is
+     * NUMBER(3,0), {@code BITOR(123.5, 2)} NUMBER(4,0)). BITAND and BITXOR take the wider argument, at least
+     * two digits, a FLOAT counting for nothing and a text for thirteen — the integer part of the NUMBER(18,5)
+     * a text reads as — and a text in SECOND place caps the width at thirty-three. BITOR is one digit wider,
+     * capped at thirty-eight, with a FLOAT or a text counting eighteen. BITNOT keeps the argument's width, at
+     * least two, and BITSHIFTRIGHT the wider of the value and the shift — {@code BITSHIFTRIGHT(1, 200)} is
+     * NUMBER(3,0) — where a shift written as a text counts for nothing; BITSHIFTLEFT is always thirty-eight.
+     * Null for an argument of any other kind.
      */
     private DataType bitwiseResultType(final String written, final List<Expression> args) {
         // BIT_AND, BIT_OR, BIT_XOR and BIT_NOT are the same functions under a second spelling.
@@ -1462,11 +1499,17 @@ final class TypeInferencer {
         if (funcName.equals("BITSHIFTLEFT")) {
             return IntegerResultWidths.WIDEST;
         }
-        final int operands = Math.min(twoOperands ? 2 : 1, args.size());
+        final boolean shift = funcName.equals("BITSHIFTRIGHT");
+        final int operands = Math.min(twoOperands || shift ? 2 : 1, args.size());
         int digits = 0;
         for (int i = 0; i < operands; i++) {
-            final int counted = bitwiseDigits(args.get(i), or);
+            final boolean shiftCount = shift && i == 1;
+            final int counted = shiftCount && infer(args.get(i)) instanceof StringType ? 0
+                : bitwiseDigits(args.get(i), or);
             if (counted < 0) {
+                if (shiftCount) {
+                    continue;
+                }
                 return null;
             }
             digits = Math.max(digits, counted);
@@ -1521,6 +1564,26 @@ final class TypeInferencer {
         return new NumericType("NUMBER", Math.min(integerDigits + scale, 38), scale);
     }
 
+    /**
+     * ZIPF's type: a whole NUMBER as wide as N's integer digits (live-verified: ZIPF(1, 100, g) is NUMBER(3,0)[SB2]),
+     * or NUMBER(38,0) where N is no exact number.
+     *
+     * @return the type, or null when this is not ZIPF
+     */
+    private DataType zipfResultType(final String funcName, final List<Expression> args) {
+        if (!funcName.equals("ZIPF") || args.size() != 3) {
+            return null;
+        }
+        final DataType elements = isNullLiteral(args.get(1)) ? null : infer(args.get(1));
+        if (!(elements instanceof NumericType) || NumericType.isApproximate(elements)) {
+            return new NumericType("NUMBER", 38, 0);
+        }
+        final NumericType exact = (NumericType) elements;
+        // An N with a fraction is rounded, which may carry it into one more digit.
+        final int digits = exact.getPrecision() - exact.getScale() + (exact.getScale() > 0 ? 1 : 0);
+        return new NumericType("NUMBER", Math.max(1, Math.min(digits, 38)), 0);
+    }
+
     /** One argument's integer digits for {@link #bitwiseResultType}, or -1 for a kind it does not count. */
     private int bitwiseDigits(final Expression arg, final boolean or) {
         if (isNullLiteral(arg)) {
@@ -1535,7 +1598,8 @@ final class TypeInferencer {
                 return or ? 18 : 0;
             }
             final NumericType exact = (NumericType) type;
-            return Math.max(exact.getPrecision() - exact.getScale(), 0);
+            final int whole = Math.max(exact.getPrecision() - exact.getScale(), 0);
+            return exact.getScale() > 0 ? Math.max(whole, 2) : whole;
         }
         return -1;
     }
@@ -2712,11 +2776,20 @@ final class TypeInferencer {
 
     /** The fractional-seconds precision, 0 to 9, that a clock call writes as its one argument, or null. */
     private static Integer literalPrecisionArgument(final List<Expression> args) {
-        if (args.size() != 1 || !(args.get(0) instanceof LiteralExpression)
-                || ((LiteralExpression) args.get(0)).getType() != LiteralType.INTEGER) {
+        if (args.size() != 1 || !(args.get(0) instanceof LiteralExpression)) {
             return null;
         }
-        final String digits = String.valueOf(((LiteralExpression) args.get(0)).getValue());
+        final LiteralExpression written = (LiteralExpression) args.get(0);
+        if (written.getType() == LiteralType.DECIMAL) {
+            // A whole-valued decimal is the precision it spells: CURRENT_TIME(3.0) is TIME(3) (live-verified).
+            final BigDecimal value = new BigDecimal(String.valueOf(written.getValue())).stripTrailingZeros();
+            return value.scale() <= 0 && value.signum() >= 0 && value.compareTo(BigDecimal.valueOf(9)) <= 0
+                ? Integer.valueOf(value.intValue()) : null;
+        }
+        if (written.getType() != LiteralType.INTEGER) {
+            return null;
+        }
+        final String digits = String.valueOf(written.getValue());
         if (digits.length() != 1 || !Character.isDigit(digits.charAt(0))) {
             return null;
         }
@@ -2725,6 +2798,12 @@ final class TypeInferencer {
 
     private DataType aggregateResultType(final String funcName,
                                          final FunctionCallExpression call) {
+        final BuiltInFunction user = visitor.getFunctionRegistry() == null ? null
+            : visitor.getFunctionRegistry().getAggregateFunction(funcName);
+        if (user instanceof UserAggregateFunction) {
+            // A user's aggregate function answers its declared RETURNS type (see UserAggregateFunction).
+            return ((UserAggregateFunction) user).resultType();
+        }
         if (funcName.equals("COUNT_IF")) {
             // A count of matching rows is the SUM of a one-digit indicator, and declares its width:
             // NUMBER(13,0), the same width SUM(1) declares (live-verified).
@@ -2810,13 +2889,30 @@ final class TypeInferencer {
         if (!isComputingAggregate(funcName) || call.getArguments().isEmpty()) {
             return null;
         }
-        final DataType argument = infer(call.getArguments().get(0));
+        final DataType argument = aggregatedType(funcName, call.getArguments().get(0));
         if (funcName.equals("AVG") && call.isDistinct() && argument instanceof NumericType) {
             // AVG(DISTINCT x) declares three more decimals than its argument, not six, as an AVG over a frame of
             // its own does: NUMBER(10,2) gives NUMBER(25,5), an INT NUMBER(38,3) (live-verified).
             return threeDecimalAverage((NumericType) argument);
         }
         return computingAggregateType(funcName, argument);
+    }
+
+    /**
+     * The type a computing aggregate reads its argument as: the argument's own, or for an untyped NULL — the word
+     * itself, or a column holding nothing but one — a NUMBER(18,0) to SUM, AVG and the variances and a text to
+     * MEDIAN, which then declares NUMBER(12,3) as it does over any text (live-verified).
+     *
+     * @param funcName the aggregate's upper-case name
+     * @param argument the aggregated expression
+     * @return the type it is read as, or null
+     */
+    private DataType aggregatedType(final String funcName, final Expression argument) {
+        final DataType type = infer(argument);
+        if (type != null || !isNullLiteral(argument)) {
+            return type;
+        }
+        return funcName.equals("MEDIAN") ? StringType.VARCHAR : UNTYPED_NULL_AGGREGATED;
     }
 
     /**
@@ -3006,8 +3102,12 @@ final class TypeInferencer {
             return infer(args.get(0));
         }
         if (funcName.equals("AVG") && !(window.isOrdered() && !window.isOwnFramed())) {
-            final DataType argument = infer(args.get(0));
-            return argument instanceof NumericType ? threeDecimalAverage((NumericType) argument) : null;
+            final DataType argument = aggregatedType(funcName, args.get(0));
+            if (argument instanceof NumericType) {
+                return threeDecimalAverage((NumericType) argument);
+            }
+            // A VARIANT or a text averages as the grouped AVG over it does, to a FLOAT (live-verified).
+            return argument == null ? null : aggregateResultType(funcName, new FunctionCallExpression(funcName, args));
         }
         return aggregateResultType(funcName, new FunctionCallExpression(funcName, args));
     }

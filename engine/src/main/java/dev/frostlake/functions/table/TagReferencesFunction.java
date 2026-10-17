@@ -19,6 +19,7 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.RoutineReferenceText;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.commands.DropCommandHandler;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -48,6 +49,7 @@ import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -87,8 +89,8 @@ public class TagReferencesFunction extends TableFunction {
     private static final String INHERITED = "INHERITED";
 
     /**
-     * The documented domains, and PIPE, which the account accepts although its documentation does not list it; one
-     * this function resolves no object for answers no rows.
+     * The documented domains, and PIPE, which the account accepts although its documentation does not list it. Each
+     * refuses a name that is no object of its kind, a domain this engine models no object of included.
      */
     private static final Set<String> DOMAINS = new HashSet<String>(Arrays.asList(
         "ACCOUNT", "ALERT", "BACKUP POLICY", "BACKUP SET", "COLUMN", "COMPUTE POOL", "CORTEX AGENT",
@@ -98,7 +100,8 @@ public class TagReferencesFunction extends TableFunction {
         "TASK", "USER", "WAREHOUSE"));
 
     /** The domains {@link #rows} reads beside {@link #DOMAINS}: the objects of a schema it finds by kind. */
-    private static final Set<String> SCHEMA_OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("PASSWORD POLICY"));
+    private static final Set<String> SCHEMA_OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("PASSWORD POLICY",
+        "SESSION POLICY"));
 
     /** The domains that name one kind of table-like object, refused in favour of TABLE. */
     private static final Set<String> TABLE_LIKE_DOMAINS = new HashSet<String>(Arrays.asList("VIEW", "MATERIALIZED VIEW"));
@@ -113,7 +116,7 @@ public class TagReferencesFunction extends TableFunction {
 
     /** The schema objects a miss names by the full path, however the name was written. */
     private static final Set<String> FULL_PATH_DOMAINS = new HashSet<String>(Arrays.asList("STAGE", "PIPE",
-        "PASSWORD POLICY", "SERVICE", "IMAGE REPOSITORY"));
+        "PASSWORD POLICY", "SESSION POLICY", "SERVICE", "IMAGE REPOSITORY"));
 
     /** The schema objects of the container services, whose rows spell the domain with an underscore (live-verified). */
     private static final Set<String> CONTAINER_DOMAINS = new HashSet<String>(Arrays.asList("SERVICE",
@@ -123,9 +126,20 @@ public class TagReferencesFunction extends TableFunction {
     private static final Set<String> ACCOUNT_OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("WAREHOUSE",
         "COMPUTE POOL", "USER", "ROLE", "NETWORK POLICY", "INTEGRATION"));
 
+    /**
+     * The domains of objects this engine models none of, by the noun their miss is refused with: a share named with
+     * the account in one quoted part, an account, a replication group (a failover group's too) and Snowflake
+     * Intelligence by the name as written, the schema objects by their full path (live-verified).
+     */
+    private static final Map<String, String> UNMODELLED_NOUNS = unmodelledNouns();
+
+    /** The unmodelled domains a miss names by its full path. */
+    private static final Set<String> UNMODELLED_SCHEMA_OBJECTS = new HashSet<String>(Arrays.asList("INSTANCE",
+        "BACKUP POLICY", "SNAPSHOT POLICY", "BACKUP SET", "SNAPSHOT SET", "CORTEX AGENT"));
+
     /** The objects of a schema this function looks up by kind. */
     private static final Set<String> LOOKED_UP_SCHEMA_OBJECTS = new HashSet<String>(Arrays.asList("ALERT", "STAGE",
-        "STREAM", "TASK", "PIPE", "PASSWORD POLICY", "SERVICE", "IMAGE REPOSITORY"));
+        "STREAM", "TASK", "PIPE", "PASSWORD POLICY", "SESSION POLICY", "SERVICE", "IMAGE REPOSITORY"));
 
     /** How many parts a role's name may have before the name itself is refused. */
     private static final int ROLE_QUALIFIER_LIMIT = 4;
@@ -326,6 +340,16 @@ public class TagReferencesFunction extends TableFunction {
             ? text.substring(1, text.length() - 1) : text;
     }
 
+    /**
+     * The object of that name and domain, refused as TAG_REFERENCES refuses it when it is not there.
+     *
+     * @param writtenName the object's name, as written
+     * @param writtenDomain the domain, as written
+     */
+    void requireObject(final String writtenName, final String writtenDomain) {
+        rows(writtenName, writtenDomain);
+    }
+
     /** One row per tag reaching the object of that name and domain. */
     private List<Row> rows(final String writtenName, final String writtenDomain) {
         final String domain = domainOf(writtenDomain);
@@ -356,8 +380,59 @@ public class TagReferencesFunction extends TableFunction {
             addAccountObjectTags(domain, parts, objectName, rows);
         } else if ("DATABASE ROLE".equals(domain)) {
             addDatabaseRoleTags(parts, objectName, rows);
+        } else if ("CORTEX SEARCH SERVICE".equals(domain)) {
+            requireCortexSearchService(parts, objectName);
+        } else if (UNMODELLED_NOUNS.containsKey(domain)) {
+            refuseUnmodelled(domain, parts, objectName);
         }
         return rows;
+    }
+
+    private static Map<String, String> unmodelledNouns() {
+        final Map<String, String> nouns = new HashMap<String, String>();
+        nouns.put("SHARE", "Share");
+        nouns.put("ACCOUNT", "Account");
+        nouns.put("FAILOVER GROUP", "Replication group");
+        nouns.put("REPLICATION GROUP", "Replication group");
+        nouns.put("SNOWFLAKE INTELLIGENCE", "Snowflake Intelligence");
+        nouns.put("INSTANCE", "Instance");
+        nouns.put("BACKUP POLICY", "Backup Policy");
+        nouns.put("SNAPSHOT POLICY", "Backup Policy");
+        nouns.put("BACKUP SET", "Backup Set");
+        nouns.put("SNAPSHOT SET", "Backup Set");
+        nouns.put("CORTEX AGENT", "Agent");
+        return nouns;
+    }
+
+    /** A domain this engine holds no object of names nothing: refused as a statement over its kind refuses one. */
+    private void refuseUnmodelled(final String domain, final String[] written, final String objectName) {
+        final String noun = UNMODELLED_NOUNS.get(domain);
+        if ("SHARE".equals(domain)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled(noun,
+                DropCommandHandler.shareName(catalog.getAccountLocator(), objectName)));
+        }
+        if (!UNMODELLED_SCHEMA_OBJECTS.contains(domain)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist(noun, objectName));
+        }
+        final String[] name = qualify(written, SCHEMA_OBJECT_PARTS, noun, objectName);
+        final Schema schema = resolveSchema(name[0], name[1], noun, objectName);
+        throw new RuntimeException(SqlCompilationError.doesNotExist(noun, schema.qualifiedName(name[2])));
+    }
+
+    /**
+     * The Cortex Search Service a domain names, which carries no tag here: a miss is refused by the name as written
+     * when it was written bare, and by the full name otherwise.
+     */
+    private void requireCortexSearchService(final String[] written, final String objectName) {
+        if (!catalog.hasCortexSearchService(written)) {
+            final String noun = "Cortex Search Service";
+            if (written.length == 1) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist(noun, objectName));
+            }
+            final String[] name = qualify(written, SCHEMA_OBJECT_PARTS, noun, objectName);
+            throw new RuntimeException(SqlCompilationError.doesNotExist(noun,
+                resolveSchema(name[0], name[1], noun, objectName).qualifiedName(name[2])));
+        }
     }
 
     /**
@@ -718,6 +793,9 @@ public class TagReferencesFunction extends TableFunction {
             }
             if ("PASSWORD POLICY".equals(domain)) {
                 return schema.getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name);
+            }
+            if ("SESSION POLICY".equals(domain)) {
+                return schema.getSecurityObjects().get(SecurityObjectKind.SESSION_POLICY, name);
             }
             if ("SERVICE".equals(domain)) {
                 return schema.getContainerObjects().getService(name);

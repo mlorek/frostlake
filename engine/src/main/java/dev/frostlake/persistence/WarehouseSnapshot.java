@@ -34,6 +34,8 @@ public class WarehouseSnapshot implements Serializable {
     public boolean autoResume;
     public String comment;
     public LocalDateTime createdAt;
+    /** When the warehouse last changed state — SHOW WAREHOUSES' resumed_on and updated_on; null on old snapshots. */
+    public LocalDateTime lastStateChange;
     // Multi-cluster scaling. scalingPolicy is null on old snapshots; the counts default to 0 → restore
     // treats a 0 min/max as "unset" and leaves the warehouse's own defaults in place.
     public String scalingPolicy;

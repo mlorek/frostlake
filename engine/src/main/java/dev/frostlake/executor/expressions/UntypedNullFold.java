@@ -35,7 +35,8 @@ import java.util.Set;
  * <p>A conditional that can answer nothing but an untyped NULL folds the same way: IFF, NVL2, COALESCE, NVL,
  * IFNULL, GREATEST, LEAST, DECODE and CASE whose every value branch is one — {@code IFF(TRUE, NULL, NULL)},
  * {@code CASE WHEN a > 1 THEN NULL END}, {@code DECODE(1, 1, NULL, NULL)} — and a NULLIF whose first argument
- * is one, {@code NULLIF(NULL, 1)}, all read NULL[LOB] and read through a derived column, a concatenation or
+ * is one, {@code NULLIF(NULL, 1)} and {@code NULLIFZERO(NULL)}, all read NULL[LOB] and read through a derived
+ * column, a concatenation or
  * arithmetic as the bare word does (live-verified). A typed NULL branch keeps its type:
  * {@code IFF(TRUE, NULL::INT, NULL)} is NUMBER(38,0).
  */
@@ -78,6 +79,10 @@ public final class UntypedNullFold {
         final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
         if (name.equals("NULLIF")) {
             return call.getArguments().size() == 2 && isUntypedNull(call.getArguments().get(0));
+        }
+        if (name.equals("NULLIFZERO")) {
+            // NULLIFZERO(NULL) is the NULLIF it stands for, over the word itself.
+            return call.getArguments().size() == 1 && isUntypedNull(call.getArguments().get(0));
         }
         if (name.equals("TRUNC")) {
             // Over a NULL value TRUNC is neither the numeric nor the date truncation: TRUNC(NULL) is NULL[LOB].
@@ -186,6 +191,26 @@ public final class UntypedNullFold {
      */
     public static boolean picksABranch(final String name) {
         return PICKING.contains(name) || name.equals("NULLIF");
+    }
+
+    /**
+     * Whether an expression is MAX or MIN over an untyped NULL. The call stays an aggregate, but it has no type of
+     * its own: it projects a VARCHAR(0) column, as the bare word does, and SYSTEM$TYPEOF reads it NULL[LOB]
+     * (live-verified).
+     *
+     * @param expr the expression
+     * @return whether it is such a call
+     */
+    public static boolean isExtremeOfUntypedNull(final Expression expr) {
+        if (!(expr instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expr;
+        if (call.getFunctionName() == null || call.getNameExpression() != null || call.getArguments().size() != 1) {
+            return false;
+        }
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        return (name.equals("MAX") || name.equals("MIN")) && isUntypedNull(call.getArguments().get(0));
     }
 
     /**

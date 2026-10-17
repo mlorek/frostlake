@@ -30,6 +30,9 @@ import dev.frostlake.storage.StorageEngine;
  * <p>The schema keeps the hidden table beside its visible ones and the storage engine keeps its rows
  * beside theirs, both under the shared name, so no path that reaches a table by name needs to know a
  * permanent one is hidden there. Between statements a table is hidden only beneath a temporary table.
+ * A session's own temporary table (see Table.isSessionTemporary) hides a permanent one from that session
+ * alone, held apart from the tables every session shares; while that session creates a permanent table of
+ * its name, its own table is set aside so the CREATE meets only the shared ones.
  */
 public final class TableShadows {
 
@@ -46,7 +49,11 @@ public final class TableShadows {
      */
     public static void stepAside(final Schema schema, final StorageEngine storage, final String database,
                                     final String name, final boolean temporary) {
-        final Table holder = schema.tableExact(name);
+        if (!temporary && schema.holdsOwnTable(name)) {
+            schema.setOwnTableAside(name);
+            storage.setOwnTableAside(QualifiedName.key(database, schema.getName(), name));
+        }
+        final Table holder = schema.heldTable(name);
         if (holder != null && holder.isTemporary() != temporary) {
             swap(schema, storage, database, name);
         }
@@ -58,8 +65,11 @@ public final class TableShadows {
      */
     public static void settle(final Schema schema, final StorageEngine storage, final String database,
                               final String name) {
+        if (schema.bringOwnTableBack(name)) {
+            storage.bringOwnTableBack(QualifiedName.key(database, schema.getName(), name));
+        }
         final Table hidden = schema.shadowedTable(name);
-        if (hidden != null && (hidden.isTemporary() || schema.tableExact(name) == null)) {
+        if (hidden != null && (hidden.isTemporary() || schema.heldTable(name) == null)) {
             swap(schema, storage, database, name);
         }
     }

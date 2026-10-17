@@ -104,6 +104,13 @@ public abstract class BuiltInFunction {
             if (held.isNumber()) {
                 return held.decimalValue();
             }
+            // A BOOLEAN reads as 1 or 0, and an array or an object as nothing at all (live-verified).
+            if (held.isBoolean()) {
+                return held.booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
+            }
+            if (held.isContainer()) {
+                throw new RuntimeException("Failed to cast variant value " + held + " to FIXED");
+            }
             try {
                 return ImpliedTextNumber.read(held.asText());
             } catch (final RuntimeException spellsNoNumber) {
@@ -112,6 +119,10 @@ public abstract class BuiltInFunction {
                 }
                 throw spellsNoNumber;
             }
+        }
+        if (value instanceof Boolean) {
+            // A BOOLEAN wrapped as a VARIANT constant arrives as itself: TRUE::VARIANT reads as 1.
+            return ((Boolean) value).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
         }
         if (value instanceof BigDecimal) {
             return (BigDecimal) value;
@@ -499,6 +510,17 @@ public abstract class BuiltInFunction {
      * @return true when the signature refuses them; false by default
      */
     public boolean refusesSignatureTypes(final List<DataType> types) {
+        return false;
+    }
+
+    /**
+     * Whether a structured OBJECT in the first position takes only string literals naming its fields as the keys
+     * that follow it: {@code OBJECT_PICK} and {@code OBJECT_DELETE} refuse any other key there by its argument
+     * number, and a literal naming none of its fields by the field (live-verified).
+     *
+     * @return true for the functions naming an object's keys; false by default
+     */
+    public boolean namesStructuredKeysByLiteral() {
         return false;
     }
 

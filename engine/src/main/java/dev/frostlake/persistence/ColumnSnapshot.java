@@ -73,6 +73,11 @@ public class ColumnSnapshot implements Serializable {
     public long identityIncrement;
     public boolean identityOrdered;
     public String collation;
+    /**
+     * An Iceberg table's column's type in the format's own terms (see TableColumn#getFormatType); null for every other
+     * column, and on a snapshot written before it was kept.
+     */
+    public DataType formatType;
 
     // The position the table gave this column: kept so a restored table reports the same gaps a
     // dropped column left behind. 0 in a snapshot written before positions were recorded.

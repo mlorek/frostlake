@@ -27,6 +27,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantJsonText;
@@ -417,6 +418,11 @@ public class BindVariableSubstitutor {
                 && !(declared instanceof StructuredArrayType) && !(declared instanceof StructuredObjectType)) {
             // An ARRAY or an OBJECT variable is one where it is bound, not the VARIANT its text parses to.
             return literal + "::" + (declared instanceof ArrayType ? "ARRAY" : "OBJECT");
+        }
+        if (!literalOnlySlot && declared instanceof VariantType && !(value instanceof VariantValue)) {
+            // A VARIANT variable is a VARIANT where it is bound, whatever it holds: SELECT :v over one holding 1 is a
+            // VARIANT column, which a RETURNS TABLE (a NUMBER) refuses (live-verified).
+            return "TO_VARIANT(" + (value instanceof Double ? "(" + literal + ")::FLOAT" : literal) + ")";
         }
         if (literalOnlySlot || !(declared instanceof NumericType)
                 || (value instanceof Double && !Double.isFinite((Double) value))) {

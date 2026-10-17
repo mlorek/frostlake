@@ -179,6 +179,23 @@ public class ShowParametersInTableTest extends BaseDatabaseTest {
             refusal("SHOW PARAMETERS IN TABLE a.b.c.d"));
     }
 
+    /** A table's DATA_METRIC_SCHEDULE is its own once set, in whatever form it was written (live-verified). */
+    @Test
+    public void aMetricScheduleSetOnTheTableIsItsOwn() {
+        final String like = "SHOW PARAMETERS LIKE 'DATA_METRIC_SCHEDULE' IN TABLE pt";
+        assertEquals("[DATA_METRIC_SCHEDULE|60 MINUTES|60 MINUTES||STRING]", listed(like).toString());
+        final String[][] schedules = {
+            {"'5 MINUTE'", "5 MINUTE"},
+            {"'USING CRON 0 8 * * * UTC'", "USING CRON 0 8 * * * UTC"},
+            {"'TRIGGER_ON_CHANGES'", "TRIGGER_ON_CHANGES"},
+        };
+        for (final String[] schedule : schedules) {
+            engine.execute("ALTER TABLE pt SET DATA_METRIC_SCHEDULE = " + schedule[0]);
+            assertEquals("[DATA_METRIC_SCHEDULE|" + schedule[1] + "|60 MINUTES|TABLE|STRING]",
+                listed(like).toString());
+        }
+    }
+
     @Test
     public void aTaskIsNamedQualifiedToo() {
         final String expected = "[SUSPEND_TASK_AFTER_NUM_FAILURES|10|10||NUMBER]";

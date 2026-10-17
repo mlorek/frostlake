@@ -34,6 +34,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -232,18 +233,12 @@ final class AlterStageHandler {
             if (apply) {
                 options.applyTo(stage);
             }
-        } else if ("COPY_OPTIONS".equals(key) && setting.parenOptionList() != null && apply) {
-            for (final FrostlakeParser.ParenOptionContext option : setting.parenOptionList().parenOption()) {
-                final FrostlakeParser.CopyOptionValueContext value = option.copyOptionValue();
-                final String text;
-                if (value == null) {
-                    text = "";
-                } else if (value.STRING_LITERAL() != null) {
-                    text = visitor.extractStringLiteral(value.STRING_LITERAL());
-                } else {
-                    text = ParseTreeText.getOriginalText(value);
-                }
-                stage.getCopyOptions().put(option.optionKey().getText().toUpperCase(Locale.ROOT), text);
+        } else if ("COPY_OPTIONS".equals(key) && setting.parenOptionList() != null) {
+            // The list judged takes the place of the stage's whole set (live-verified).
+            final Map<String, String> options = StageCopyOptions.read(setting.parenOptionList());
+            if (apply) {
+                stage.getCopyOptions().clear();
+                stage.getCopyOptions().putAll(options);
             }
         }
     }

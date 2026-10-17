@@ -76,4 +76,8 @@ public class DynamicTableSnapshot implements Serializable {
     public Long firstRefreshedMillis;
     /** The rows its last refresh read, for the next refresh to tell what changed; null when there are none. */
     public List<List<Object>> refreshImage;
+    /** The refreshes the table keeps for time travel, oldest first: where each fell, when it ran, its rows. */
+    public List<Long> refreshSequences;
+    public List<Long> refreshMillis;
+    public List<List<List<Object>>> refreshRows;
 }

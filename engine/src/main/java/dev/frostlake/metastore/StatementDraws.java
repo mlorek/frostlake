@@ -53,6 +53,48 @@ public final class StatementDraws {
     }
 
     /**
+     * Records what a statement inside the recorded one draws apart from it, until {@link #endApart}: the draws of a
+     * statement the log may keep in a record of its own.
+     *
+     * @return what was being recorded, for {@link #endApart}; null when nothing was
+     */
+    public static List<CounterDraw> beginApart() {
+        final List<CounterDraw> displaced = RECORDING.get();
+        if (displaced != null) {
+            RECORDING.set(new ArrayList<CounterDraw>());
+        }
+        return displaced;
+    }
+
+    /**
+     * Ends recording apart and goes back to what {@link #beginApart} displaced.
+     *
+     * @param displaced what {@link #beginApart} answered
+     * @return the draws recorded apart, in order; empty when nothing was being recorded
+     */
+    public static List<CounterDraw> endApart(final List<CounterDraw> displaced) {
+        final List<CounterDraw> apart = RECORDING.get();
+        if (displaced == null) {
+            return new ArrayList<CounterDraw>();
+        }
+        RECORDING.set(displaced);
+        return apart == null ? new ArrayList<CounterDraw>() : apart;
+    }
+
+    /**
+     * Gives draws recorded apart back to the statement they were set apart from, after its own, as if never set
+     * apart: they went with no record of their own.
+     *
+     * @param displaced what {@link #beginApart} answered
+     * @param apart     what {@link #endApart} answered
+     */
+    public static void rejoin(final List<CounterDraw> displaced, final List<CounterDraw> apart) {
+        if (displaced != null) {
+            displaced.addAll(apart);
+        }
+    }
+
+    /**
      * Starts handing out a replayed statement's recorded draws.
      *
      * @param draws what the statement drew when it first ran, in order
@@ -64,6 +106,15 @@ public final class StatementDraws {
     /** Ends a replayed statement's draws. */
     public static void endReplay() {
         REPLAYING.remove();
+    }
+
+    /**
+     * Whether the calling thread replays a statement's draws.
+     *
+     * @return true while a replayed statement runs
+     */
+    public static boolean isReplaying() {
+        return REPLAYING.get() != null;
     }
 
     /**

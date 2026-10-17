@@ -34,7 +34,8 @@ import java.util.Locale;
  *
  * <pre>
  *   ARRAY_CAT(ARRAY(NUMBER), ARRAY(NUMBER(2,1)))           ARRAY(NUMBER(38,1))    the elements' common type
- *   ARRAY_APPEND, ARRAY_SLICE, ARRAY_COMPACT, ARRAY_EXCEPT  the first array's type
+ *   ARRAY_APPEND, ARRAY_PREPEND, ARRAY_INSERT,             the first array's type
+ *   ARRAY_SLICE, ARRAY_COMPACT, ARRAY_EXCEPT
  *   OBJECT_DELETE(o, 'city')                               o without the field
  *   OBJECT_INSERT(o, 'zip', v, FALSE)                      o and the new field, typed as v
  *   OBJECT_PICK(o, 'state', 'city')                        the picked fields, in the order picked
@@ -66,10 +67,15 @@ final class StructuredFunctionTypes {
             case "ARRAY_CAT":
                 return args.size() == 2 ? concatenated(first, inferencer.infer(args.get(1))) : null;
             case "ARRAY_APPEND":
+            case "ARRAY_PREPEND":
+            case "ARRAY_INSERT":
             case "ARRAY_SLICE":
-            case "ARRAY_COMPACT":
             case "ARRAY_EXCEPT":
                 return first instanceof StructuredArrayType ? first : null;
+            case "ARRAY_COMPACT":
+                // What it keeps is never NULL: ARRAY(NUMBER(38,0) NOT NULL) over an ARRAY(INT) (live-verified).
+                return first instanceof StructuredArrayType
+                    ? new StructuredArrayType(((StructuredArrayType) first).getElementType(), true) : null;
             case "OBJECT_DELETE":
                 return first instanceof StructuredObjectType ? deleted((StructuredObjectType) first, args) : null;
             case "OBJECT_PICK":
@@ -78,8 +84,10 @@ final class StructuredFunctionTypes {
                 return first instanceof StructuredObjectType && args.size() >= 3
                     ? inserted(inferencer, (StructuredObjectType) first, args) : null;
             case "OBJECT_KEYS":
+                // A key is never NULL: ARRAY(VARCHAR NOT NULL) (live-verified).
                 return first instanceof StructuredObjectType
-                    ? new StructuredArrayType(new StringType("VARCHAR", DataTypeParser.CAST_STRING_DEFAULT, true))
+                    ? new StructuredArrayType(new StringType("VARCHAR", DataTypeParser.CAST_STRING_DEFAULT, true),
+                        true)
                     : null;
             default:
                 return null;

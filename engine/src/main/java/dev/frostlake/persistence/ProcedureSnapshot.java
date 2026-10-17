@@ -34,6 +34,8 @@ public class ProcedureSnapshot implements Serializable {
     public String returnType;
     /** Whether the RETURNS type was written with its width; null on older snapshots. */
     public Boolean returnSized;
+    /** Whether the RETURNS type was written NOT NULL; absent in a snapshot written before it was recorded. */
+    public Boolean returnNotNull;
     /** The return type itself (see {@link ParameterSnapshot#type}); null on older snapshots. */
     public DataType returnDataType;
     public String body;

@@ -89,10 +89,11 @@ public final class StructuredLeafWidths {
         }
         if (type instanceof MapType) {
             return "MAP(" + typeOfText(((MapType) type).getKeyType()) + ", "
-                + typeOfText(((MapType) type).getValueType()) + ")";
+                + typeOfText(((MapType) type).getValueType()) + StructuredTypes.notNullMark(type) + ")";
         }
         if (type instanceof StructuredArrayType) {
-            return "ARRAY(" + typeOfText(((ArrayType) type).getElementType()) + ")";
+            return "ARRAY(" + typeOfText(((ArrayType) type).getElementType()) + StructuredTypes.notNullMark(type)
+                + ")";
         }
         if (type instanceof StringType && ((StringType) type).isUnsized()) {
             return "VARCHAR";
@@ -132,11 +133,12 @@ public final class StructuredLeafWidths {
             final DataType key = storedMember(((MapType) type).getKeyType());
             final DataType value = storedMember(((MapType) type).getValueType());
             return key == ((MapType) type).getKeyType() && value == ((MapType) type).getValueType()
-                ? type : new MapType(key, value);
+                ? type : new MapType(key, value, ((MapType) type).isValueNotNull());
         }
         if (type instanceof StructuredArrayType) {
             final DataType element = storedMember(((ArrayType) type).getElementType());
-            return element == ((ArrayType) type).getElementType() ? type : new StructuredArrayType(element);
+            return element == ((ArrayType) type).getElementType() ? type
+                : new StructuredArrayType(element, ((StructuredArrayType) type).isElementNotNull());
         }
         if (type instanceof StringType && ((StringType) type).isUnsized()) {
             return new StringType("VARCHAR", ((StringType) type).getMaxLength());

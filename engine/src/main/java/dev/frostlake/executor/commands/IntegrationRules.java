@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * The property sets of the integration kinds Frostlake models, from their CREATE and ALTER pages: which
@@ -102,6 +103,19 @@ final class IntegrationRules {
         "GCP_PUBSUB", "AZURE_STORAGE_QUEUE");
     private static final List<String> DIRECTIONS = Arrays.asList("INBOUND", "OUTBOUND");
 
+    /** A Pub/Sub subscription's full name, its project's id six characters or more. */
+    /**
+     * A Pub/Sub name: {@code projects/<project>/topics|subscriptions/<name>}, the two words in any case, the project
+     * 6 to 30 lower-case letters, digits and hyphens, a letter first and no hyphen last, the name three characters or
+     * more of letters, digits and {@code - _ . ~ + %}, a letter first and not {@code goog} (live-verified).
+     */
+    private static final String PUBSUB_NAME = "(?i:projects)/[a-z][a-z0-9-]{4,28}[a-z0-9]/(?i:%s)/(?!goog)"
+        + "[A-Za-z][A-Za-z0-9._~+%%-]{2,}";
+
+    private static final Pattern SUBSCRIPTION_NAME = Pattern.compile(String.format(PUBSUB_NAME, "subscriptions"));
+
+    private static final Pattern TOPIC_NAME = Pattern.compile(String.format(PUBSUB_NAME, "topics"));
+
     private static final List<String> SECRETS = Arrays.asList("API_KEY", "OAUTH_CLIENT_SECRET", "BEARER_TOKEN",
         "AWS_SECRET_KEY");
 
@@ -175,8 +189,14 @@ final class IntegrationRules {
                     required.add("AZURE_EVENT_GRID_TOPIC_ENDPOINT");
                     required.add("AZURE_TENANT_ID");
                 } else if ("GCP_PUBSUB".equals(provider)) {
-                    required.add("OUTBOUND".equals(direction) ? "GCP_PUBSUB_TOPIC_NAME"
-                        : "GCP_PUBSUB_SUBSCRIPTION_NAME");
+                    // A topic's name is judged first; then Pub/Sub carries notifications out of a GCP account alone,
+                    // and this account is an AWS one.
+                    checkPubSubName("GCP_PUBSUB_TOPIC_NAME", TOPIC_NAME, properties.get("GCP_PUBSUB_TOPIC_NAME"));
+                    if ("OUTBOUND".equals(direction)) {
+                        throw new RuntimeException(SqlCompilationError.invalidValueForProperty("OUTBOUND",
+                            "Direction"));
+                    }
+                    required.add("GCP_PUBSUB_SUBSCRIPTION_NAME");
                 } else if ("AZURE_STORAGE_QUEUE".equals(provider)) {
                     required.add("AZURE_STORAGE_QUEUE_PRIMARY_URI");
                     required.add("AZURE_TENANT_ID");
@@ -190,6 +210,15 @@ final class IntegrationRules {
             }
         }
         checkWebhookTemplate(properties);
+        checkPubSubName("GCP_PUBSUB_SUBSCRIPTION_NAME", SUBSCRIPTION_NAME,
+            properties.get("GCP_PUBSUB_SUBSCRIPTION_NAME"));
+    }
+
+    /** A Pub/Sub topic's or subscription's name (see {@code PUBSUB_NAME}). */
+    private static void checkPubSubName(final String key, final Pattern shape, final PropertyValue value) {
+        if (value != null && (value.getText() == null || !shape.matcher(value.getText()).matches())) {
+            throw invalidValue(key, value);
+        }
     }
 
     /** An API integration of the package index's provider takes none of the gateways' options. */

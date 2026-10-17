@@ -71,6 +71,10 @@ public class GroupByOperator implements Operator {
     // The select item each group key names, parallel to groupByExpressions (-1 where it names none). See
     // bindKeyItems.
     private List<Integer> keyItems;
+    // The values the WHERE computed for the aliases it read, and the alias each group key names, parallel to
+    // groupByExpressions (null where it names none). See readWhereAliasValues.
+    private WhereAliasValues whereAliasValues;
+    private List<String> keyAliases;
 
     /**
      * Create an explicit GROUP BY operator.
@@ -143,6 +147,21 @@ public class GroupByOperator implements Operator {
      */
     public void bindKeyItems(final List<Integer> items) {
         this.keyItems = items;
+    }
+
+    /**
+     * The values the WHERE computed for the select aliases it read, which a key naming such an alias reads instead
+     * of computing the item again. Over a single relation the account computes an aliased item once for a row, so a
+     * volatile key forms its groups by the values the WHERE tested: {@code SELECT UNIFORM(1, 4, RANDOM()) AS r,
+     * COUNT(*) FROM g WHERE r > 1 GROUP BY r} forms the groups 2, 3 and 4 alone, by the alias, the position or GROUP
+     * BY ALL alike (live-verified).
+     *
+     * @param values  the values the WHERE kept for its rows
+     * @param aliases one entry per group-by expression, the upper-cased alias of the item it names, or null
+     */
+    public void readWhereAliasValues(final WhereAliasValues values, final List<String> aliases) {
+        this.whereAliasValues = values;
+        this.keyAliases = aliases;
     }
 
     /**
@@ -505,7 +524,9 @@ public class GroupByOperator implements Operator {
         for (int i = 0; i < parsedGroupBy.size(); i++) {
             // A key that cannot be evaluated fails the query, as it does on the account — it used to
             // collect every such row under one error key and answer.
-            final Object value = columnEvaluator.evaluate(parsedGroupBy.get(i), row);
+            final String alias = keyAliases == null || i >= keyAliases.size() ? null : keyAliases.get(i);
+            final Object value = alias != null && whereAliasValues != null && whereAliasValues.holds(row, alias)
+                ? whereAliasValues.valueOf(row, alias) : columnEvaluator.evaluate(parsedGroupBy.get(i), row);
             if (computed != null) {
                 computed.add(value);
             }

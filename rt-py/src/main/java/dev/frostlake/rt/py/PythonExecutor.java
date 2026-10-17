@@ -41,6 +41,9 @@ public final class PythonExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(PythonExecutor.class);
 
+    /** The global an aggregate's argument is bound to for its {@code accumulate} call, numbered from 0. */
+    private static final String AGGREGATE_ARGUMENT = "__fl_aggregate_argument";
+
     public static Object executePythonFunction(final Function function, final List<Object> arguments) {
         if (function.getUdfLanguage() != UdfLanguage.PYTHON) {
             throw new RuntimeException("Function is not a Python function");
@@ -72,27 +75,80 @@ public final class PythonExecutor {
 
             final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
             logger.debug("Python function {} executed successfully", function.getName());
-            if (javaResult == null) {
-                return null;
-            }
-            // A dict / list return becomes a VARIANT, rendered as JSON like every other semi-structured
-            // value in the engine.
-            final JsonNode semiStructured = toJsonNode(javaResult);
-            if (semiStructured != null) {
-                // Canonical form (sorted object keys, whole-valued decimals descaled) — the same
-                // normalization PARSE_JSON and OBJECT_CONSTRUCT apply. The engine compares VARIANTs by
-                // their JSON TEXT, so a dict emitted in insertion order compared unequal to a structurally
-                // identical PARSE_JSON'd object even when the data was the same.
-                return ArrayFunctionHelper.toCanonicalVariant(semiStructured);
-            }
-            return javaResult;
+            return sqlResult(javaResult);
         } catch (final Exception e) {
-            // A failed execution may have left a Python-level lock acquired (see discardContext); never
-            // reuse the context afterwards, or the NEXT call on this thread blocks forever.
-            PythonRuntime.discardContext();
+            // Worded before the context is settled (see PythonRuntime.settleAfter): a discarded context answers
+            // nothing more of its failure, so the refusal then travels as text alone.
+            final String refusal = PythonRuntimeDiagnostics.describeFailure(
+                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
             logger.error("Error executing Python function: {}", function.getName(), e);
-            throw new RuntimeException(PythonRuntimeDiagnostics.describeFailure(
-                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e), e);
+            if (!PythonRuntime.settleAfter(e)) {
+                throw new RuntimeException(refusal);
+            }
+            throw new RuntimeException(refusal, e);
+        }
+    }
+
+    /**
+     * What a handler answered, as the engine holds a value: a dict or a list becomes a VARIANT, rendered as JSON like
+     * every other semi-structured value in the engine.
+     */
+    private static Object sqlResult(final Object javaResult) {
+        if (javaResult == null) {
+            return null;
+        }
+        final JsonNode semiStructured = toJsonNode(javaResult);
+        if (semiStructured != null) {
+            // Canonical form (sorted object keys, whole-valued decimals descaled) — the same
+            // normalization PARSE_JSON and OBJECT_CONSTRUCT apply. The engine compares VARIANTs by
+            // their JSON TEXT, so a dict emitted in insertion order compared unequal to a structurally
+            // identical PARSE_JSON'd object even when the data was the same.
+            return ArrayFunctionHelper.toCanonicalVariant(semiStructured);
+        }
+        return javaResult;
+    }
+
+    /**
+     * Run a Python aggregate function's handler over one group (live-verified): an instance of the handler class
+     * reads each of the group's rows with {@code accumulate}, a NULL argument as None, and {@code finish} answers
+     * the group's value. A failure anywhere is the call's, worded as a scalar function's is.
+     *
+     * @param function the function
+     * @param rows     the group's rows, each the function's arguments
+     * @return the group's value
+     */
+    static Object executePythonAggregate(final Function function, final List<List<Object>> rows) {
+        final List<Parameter> parameters = function.getParameters();
+        final String handlerName = function.getHandler();
+        try {
+            PythonProcedureExecutor.installSnowparkShim();
+            PythonRuntime.eval(dedent(function.getBody()));
+            if (PythonHandlerCheck.isDotted(handlerName)) {
+                PythonRuntime.bind("__fl_handler_name", handlerName);
+                PythonRuntime.eval(PythonHandlerCheck.RESOLVE_DOTTED + "__fl_aggregate = __fl_handler()");
+            } else {
+                PythonRuntime.eval("__fl_aggregate = " + handlerName + "()");
+            }
+            final StringBuilder call = new StringBuilder("__fl_aggregate.accumulate(");
+            for (int i = 0; i < parameters.size(); i++) {
+                call.append(i == 0 ? "" : ", ").append(AGGREGATE_ARGUMENT).append(i);
+            }
+            final String accumulate = call.append(')').toString();
+            for (final List<Object> row : rows) {
+                for (int i = 0; i < parameters.size(); i++) {
+                    bindArgument(parameters.get(i), AGGREGATE_ARGUMENT + i, i < row.size() ? row.get(i) : null);
+                }
+                PythonRuntime.eval(accumulate);
+            }
+            PythonRuntime.eval("__result = __fl_aggregate.finish()");
+            return sqlResult(PythonRuntime.toJava(PythonRuntime.global("__result")));
+        } catch (final Exception e) {
+            final String refusal = PythonRuntimeDiagnostics.describeFailure(
+                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
+            if (!PythonRuntime.settleAfter(e)) {
+                throw new RuntimeException(refusal);
+            }
+            throw new RuntimeException(refusal, e);
         }
     }
 
@@ -110,20 +166,23 @@ public final class PythonExecutor {
             // The body's module-level snowpark imports must resolve at CREATE exactly as they do at
             // execution; without the shim the compile refused every function importing snowpark.
             PythonProcedureExecutor.installSnowparkShim();
+            PythonHandlerCheck.forget(function.getHandler());
             PythonRuntime.eval(dedent(function.getBody()));
         } catch (final Exception e) {
-            // Same discipline as execution: a failed eval may hold a Python-level lock, and reusing the
-            // context afterwards would block this thread's NEXT call forever.
-            PythonRuntime.discardContext();
-            throw new RuntimeException(PythonRuntimeDiagnostics.describeFailure(
-                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e), e);
+            // Same discipline as execution (see PythonRuntime.settleAfter).
+            final String refusal = PythonRuntimeDiagnostics.describeFailure(
+                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
+            if (!PythonRuntime.settleAfter(e)) {
+                throw new RuntimeException(refusal);
+            }
+            throw new RuntimeException(refusal, e);
         }
         final String handlerName = function.getHandler();
         if (handlerName == null) {
             return;
         }
         final String refusal = PythonHandlerCheck.refusal(handlerName, function.isTableFunction(),
-            function.getParameters() == null ? 0 : function.getParameters().size());
+            function.isAggregate(), function.getParameters() == null ? 0 : function.getParameters().size());
         if (refusal != null) {
             throw new RuntimeException(refusal + (handlerName.isEmpty() ? " in function " + function.getName()
                 : " in function " + function.getName() + " with handler " + handlerName));

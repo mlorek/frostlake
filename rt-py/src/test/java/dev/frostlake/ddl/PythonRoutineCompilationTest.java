@@ -78,6 +78,16 @@ public class PythonRoutineCompilationTest extends BaseDatabaseTest {
                 + " RUNTIME_VERSION = '3.11' HANDLER = 'go' AS $$\ndef go():\n    return 1\n$$"));
     }
 
+    /** A handler an earlier function's body defined does not stand for one this body lacks. */
+    @Test
+    public void anEarlierBodysHandlerDoesNotStandForAMissingOne() {
+        engine.execute("CREATE FUNCTION f_first(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON"
+            + " RUNTIME_VERSION = '3.11' HANDLER = 'go' AS $$\ndef go(x):\n    return x\n$$");
+        assertEquals("Could not find handler in function F_LATER with handler go",
+            refusalOf("CREATE FUNCTION f_later(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON"
+                + " RUNTIME_VERSION = '3.11' HANDLER = 'go' AS $$\ndef other(x):\n    return x\n$$"));
+    }
+
     /** A body that compiles and whose handler matches is created, and still runs. */
     @Test
     public void aGoodBodyIsCreatedAndRuns() {

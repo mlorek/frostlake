@@ -23,6 +23,7 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -69,8 +70,20 @@ public final class StarArgument {
 
     /** The star of a star-call parse tree ({@code COUNT(t.* EXCLUDE (a))}). */
     public static StarArgument of(final FrostlakeParser.FunctionCallStarExprContext starCall) {
-        return new StarArgument(qualifierOf(starCall.starQualifiedName()),
-            excludesOf(starCall.starArgumentModifier()), ilikeOf(starCall.starArgumentModifier()));
+        final List<FrostlakeParser.StarArgumentModifierContext> modifiers = modifiers(starCall.starArgumentModifier());
+        return new StarArgument(qualifierOf(starCall.starQualifiedName()), excludesOf(modifiers), ilikeOf(modifiers));
+    }
+
+    /**
+     * A star's modifier as the list the readers take: none, or the one a star argument holds at most.
+     *
+     * @param modifier the modifier written, or null
+     * @return the list
+     */
+    public static List<FrostlakeParser.StarArgumentModifierContext> modifiers(
+            final FrostlakeParser.StarArgumentModifierContext modifier) {
+        return modifier == null ? Collections.<FrostlakeParser.StarArgumentModifierContext>emptyList()
+            : Collections.singletonList(modifier);
     }
 
     /** The star of a star function argument, or null when the argument is not a star. */
@@ -79,7 +92,13 @@ public final class StarArgument {
             return null;
         }
         return new StarArgument(qualifierOf(arg.starQualifiedName()),
-            excludesOf(arg.starArgumentModifier()), ilikeOf(arg.starArgumentModifier()));
+            excludesOf(modifiers(arg.starArgumentModifier())), ilikeOf(modifiers(arg.starArgumentModifier())));
+    }
+
+    /** The star written first among a named call's positional arguments ({@code SEARCH(*, 'q', SEARCH_MODE => …)}). */
+    public static StarArgument of(final FrostlakeParser.MixedStarArgumentContext arg) {
+        final List<FrostlakeParser.StarArgumentModifierContext> modifiers = modifiers(arg.starArgumentModifier());
+        return new StarArgument(qualifierOf(arg.starQualifiedName()), excludesOf(modifiers), ilikeOf(modifiers));
     }
 
     /** The star a star-shaped call node carries. */

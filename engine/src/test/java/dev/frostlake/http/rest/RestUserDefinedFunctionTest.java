@@ -126,14 +126,29 @@ public class RestUserDefinedFunctionTest extends BaseRestTest {
     }
 
     @Test
-    public void malformedBodiesAndSignaturesAre400AndAggregatesAre501() throws Exception {
+    public void malformedBodiesAndSignaturesAre400() throws Exception {
         error(400, post(UDFS, "{\"name\":\"bad_fn\",\"arguments\":[],\"language_config\":{\"language\":\"SQL\"}}"));
         error(400, post(UDFS, "{\"name\":\"bad_fn\",\"arguments\":[{\"name\":\"a\",\"datatype\":\"NUMBER; DROP\"}],"
             + "\"return_type\":{\"datatype\":\"NUMBER\"},\"language_config\":{\"language\":\"SQL\"},\"body\":\"1\"}"));
         error(400, get(UDFS + "/bad_fn(NUMBER"));
-        error(501, post(UDFS, "{\"name\":\"agg_fn\",\"is_aggregate\":true,\"arguments\":[],"
-            + "\"return_type\":{\"datatype\":\"NUMBER\"},\"language_config\":{\"language\":\"PYTHON\"},\"body\":\"1\"}"));
         error(404, get("/api/v2/databases/no_such_db/schemas/s/user-defined-functions/f()"));
+    }
+
+    @Test
+    public void anAggregateFunctionIsCreatedAndReadBackAsOne() throws Exception {
+        final String handler = "public class H { public Long initialize() { return 0L; }"
+            + " public Long accumulate(Long s, Long x) { return x == null ? s : s + x; }"
+            + " public Long merge(Long a, Long b) { return a + b; } public Long finish(Long s) { return s; } }";
+        final String body = "{\"name\":\"agg_fn\",\"is_aggregate\":true,"
+            + "\"arguments\":[{\"name\":\"x\",\"datatype\":\"NUMBER\"}],"
+            + "\"return_type\":{\"type\":\"DATATYPE\",\"datatype\":\"NUMBER\"},"
+            + "\"language_config\":{\"language\":\"JAVA\",\"runtime_version\":\"17\",\"handler\":\"H\"},"
+            + "\"body\":\"" + handler + "\"}";
+        assertEquals("Function AGG_FN successfully created.", ok(post(UDFS, body)).path("status").asString());
+        final JsonNode fetched = ok(get(UDFS + "/agg_fn(NUMBER)"));
+        assertTrue(fetched.path("is_aggregate").asBoolean(), fetched.toString());
+        assertFalse(ok(post(UDFS, sqlFunction("plain_fn", "plain"))).isMissingNode());
+        assertFalse(ok(get(UDFS + "/plain_fn(NUMBER,NUMBER)")).path("is_aggregate").asBoolean());
     }
 
     @Test

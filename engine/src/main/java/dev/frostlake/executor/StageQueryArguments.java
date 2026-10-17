@@ -109,7 +109,7 @@ final class StageQueryArguments {
             }
         }
         final FileFormat format = formatName == null ? null
-            : InferSchemaArguments.resolveFileFormat(executor.getCatalog(), formatName);
+            : InferSchemaArguments.resolveFileFormat(executor.getCatalog(), formatName, true);
         if (pattern != null) {
             try {
                 Pattern.compile(pattern);

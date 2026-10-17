@@ -66,6 +66,17 @@ public class Procedure extends SqlObject {
     public Boolean getReturnSized() { return returnSized; }
     public void setReturnSized(final Boolean returnSized) { this.returnSized = returnSized; }
 
+    /** Whether the RETURNS type was written NOT NULL, which DESCRIBE PROCEDURE's returns row tells. */
+    private boolean returnNotNull;
+
+    public boolean isReturnNotNull() {
+        return returnNotNull;
+    }
+
+    public void setReturnNotNull(final boolean returnNotNull) {
+        this.returnNotNull = returnNotNull;
+    }
+
     public void setSecure(final boolean secure) { this.secure = secure; }
 
     public Procedure(final String name, final List<Parameter> parameters,

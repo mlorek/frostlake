@@ -504,12 +504,23 @@ public class EngineConfig {
     /**
      * Local filesystem root backing the internal stages — the user stage ({@code @~}), the per-table stages
      * ({@code @%table}) and the named internal stages. User stages resolve to {@code <root>/users/<user>}, table
-     * stages to {@code <root>/tables/<db.schema.table>}, for an engine with a write-ahead log or snapshot persistence;
-     * any other engine keeps the same tree in a directory of its own below the root, deleted when it shuts down.
-     * Defaults to {@code ~/.frostlake_stages/internal}.
+     * stages to {@code <root>/tables/<db.schema.table>}, for an engine with a write-ahead log or snapshot persistence
+     * when a root is configured — without one, such an engine keeps the tree in {@code stages} inside its data
+     * directory; any other engine keeps the same tree in a directory of its own below the root, deleted when it shuts
+     * down. Defaults to {@code ~/.frostlake_stages/internal}.
      */
     public String getStageInternalLocalRoot() {
         return getProperty(PROP_STAGE_INTERNAL_LOCAL_ROOT, DEFAULT_STAGE_INTERNAL_LOCAL_ROOT);
+    }
+
+    /**
+     * Whether the internal stage root is the default one rather than one configured: an engine whose data outlives
+     * it then keeps its stages in {@code stages} inside its data directory.
+     *
+     * @return whether no root of its own is configured
+     */
+    public boolean isStageInternalLocalRootDefault() {
+        return DEFAULT_STAGE_INTERNAL_LOCAL_ROOT.equals(getStageInternalLocalRoot());
     }
 
     /**

@@ -20,6 +20,7 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -216,7 +217,7 @@ final class ParsedQueryEcho {
         return new ExpressionAstBuilder().build(ctx).accept(printer);
     }
 
-    private static String value(final FrostlakeParser.ExpressionContext ctx, final ParsedEchoPrinter printer) {
+    private static String value(final ParserRuleContext ctx, final ParsedEchoPrinter printer) {
         return new ExpressionAstBuilder().visit(ctx).accept(printer);
     }
 
@@ -435,17 +436,17 @@ final class ParsedQueryEcho {
         final List<List<String>> sets = new ArrayList<>();
         if (element.GROUPING() != null) {
             for (final FrostlakeParser.GroupingSetContext set : element.groupingSetList().groupingSet()) {
-                sets.add(keys(set.expression(), printer));
+                sets.add(keys(KeyContexts.members(set), printer));
             }
             return sets;
         }
         if (element.groupByColumnList() == null) {
             final List<String> key = new ArrayList<>();
-            key.add(value(element.expression(), printer));
+            key.add(value(KeyContexts.of(element), printer));
             sets.add(key);
             return sets;
         }
-        final List<String> keys = keys(element.groupByColumnList().expression(), printer);
+        final List<String> keys = keys(KeyContexts.members(element.groupByColumnList()), printer);
         if (element.ROLLUP() != null) {
             // Every leading run of the keys, the empty one first.
             for (int length = 0; length <= keys.size(); length++) {
@@ -466,10 +467,9 @@ final class ParsedQueryEcho {
         return sets;
     }
 
-    private static List<String> keys(final List<FrostlakeParser.ExpressionContext> written,
-                                     final ParsedEchoPrinter printer) {
+    private static List<String> keys(final List<ParserRuleContext> written, final ParsedEchoPrinter printer) {
         final List<String> keys = new ArrayList<>();
-        for (final FrostlakeParser.ExpressionContext key : written) {
+        for (final ParserRuleContext key : written) {
             keys.add(value(key, printer));
         }
         return keys;
@@ -484,7 +484,7 @@ final class ParsedQueryEcho {
         final List<FrostlakeParser.OrderItemContext> items = ctx.orderItem();
         for (int i = 0; i < items.size(); i++) {
             final FrostlakeParser.OrderItemContext item = items.get(i);
-            text.append(i > 0 ? ", " : "").append(value(item.expression(), printer))
+            text.append(i > 0 ? ", " : "").append(value(KeyContexts.of(item), printer))
                 .append(ParsedEchoPrinter.sortSuffix(item.DESC() == null,
                     item.NULLS() == null ? null : Boolean.valueOf(item.FIRST() != null)));
         }

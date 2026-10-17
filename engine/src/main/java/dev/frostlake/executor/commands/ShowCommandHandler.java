@@ -20,6 +20,7 @@ import dev.frostlake.executor.GrantedObject;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RelationShapeOnly;
 import dev.frostlake.executor.SchemaObjectName;
 import dev.frostlake.executor.ShowCommandExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
@@ -906,6 +907,12 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showParametersInTask(schemaObject(scope.objectName()), like);
         }
+        if (scope.ALERT() != null) {
+            if (scope.objectName() == null) {
+                throw new RuntimeException(SqlCompilationError.of("This session does not have a current alert"));
+            }
+            return showExecutor.showParametersInAlert(schemaObject(scope.objectName()), like);
+        }
         if (scope.TABLE() != null || scope.STREAM() != null) {
             if (scope.objectName() == null) {
                 throw new RuntimeException(SqlCompilationError.of("This session does not have a current stream"));
@@ -1011,17 +1018,23 @@ public class ShowCommandHandler implements CommandHandler {
     }
 
     /**
-     * DESCRIBE DYNAMIC TABLE's columns, which come from projecting the dynamic table itself, zero rows needed. The
-     * projection is the DESCRIBE's own work, so it takes no query ID and no history row.
+     * DESCRIBE DYNAMIC TABLE's columns, which come from projecting the dynamic table itself, its shape alone: no
+     * row is read, so a table that never refreshed is described too (live-verified). The projection is the
+     * DESCRIBE's own work, so it takes no query ID and no history row.
      */
     private ResultSet describeDynamicTable(final ShowCommandExecutor showExecutor, final String dtName) {
         return showExecutor.describeDynamicTable(dtName, new ResultSetProvider() {
             @Override
             public ResultSet getResultSet() {
-                final List<ResultSet> results =
-                    queryExecutor.executeUnrecorded("SELECT * FROM "
-                        + SqlIdentifiers.spellAlreadyCanonicalPathEscaped(dtName) + " LIMIT 0");
-                return results.get(results.size() - 1);
+                final boolean previous = RelationShapeOnly.begin();
+                try {
+                    final List<ResultSet> results =
+                        queryExecutor.executeUnrecorded("SELECT * FROM "
+                            + SqlIdentifiers.spellAlreadyCanonicalPathEscaped(dtName) + " LIMIT 0");
+                    return results.get(results.size() - 1);
+                } finally {
+                    RelationShapeOnly.end(previous);
+                }
             }
         });
     }
@@ -1120,7 +1133,16 @@ public class ShowCommandHandler implements CommandHandler {
                 // A kind that misses its object judges the properties first, as every modelled kind does.
                 DescribeProperties.describesStage(ctx, queryExecutor);
             }
-            throw describeUnmodelled(unmodelled, queryExecutor.resolveObjectNameParts(ctx.objectName()));
+            final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+            if (unmodelled == UnmodelledDropKind.SESSION_POLICY) {
+                // The one kind read here that is modelled: a session policy that is there is described.
+                final ResultSet described = new SecurityObjectCommandHandler(catalog, queryExecutor)
+                    .describeSessionPolicy(parts);
+                if (described != null) {
+                    return described;
+                }
+            }
+            throw describeUnmodelled(unmodelled, parts);
         }
         if (ctx.IMAGE() != null && ctx.REPOSITORY() != null) {
             // The account describes no image repository, whatever one is named; a property's name left without
@@ -1549,12 +1571,24 @@ public class ShowCommandHandler implements CommandHandler {
                 // The word alone is the account itself, never a table of that name (live-verified).
                 return showExecutor.showGrantsOnAccount();
             }
-            if (target.securableKind() == null) {
-                // A bare name is a table or a view, and anything else is no object at all (live-verified).
-                final GrantedObject relation = queryExecutor.grantedRelation(parts);
-                return showExecutor.showGrantsOnObject(relation.getKind(), getText(target.qualifiedName()), relation);
+            final String objectType = target.securableKind() != null ? SecurableKinds.of(target.securableKind())
+                : target.VOLUME() != null ? "EXTERNAL_VOLUME" : null;
+            if (objectType == null) {
+                // A bare name is a relation of any kind, and anything else is no object at all; a relation kind
+                // other than TABLE and VIEW finds the relation of the name whatever its own kind (live-verified).
+                final String kind = target.relationGrantsKind() == null ? null
+                    : SecurableKinds.joined(target.relationGrantsKind());
+                final GrantedObject relation = queryExecutor.shownRelation(parts, kind);
+                return asEventTable(showExecutor.showGrantsOnObject(relation.getKind(),
+                    getText(target.qualifiedName()), relation), parts, relation);
             }
-            final String objectType = SecurableKinds.of(target.securableKind());
+            if (("TABLE".equals(objectType) || "VIEW".equals(objectType)) && target.LPAREN() == null) {
+                // TABLE and VIEW find a materialized view or a dynamic table too, listed under its own kind.
+                final GrantedObject other = queryExecutor.materializedOrDynamic(parts);
+                if (other != null) {
+                    return showExecutor.showGrantsOnObject(other.getKind(), getText(target.qualifiedName()), other);
+                }
+            }
             GrantRevokeHandler.requireArgumentTypes(objectType, parts, target.LPAREN() != null);
             queryExecutor.requireSecurable(objectType, parts);
             final Integer arity = target.LPAREN() == null ? null
@@ -1569,8 +1603,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (writtenTypes != null && ("FUNCTION".equals(objectType) || "PROCEDURE".equals(objectType))) {
                 queryExecutor.routineGrantNames(objectType, parts, writtenTypes);
             }
-            return showExecutor.showGrantsOnObject(objectType, getText(target.qualifiedName()),
-                queryExecutor.grantedObject(objectType, parts, arity, writtenTypes));
+            final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity, writtenTypes);
+            return asEventTable(showExecutor.showGrantsOnObject(objectType, getText(target.qualifiedName()), granted),
+                parts, granted);
         } else if (ctx.TO() != null) {
             // SHOW GRANTS TO USER/ROLE identifier
             final String targetType = ctx.USER() != null ? "USER" : "ROLE";
@@ -1586,6 +1621,20 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showGrantsForCurrentUser();
         }
         throw new RuntimeException("Invalid SHOW GRANTS syntax");
+    }
+
+    /** An event table's grant rows, which live lists as EVENT_TABLE whichever word named it (live-verified). */
+    private ResultSet asEventTable(final ResultSet listed, final String[] parts, final GrantedObject granted) {
+        if (granted == null || !"TABLE".equals(granted.getKind()) || !queryExecutor.isEventTable(parts)) {
+            return listed;
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final Row row : listed.getRows()) {
+            final List<Object> values = new ArrayList<>(row.getValues());
+            values.set(2, "EVENT_TABLE");
+            rows.add(new Row(values));
+        }
+        return new ResultSet(listed.getColumns(), rows);
     }
 
     /**

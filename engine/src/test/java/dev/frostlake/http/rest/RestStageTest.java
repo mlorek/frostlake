@@ -131,8 +131,11 @@ public class RestStageTest extends BaseRestTest {
         assertEquals("first", ok(get(stages("stg_modes") + "/m")).path("comment").asString());
         ok(post(stages("stg_modes") + "?createMode=orReplace", "{\"name\":\"m\",\"comment\":\"third\"}"));
         assertEquals("third", ok(get(stages("stg_modes") + "/m")).path("comment").asString());
-        ok(post(stages("stg_modes"), "{\"name\":\"tmp\",\"kind\":\"TEMPORARY\"}"));
-        assertEquals("TEMPORARY", ok(get(stages("stg_modes") + "/tmp")).path("kind").asString());
+        // A temporary stage is its session's alone: the create and the read share the session kept for one token,
+        // where a request without one is a session of its own that reaches none of another's.
+        ok(asToken("POST", stages("stg_modes"), "{\"name\":\"tmp\",\"kind\":\"TEMPORARY\"}"));
+        assertEquals("TEMPORARY", ok(asToken("GET", stages("stg_modes") + "/tmp", null)).path("kind").asString());
+        error(404, get(stages("stg_modes") + "/tmp"));
         error(400, post(stages("stg_modes"), "{\"name\":\"bad\",\"kind\":\"TRANSIENT\"}"));
         error(400, post(stages("stg_modes"), "{\"comment\":\"no name\"}"));
         error(400, post(stages("stg_modes"), "{\"name\":\"bad\",\"file_format\":{\"type\":\"CSV\",\"x y\":1}}"));
@@ -193,5 +196,17 @@ public class RestStageTest extends BaseRestTest {
         assertEquals(403, forged.statusCode());
         error(404, post(stages("stg_url") + "/nope/files/data.csv:presigned-url", null));
         error(400, post(stages("stg_url") + "/u/files/data.csv:presigned-url", "{\"expiration_time\":0}"));
+    }
+    /** A request in the session the REST API keeps for one bearer token, which every request carrying it shares. */
+    private HttpResponse<String> asToken(final String method, final String path, final String body) throws Exception {
+        final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(baseUrl + path))
+            .header("Accept", "application/json").header("Authorization", "Bearer stage-modes");
+        if (body != null) {
+            builder.header("Content-Type", "application/json");
+            builder.method(method, HttpRequest.BodyPublishers.ofString(body));
+        } else {
+            builder.method(method, HttpRequest.BodyPublishers.noBody());
+        }
+        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 }

@@ -33,6 +33,8 @@ import dev.frostlake.functions.window.BooleanArgumentWindowFunctions;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
+import dev.frostlake.types.DataType;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -201,6 +203,16 @@ final class PlanEcho {
      * {@code AVG(SUM(n))} and {@code [SUM(T.N)] nested in [SUM((CAST(SUM(T.N) AS NUMBER(28,8))) /
      * (COUNT(T.N)))]} for {@code SUM(AVG(n))}. A call that will not re-parse prints as written.
      */
+    /**
+     * Types the select aliases a printed key may read, so an operation over one prints as the plan holds it:
+     * {@code MAX(x / 0)} over an alias of a NUMBER(38,0) is {@code MAX(SCALED_ROUND_INT_DIVIDE(X, 0))}.
+     *
+     * @param types each alias's type, keyed upper-cased
+     */
+    void typeAliases(final Map<String, DataType> types) {
+        printer.setOutputAliasTypes(types);
+    }
+
     String printAggregateCall(final ParserRuleContext call) {
         final String written = ParseTreeText.getOriginalText(call);
         try {
@@ -406,7 +418,7 @@ final class PlanEcho {
 
     private void appendPartitionKeys(final StringBuilder text,
                                      final FrostlakeParser.PartitionByClauseContext partition) {
-        final List<FrostlakeParser.ExpressionContext> keys = partition.expressionList().expression();
+        final List<ParserRuleContext> keys = KeyContexts.partitionKeys(partition);
         for (int i = 0; i < keys.size(); i++) {
             if (i > 0) {
                 text.append(", ");
@@ -424,7 +436,7 @@ final class PlanEcho {
             final FrostlakeParser.OrderItemContext item = items.get(i);
             final boolean ascending = item.DESC() == null;
             final Boolean nullsFirst = ValueComparisons.nullsFirstFlag(item);
-            text.append(print(item.expression()))
+            text.append(print(KeyContexts.of(item)))
                 .append(ascending ? " ASC NULLS " : " DESC NULLS ")
                 .append((nullsFirst != null ? nullsFirst.booleanValue() : !ascending) ? "FIRST" : "LAST");
         }

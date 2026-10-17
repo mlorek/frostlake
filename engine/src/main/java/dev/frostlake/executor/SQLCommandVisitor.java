@@ -39,6 +39,7 @@ import dev.frostlake.executor.commands.SecurityObjectCommandHandler;
 import dev.frostlake.executor.commands.ShowCommandHandler;
 import dev.frostlake.executor.commands.TagValues;
 import dev.frostlake.executor.expressions.CaretOperator;
+import dev.frostlake.executor.expressions.InformationSchemaCalls;
 import dev.frostlake.executor.expressions.IntervalLiteralSyntax;
 import dev.frostlake.executor.expressions.NamedCallRewrite;
 import dev.frostlake.executor.expressions.SourcePosition;
@@ -80,6 +81,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.AnsiFromFormSyntax;
+import dev.frostlake.parser.BlockCallStatementReading;
 import dev.frostlake.parser.ColdPrediction;
 import dev.frostlake.parser.EmptySchemaPartSyntax;
 import dev.frostlake.parser.FinishedPredicateSyntax;
@@ -110,6 +112,7 @@ import dev.frostlake.transaction.TransactionAbortedMessages;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.UuidType;
@@ -358,12 +361,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             final FrostlakeParser.TagListContext tags = (FrostlakeParser.TagListContext) node;
             for (final FrostlakeParser.TagAssignmentContext assignment : tags.tagAssignment()) {
                 final String tagName = getText(assignment.qualifiedName());
-                if (catalog != null && !catalog.hasTag(tagName)) {
+                if (catalog != null && !catalog.hasTagExact(tagName)) {
                     throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Tag", tagName.toUpperCase(Locale.ROOT)));
                 }
                 if (catalog != null) {
                     // ALLOWED_VALUES is judged before the object is created, as live does.
-                    TagValues.requireAllowed(catalog.getTag(tagName),
+                    TagValues.requireAllowed(catalog.getTagExact(tagName),
                         TagValues.text(assignment.qualifiedName(), assignment.tagValue(), queryExecutor));
                 }
             }
@@ -1300,6 +1303,15 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             return null;
         }
 
+        if (ctx.booleanExpr() == null) {
+            // A type and no value declares the variable NULL of its type, as a DECLARE section's item does
+            // (live-verified).
+            proceduralExecutor.executeStatement(new DeclareStatement(varName, null,
+                parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters())));
+            logger.trace("Let variable: {}", varName);
+            return null;
+        }
+
         // Regular LET with expression. A typed one's value is compiled when it is reached; an untyped one's
         // initialiser while the block compiles.
         if (ctx.dataTypeName() != null) {
@@ -1939,6 +1951,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return answer;
     }
 
+    /** The database a name under INFORMATION_SCHEMA is written with, which is looked up (live-verified). */
+    private void requireQualifierDatabase(final List<String> parts) {
+        final String database = InformationSchemaCalls.database(parts);
+        if (database != null && !catalog.hasDatabaseExact(database)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", database));
+        }
+    }
+
     /**
      * A missing procedure, in the unknown-FUNCTION vocabulary (live-verified): the name as written, each
      * part quoted only when it needs quotes, with a full stop and no argument signature, and a qualified
@@ -1984,6 +2004,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      */
     private ResultSet callSystemFunction(final FrostlakeParser.CallStatementContext ctx) {
         final String name = ctx.systemFunctionName().getText();
+        // A name written twice is refused at its second writing before the arguments are counted (live-verified).
+        CallNamedShape.require(ctx);
         rejectSystemCallArity(ctx, name.toUpperCase(Locale.ROOT));
         return callAsSelect(ctx, name);
     }
@@ -2040,6 +2062,16 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             : new RuntimeException(SqlCompilationError.at(0, -1, message.substring(place.end(1))), refused.getCause());
     }
 
+    /**
+     * Whether a CALL argument is the positional reference {@code $1} alone, which a CALL binds as NULL, as a query
+     * without FROM reads it; {@code $2} and on are invalid identifiers there (live-verified).
+     */
+    private static boolean isFirstPositionalReference(final FrostlakeParser.ExpressionContext argument) {
+        final Token start = argument.getStart();
+        return start == argument.getStop() && start.getType() == FrostlakeParser.POSITIONAL_PARAMETER
+            && "$1".equals(start.getText());
+    }
+
     /** A CALL's arguments as written, comma-separated. */
     private static String writtenArguments(final FrostlakeParser.CallStatementContext ctx) {
         final List<String> written = new ArrayList<>();
@@ -2051,12 +2083,19 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return String.join(", ", written);
     }
 
-    /** Refuse a CALL of a SYSTEM$ function with another number of arguments than the function takes. */
+    /**
+     * Refuse a CALL of a SYSTEM$ function with another number of arguments than the function takes. The echo writes
+     * a named argument's value alone: {@code CALL SYSTEM$TYPEOF(a => 1, b => 2)} is {@code [SYSTEM$TYPEOF(1, 2)]}
+     * (live-verified).
+     */
     private static void rejectSystemCallArity(final FrostlakeParser.CallStatementContext ctx, final String name) {
         final List<String> written = new ArrayList<>();
         if (ctx.callArguments() != null) {
             for (final FrostlakeParser.CallArgumentContext argument : ctx.callArguments().callArgument()) {
-                written.add(ParseTreeText.getOriginalText(argument));
+                final FrostlakeParser.NamedArgumentContext named = argument.namedArgument();
+                written.add(ParseTreeText.getOriginalText(named == null ? argument
+                    : named.expression() != null ? named.expression()
+                    : named.selectStatement() != null ? named.selectStatement() : named.argumentRow()));
             }
         }
         final int minimum = SystemFunctionArity.minimumOr(name);
@@ -2088,6 +2127,18 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     private Object executeCall(final FrostlakeParser.CallStatementContext ctx) {
         if (ctx.systemFunctionName() != null) {
+            final List<String> qualifier = new ArrayList<>();
+            if (ctx.callQualifier() != null) {
+                for (final FrostlakeParser.IdentifierContext part : ctx.callQualifier().identifier()) {
+                    qualifier.add(ParseTreeText.getIdentifier(part));
+                }
+            }
+            qualifier.add(ctx.systemFunctionName().getText().toUpperCase(Locale.ROOT));
+            if (InformationSchemaCalls.builtIn(qualifier) != null) {
+                // A built-in named under INFORMATION_SCHEMA is the built-in itself (see InformationSchemaCalls).
+                requireQualifierDatabase(qualifier);
+                return callSystemFunction(ctx);
+            }
             if (ctx.callQualifier() != null) {
                 // A SYSTEM$ function has no qualifier: under one the name is a routine nobody declared.
                 final StringBuilder spelled = new StringBuilder();
@@ -2115,6 +2166,16 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         // The shape of its named arguments is judged before the procedure is looked for.
         CallNamedShape.require(ctx);
+        final String underInformationSchema = InformationSchemaCalls.builtIn(Arrays.asList(parts));
+        if (underInformationSchema != null) {
+            // A built-in named under INFORMATION_SCHEMA is the built-in itself (see InformationSchemaCalls).
+            requireQualifierDatabase(Arrays.asList(parts));
+            final String called = underInformationSchema.toUpperCase(Locale.ROOT);
+            if (queryExecutor.getFunctionRegistry().hasFunction(called)
+                    || queryExecutor.getFunctionRegistry().hasBuiltInAggregateFunction(called)) {
+                return callAsSelect(ctx, called);
+            }
+        }
         // The canonical name, resolved exactly: CALL proccase() does not reach "procCase" (live-verified).
         final String procName = parts[parts.length - 1];
 
@@ -2186,6 +2247,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final Object[] boundValues = new Object[params.size()];
         final boolean[] boundFlags = new boolean[params.size()];
         final boolean[] variantBinds = new boolean[params.size()];
+        final boolean[] exactNumbers = new boolean[params.size()];
         int positionalIndex = 0;
         if (ctx.callArguments() == null) {
             // A CALL that gives no argument is judged like any other: a parameter without a default it leaves
@@ -2231,13 +2293,21 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     boundValues[idx] = evaluateSqlExpression(argCtx.namedArgument().expression());
                     boundFlags[idx] = true;
                     variantBinds[idx] = CallArgumentTypes.bindsAVariant(argCtx.namedArgument().expression(), typer);
+                    exactNumbers[idx] = CallArgumentTypes.isExactNumber(argCtx.namedArgument().expression(), typer);
                 } else {
                     if (positionalIndex >= params.size()) {
                         throw new RuntimeException("Too many arguments for procedure: " + qualifiedName);
                     }
-                    boundValues[positionalIndex] = evaluateSqlExpression(argCtx.expression());
+                    // A NOT, AND or OR over values is an argument too: CALL p(NOT TRUE) binds FALSE (live-verified).
+                    boundValues[positionalIndex] = argCtx.expression() == null
+                        ? evaluateSqlExpression(argCtx.booleanExpr())
+                        : isFirstPositionalReference(argCtx.expression()) ? null
+                        : evaluateSqlExpression(argCtx.expression());
                     boundFlags[positionalIndex] = true;
-                    variantBinds[positionalIndex] = CallArgumentTypes.bindsAVariant(argCtx.expression(), typer);
+                    variantBinds[positionalIndex] = argCtx.expression() != null
+                        && CallArgumentTypes.bindsAVariant(argCtx.expression(), typer);
+                    exactNumbers[positionalIndex] = argCtx.expression() != null
+                        && CallArgumentTypes.isExactNumber(argCtx.expression(), typer);
                     positionalIndex++;
                 }
             }
@@ -2263,8 +2333,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // whatever language the body is in: a text into a BOOLEAN or a NUMBER parameter is read as one, and one
         // that is none is the CALL's own refusal (live-verified).
         for (int i = 0; i < params.size(); i++) {
-            final Object given = variantBinds[i]
+            Object given = variantBinds[i]
                 ? CallArgumentTypes.variantText(arguments.get(i), params.get(i).getDataType()) : arguments.get(i);
+            if (exactNumbers[i] && given instanceof Double && Double.isFinite((Double) given)
+                    && params.get(i).getDataType() instanceof NumericType) {
+                // An exact number reaches a NUMBER parameter as the exact number it is, so a value too wide for
+                // the parameter is refused as one (see ProceduralExecutor.coerceArgument).
+                given = BigDecimal.valueOf((Double) given);
+            }
             arguments.set(i, proceduralExecutor.coerceArgument(given, params.get(i).getDataType(),
                 language == UdfLanguage.SQL));
         }
@@ -2372,6 +2448,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 parser.removeErrorListeners();
                 parser.addErrorListener(errorListener);
                 final FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
+                // A body whose only faults are calls written as its statements is refused for them as it runs.
+                BlockCallStatementReading.requireBefore(body, errorListener, queryExecutor.getFunctionRegistry());
                 errorListener.throwIfErrors();
                 StageArgumentSyntax.requirePlacement(tree, body);
                 NamedCallRewrite.apply(tree);
@@ -2628,6 +2706,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             parser.addErrorListener(errorListener);
 
             final FrostlakeParser.SqlScriptContext sqlScriptCtx = parser.sqlScript();
+            // A text whose only faults are calls written as a block's statements is refused for them.
+            BlockCallStatementReading.requireBefore(sqlString, errorListener, queryExecutor.getFunctionRegistry());
             if (errorListener.hasErrors()) {
                 // A refused text is read for its faults as a refused statement is: again, with a prediction cache
                 // of its own, and as a whole statement unless it is a block, whose statements are read as a
@@ -2921,9 +3001,6 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * else reports its own text (a bare identifier → that identifier).
      */
     private static String unexpectedExecuteImmediateToken(final FrostlakeParser.ExpressionContext source) {
-        if (source instanceof FrostlakeParser.ConcatExprContext) {
-            return ((FrostlakeParser.ConcatExprContext) source).PIPE_PIPE().getText();
-        }
         if (source instanceof FrostlakeParser.AdditiveExprContext) {
             return ((FrostlakeParser.AdditiveExprContext) source).op.getText();
         }

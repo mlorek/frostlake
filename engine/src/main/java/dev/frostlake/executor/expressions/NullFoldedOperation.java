@@ -57,6 +57,49 @@ final class NullFoldedOperation {
             || leftQuery && !rightQuery && foldsToNull(operation.getRight(), visitor);
     }
 
+    /**
+     * Whether the plan folds a BETWEEN to NULL over a constant subject that folds to NULL, without reading a subquery
+     * among its bounds: {@code NULL BETWEEN 1 AND (SELECT …)} and its NOT answer NULL for every row, where a NULL
+     * bound leaves the subquery to be judged (live-verified).
+     *
+     * @param between the BETWEEN
+     * @param visitor the evaluator that folds a constant operand
+     * @return whether the BETWEEN is NULL whatever the subquery would answer
+     */
+    static boolean foldsBetween(final BetweenExpression between, final ExpressionEvaluatorVisitor visitor) {
+        return (SubqueryExpression.occursIn(between.getLower()) || SubqueryExpression.occursIn(between.getUpper()))
+            && !SubqueryExpression.occursIn(between.getValue()) && foldsToNull(between.getValue(), visitor);
+    }
+
+    /**
+     * Whether the plan folds a GREATEST or a LEAST to NULL over a constant argument that folds to NULL, without
+     * reading a subquery among its other arguments: {@code GREATEST(NULL, (SELECT …))} answers NULL for every row,
+     * where GREATEST_IGNORE_NULLS leaves the subquery to be judged (live-verified).
+     *
+     * @param call    the call
+     * @param visitor the evaluator that folds a constant argument
+     * @return whether the call is NULL whatever the subquery would answer
+     */
+    static boolean foldsExtreme(final FunctionCallExpression call, final ExpressionEvaluatorVisitor visitor) {
+        if (call.getNameExpression() != null || call.getFunctionName() == null) {
+            return false;
+        }
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        if (!"GREATEST".equals(name) && !"LEAST".equals(name)) {
+            return false;
+        }
+        boolean query = false;
+        boolean nullArgument = false;
+        for (final Expression argument : call.getArguments()) {
+            if (SubqueryExpression.occursIn(argument)) {
+                query = true;
+            } else if (!nullArgument && foldsToNull(argument, visitor)) {
+                nullArgument = true;
+            }
+        }
+        return query && nullArgument;
+    }
+
     private static boolean foldsToNull(final Expression operand, final ExpressionEvaluatorVisitor visitor) {
         if (!isConstant(operand)) {
             return false;

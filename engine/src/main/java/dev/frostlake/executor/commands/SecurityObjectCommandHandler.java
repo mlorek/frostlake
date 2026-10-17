@@ -23,10 +23,10 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
-import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
@@ -35,7 +35,7 @@ import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.SecurityObjectStore;
 import dev.frostlake.metastore.model.SecurityPropertySpec;
 import dev.frostlake.metastore.model.SecurityPropertySpecs;
-import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.metastore.model.SecurityPropertyType;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
@@ -61,8 +61,10 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * CREATE, ALTER, DROP, SHOW and DESCRIBE of network rules, network policies, password policies and secrets, and the
- * attachment of a password policy or a network policy to the account or to a user.
+ * CREATE, ALTER, DROP, SHOW and DESCRIBE of network rules, network policies, password policies, session policies and
+ * secrets, and the attachment of a password policy or a network policy to the account or to a user. A session
+ * policy's DROP, SHOW and DESCRIBE are read with the kinds that model no object, and reach it through
+ * {@link #dropFound}, {@link #showRows} and {@link #describeSessionPolicy}.
  *
  * <p>The objects have no behaviour: nothing here authenticates, allows or blocks anyone. They are recorded so that
  * scripts that set an account up can create, describe, alter and drop them as they would on a real account. A
@@ -131,7 +133,7 @@ public final class SecurityObjectCommandHandler {
     // ---- CREATE / ALTER / DROP ---------------------------------------------------------------------------------
 
     /**
-     * Runs one CREATE, ALTER or DROP of the four kinds, or an attachment of a policy to the account or a user.
+     * Runs one CREATE, ALTER or DROP of the five kinds, or an attachment of a policy to the account or a user.
      *
      * @param ctx the statement
      * @return null: the statement answers with its status sentence
@@ -140,7 +142,8 @@ public final class SecurityObjectCommandHandler {
         if (ctx.ACCOUNT() != null || ctx.USER() != null) {
             return attach(ctx);
         }
-        final SecurityObjectKind kind = kindOf(ctx.RULE() != null, ctx.NETWORK() != null, ctx.SECRET() != null);
+        final SecurityObjectKind kind = kindOf(ctx.RULE() != null, ctx.NETWORK() != null, ctx.SECRET() != null,
+            ctx.SESSION() != null);
         if (ctx.CREATE() != null) {
             return create(ctx, kind);
         }
@@ -150,14 +153,23 @@ public final class SecurityObjectCommandHandler {
         return alter(ctx, kind);
     }
 
-    private static SecurityObjectKind kindOf(final boolean rule, final boolean network, final boolean secret) {
+    private static SecurityObjectKind kindOf(final boolean rule, final boolean network, final boolean secret,
+                                             final boolean session) {
         if (rule) {
             return SecurityObjectKind.NETWORK_RULE;
         }
         if (network) {
             return SecurityObjectKind.NETWORK_POLICY;
         }
+        if (session) {
+            return SecurityObjectKind.SESSION_POLICY;
+        }
         return secret ? SecurityObjectKind.SECRET : SecurityObjectKind.PASSWORD_POLICY;
+    }
+
+    /** Whether a kind's names are shared with the other policies of its schema: a password or a session policy's. */
+    private static boolean sharesPolicyNames(final SecurityObjectKind kind) {
+        return kind == SecurityObjectKind.PASSWORD_POLICY || kind == SecurityObjectKind.SESSION_POLICY;
     }
 
     private Schema owningSchema(final FrostlakeParser.QualifiedNameContext name) {
@@ -190,8 +202,8 @@ public final class SecurityObjectCommandHandler {
             : SqlIdentifiers.canonical(ctx.identifier(0));
         final SecurityObjectStore store = store(kind, schema);
         final SecurityObject existing = store.get(kind, name);
-        // A password policy shares its name with the schema's other policies (live-verified).
-        final String otherPolicy = schema != null && kind == SecurityObjectKind.PASSWORD_POLICY && existing == null
+        // A password or a session policy shares its name with the schema's other policies (live-verified).
+        final String otherPolicy = schema != null && sharesPolicyNames(kind) && existing == null
             ? schema.policyKindHolding(name) : null;
         // A plain CREATE over a name that is taken is refused for the name before the privilege is asked.
         final boolean plainOverTaken = ctx.or_replace() == null && ctx.if_not_exists() == null
@@ -231,6 +243,13 @@ public final class SecurityObjectCommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Object '"
                 + SqlIdentifiers.spellAlreadyCanonicalPath(written) + "' already exists."));
         }
+        if (kind == SecurityObjectKind.SECRET && properties.get("API_AUTHENTICATION") != null
+                && properties.get("TYPE") != null && !SecurityPropertySpecs.secretCreateProperties(
+                    properties.get("TYPE").toString()).contains("API_AUTHENTICATION")) {
+            // The integration is looked up before the secret's type refuses the property (live-verified).
+            new IntegrationReferences(catalog).requireAuthenticationIntegration(
+                properties.get("API_AUTHENTICATION").toString());
+        }
         requireCreatable(kind, properties);
         if (kind == SecurityObjectKind.SECRET && properties.get("API_AUTHENTICATION") != null) {
             // The integration a secret authenticates through has to exist and to suit the secret's type.
@@ -244,8 +263,12 @@ public final class SecurityObjectCommandHandler {
         if (kind == SecurityObjectKind.NETWORK_RULE && !properties.containsKey("MODE")) {
             created.setProperty("MODE", "INGRESS");
         }
-        if (kind == SecurityObjectKind.NETWORK_RULE && !properties.containsKey("VALUE_LIST")) {
-            created.setProperty("VALUE_LIST", new ArrayList<String>());
+        for (final SecurityPropertySpec spec : SecurityPropertySpecs.of(kind)) {
+            // A list left out holds its default: a rule's values and a session policy's roles (live-verified).
+            final Object unset = SecurityPropertySpecs.unsetValue(spec.getName());
+            if (unset != null && !properties.containsKey(spec.getName())) {
+                created.setProperty(spec.getName(), unset);
+            }
         }
         apply(created, properties);
         store.add(created);
@@ -254,7 +277,8 @@ public final class SecurityObjectCommandHandler {
 
     /**
      * The sentence a CREATE answers with: a network rule or a network policy "is created", a password policy is
-     * "created successfully" under its quoted name, and a secret takes the common sentence.
+     * "created successfully" under its quoted name, a session policy as well with a full stop after it, and a secret
+     * takes the common sentence.
      */
     private static ResultSet created(final SecurityObjectKind kind, final String name) {
         final String sentence;
@@ -262,6 +286,8 @@ public final class SecurityObjectCommandHandler {
             sentence = kind.noun() + " " + name + " is created.";
         } else if (kind == SecurityObjectKind.PASSWORD_POLICY) {
             sentence = kind.noun() + " '" + name + "' created successfully";
+        } else if (kind == SecurityObjectKind.SESSION_POLICY) {
+            sentence = kind.noun() + " '" + name + "' created successfully.";
         } else {
             return null;
         }
@@ -363,9 +389,12 @@ public final class SecurityObjectCommandHandler {
             if (properties.containsKey(key)) {
                 throw new RuntimeException(SqlCompilationError.duplicateProperty(key));
             }
-            Object value = value(spec, property.securityPropertyValue());
+            Object value = value(kind, spec, property.securityPropertyValue());
             if (key.endsWith("_NETWORK_RULE_LIST")) {
                 value = ruleReferences(asStrings(value));
+            }
+            if (key.endsWith("_SECONDARY_ROLES")) {
+                value = secondaryRoles(key, asStrings(value));
             }
             properties.put(key, value);
         }
@@ -377,7 +406,38 @@ public final class SecurityObjectCommandHandler {
         return (List<String>) value;
     }
 
-    private static Object value(final SecurityPropertySpec spec, final FrostlakeParser.SecurityPropertyValueContext v) {
+    /**
+     * The roles a session policy's role list names, each a role of the account, or the word ALL alone: ALL beside a
+     * role is no value of the list, {@code invalid value [[ALL, x]] for parameter 'ALLOWED_SECONDARY_ROLES'}, and the
+     * roles that are missing are refused together, {@code Role '[X, Y]' does not exist or not authorized.}
+     * (live-verified).
+     */
+    private List<String> secondaryRoles(final String key, final List<String> written) {
+        if (written.size() > 1) {
+            for (final String role : written) {
+                if ("ALL".equals(SqlIdentifiers.canonicalText(role))) {
+                    throw new RuntimeException(SqlCompilationError.invalidValueForParameter(written.toString(), key));
+                }
+            }
+        }
+        final List<String> roles = new ArrayList<>();
+        final List<String> missing = new ArrayList<>();
+        for (final String role : written) {
+            final String name = SqlIdentifiers.canonicalText(role);
+            if (!"ALL".equals(name) && !catalog.roleExistsExact(name)) {
+                missing.add(name);
+            }
+            roles.add(name);
+        }
+        if (!missing.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of("Role '" + missing
+                + "' does not exist or not authorized."));
+        }
+        return roles;
+    }
+
+    private static Object value(final SecurityObjectKind kind, final SecurityPropertySpec spec,
+                                final FrostlakeParser.SecurityPropertyValueContext v) {
         final String written = v.getText();
         final String key = spec.getName();
         final TerminalNode text = v.STRING_LITERAL().isEmpty() || v.LPAREN() != null ? null : v.STRING_LITERAL(0);
@@ -385,6 +445,10 @@ public final class SecurityObjectCommandHandler {
             : text != null ? SqlStringLiterals.decode(text.getText()).toUpperCase(Locale.ROOT) : null;
         switch (spec.getType()) {
             case TEXT:
+                if (text == null && kind == SecurityObjectKind.SESSION_POLICY) {
+                    // A session policy reads a value of another shape as a parameter's (live-verified).
+                    throw new RuntimeException(SqlCompilationError.invalidValueForParameter(written, key));
+                }
                 if (text == null) {
                     throw invalidValue(written, key);
                 }
@@ -562,6 +626,30 @@ public final class SecurityObjectCommandHandler {
         return null;
     }
 
+    /**
+     * Drops the object of a schema kind a DROP names when it is there: PURGE is refused once it is found, and OWNERSHIP
+     * of it is asked for. A session policy is dropped this way, its DROP being read with the kinds that model no
+     * object, which answer the missing one.
+     *
+     * @param kind the object's kind
+     * @param schema the schema the name resolves to
+     * @param parts the name as the statement wrote it, part by part
+     * @param purged whether the statement wrote PURGE
+     * @return whether the object was there, and is now dropped
+     */
+    boolean dropFound(final SecurityObjectKind kind, final Schema schema, final String[] parts, final boolean purged) {
+        final String name = parts[parts.length - 1];
+        if (schema.getSecurityObjects().get(kind, name) == null) {
+            return false;
+        }
+        if (purged) {
+            throw DropPurge.refusal(parts);
+        }
+        queryExecutor.requireOwnership(kind.name(), parts, null);
+        schema.getSecurityObjects().remove(kind, name);
+        return true;
+    }
+
     /** Moves (or, when {@code renamed} is null, removes) every attachment of a policy that is renamed or dropped. */
     private void forgetAttachments(final SecurityObjectKind kind, final String attached, final String renamed) {
         final String prefix = kind == SecurityObjectKind.PASSWORD_POLICY ? PASSWORD_POLICY_PREFIX
@@ -600,16 +688,10 @@ public final class SecurityObjectCommandHandler {
         } else if (ctx.ADD() != null || ctx.REMOVE() != null) {
             addOrRemoveRule(ctx, target);
         } else if (ctx.tagSet() != null) {
-            for (final FrostlakeParser.TagAssignContext assign : ctx.tagSet().tagAssign()) {
-                final Tag tag = catalog.getTag(ParseTreeText.getQualifiedName(assign.qualifiedName()));
-                final String value = TagValues.text(assign.qualifiedName(), assign.tagValue(), queryExecutor);
-                TagValues.requireAllowed(tag, value);
-                TagAssignments.set(target, tag, value);
-            }
+            // A missing tag written alone is named as written (live-verified for a session policy).
+            TagActions.set(target, ctx.tagSet(), catalog, queryExecutor);
         } else if (ctx.tagUnset() != null) {
-            for (final FrostlakeParser.QualifiedNameContext tagName : ctx.tagUnset().qualifiedName()) {
-                TagAssignments.unset(target, catalog.getTag(ParseTreeText.getQualifiedName(tagName)));
-            }
+            TagActions.unset(target, ctx.tagUnset(), catalog);
         }
         return null;
     }
@@ -623,7 +705,10 @@ public final class SecurityObjectCommandHandler {
             for (final String key : properties.keySet()) {
                 final SecurityPropertySpec spec = SecurityPropertySpecs.find(kind, key);
                 if (alterable != null && !alterable.contains(key)) {
-                    throw new RuntimeException(wrongTypeProperty(key, target.text("TYPE")));
+                    // The integration a secret authenticates through is no property an ALTER takes (live-verified).
+                    throw new RuntimeException("API_AUTHENTICATION".equals(key)
+                        ? SqlCompilationError.invalidPropertyFor(key, kind.name())
+                        : wrongTypeProperty(key, target.text("TYPE")));
                 }
                 if (!spec.isAlterable()) {
                     throw new RuntimeException(SqlCompilationError.invalidPropertyFor(key, kind.name()));
@@ -651,7 +736,7 @@ public final class SecurityObjectCommandHandler {
             keys.add(key);
         }
         for (final String key : keys) {
-            target.setProperty(key, "VALUE_LIST".equals(key) ? new ArrayList<String>() : null);
+            target.setProperty(key, SecurityPropertySpecs.unsetValue(key));
             if ("COMMENT".equals(key)) {
                 target.setComment(null);
             }
@@ -681,10 +766,11 @@ public final class SecurityObjectCommandHandler {
         final Schema into = owningSchema(ctx.qualifiedName(1));
         into.requireCreatable(Privilege.valueOf("CREATE_" + kind.name()));
         final String renamed = lastPart(ctx.qualifiedName(1));
-        // A name that is taken — by any policy of the schema, for a password policy — is refused as the statement
-        // wrote it, and the schema is then asked for the privilege to create the object (live-verified).
+        // A name that is taken — by any policy of the schema, for a password or a session policy — is refused as
+        // the statement wrote it, and the schema is then asked for the privilege to create the object
+        // (live-verified).
         if (into.getSecurityObjects().get(kind, renamed) != null
-                || kind == SecurityObjectKind.PASSWORD_POLICY && into.policyKindHolding(renamed) != null) {
+                || sharesPolicyNames(kind) && into.policyKindHolding(renamed) != null) {
             throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellAlreadyCanonicalPath(
                 String.join(".", ParseTreeText.qualifiedNameParts(ctx.qualifiedName(1)))) + "' already exists."));
         }
@@ -803,7 +889,7 @@ public final class SecurityObjectCommandHandler {
      */
     public ResultSet list(final FrostlakeParser.SecurityObjectListingContext ctx) {
         final SecurityObjectKind kind = kindOf(ctx.RULE() != null || ctx.RULES() != null, ctx.NETWORK() != null,
-            ctx.SECRET() != null || ctx.SECRETS() != null);
+            ctx.SECRET() != null || ctx.SECRETS() != null, false);
         if (ctx.DESCRIBE() != null || ctx.DESC() != null) {
             return describe(ctx, kind);
         }
@@ -812,6 +898,9 @@ public final class SecurityObjectCommandHandler {
             // The listing reads STARTS WITH and LIMIT … FROM as the others do (live-verified for the reading).
             return paged(ctx, kind, filter(showNetworkPolicies(), ctx.LIKE() == null ? null
                 : ParseTreeText.stringValue(ctx.stringText(0))));
+        }
+        if (ctx.securityHolder() != null) {
+            return listOnHolder(ctx, kind);
         }
         if (kind == SecurityObjectKind.PASSWORD_POLICY && ctx.ON() != null) {
             if (ctx.holderDatabase != null) {
@@ -831,6 +920,29 @@ public final class SecurityObjectCommandHandler {
         return paged(ctx, kind, sorted(filter(listing, like == null ? null : ParseTreeText.stringValue(like))));
     }
 
+    /**
+     * SHOW NETWORK RULES or SHOW SECRETS ON a name. A rule is shown on nothing a name names, a table or USER alike —
+     * {@code Object does not exist, or operation cannot be performed.} — and a secret listing looks the name up as a
+     * table, its database and schema first: {@code Table 'X' does not exist or not authorized.} (live-verified). A
+     * table that exists holds no secret to list.
+     */
+    private ResultSet listOnHolder(final FrostlakeParser.SecurityObjectListingContext ctx,
+                                   final SecurityObjectKind kind) {
+        if (kind != SecurityObjectKind.SECRET) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+        final FrostlakeParser.SecurityHolderContext holder = ctx.securityHolder();
+        final String[] parts = holder.holderUser != null ? new String[] {"USER"}
+            : ParseTreeText.qualifiedNameParts(holder.qualifiedName());
+        final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+        final String name = parts[parts.length - 1];
+        if (owner.relationKindOf(name) == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table",
+                parts.length == 1 ? QualifiedName.join(name) : owner.qualifiedName(name)));
+        }
+        return paged(ctx, kind, new ResultSet(showColumns(kind, false), new ArrayList<Row>()));
+    }
+
     /** A listing cut down by the statement's STARTS WITH and LIMIT … FROM. */
     private ResultSet paged(final FrostlakeParser.SecurityObjectListingContext ctx, final SecurityObjectKind kind,
                             final ResultSet filtered) {
@@ -843,9 +955,11 @@ public final class SecurityObjectCommandHandler {
             final int limit = ShowPageSize.require(ctx.INTEGER_LITERAL().getText());
             final String from = ctx.FROM() == null ? null
                 : ParseTreeText.stringValue(ctx.stringText(ctx.stringText().size() - 1));
-            // A network rule listing starts at the name's own row; a secret listing after it (live-verified).
-            listing = page(listing, limit, from, kind == SecurityObjectKind.NETWORK_RULE ? ShowPageStart.AT_NAME
-                : ShowPageStart.AFTER_NAME);
+            // A network rule listing starts at the name's own row, a secret listing after it, and a password
+            // policy listing reads the name and keeps every row (live-verified).
+            final ShowPageStart start = kind == SecurityObjectKind.NETWORK_RULE ? ShowPageStart.AT_NAME
+                : kind == SecurityObjectKind.PASSWORD_POLICY ? ShowPageStart.IGNORED : ShowPageStart.AFTER_NAME;
+            listing = page(listing, limit, from, start);
         }
         return listing;
     }
@@ -888,6 +1002,12 @@ public final class SecurityObjectCommandHandler {
      * account's.
      */
     private static void requireAccountScope(final FrostlakeParser.SecurityListingScopeContext scope) {
+        if (scope != null && scope.ACCOUNT() != null && scope.accountName != null) {
+            // IN ACCOUNT names another account, and no other is known here (live-verified).
+            final String[] named = ParseTreeText.qualifiedNameParts(scope.accountName);
+            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Account",
+                SqlIdentifiers.spellCanonical(named[named.length - 1])));
+        }
         if (scope == null || scope.ACCOUNT() != null) {
             return;
         }
@@ -909,6 +1029,12 @@ public final class SecurityObjectCommandHandler {
      */
     private List<Schema> scopeOf(final SecurityObjectKind kind,
                                  final FrostlakeParser.SecurityListingScopeContext scope) {
+        if (scope != null && scope.ACCOUNT() != null && scope.accountName != null) {
+            // A name after IN ACCOUNT is read as a path that does not start from a database (live-verified).
+            final String[] named = ParseTreeText.qualifiedNameParts(scope.accountName);
+            throw new RuntimeException(SqlCompilationError.of(
+                "Must specify the full search path starting from database for " + named[named.length - 1]));
+        }
         final String holder = holderKind(scope);
         if (holder != null) {
             throw ShowScopeKindRefusal.cannotShow(kind.name().replace('_', ' '), holder);
@@ -1046,27 +1172,45 @@ public final class SecurityObjectCommandHandler {
             cells.add(schema.getDatabaseName());
             cells.add(schema.getName());
         }
-        if (kind == SecurityObjectKind.PASSWORD_POLICY) {
-            cells.add("PASSWORD_POLICY");
+        if (sharesPolicyNames(kind)) {
+            cells.add(kind.name());
         }
         cells.add(object.getOwner());
         cells.add(object.getComment() == null && kind != SecurityObjectKind.SECRET ? "" : object.getComment());
         if (kind == SecurityObjectKind.NETWORK_RULE) {
             cells.add(object.text("TYPE"));
             cells.add(object.text("MODE"));
-            cells.add(Long.valueOf(object.list("VALUE_LIST").size()));
+            cells.add(Long.valueOf(NetworkRuleChecks.entries(object.list("VALUE_LIST"))));
         } else if (kind == SecurityObjectKind.SECRET) {
             cells.add(object.text("TYPE"));
             cells.add(object.getProperty("OAUTH_SCOPES") == null ? null : scopes(object));
         }
         cells.add(ShowResultHelpers.ownerRoleType(object.getOwner()));
-        if (kind == SecurityObjectKind.PASSWORD_POLICY) {
+        if (sharesPolicyNames(kind)) {
             cells.add("");
             if (setOn != null) {
                 cells.add(setOn);
             }
         }
         return new Row(cells);
+    }
+
+    /**
+     * The listing rows of a kind's objects in the schemas a listing covers, in the columns the kind's SHOW has. SHOW
+     * SESSION POLICIES lists through here, its statement being read with the kinds that model no object.
+     *
+     * @param kind the kind listed
+     * @param schemas the schemas the listing's scope covers
+     * @return a row per object, by database, schema and name
+     */
+    static List<Row> showRows(final SecurityObjectKind kind, final List<Schema> schemas) {
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : schemas) {
+            for (final SecurityObject object : schema.getSecurityObjects().list(kind)) {
+                rows.add(showRow(kind, schema, object, null));
+            }
+        }
+        return sorted(new ResultSet(showColumns(kind, false), rows)).getRows();
     }
 
     /** An OAuth refresh token's expiry, written as a date or a timestamp, as the timestamp DESCRIBE shows. */
@@ -1211,6 +1355,51 @@ public final class SecurityObjectCommandHandler {
                 "SYSTEM")));
         }
         return new ResultSet(showColumns(SecurityObjectKind.PASSWORD_POLICY, true), rows);
+    }
+
+    /**
+     * DESCRIBE SESSION POLICY of a policy that is there, read with the kinds that model no object: a row per
+     * property — the policy's creation, name, owner and comment, each of its settings with its default, and the agent
+     * scope no statement sets — as property, value, default and description (live-verified).
+     *
+     * @param parts the policy's name as the statement wrote it, part by part
+     * @return the description, or null when no session policy has the name
+     */
+    ResultSet describeSessionPolicy(final String[] parts) {
+        final SecurityObjectKind kind = SecurityObjectKind.SESSION_POLICY;
+        final SecurityObject policy = catalog.requireOwningSchema(QualifiedName.of(parts)).getSecurityObjects()
+            .get(kind, parts[parts.length - 1]);
+        if (policy == null) {
+            return null;
+        }
+        final List<Row> rows = new ArrayList<>();
+        rows.add(describedRow("CREATED_ON", SharedFunctionHelpers.offsetTimestampText(ShowResultHelpers.createdOn(
+            policy.getCreatedTime())), null, "Timestamp when the session policy was created."));
+        rows.add(describedRow("NAME", policy.getName(), null, "Name of the session policy."));
+        rows.add(describedRow("OWNER", policy.getOwner(), null, "Owner role of the session policy."));
+        rows.add(describedRow("OWNER_ROLE_TYPE", ShowResultHelpers.ownerRoleType(policy.getOwner()), null,
+            "Owner role type of the session policy."));
+        for (final SecurityPropertySpec spec : SecurityPropertySpecs.of(kind)) {
+            if ("COMMENT".equals(spec.getName())) {
+                rows.add(4, describedRow(spec.getName(), policy.getComment(), null, spec.getDescription()));
+            } else if (spec.getType() == SecurityPropertyType.TEXT_LIST) {
+                // A role list is shown in brackets, and has no default to show.
+                rows.add(describedRow(spec.getName(), "[" + String.join(", ", policy.list(spec.getName())) + "]", null,
+                    spec.getDescription()));
+            } else {
+                final String value = policy.text(spec.getName());
+                rows.add(describedRow(spec.getName(), value != null ? value : spec.getDefaultValue(),
+                    spec.getDefaultValue(), spec.getDescription()));
+            }
+        }
+        rows.add(describedRow(SecurityPropertySpecs.AGENT_RESTRICTED_SESSION_SCOPE, null, null,
+            SecurityPropertySpecs.AGENT_RESTRICTED_SESSION_SCOPE_DESCRIPTION));
+        return new ResultSet(columns("property", "value", "default", "description"), rows);
+    }
+
+    private static Row describedRow(final String property, final Object value, final String defaultValue,
+                                    final String description) {
+        return new Row(Arrays.<Object>asList(property, value, defaultValue, description));
     }
 
     private ResultSet describe(final FrostlakeParser.SecurityObjectListingContext ctx, final SecurityObjectKind kind) {

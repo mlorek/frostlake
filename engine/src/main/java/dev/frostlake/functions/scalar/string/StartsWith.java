@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
@@ -35,7 +36,7 @@ public class StartsWith extends TextArgumentFunction {
             }
         }
         if (args.get(0) == null || args.get(1) == null) return false;
-        return args.get(0).toString().startsWith(args.get(1).toString());
+        return SharedFunctionHelpers.textOf(args.get(0)).startsWith(SharedFunctionHelpers.textOf(args.get(1)));
     }
 
     /** Under a collation the prefix is the one the collation matches, not the byte-for-byte one. */
@@ -44,7 +45,8 @@ public class StartsWith extends TextArgumentFunction {
         if (collation == null || args.get(0) == null || args.get(1) == null) {
             return evaluate(args);
         }
-        return CollationMatching.startsWithUnder(collation, args.get(0).toString(), args.get(1).toString());
+        return CollationMatching.startsWithUnder(collation, SharedFunctionHelpers.textOf(args.get(0)),
+            SharedFunctionHelpers.textOf(args.get(1)));
     }
 
     @Override

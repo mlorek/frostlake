@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ClonePoint;
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -29,6 +30,7 @@ import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.SystemDatabase;
+import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -37,11 +39,15 @@ import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.storage.StorageEngine;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
+import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,6 +89,7 @@ public class CreateNamespaceHandler implements CommandHandler {
      */
     private void releaseSchemaStorage(final String databaseName, final Schema schema) {
         final StorageEngine storage = queryExecutor.getStorageEngine();
+        TemporaryObjects.releaseSessionTables(schema, storage, databaseName);
         for (final Table table : schema.getTables()) {
             final String fqn = QualifiedName.key(databaseName, schema.getName(), table.getName());
             if (storage.hasTable(fqn)) {
@@ -257,7 +264,27 @@ public class CreateNamespaceHandler implements CommandHandler {
         catalog.dropDatabase(dbName, true);
     }
 
+    /**
+     * A comma may stand between two of a schema's properties, but not after WITH MANAGED ACCESS: that one is a syntax
+     * error at the comma, the one line the account gives (live-verified).
+     */
+    private static void rejectCommaAfterManagedAccess(final FrostlakeParser.CreateStatementContext ctx) {
+        for (int i = 0; i + 1 < ctx.getChildCount(); i++) {
+            if (ctx.getChild(i) instanceof FrostlakeParser.SchemaPropertyContext
+                    && ((FrostlakeParser.SchemaPropertyContext) ctx.getChild(i)).MANAGED() != null
+                    && ctx.getChild(i + 1) instanceof TerminalNode
+                    && ((TerminalNode) ctx.getChild(i + 1)).getSymbol().getType() == FrostlakeParser.COMMA) {
+                final Token comma = ((TerminalNode) ctx.getChild(i + 1)).getSymbol();
+                final String line = "syntax error line " + comma.getLine() + " at position "
+                    + comma.getCharPositionInLine() + " unexpected ','.";
+                throw new SqlSyntaxException(SqlCompilationError.of(line), Collections.singletonList(line),
+                    ParseTreeText.getOriginalText(ctx));
+            }
+        }
+    }
+
     public Object handleCreateSchema(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        rejectCommaAfterManagedAccess(ctx);
         rejectUnsupportedSchemaModifier(ctx);
         final NamespaceProperties properties = NamespaceProperties.ofSchema(ctx.schemaProperty());
         final String schemaName = getText(ctx.qualifiedName(0));

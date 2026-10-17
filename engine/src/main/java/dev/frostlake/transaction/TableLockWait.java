@@ -56,9 +56,15 @@ public final class TableLockWait extends RuntimeException {
     public void await(final TransactionManager transactions, final long timeoutSeconds, final long waitingSince,
                       final LockWaitStop stop) {
         if (timeoutSeconds <= 0) {
-            throw refusal("is currently not allowed.");
+            throw refusal("is currently not allowed.", UUID.randomUUID().toString());
         }
         final long deadline = waitingSince + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        // The waiting statement's lock shows as WAITING in SHOW LOCKS for as long as it waits.
+        final Transaction waiter = transactions.getCurrentTransaction();
+        final String waitingQueryId = UUID.randomUUID().toString();
+        if (waiter != null) {
+            waiter.beginWaiting(fullyQualifiedName, waitingQueryId);
+        }
         final EngineLockRelease release = TableLockGate.release();
         release.release();
         try {
@@ -70,10 +76,13 @@ public final class TableLockWait extends RuntimeException {
         } catch (final InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         } finally {
+            if (waiter != null) {
+                waiter.endWaiting();
+            }
             release.reacquire();
         }
         if (stillHeld(transactions)) {
-            throw refusal("is limited to " + timeoutSeconds + " seconds.");
+            throw refusal("is limited to " + timeoutSeconds + " seconds.", waitingQueryId);
         }
     }
 
@@ -82,9 +91,9 @@ public final class TableLockWait extends RuntimeException {
         return transactions.getActiveTransactions().contains(holder);
     }
 
-    private RuntimeException refusal(final String waiting) {
+    private RuntimeException refusal(final String waiting, final String waitingQueryId) {
         return new RuntimeException("Statement '" + holder.lockQueryId(fullyQualifiedName) + "' has locked table '"
             + tableName + "' in transaction " + holder.getPublicId() + " and this lock has not yet been released.\n"
-            + "Your statement '" + UUID.randomUUID() + "' was aborted because waiting for this lock " + waiting);
+            + "Your statement '" + waitingQueryId + "' was aborted because waiting for this lock " + waiting);
     }
 }

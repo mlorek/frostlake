@@ -74,6 +74,18 @@ public interface UdfLanguageRuntime {
     }
 
     /**
+     * Run an aggregate function's handler over one group: it reads each of the group's rows in turn and then
+     * answers the group's value. Languages without aggregate functions refuse, as creating one does.
+     *
+     * @param function the function
+     * @param rows     the group's rows, each the function's arguments; at least one
+     * @return the group's value
+     */
+    default Object executeAggregate(final Function function, final List<List<Object>> rows) {
+        throw new RuntimeException("Aggregate functions not supported for language '" + language().name() + "'.");
+    }
+
+    /**
      * Compile a FUNCTION's body at CREATE time, throwing if the routine could never run — live-verified,
      * a Python, Java or Scala function whose body will not compile, or whose HANDLER is not in it, is
      * refused by CREATE rather than by the first call.

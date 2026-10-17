@@ -21,8 +21,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
 import java.nio.file.Files;
@@ -43,10 +41,16 @@ import java.util.zip.GZIPInputStream;
 public final class StagedFileIo {
 
     /**
-     * What a byte sequence the file's encoding cannot read is read as, for the load to find it and settle it by
-     * REPLACE_INVALID_CHARACTERS: a noncharacter, which text does not hold.
+     * The mark of the first byte of a sequence the file's encoding cannot read, the byte's value added to it, for a
+     * reader to find it and settle it by REPLACE_INVALID_CHARACTERS (see {@link UnreadableMarkingReader}).
      */
-    public static final char MALFORMED = '\uFFFF';
+    public static final char UNREADABLE_START = '\uF600';
+
+    /** The mark of a later byte of the same unreadable sequence, the byte's value added to it. */
+    public static final char UNREADABLE_MORE = '\uF700';
+
+    /** Past the last mark. */
+    private static final char UNREADABLE_END = '\uF800';
 
     /** The character sets a load's ENCODING names, by the account's names, as the JDK names them (documented). */
     private static final Map<String, String> ENCODINGS = new HashMap<String, String>();
@@ -134,7 +138,8 @@ public final class StagedFileIo {
     }
 
     /**
-     * A staged file's text in a character set, every byte sequence the set cannot read read as {@link #MALFORMED}.
+     * A staged file's text in a character set, every byte the set cannot read kept as a mark of it (see
+     * {@link #UNREADABLE_START}).
      *
      * @param file    the staged file
      * @param charset its character set
@@ -142,15 +147,99 @@ public final class StagedFileIo {
      * @throws IOException when the file cannot be opened
      */
     public static BufferedReader reader(final Path file, final Charset charset) throws IOException {
-        final CharsetDecoder decoder = charset.newDecoder()
-            .onMalformedInput(CodingErrorAction.REPLACE)
-            .onUnmappableCharacter(CodingErrorAction.REPLACE);
-        try {
-            decoder.replaceWith(String.valueOf(MALFORMED));
-        } catch (final IllegalArgumentException wide) {
-            // A set that reads fewer than one character a byte keeps its own replacement, U+FFFD.
+        return new BufferedReader(new UnreadableMarkingReader(inputStream(file), charset));
+    }
+
+    /**
+     * A staged file's whole text in a character set, every byte the set cannot read kept as a mark of it.
+     *
+     * @param file    the staged file
+     * @param charset its character set
+     * @return the text
+     * @throws IOException when the file cannot be read
+     */
+    public static String readMarked(final Path file, final Charset charset) throws IOException {
+        final StringBuilder text = new StringBuilder();
+        try (BufferedReader reader = reader(file, charset)) {
+            final char[] buffer = new char[8192];
+            int read = reader.read(buffer);
+            while (read >= 0) {
+                text.append(buffer, 0, read);
+                read = reader.read(buffer);
+            }
         }
-        return new BufferedReader(new InputStreamReader(inputStream(file), decoder));
+        return text.toString();
+    }
+
+    /** Whether a character is the mark of a byte its file's encoding could not read. */
+    public static boolean isUnreadable(final char c) {
+        return c >= UNREADABLE_START && c < UNREADABLE_END;
+    }
+
+    /**
+     * Where a text holds the first mark of an unreadable byte.
+     *
+     * @param text the text
+     * @return its index, or -1 when it holds none
+     */
+    public static int firstUnreadable(final String text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (isUnreadable(text.charAt(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The byte a mark keeps, as the account's refusals spell it: {@code 0xE9}.
+     *
+     * @param mark the mark
+     * @return its byte in upper-case hex
+     */
+    public static String unreadableByte(final char mark) {
+        return String.format(Locale.ROOT, "0x%02X", Integer.valueOf(mark & 0xFF));
+    }
+
+    /**
+     * A text as a refusal quotes it, each unreadable byte spelled as its value: {@code caf0xE9}.
+     *
+     * @param text the text
+     * @return the text quoted
+     */
+    public static String unreadableShown(final String text) {
+        final StringBuilder shown = new StringBuilder(text.length() + 8);
+        for (int i = 0; i < text.length(); i++) {
+            final char c = text.charAt(i);
+            if (isUnreadable(c)) {
+                shown.append(unreadableByte(c));
+            } else {
+                shown.append(c);
+            }
+        }
+        return shown.toString();
+    }
+
+    /**
+     * A text with each unreadable byte sequence replaced by U+FFFD, as REPLACE_INVALID_CHARACTERS = TRUE reads it.
+     *
+     * @param text the text
+     * @return the text replaced
+     */
+    public static String unreadableReplaced(final String text) {
+        if (firstUnreadable(text) < 0) {
+            return text;
+        }
+        final StringBuilder replaced = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            final char c = text.charAt(i);
+            if (c >= UNREADABLE_START && c < UNREADABLE_MORE) {
+                replaced.append('\uFFFD');
+            } else if (!isUnreadable(c)) {
+                replaced.append(c);
+            }
+        }
+        return replaced.toString();
     }
 
     public static String readString(final Path file) throws IOException {

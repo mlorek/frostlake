@@ -16,9 +16,15 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.CastExpression;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ParsedEchoPrinter;
+import dev.frostlake.executor.expressions.UntypedNullFold;
+import dev.frostlake.functions.scalar.AutoTemporalParser;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
@@ -59,6 +65,24 @@ final class PivotValue {
         }
         final boolean keyword = literal.TRUE() != null || literal.FALSE() != null || literal.NULL() != null;
         return new PivotValue(value, keyword ? literal.getText().toUpperCase(Locale.ROOT) : literal.getText());
+    }
+
+    /**
+     * A column for a value the IN list wrote as an expression: a constant, named as the plan prints it.
+     *
+     * @param written the expression as written
+     * @param value the constant it evaluates to, null for a NULL
+     * @param alias the alias written after it, or null
+     * @return the column
+     */
+    static PivotValue computed(final Expression written, final Object value, final String alias) {
+        if (alias != null) {
+            return new PivotValue(value, alias);
+        }
+        // A cast of NULL is the NULL the plan folds it to: NULL::INT names its column NULL (live-verified).
+        final boolean castNull = written instanceof CastExpression
+            && UntypedNullFold.isUntypedNull(((CastExpression) written).getExpression());
+        return new PivotValue(value, castNull ? "NULL" : ParsedEchoPrinter.print(written));
     }
 
     /**
@@ -109,6 +133,11 @@ final class PivotValue {
             final Boolean mine = asBoolean(value);
             return mine != null && mine.equals(cell);
         }
+        if ((cell instanceof LocalDateTime || cell instanceof LocalDate) && value instanceof String) {
+            // A text meets a date or a timestamp cell as the value it converts to (live-verified).
+            final Object mine = asTemporal(cell, (String) value);
+            return mine != null && mine.equals(cell);
+        }
         if (cell instanceof Number) {
             final BigDecimal mine = asNumber(value);
             final BigDecimal theirs = asNumber(cell);
@@ -134,6 +163,15 @@ final class PivotValue {
             return "'" + TIMESTAMP.format((LocalDateTime) value) + "Z'";
         }
         return "'" + value + "'";
+    }
+
+    private static Object asTemporal(final Object cell, final String text) {
+        try {
+            return cell instanceof LocalDate ? AutoTemporalParser.parseDate(text)
+                : AutoTemporalParser.parseDateTime(text);
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
     }
 
     private static Boolean asBoolean(final Object value) {

@@ -89,7 +89,7 @@
     {"name": "an-unknown-domain-is-refused", "steps": [
       {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
       {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'NONSENSE'))",
-       "expect": {"error": {"messageContains": "Invalid value 'NONSENSE' for argument 'ref_entity_domain' for function 'information_schema.policy_references'"}}}
+       "expect": {"error": {"messageContains": "Unknown domain: NONSENSE."}}}
     ]},
     {"name": "a-positional-call-is-refused-as-a-policy-kind", "steps": [
       {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},

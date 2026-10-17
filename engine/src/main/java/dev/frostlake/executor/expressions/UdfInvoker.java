@@ -30,7 +30,9 @@ import dev.frostlake.executor.SqlArgumentText;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.commands.ExternalFunctions;
 import dev.frostlake.executor.commands.ServiceFunctions;
+import dev.frostlake.executor.udf.GuestResults;
 import dev.frostlake.executor.udf.HandlerResults;
 import dev.frostlake.executor.udf.HandlerStateFactory;
 import dev.frostlake.executor.udf.ImportLocalizer;
@@ -66,14 +68,12 @@ import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import dev.frostlake.values.BinaryValue;
-import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantValue;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import tools.jackson.databind.node.StringNode;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -454,7 +454,9 @@ final class UdfInvoker {
     /**
      * The first of several overloads in the order of their signatures — the account's internal type names,
      * parameter by parameter — which is the one a call written by position runs among overloads that weigh alike,
-     * whatever order they were created in (live-verified).
+     * whatever order they were created in (live-verified). Of an OBJECT's or an ARRAY's overloads the plain one
+     * comes first and the structured ones after it by their shapes: {@code f(NULL)} runs {@code f(OBJECT)} beside
+     * {@code f(OBJECT(a INT))}, and that one beside {@code f(OBJECT(a VARCHAR))} and {@code f(OBJECT(b INT))}.
      *
      * @param candidates the overloads that weigh alike, never empty
      * @return the first by signature
@@ -476,8 +478,19 @@ final class UdfInvoker {
             if (own != others) {
                 return own < others;
             }
+            final int shapes = shapeOrder(signature.get(i).getDataType())
+                .compareTo(shapeOrder(other.get(i).getDataType()));
+            if (shapes != 0) {
+                return shapes < 0;
+            }
         }
         return signature.size() < other.size();
+    }
+
+    /** What orders an OBJECT's or an ARRAY's overloads among themselves: its spelled shape, the plain one first. */
+    private static String shapeOrder(final DataType type) {
+        return type instanceof ObjectType || type instanceof ArrayType || StructuredTypes.isStructured(type)
+            ? StructuredTypes.signatureText(type) : "";
     }
 
     /**
@@ -623,6 +636,9 @@ final class UdfInvoker {
         if (function.isServiceFunction()) {
             throw new RuntimeException(ServiceFunctions.cannotCall(function));
         }
+        if (function.isExternalFunction()) {
+            throw new RuntimeException(ExternalFunctions.cannotCall(function));
+        }
         final UdfLanguage language = function.getUdfLanguage();
 
         if (language == UdfLanguage.JAVA) {
@@ -640,20 +656,13 @@ final class UdfInvoker {
             } finally {
                 JarHandlerLoader.restore(outer);
             }
-            return wrapSemiStructuredReturn(function, guestResult);
+            return GuestResults.declared(function, guestResult);
         } else {
             throw new RuntimeException("Unsupported function language: " + language);
         }
     }
 
 
-    /**
-     * A guest-language handler returns OBJECT / ARRAY values as JSON text; a function DECLARED to
-     * return a semi-structured type hands that text back as a real semi-structured value, so a
-     * container embeds it structurally — OBJECT_CONSTRUCT('k', js_array_fn(...)) nests the array
-     * instead of quoting its text — and a scalar string under a VARIANT declaration becomes a
-     * VARIANT STRING, exactly as the SQL-side cast would make it.
-     */
     /**
      * Whether an argument reaches its parameter as the number it already is, with no conversion and so
      * no rounding to the parameter's declared scale.
@@ -673,25 +682,6 @@ final class UdfInvoker {
         return language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.JAVA || language == UdfLanguage.SCALA;
     }
 
-    private Object wrapSemiStructuredReturn(final Function function, final Object result) {
-        if (!(result instanceof String)) {
-            return result;
-        }
-        final DataType returnType = function.getReturnType();
-        if (!(returnType instanceof ArrayType || returnType instanceof ObjectType
-                || returnType instanceof VariantType)) {
-            return result;
-        }
-        final String text = ((String) result).trim();
-        if (text.startsWith("[") || text.startsWith("{") || text.startsWith("\"")
-                || "null".equals(text)) {
-            return VariantValue.of(text);
-        }
-        if (returnType instanceof VariantType) {
-            return VariantValue.of(VariantText.canonical(StringNode.valueOf((String) result)));
-        }
-        return result;
-    }
 
     /**
      * A SQL function's body, run where the function lives: the names it writes without a schema are looked for

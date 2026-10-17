@@ -63,7 +63,7 @@ final class IcebergTables {
     private static final String CHANGE_TRACKING_REFUSAL = "invalid value 'false' for property 'CHANGE_TRACKING',"
         + " Reason: Change Tracking cannot be turned off for Iceberg tables";
     /** The storage an Iceberg table written without an external volume is kept in. */
-    private static final String DEFAULT_VOLUME = "SNOWFLAKE_MANAGED";
+    private static final String DEFAULT_VOLUME = IcebergTableMetadata.MANAGED_VOLUME;
     private static final String SUFFIX_CHARACTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
     private IcebergTables() {
@@ -154,6 +154,8 @@ final class IcebergTables {
                 && metadata.getBaseLocation().equals(source.getIcebergMetadata().getBaseLocation())) {
             metadata.setBaseLocation(schemaPath + "/" + table.getName() + "." + suffix() + "/");
         }
+        // GET_DDL spells the base location a clone shares with its source (live-verified).
+        metadata.setBaseLocationSpelled(ctx.CLONE() != null);
         table.setIcebergMetadata(metadata);
         // An Iceberg table always tracks its changes.
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {

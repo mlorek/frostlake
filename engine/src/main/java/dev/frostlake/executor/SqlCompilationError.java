@@ -203,6 +203,11 @@ public final class SqlCompilationError {
         return PREFIX + " conflicting values for copy option '" + name + "'\n";
     }
 
+    /** A copy option a stage does not take, named as written — laid out like {@link #conflictingCopyOption}. */
+    public static String invalidCopyOption(final String written) {
+        return PREFIX + " invalid copy option '" + written + "'\n";
+    }
+
     /**
      * A column carrying more than one DEFAULT / AUTOINCREMENT / IDENTITY. Its shape is a third one
      * again — a space AFTER the colon, then the newline, and the sentence ends in a period.

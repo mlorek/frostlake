@@ -91,11 +91,9 @@ public class TaskHistoryFunction extends TableFunction {
                         for (int i = 0; i < history.size(); i++) {
                             if (rows.size() >= resultLimit) break;
                             final TaskExecution exec = history.get(i);
-                            final int first = firstAttempt(history, i);
                             rows.add(row(task, schema, exec.getState(), exec.getErrorMessage(),
                                 exec.getScheduledTime(), exec.getStartTime(), exec.getEndTime(), root,
-                                graphRunTime(root, task, history.get(first)), exec.getScheduledFrom(),
-                                i - first + 1));
+                                graphRunTime(root, task, exec), exec.getScheduledFrom(), exec.getAttempt()));
                         }
                         if (rows.size() >= resultLimit) break;
                     }
@@ -197,29 +195,17 @@ public class TaskHistoryFunction extends TableFunction {
     }
 
     /**
-     * The run a run retries: the one before the unbroken chain of retries that ends at {@code index}, or the run
-     * itself. A retry is one more attempt of that run (live-verified).
-     */
-    private static int firstAttempt(final List<TaskExecution> history, final int index) {
-        int first = index;
-        while (first > 0 && TaskTrigger.MANUAL_RETRY.reported().equals(history.get(first).getScheduledFrom())) {
-            first--;
-        }
-        return first;
-    }
-
-    /**
-     * When the graph run a task's run belongs to was scheduled: the run's own time for a root task, and for
-     * another task the time of the root's last run that began no later than it.
+     * When the graph run a task's run belongs to was scheduled: a root's first-attempt run's own time, and for a
+     * retry's run or another task's the time of the root's last first-attempt run that began no later than it.
      */
     private static LocalDateTime graphRunTime(final Task root, final Task task, final TaskExecution run) {
-        if (root == null || root == task) {
+        if (root == null || root == task && run.getAttempt() == 1) {
             return run.getScheduledTime();
         }
         LocalDateTime scheduled = null;
         for (final TaskExecution rootRun : root.getExecutionHistory()) {
             if (rootRun.getStartTime() != null && run.getStartTime() != null
-                    && !rootRun.getStartTime().isAfter(run.getStartTime())
+                    && !rootRun.getStartTime().isAfter(run.getStartTime()) && rootRun.getAttempt() == 1
                     && !TaskTrigger.MANUAL_RETRY.reported().equals(rootRun.getScheduledFrom())) {
                 scheduled = rootRun.getScheduledTime();
             }

@@ -41,6 +41,14 @@ public final class BoundText {
         "^(SQL compilation error: error line 1 at position )(\\d+)(\\n(?:Invalid argument types for function "
             + "|too many arguments for function |not enough arguments for function ))");
 
+    /** The echo of a call an argument-count refusal names, between its brackets. */
+    private static final Pattern ARITY_ECHO = Pattern.compile(
+        "(too many arguments for function |not enough arguments for function )\\[(.*)\\]((?:,)? expected \\d+, got "
+            + "\\d+)$", Pattern.DOTALL);
+
+    /** A bind written out as a value cast to the variable's type, {@code (1)::NUMBER(38,0)}. */
+    private static final Pattern WRITTEN_CAST = Pattern.compile("\\((.*)\\)::([A-Z_]+(?:\\(\\d+(?:,\\d+)?\\))?)");
+
     /** A refusal placed in a statement's text: the line, then the position. */
     private static final Pattern PLACED = Pattern.compile(
         "^(SQL compilation error: error line )(\\d+)( at position )(-?\\d+)(?=\\n)");
@@ -103,6 +111,80 @@ public final class BoundText {
         final int position = Integer.parseInt(place.group(4));
         return new RuntimeException(place.group(1) + (line + lines) + place.group(3)
             + (line == 1 ? position + columns : position) + message.substring(place.end()), refused.getCause());
+    }
+
+    /**
+     * A refusal of a call's argument count, its echo spelling each bind as the block wrote it: {@code res := (SELECT
+     * ABS(:s, 1) FROM t)} is {@code too many arguments for function [ABS(:s, 1)]}, where the text that ran holds the
+     * value written in the bind's place (live-verified). Each bind's written-out value is put back where the echo
+     * spells it, the binds in the order written; any other refusal is as it is.
+     *
+     * @param refused the refusal
+     * @param written the text as the block wrote it
+     * @param ran     the text that ran, each bind written out
+     * @param binds   each bind written out, as the substitution noted it
+     * @return the refusal to raise
+     */
+    public static RuntimeException echoedAsWritten(final RuntimeException refused, final String written,
+                                                   final String ran, final List<int[]> binds) {
+        final String message = refused.getMessage();
+        final Matcher echo = message == null || refused.getClass() != RuntimeException.class ? null
+            : ARITY_ECHO.matcher(message);
+        if (echo == null || !echo.find() || binds.isEmpty()) {
+            return refused;
+        }
+        final int[] writtenStarts = lineStarts(written);
+        final int[] ranStarts = lineStarts(ran);
+        final StringBuilder spelled = new StringBuilder(echo.group(2));
+        int from = 0;
+        int shift = 0;
+        int line = -1;
+        for (final int[] bind : binds) {
+            if (bind[0] != line) {
+                line = bind[0];
+                shift = 0;
+            }
+            if (line > writtenStarts.length || line > ranStarts.length) {
+                return refused;
+            }
+            final int at = writtenStarts[line - 1] + bind[1];
+            final int ranAt = ranStarts[line - 1] + bind[1] + shift;
+            shift += bind[3] - bind[2];
+            if (at + bind[2] > written.length() || ranAt + bind[3] > ran.length()) {
+                return refused;
+            }
+            final String value = ran.substring(ranAt, ranAt + bind[3]);
+            // A number is written out as (1)::NUMBER(38,0), which the echo spells as the cast it is.
+            final Matcher cast = WRITTEN_CAST.matcher(value);
+            final String echoed = cast.matches() ? "CAST(" + cast.group(1) + " AS " + cast.group(2) + ")" : value;
+            final int found = spelled.indexOf(echoed, from);
+            if (found < 0) {
+                continue;
+            }
+            final String bindText = written.substring(at, at + bind[2]);
+            spelled.replace(found, found + echoed.length(), bindText);
+            from = found + bindText.length();
+        }
+        return new RuntimeException(message.substring(0, echo.start(2)) + spelled + message.substring(echo.end(2)),
+            refused.getCause());
+    }
+
+    /** The offset each line of a text starts at. */
+    private static int[] lineStarts(final String text) {
+        int lines = 1;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n') {
+                lines++;
+            }
+        }
+        final int[] starts = new int[lines];
+        int line = 1;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n') {
+                starts[line++] = i + 1;
+            }
+        }
+        return starts;
     }
 
     /** The origin the text runs under. */

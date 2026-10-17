@@ -92,11 +92,12 @@ final class PivotAggregateCall {
                                          final FunctionRegistry functions) {
         final String written = call.functionName().getText();
         final String name = written.toUpperCase(Locale.ROOT);
-        final boolean known = functions.hasFunction(name) || functions.hasAggregateFunction(name);
+        // A user's aggregate function is no function PIVOT knows of (live-verified).
+        final boolean known = functions.hasFunction(name) || functions.hasBuiltInAggregateFunction(name);
         if (written.startsWith("\"") || !known || "GROUPING".equals(name)) {
             throw new RuntimeException(SqlCompilationError.of("invalid function '" + written + "'"));
         }
-        if (!functions.hasAggregateFunction(name) || "ANY_VALUE".equals(name)) {
+        if (!functions.hasBuiltInAggregateFunction(name) || "ANY_VALUE".equals(name)) {
             throw new RuntimeException(SqlCompilationError.of("'" + name + "' is not a recognized aggregate function"));
         }
     }

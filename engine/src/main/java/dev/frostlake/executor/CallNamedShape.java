@@ -21,6 +21,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.Token;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -42,13 +43,18 @@ public final class CallNamedShape {
      * @param call the CALL
      */
     public static void require(final FrostlakeParser.CallStatementContext call) {
-        if (call.callArguments() == null || call.qualifiedName() == null) {
+        if (call.callArguments() == null || call.qualifiedName() == null && call.systemFunctionName() == null) {
             return;
         }
-        // The procedure is named as the CALL writes it: test_schema.p is TEST_SCHEMA.P, "p" keeps its quotes.
+        // The procedure is named as the CALL writes it: test_schema.p is TEST_SCHEMA.P, "p" keeps its quotes; a
+        // SYSTEM$ function by its own name, SYSTEM$TYPEOF.
         final StringBuilder procedure = new StringBuilder();
-        for (final String part : ParseTreeText.qualifiedNameParts(call.qualifiedName())) {
-            procedure.append(procedure.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+        if (call.qualifiedName() == null) {
+            procedure.append(call.systemFunctionName().getText().toUpperCase(Locale.ROOT));
+        } else {
+            for (final String part : ParseTreeText.qualifiedNameParts(call.qualifiedName())) {
+                procedure.append(procedure.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+            }
         }
         final Set<String> seen = new HashSet<String>();
         boolean named = false;
@@ -67,7 +73,8 @@ public final class CallNamedShape {
             }
         }
         if (named && positional) {
-            final Token at = call.qualifiedName().getStart();
+            final Token at = call.qualifiedName() != null ? call.qualifiedName().getStart()
+                : call.systemFunctionName().getStart();
             throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                 "illegal mixing of named and positional arguments for function " + procedure));
         }

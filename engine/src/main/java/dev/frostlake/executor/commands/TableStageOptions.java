@@ -55,7 +55,7 @@ final class TableStageOptions {
             if ("STAGE_FILE_FORMAT".equals(key)) {
                 readGroup(tail.parenOptionList(), table.getStageFileFormat());
             } else if ("STAGE_COPY_OPTIONS".equals(key)) {
-                readGroup(tail.parenOptionList(), table.getStageCopyOptions());
+                table.getStageCopyOptions().putAll(StageCopyOptions.read(tail.parenOptionList()));
             }
         }
     }

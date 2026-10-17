@@ -33,6 +33,10 @@ public class Acosh extends NumericArgumentFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final double x = ((Number) args.get(0)).doubleValue();
+        if (x < 1) {
+            // Below 1 the inverse has no value: refused in the runtime's words (live-verified).
+            throw FloatingPointRefusal.of("acosh(" + FloatingPointRefusal.number(x) + ")");
+        }
         return Math.log(x + Math.sqrt(x * x - 1));
     }
 

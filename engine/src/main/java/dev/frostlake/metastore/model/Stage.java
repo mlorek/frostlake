@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -183,6 +184,21 @@ public class Stage extends SqlObject {
 
     public StageType getType() {
         return type;
+    }
+
+    /**
+     * The cloud an external stage's location is in, by its scheme in any case: {@code AZURE://…} is an Azure stage as
+     * {@code azure://…} is (live-verified).
+     *
+     * @return AWS, AZURE or GCP, or null for a location in none, an internal stage's
+     */
+    public String locationCloud() {
+        if (url == null) {
+            return null;
+        }
+        final int end = url.indexOf("://");
+        final String scheme = end < 0 ? "" : url.substring(0, end).toLowerCase(Locale.ROOT);
+        return "s3".equals(scheme) ? "AWS" : "azure".equals(scheme) ? "AZURE" : "gcs".equals(scheme) ? "GCP" : null;
     }
 
     public String getUrl() {

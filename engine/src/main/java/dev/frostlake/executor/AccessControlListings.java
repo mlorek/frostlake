@@ -18,13 +18,27 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
+import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.FutureGrant;
 import dev.frostlake.metastore.model.ManagedAccount;
+import dev.frostlake.metastore.model.MaterializedView;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.Stage;
+import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.User;
+import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -36,6 +50,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -164,7 +179,115 @@ public final class AccessControlListings {
                     role.getPrivilegeGrantor(objectType, objectName, privilege))));
             }
         }
+        if (!(role instanceof DatabaseRole)) {
+            addOwnershipRows(rows, role.getName(), granteeKind);
+        }
         return new ResultSet(grantsToColumns(), sortedGrants(rows));
+    }
+
+    /**
+     * The OWNERSHIP a role holds on what it owns, beside the privileges granted to it: one row per object whose owner
+     * the role is, from when the object was created, with the grant option, granted by the role itself (live-verified
+     * for a table and a function). An OWNERSHIP already listed as a granted privilege is not listed twice.
+     */
+    private void addOwnershipRows(final List<Row> rows, final String owner, final String granteeKind) {
+        final Set<String> listed = new HashSet<>();
+        for (final Row row : rows) {
+            if (Privilege.OWNERSHIP.displayName().equals(row.getValue(1))) {
+                listed.add(row.getValue(2) + "|" + row.getValue(3));
+            }
+        }
+        for (final Database database : catalog.getAllDatabases()) {
+            owned(rows, listed, owner, granteeKind, "DATABASE", database.getName(), database.getOwner(),
+                database.getCreatedTime());
+            for (final Schema schema : database.getAllSchemas()) {
+                owned(rows, listed, owner, granteeKind, "SCHEMA", QualifiedName.join(database.getName(),
+                    schema.getName()), schema.getOwner(), schema.getCreatedTime());
+                for (final Table table : schema.getTables()) {
+                    ownedMember(rows, listed, owner, granteeKind, "TABLE", schema, table.getName(), table.getOwner(),
+                        table.getCreatedTime());
+                }
+                for (final View view : schema.getViews()) {
+                    ownedMember(rows, listed, owner, granteeKind, "VIEW", schema, view.getName(), view.getOwner(),
+                        view.getCreatedTime());
+                }
+                for (final MaterializedView view : schema.getMaterializedViews()) {
+                    ownedMember(rows, listed, owner, granteeKind, "MATERIALIZED_VIEW", schema, view.getName(),
+                        view.getOwner(), view.getCreatedTime());
+                }
+                for (final DynamicTable table : schema.getDynamicTables()) {
+                    ownedMember(rows, listed, owner, granteeKind, "DYNAMIC_TABLE", schema, table.getName(),
+                        table.getOwner(), table.getCreatedTime());
+                }
+                for (final Sequence sequence : schema.getSequences()) {
+                    ownedMember(rows, listed, owner, granteeKind, "SEQUENCE", schema, sequence.getName(),
+                        sequence.getOwner(), sequence.getCreatedTime());
+                }
+                for (final Stage stage : schema.getStages()) {
+                    ownedMember(rows, listed, owner, granteeKind, "STAGE", schema, stage.getName(), stage.getOwner(),
+                        stage.getCreatedTime());
+                }
+                for (final FileFormat format : schema.getFileFormats()) {
+                    ownedMember(rows, listed, owner, granteeKind, "FILE_FORMAT", schema, format.getName(),
+                        format.getOwner(), format.getCreatedTime());
+                }
+                for (final Pipe pipe : schema.getPipes()) {
+                    ownedMember(rows, listed, owner, granteeKind, "PIPE", schema, pipe.getName(), pipe.getOwner(),
+                        pipe.getCreatedTime());
+                }
+                for (final Stream stream : schema.getStreams()) {
+                    if (owner.equals(stream.getOwner())) {
+                        add(rows, listed, granteeKind, owner, "STREAM",
+                            GrantNames.spelled("STREAM", schema.qualifiedName(stream.getName())),
+                            ShowResultHelpers.createdOn(stream.getCreatedAt()));
+                    }
+                }
+                for (final Task task : schema.getTasks()) {
+                    if (owner.equals(task.getOwner())) {
+                        add(rows, listed, granteeKind, owner, "TASK",
+                            GrantNames.spelled("TASK", schema.qualifiedName(task.getName())),
+                            ShowResultHelpers.createdOn(task.getCreatedAt()));
+                    }
+                }
+                for (final Function function : schema.getFunctions()) {
+                    ownedRoutine(rows, listed, owner, granteeKind, QueryExecutor.functionGrant(schema, function));
+                }
+                for (final Procedure procedure : schema.getProcedures()) {
+                    ownedRoutine(rows, listed, owner, granteeKind, QueryExecutor.procedureGrant(schema, procedure));
+                }
+            }
+        }
+    }
+
+    private void owned(final List<Row> rows, final Set<String> listed, final String owner, final String granteeKind,
+                       final String kind, final String name, final String objectOwner, final Instant created) {
+        if (owner.equals(objectOwner)) {
+            add(rows, listed, granteeKind, owner, kind, GrantNames.spelled(kind, name),
+                ShowResultHelpers.createdOn(created));
+        }
+    }
+
+    private void ownedMember(final List<Row> rows, final Set<String> listed, final String owner,
+                             final String granteeKind, final String kind, final Schema schema, final String name,
+                             final String objectOwner, final Instant created) {
+        owned(rows, listed, owner, granteeKind, kind, schema.qualifiedName(name), objectOwner, created);
+    }
+
+    /** A routine overload, named with its argument types as its grants name it. */
+    private void ownedRoutine(final List<Row> rows, final Set<String> listed, final String owner,
+                              final String granteeKind, final GrantedObject routine) {
+        if (owner.equals(routine.getOwner())) {
+            add(rows, listed, granteeKind, owner, routine.getKind(), routine.getName(),
+                ShowResultHelpers.createdOn(routine.getCreatedTime()));
+        }
+    }
+
+    private static void add(final List<Row> rows, final Set<String> listed, final String granteeKind,
+                            final String owner, final String kind, final String name, final Object created) {
+        if (listed.add(kind + "|" + name)) {
+            rows.add(new Row(Arrays.<Object>asList(created, Privilege.OWNERSHIP.displayName(), kind, name,
+                granteeKind, owner, "true", owner)));
+        }
     }
 
     /**

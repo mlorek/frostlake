@@ -74,6 +74,12 @@ public class Transaction {
     private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
     /** The statement a lock refusal names for a table this transaction only inserted into, by table. */
     private final Map<String, String> insertLockIds = new HashMap<>();
+
+    /** The table a statement of this transaction waits for, by its storage name upper-cased, or null. */
+    private volatile String waitingFor;
+
+    /** The query ID of the statement that waits, which SHOW LOCKS and its refusal name. */
+    private volatile String waitingQueryId;
     /** The number of the session that began the transaction — SHOW TRANSACTIONS' and SHOW LOCKS'
      *  session cell — or null for a transaction begun with no session context wired. */
     private volatile Long sessionNumber;
@@ -332,6 +338,34 @@ public class Transaction {
             insertLockIds.put(key, named);
         }
         return named;
+    }
+
+    /**
+     * A statement of this transaction waits for another transaction's lock on a table: SHOW LOCKS lists the lock as
+     * WAITING, with the statement's query ID, until the statement takes the lock or gives up (live-verified).
+     *
+     * @param fullyQualifiedName the table's storage name
+     * @param queryId            the waiting statement's query ID
+     */
+    public void beginWaiting(final String fullyQualifiedName, final String queryId) {
+        waitingQueryId = queryId;
+        waitingFor = fullyQualifiedName.toUpperCase(Locale.ROOT);
+    }
+
+    /** The waiting statement took its lock or gave up. */
+    public void endWaiting() {
+        waitingFor = null;
+        waitingQueryId = null;
+    }
+
+    /** The table a statement of this transaction waits for, upper-cased, or null when none waits. */
+    public String getWaitingFor() {
+        return waitingFor;
+    }
+
+    /** The query ID of the statement that waits, or null when none waits. */
+    public String getWaitingQueryId() {
+        return waitingQueryId;
     }
 
     /** Register the PARTITIONS lock a DML touch takes on a table; the first touch wins the cell. */

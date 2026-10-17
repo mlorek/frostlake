@@ -19,10 +19,14 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.ColumnReferenceCollectWalk;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.StorageEngine;
 
 import java.util.List;
@@ -36,7 +40,10 @@ import java.util.Locale;
  * place of the table's own. A table with no key and no such list is "Invalid clustering keys or table T is not
  * clustered". A key that names no column of the table is an invalid identifier, placed where the account's own
  * statement holds the list: forty-two characters in, on line one, wherever the call stands. A second argument that
- * is no such list — a bare name, an empty text, NULL, a number — is not read.
+ * is no such list — a bare name, an empty text, NULL, a number — is not read. SYSTEM$CLUSTERING_DEPTH's third
+ * argument is a predicate the rows are filtered by, compiled in a statement of the account's own after the table's
+ * name and the key list, the table's own when none is given: a fault in it is placed fifty-six characters in, after
+ * both as written, and a predicate no row meets gives the depth of no partition.
  *
  * <pre>
  *   SYSTEM$CLUSTERING_DEPTH('t')              1.0, and 0.0 for a table with no row
@@ -51,6 +58,12 @@ public final class ClusteringStatistics {
     /** Where the key list starts in the statement the account compiles it in. */
     private static final int KEY_LIST_COLUMN = 42;
 
+    /** Where a predicate starts in the statement the account compiles it in, the table's and the keys' text aside. */
+    private static final int PREDICATE_COLUMN = 56;
+
+    /** What the predicate follows in the statement it is compiled in here. */
+    private static final String WHERE = " WHERE ";
+
     /** The report of SYSTEM$CLUSTERING_INFORMATION: its keys, its partition count and its depth. */
     private static final String REPORT = """
         {
@@ -63,10 +76,12 @@ public final class ClusteringStatistics {
           "clustering_errors" : [ ]
         }""";
 
+    private final String table;
     private final String keys;
     private final boolean populated;
 
-    private ClusteringStatistics(final String keys, final boolean populated) {
+    private ClusteringStatistics(final String table, final String keys, final boolean populated) {
+        this.table = table;
         this.keys = keys;
         this.populated = populated;
     }
@@ -77,10 +92,37 @@ public final class ClusteringStatistics {
      * @param catalog the catalog
      * @param storage the storage that tells whether the table holds a row
      * @param args    the call's arguments
+     * @param runner  what runs the query a predicate is compiled in
      * @return the depth
      */
-    public static Double depth(final Catalog catalog, final StorageEngine storage, final List<Object> args) {
-        return Double.valueOf(read(catalog, storage, args, false).populated ? 1.0 : 0.0);
+    public static Double depth(final Catalog catalog, final StorageEngine storage, final List<Object> args,
+                               final QueryRunner runner) {
+        final ClusteringStatistics read = read(catalog, storage, args, false);
+        final boolean filtered = args.size() > 2 && args.get(2) != null && runner != null;
+        return Double.valueOf((filtered ? read.meets(String.valueOf(args.get(2)), runner) : read.populated) ? 1.0
+            : 0.0);
+    }
+
+    /** Whether a row of the table meets the predicate, compiled where the account compiles it. */
+    private boolean meets(final String predicate, final QueryRunner runner) {
+        final StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ").append(table);
+        final int column = PREDICATE_COLUMN + table.length() + keys.length();
+        while (sql.length() < column - WHERE.length()) {
+            sql.append(' ');
+        }
+        sql.append(WHERE).append(predicate);
+        // A statement of its own, placed from its own first character, and one query and nothing else: a statement
+        // after a semicolon is refused as TO_QUERY refuses one.
+        final ResultSet counted;
+        final SourcePosition displaced = ExpressionSource.begin(null);
+        try {
+            counted = runner.runQuery(ToQueryText.requireQuery(sql.toString()));
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+        final Object rows = counted == null || counted.getRows().isEmpty() ? null
+            : counted.getRows().get(0).getValue(0);
+        return rows instanceof Number && ((Number) rows).longValue() > 0;
     }
 
     /**
@@ -117,7 +159,8 @@ public final class ClusteringStatistics {
         if (named == null) {
             throw new RuntimeException("null argument for table name");
         }
-        final String[] parts = SqlIdentifiers.canonicalTextParts(named.toString().replaceAll("^'|'$", "").trim());
+        final String writtenName = named.toString().replaceAll("^'|'$", "");
+        final String[] parts = SqlIdentifiers.canonicalTextParts(writtenName.trim());
         if (parts.length > 3) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
@@ -143,7 +186,7 @@ public final class ClusteringStatistics {
         }
         final boolean populated = storage != null && storage.getTableStorage(
             QualifiedName.key(home.getDatabaseName(), home.getName(), table.getName())).getRowCount() > 0;
-        return new ClusteringStatistics(keys, populated);
+        return new ClusteringStatistics(writtenName, keys, populated);
     }
 
     /** The second argument when it is a list in parentheses that holds something, as written; null otherwise. */

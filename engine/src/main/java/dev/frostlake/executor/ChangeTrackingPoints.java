@@ -92,6 +92,22 @@ final class ChangeTrackingPoints {
      * @param inQuery whether a query's CHANGES clause wrote it, rather than a stream's definition
      */
     static void requireRepeatable(final FrostlakeParser.TimeTravelPointContext point, final boolean inQuery) {
+        refuseMoving(point, inQuery ? " (inside a view)." : "");
+    }
+
+    /**
+     * Refuses a point of a CHANGES clause over a view that reads a function whose value moves, the sentence closing
+     * with the view's name: {@code (inside view 'DB.S.V').} (live-verified).
+     *
+     * @param point    the point
+     * @param viewName the view's name in full
+     */
+    static void requireRepeatable(final FrostlakeParser.TimeTravelPointContext point, final String viewName) {
+        refuseMoving(point, " (inside view '" + viewName + "').");
+    }
+
+    /** Refuses a point that reads a function whose value moves, the sentence closed by {@code closing}. */
+    private static void refuseMoving(final FrostlakeParser.TimeTravelPointContext point, final String closing) {
         if (point == null || point.STREAM() != null || point.expression() == null) {
             return;
         }
@@ -102,7 +118,7 @@ final class ChangeTrackingPoints {
         final String written = moving.getText().toUpperCase(Locale.ROOT);
         final String detail = "Query contains time travel to a version containing function '" + MOVING.get(written)
             + "', but change tracking is not supported on queries with non-deterministic functions in versions."
-            + (inQuery ? " (inside a view)." : "");
+            + closing;
         final Integer place = REWRITTEN_PLACE.get(written);
         if (place != null) {
             throw new RuntimeException(SqlCompilationError.PREFIX + " line 1 at position " + place + ":\n" + detail);

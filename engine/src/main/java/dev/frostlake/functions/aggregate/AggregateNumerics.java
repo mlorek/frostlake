@@ -120,6 +120,153 @@ public final class AggregateNumerics {
         return sumOfPartials(partials, variantArgument, rowWise);
     }
 
+    /**
+     * SUM over every cumulative RANGE frame of one partition at once: the sum through each peer group, each exactly
+     * as {@link #windowSum} reads that frame on its own. The groups join one running sum in turn, so the partition
+     * costs one pass rather than one per row. A refusal a running total meets stands for its group and every later
+     * one, whose frames all read the row it was met at.
+     *
+     * @param groups the partition's values, peer group by peer group, in partition order
+     * @param variantArgument whether the argument expression is statically VARIANT-typed
+     * @return each group's frame sum, or the refusal it meets, in group order
+     */
+    public static List<Object> cumulativeWindowSums(final List<? extends Iterable<Object>> groups,
+                                                    final boolean variantArgument) {
+        final List<Object> sums = new ArrayList<Object>(groups.size());
+        boolean any = false;
+        boolean anyDouble = variantArgument;
+        boolean anyDecimalScale = false;
+        final PartialFloatSum doubleSum = new PartialFloatSum();
+        BigDecimal decimalSum = BigDecimal.ZERO;
+        RuntimeException refused = null;
+        for (final Iterable<Object> group : groups) {
+            if (refused == null) {
+                try {
+                    for (final Object v : group) {
+                        if (v == null) {
+                            continue;
+                        }
+                        any = true;
+                        if (v instanceof VariantValue) {
+                            anyDouble = true;
+                            doubleSum.add(variantDouble((VariantValue) v));
+                        } else if (isApproximateInput(v)) {
+                            anyDouble = true;
+                            doubleSum.add(NumericAggregateInput.asDouble(v));
+                        } else {
+                            final BigDecimal fixed = fixedPointValue(v);
+                            if (fixed != null) {
+                                if (fixed.scale() > 0) {
+                                    anyDecimalScale = true;
+                                }
+                                decimalSum = decimalSum.add(fixed);
+                                SumAccumulator.requireSumFits(decimalSum);
+                                doubleSum.add(fixed.doubleValue());
+                            } else {
+                                anyDouble = true;
+                                doubleSum.add(toDouble(v));
+                            }
+                        }
+                    }
+                } catch (final RuntimeException refusal) {
+                    refused = refusal;
+                }
+            }
+            if (refused != null) {
+                sums.add(refused);
+                continue;
+            }
+            doubleSum.endPartial();
+            if (!any) {
+                sums.add(null);
+            } else if (anyDouble) {
+                sums.add(Double.valueOf(doubleSum.result()));
+            } else if (anyDecimalScale) {
+                sums.add(decimalSum);
+            } else {
+                final BigInteger integralSum = decimalSum.toBigIntegerExact();
+                sums.add(integralSum.bitLength() < 63 ? (Object) Long.valueOf(integralSum.longValue()) : integralSum);
+            }
+        }
+        return sums;
+    }
+
+    /**
+     * AVG over every cumulative RANGE frame of one partition at once, each exactly as {@link #windowAvg} reads that
+     * frame on its own at a cumulative window's scale (see {@link #cumulativeWindowSums}). A quotient's refusal stands
+     * for its own group alone.
+     *
+     * @param groups the partition's values, peer group by peer group, in partition order
+     * @param variantArgument whether the argument expression is statically VARIANT-typed
+     * @return each group's frame average, or the refusal it meets, in group order
+     */
+    public static List<Object> cumulativeWindowAvgs(final List<? extends Iterable<Object>> groups,
+                                                    final boolean variantArgument) {
+        final List<Object> averages = new ArrayList<Object>(groups.size());
+        boolean any = false;
+        boolean anyDouble = variantArgument;
+        int maxScale = 0;
+        BigDecimal decimalSum = BigDecimal.ZERO;
+        final PartialFloatSum doubleSum = new PartialFloatSum();
+        long count = 0L;
+        RuntimeException refused = null;
+        for (final Iterable<Object> group : groups) {
+            if (refused == null) {
+                try {
+                    for (final Object v : group) {
+                        if (v == null) {
+                            continue;
+                        }
+                        any = true;
+                        count++;
+                        if (v instanceof VariantValue || isApproximateInput(v)) {
+                            anyDouble = true;
+                            doubleSum.add(NumericAggregateInput.asDouble(v));
+                        } else {
+                            final BigDecimal fixed = fixedPointValue(v);
+                            if (fixed == null) {
+                                anyDouble = true;
+                                doubleSum.add(toDouble(v));
+                            } else {
+                                decimalSum = decimalSum.add(fixed);
+                                SumAccumulator.requireSumFits(decimalSum);
+                                doubleSum.add(fixed.doubleValue());
+                                if (fixed.scale() > maxScale) {
+                                    maxScale = fixed.scale();
+                                }
+                            }
+                        }
+                    }
+                } catch (final RuntimeException refusal) {
+                    refused = refusal;
+                }
+            }
+            if (refused != null) {
+                averages.add(refused);
+                continue;
+            }
+            doubleSum.endPartial();
+            if (!any) {
+                averages.add(null);
+            } else if (anyDouble) {
+                averages.add(Double.valueOf(doubleSum.result() / count));
+            } else {
+                try {
+                    final int quotientScale = averageScale(maxScale);
+                    final BigDecimal quotient = decimalSum.divide(BigDecimal.valueOf(count), quotientScale,
+                        RoundingMode.HALF_UP);
+                    if (quotient.precision() > 38 && NumericRangeRefusal.outsideSb16Window(quotient.unscaledValue())) {
+                        throw new RawRangeOverflow(RawOverflowKind.QUOTIENT, quotient, quotientScale);
+                    }
+                    averages.add(quotient);
+                } catch (final RuntimeException quotientRefused) {
+                    averages.add(quotientRefused);
+                }
+            }
+        }
+        return averages;
+    }
+
     private static Object sumOfPartials(final List<? extends Iterable<Object>> partials,
                                         final boolean variantArgument, final boolean rowWise) {
         // Three tiers, live-verified: integral inputs sum to an integer; FIXED-POINT decimals (incl.
@@ -521,6 +668,42 @@ public final class AggregateNumerics {
      */
     public static Object percentileCont(final Iterable<Object> values, final double fraction,
                                         final boolean approximateArgument) {
+        return percentileCont(values, fraction, approximateArgument, 0);
+    }
+
+    /**
+     * {@link #percentileCont(Iterable, double, boolean)} over values a VARIANT's JSON nulls follow, each sorting after
+     * every number: the place the fraction reads counts them, and a place on one, or between a number and one,
+     * answers NULL — MEDIAN over {JSON null, 3} is NULL, over {JSON null, 3, 5} 5 (live-verified).
+     *
+     * @param values              the aggregated numbers, in group order
+     * @param fraction            the percentile, between 0 and 1, counted upwards
+     * @param approximateArgument whether the argument is declared FLOAT / DOUBLE / REAL
+     * @param trailingNulls       how many JSON nulls follow the numbers
+     * @return the interpolated value, or null for an empty set or a place the nulls take
+     */
+    public static Object percentileCont(final Iterable<Object> values, final double fraction,
+                                        final boolean approximateArgument, final int trailingNulls) {
+        if (trailingNulls > 0) {
+            int numbers = 0;
+            for (final Object v : values) {
+                numbers += v == null ? 0 : 1;
+            }
+            final double place = fraction * (numbers + trailingNulls - 1);
+            if (Math.ceil(place) > numbers - 1) {
+                return null;
+            }
+            return interpolated(values, 0d, approximateArgument, place);
+        }
+        return interpolated(values, fraction, approximateArgument, -1d);
+    }
+
+    /**
+     * The interpolation PERCENTILE_CONT reads: at {@code place} among the sorted numbers when it is given (not
+     * negative), else at the fraction's place.
+     */
+    private static Object interpolated(final Iterable<Object> values, final double fraction,
+                                       final boolean approximateArgument, final double place) {
         final List<BigDecimal> exact = new ArrayList<>();
         final List<Double> approximate = new ArrayList<>();
         boolean anyDouble = approximateArgument;
@@ -544,7 +727,7 @@ public final class AggregateNumerics {
         }
         if (anyDouble) {
             Collections.sort(approximate);
-            final double index = fraction * (approximate.size() - 1);
+            final double index = place >= 0 ? place : fraction * (approximate.size() - 1);
             final int low = (int) index;
             final int high = Math.min(low + 1, approximate.size() - 1);
             final double weight = index - low;
@@ -552,7 +735,7 @@ public final class AggregateNumerics {
                 + approximate.get(high).doubleValue() * weight;
         }
         Collections.sort(exact);
-        final double index = fraction * (exact.size() - 1);
+        final double index = place >= 0 ? place : fraction * (exact.size() - 1);
         final int low = (int) index;
         final int high = Math.min(low + 1, exact.size() - 1);
         final BigDecimal weight = BigDecimal.valueOf(index - low);
@@ -572,6 +755,22 @@ public final class AggregateNumerics {
      * @return the selected input value, or null for an empty set
      */
     public static Object percentileDisc(final Iterable<Object> values, final double fraction) {
+        return percentileDisc(values, fraction, null, 0);
+    }
+
+    /**
+     * {@link #percentileDisc(Iterable, double)} over values a VARIANT's JSON nulls follow, each sorting after every
+     * number: the place the fraction picks counts them, and a place a null takes answers that null —
+     * PERCENTILE_DISC(0.9) over {JSON null, 3, 5} is the null (live-verified).
+     *
+     * @param values        the aggregated numbers, in group order
+     * @param fraction      the percentile, between 0 and 1, counted upwards
+     * @param jsonNull      one of the trailing JSON nulls, or null when there are none
+     * @param trailingNulls how many JSON nulls follow the numbers
+     * @return the selected value, or null for an empty set
+     */
+    public static Object percentileDisc(final Iterable<Object> values, final double fraction, final Object jsonNull,
+                                        final int trailingNulls) {
         final List<Object> present = new ArrayList<>();
         for (final Object v : values) {
             if (v != null) {
@@ -583,7 +782,7 @@ public final class AggregateNumerics {
             }
         }
         if (present.isEmpty()) {
-            return null;
+            return trailingNulls > 0 ? jsonNull : null;
         }
         Collections.sort(present, new Comparator<Object>() {
             @Override
@@ -596,7 +795,10 @@ public final class AggregateNumerics {
                 return Double.compare(toDouble(left), toDouble(right));
             }
         });
-        final int index = (int) Math.ceil(fraction * present.size()) - 1;
+        final int index = (int) Math.ceil(fraction * (present.size() + trailingNulls)) - 1;
+        if (trailingNulls > 0 && index >= present.size()) {
+            return jsonNull;
+        }
         return present.get(Math.max(0, Math.min(index, present.size() - 1)));
     }
 
@@ -608,6 +810,18 @@ public final class AggregateNumerics {
      */
     public static Object medianOverCoerced(final Iterable<Object> values) {
         return percentileContOverCoerced(values, 0.5d);
+    }
+
+    /**
+     * {@link #medianOverCoerced(Iterable)} with JSON nulls after the values (see
+     * {@link #percentileContOverCoerced(Iterable, double, int)}).
+     *
+     * @param values        the aggregated key values, in group order
+     * @param trailingNulls how many JSON nulls follow them
+     * @return the median, or null
+     */
+    public static Object medianOverCoerced(final Iterable<Object> values, final int trailingNulls) {
+        return percentileContOverCoerced(values, 0.5d, trailingNulls);
     }
 
     /**
@@ -625,11 +839,29 @@ public final class AggregateNumerics {
      * @return the interpolated value at scale three, or null for an empty set
      */
     public static Object percentileContOverCoerced(final Iterable<Object> values, final double fraction) {
+        return percentileContOverCoerced(values, fraction, 0);
+    }
+
+    /**
+     * {@link #percentileContOverCoerced(Iterable, double)} over a VARIANT whose JSON nulls sort after every value:
+     * the place counts them, and one on or beside a null answers NULL — MEDIAN over {JSON null, 3} is NULL, over
+     * {JSON null, 3, 5} 5.000 (live-verified).
+     *
+     * @param values        the aggregated key values, in group order
+     * @param fraction      the percentile, between 0 and 1, counted upwards
+     * @param trailingNulls how many JSON nulls follow them
+     * @return the interpolated value at scale three, or null
+     */
+    public static Object percentileContOverCoerced(final Iterable<Object> values, final double fraction,
+                                                   final int trailingNulls) {
         final List<Object> ordered = orderedByOwnType(values);
         if (ordered.isEmpty()) {
             return null;
         }
-        final double index = fraction * (ordered.size() - 1);
+        final double index = fraction * (ordered.size() + trailingNulls - 1);
+        if (Math.ceil(index) > ordered.size() - 1) {
+            return null;
+        }
         final int low = (int) index;
         final int high = Math.min(low + 1, ordered.size() - 1);
         final BigDecimal weight = BigDecimal.valueOf(index - low);
@@ -649,11 +881,28 @@ public final class AggregateNumerics {
      * @return the selected value's whole number, or null for an empty set
      */
     public static Object percentileDiscOverCoerced(final Iterable<Object> values, final double fraction) {
+        return percentileDiscOverCoerced(values, fraction, 0);
+    }
+
+    /**
+     * {@link #percentileDiscOverCoerced(Iterable, double)} over a VARIANT whose JSON nulls sort after every value: a
+     * place a null takes answers NULL — PERCENTILE_DISC(0.9) over {JSON null, 3, 5} (live-verified).
+     *
+     * @param values        the aggregated key values, in group order
+     * @param fraction      the percentile, between 0 and 1, counted upwards
+     * @param trailingNulls how many JSON nulls follow them
+     * @return the selected value's whole number, or null
+     */
+    public static Object percentileDiscOverCoerced(final Iterable<Object> values, final double fraction,
+                                                   final int trailingNulls) {
         final List<Object> ordered = orderedByOwnType(values);
         if (ordered.isEmpty()) {
             return null;
         }
-        final int index = (int) Math.ceil(fraction * ordered.size()) - 1;
+        final int index = (int) Math.ceil(fraction * (ordered.size() + trailingNulls)) - 1;
+        if (index >= ordered.size()) {
+            return null;
+        }
         final Object picked = ordered.get(Math.max(0, Math.min(index, ordered.size() - 1)));
         return Long.valueOf(wholeNumberOf(picked).longValueExact());
     }

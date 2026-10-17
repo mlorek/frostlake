@@ -62,9 +62,11 @@ final class ConstantTextArgument {
             return value == null || value instanceof String;
         }
         if (argument instanceof BinaryOperationExpression) {
+            // A side the plan settles to a text is one too: IFF(NULL, 'a', 'b') || 'c' (live-verified).
             final BinaryOperationExpression join = (BinaryOperationExpression) argument;
             return join.getOperator() == BinaryOperator.CONCAT
-                && isConstant(join.getLeft(), evaluator) && isConstant(join.getRight(), evaluator);
+                && (isConstant(join.getLeft(), evaluator) || FoldedVariableName.folds(join.getLeft()))
+                && (isConstant(join.getRight(), evaluator) || FoldedVariableName.folds(join.getRight()));
         }
         if (!(argument instanceof FunctionCallExpression)) {
             return false;

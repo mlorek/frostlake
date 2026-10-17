@@ -131,6 +131,40 @@ public final class ProjectionLineage {
         return policies;
     }
 
+    /**
+     * The policed columns an expression hands out, each with the relation holding it: the columns
+     * {@link #policiesOf} reads its policies from, one entry a column, in the same order.
+     *
+     * @param expression the expression as written, or null
+     * @param sources    the relations it is written over
+     * @return each column with its relation, as {@code {relation, column}}
+     */
+    static List<Object[]> policedColumnsOf(final String expression, final List<Table> sources) {
+        final List<Object[]> columns = new ArrayList<>();
+        if (expression == null) {
+            return columns;
+        }
+        final String handed = withoutUses(expression);
+        Boolean everyColumn = null;
+        for (final Table source : sources) {
+            if (source == null) {
+                continue;
+            }
+            for (final TableColumn column : source.columnsView()) {
+                if (!column.hasProjectionPolicy()) {
+                    continue;
+                }
+                if (everyColumn == null) {
+                    everyColumn = handsOverEveryColumn(handed);
+                }
+                if (everyColumn || ExpressionColumns.references(handed, column.getName())) {
+                    columns.add(new Object[] {source, column});
+                }
+            }
+        }
+        return columns;
+    }
+
     /** The aggregates whose answer is a count, which holds no value of what they read. */
     private static final List<String> COUNTING = List.of("COUNT", "COUNT_IF", "APPROX_COUNT_DISTINCT", "HLL");
 

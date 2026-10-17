@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
@@ -46,8 +47,8 @@ public class JarowinklerSimilarity extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        final int[] s1 = codePoints(args.get(0).toString().toLowerCase(Locale.ROOT));
-        final int[] s2 = codePoints(args.get(1).toString().toLowerCase(Locale.ROOT));
+        final int[] s1 = codePoints(SharedFunctionHelpers.textOf(args.get(0)).toLowerCase(Locale.ROOT));
+        final int[] s2 = codePoints(SharedFunctionHelpers.textOf(args.get(1)).toLowerCase(Locale.ROOT));
         final double jaro = jaro(s1, s2);
         double similarity = jaro;
         if (jaro >= BONUS_THRESHOLD) {

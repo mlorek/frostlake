@@ -47,6 +47,12 @@ public class ObjectDelete extends BuiltInFunction {
         return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
+    /** A structured OBJECT takes string literals naming its fields alone as the keys deleted out of it. */
+    @Override
+    public boolean namesStructuredKeysByLiteral() {
+        return true;
+    }
+
     @Override
     public int getMinArgCount() { return 2; }
     @Override

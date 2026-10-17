@@ -39,11 +39,39 @@ public final class DeferredFault {
     private static final Map<Throwable, Boolean> HELD =
         Collections.synchronizedMap(new WeakHashMap<Throwable, Boolean>());
 
+    /** The held faults a write raises bare, with no DML sentence around them (see {@link #isHeldBare}). */
+    private static final Map<Throwable, Boolean> BARE =
+        Collections.synchronizedMap(new WeakHashMap<Throwable, Boolean>());
+
     private final RuntimeException fault;
 
     public DeferredFault(final RuntimeException fault) {
         this.fault = fault;
         HELD.put(fault, Boolean.TRUE);
+    }
+
+    /**
+     * A cell holding a fault that a write raises as it is: a CALL's answer wider than its RETURNS column, read from
+     * the CALL's scan, is refused bare by an INSERT or a CREATE TABLE … AS SELECT over it (live-verified), where a
+     * view's too-long value is worded as the write's.
+     *
+     * @param fault the fault
+     * @return the cell
+     */
+    public static DeferredFault bare(final RuntimeException fault) {
+        final DeferredFault cell = new DeferredFault(fault);
+        BARE.put(fault, Boolean.TRUE);
+        return cell;
+    }
+
+    /**
+     * Whether a failure is a held fault a write raises bare ({@link #bare}).
+     *
+     * @param failure the failure caught
+     * @return whether it is such a fault
+     */
+    public static boolean isHeldBare(final Throwable failure) {
+        return failure != null && BARE.containsKey(failure);
     }
 
     /**

@@ -27,6 +27,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.BooleanType;
@@ -1340,10 +1341,10 @@ final class SubqueryPlanPrint {
             return " GROUP BY " + String.join(", ", keys);
         }
         for (final FrostlakeParser.GroupByElementContext element : group.groupByElement()) {
-            if (element.expression() == null) {
+            if (KeyContexts.of(element) == null) {
                 return null;
             }
-            final Expression key = new ExpressionAstBuilder().visit(element.expression());
+            final Expression key = new ExpressionAstBuilder().visit(KeyContexts.of(element));
             final Integer ordinal = ordinalOf(key, names.size());
             if (ordinal != null) {
                 keys.add(names.get(ordinal.intValue() - 1));
@@ -1374,7 +1375,7 @@ final class SubqueryPlanPrint {
             printer.watchColumns(bareColumns, writtenQualifiers);
             final List<String> keys = new ArrayList<>();
             for (final FrostlakeParser.OrderItemContext item : order.orderItem()) {
-                final Expression key = new ExpressionAstBuilder().visit(item.expression());
+                final Expression key = new ExpressionAstBuilder().visit(KeyContexts.of(item));
                 final Integer ordinal = ordinalOf(key, names.size());
                 final boolean descending = item.DESC() != null;
                 final boolean nullsFirst = item.FIRST() != null || (item.LAST() == null && descending);

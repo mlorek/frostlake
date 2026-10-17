@@ -16,9 +16,10 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.executor.copy.CopyCommandExecutor;
-import dev.frostlake.executor.copy.CsvEscapes;
 import dev.frostlake.executor.copy.CsvFormatOptions;
+import dev.frostlake.executor.copy.CsvRecordReader;
+import dev.frostlake.executor.copy.JsonNullStripping;
+import dev.frostlake.executor.copy.JsonStageReader;
 import dev.frostlake.executor.copy.StageFileReader;
 import dev.frostlake.executor.copy.StageReaderFactory;
 import dev.frostlake.executor.copy.StagedFileIo;
@@ -43,9 +44,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.StringReader;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -60,6 +63,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.UUID;
 
 /**
  * Query staged files directly — {@code SELECT $1, $2, metadata$filename FROM @stage[/path]
@@ -115,6 +119,10 @@ final class StageQueryExecutor {
         if (kept.get("TYPE") != null) {
             fileFormat = kept.get("TYPE").toUpperCase(Locale.ROOT);
         }
+        // A JSON format's STRIP_OUTER_ARRAY and STRIP_NULL_VALUES read the file as a load reads it (live-verified).
+        final boolean stripOuterArray = "TRUE".equalsIgnoreCase(jsonOption(named, kept, "STRIP_OUTER_ARRAY"));
+        final boolean stripNullValues = "TRUE".equalsIgnoreCase(jsonOption(named, kept, "STRIP_NULL_VALUES"));
+        final boolean replaceInvalid = "TRUE".equalsIgnoreCase(jsonOption(named, kept, "REPLACE_INVALID_CHARACTERS"));
         csvOptions.takeAll(kept);
         csvOptions.takeListedNullIf(kept.get("NULL_IF"));
         if (kept.get("SKIP_HEADER") != null) {
@@ -122,9 +130,6 @@ final class StageQueryExecutor {
         }
         final String pattern = arguments.pattern();
 
-        // A delimiter of NONE splits nothing: the stand-in is a character no file holds.
-        final char delimiter = csvOptions.getFieldDelimiter() == null || csvOptions.getFieldDelimiter().isEmpty()
-            ? '\u0000' : csvOptions.getFieldDelimiter().charAt(0);
         final Character enclosure = csvOptions.getEnclosure();
         final boolean emptyFieldAsNull = csvOptions.isEmptyFieldAsNull();
 
@@ -148,41 +153,54 @@ final class StageQueryExecutor {
             long rowNumber = 0;
             try {
                 if (recordReader != null) {
-                    for (final JsonNode record : recordReader.readRecords(file)) {
+                    // A JSON file's refusal of a byte that is no UTF-8 names it under its stage's storage path.
+                    final List<JsonNode> records = recordReader instanceof JsonStageReader
+                        ? ((JsonStageReader) recordReader).readRecords(file, stripOuterArray, replaceInvalid,
+                            storedName(staged, relativeName))
+                        : recordReader.readRecords(file);
+                    for (final JsonNode record : records) {
+                        if (stripNullValues) {
+                            JsonNullStripping.strip(record);
+                        }
                         fieldRows.add(new ArrayList<>(Arrays.asList((Object) record.toString())));
                         fileNames.add(relativeName);
                         rowNumbers.add(++rowNumber);
                     }
                 } else {
-                    // Compressed files read through, as COPY reads them: a gzipped unload is a CSV file too.
-                    // RECORD_DELIMITER = NONE makes the whole file one record, and FIELD_DELIMITER = NONE a
-                    // record one field; an escaped line break joins the lines it was split over.
-                    final boolean wholeFile = csvOptions.getRecordDelimiter() == null;
-                    final List<String> lines = wholeFile ? Arrays.asList(readText(file))
-                        : CsvEscapes.joined(readLines(file), csvOptions.getEscapeUnenclosed());
-                    for (int ln = skipHeader; ln < lines.size(); ln++) {
-                        if (lines.get(ln).isEmpty() && !wholeFile) {
-                            continue;
-                        }
-                        final List<Boolean> enclosedEmpty = new ArrayList<>();
-                        final List<String> fields = CsvEscapes.exposed(CopyCommandExecutor.parseCsvLine(
-                            CsvEscapes.shielded(lines.get(ln), delimiter, enclosure, csvOptions.getEscapeUnenclosed(),
-                                csvOptions.getEscape()),
-                            delimiter, enclosure, enclosedEmpty, null, csvOptions.getEscape()),
-                            delimiter, csvOptions.getEscapeUnenclosed());
+                    // Compressed files read through, as COPY reads them: a gzipped unload is a CSV file too. The
+                    // records split as INFER_SCHEMA splits them (see CsvRecordReader): delimiters of any length,
+                    // NONE included, an escaped line break inside a record, and a closing enclosure followed by
+                    // anything but a delimiter refused.
+                    // The file is read in its format's ENCODING, and a byte that set cannot read refuses its field
+                    // unless REPLACE_INVALID_CHARACTERS reads it as U+FFFD (live-verified).
+                    final CsvRecordReader reader = new CsvRecordReader(
+                        new StringReader(StagedFileIo.readMarked(file, csvCharset(csvOptions.getEncoding()))),
+                        relativeName, noneAsNull(csvOptions.getFieldDelimiter()),
+                        noneAsNull(csvOptions.getRecordDelimiter()), enclosure, csvOptions.getEscape(),
+                        csvOptions.getEscapeUnenclosed())
+                        .settlingUnreadable(csvOptions.replacesInvalidCharacters());
+                    reader.skipLines(skipHeader);
+                    final List<Boolean> enclosed = new ArrayList<>();
+                    long fileRow = 0;
+                    List<String> fields = reader.next(-1, ++fileRow, enclosed);
+                    while (fields != null) {
                         width = Math.max(width, fields.size());
                         final List<Object> values = new ArrayList<Object>(fields);
                         for (int f = 0; f < values.size(); f++) {
-                            final boolean enclosedBlank = f < enclosedEmpty.size()
-                                && enclosedEmpty.get(f).booleanValue();
+                            final boolean enclosedBlank = f < enclosed.size() && enclosed.get(f).booleanValue();
                             if (csvOptions.getNullIf().contains(values.get(f))
                                     || emptyFieldAsNull && "".equals(values.get(f)) && !enclosedBlank) {
                                 values.set(f, null);
                             }
                         }
+                        // A field its file's encoding could not read holds its refusal until a query reads it.
+                        for (final Map.Entry<Integer, RuntimeException> fault : reader.unreadableFaults().entrySet()) {
+                            values.set(fault.getKey().intValue() - 1, new DeferredFault(fault.getValue()));
+                        }
                         fieldRows.add(values);
                         fileNames.add(relativeName);
                         rowNumbers.add(++rowNumber);
+                        fields = reader.next(-1, ++fileRow, enclosed);
                     }
                 }
             } catch (final IOException e) {
@@ -346,31 +364,24 @@ final class StageQueryExecutor {
         return column;
     }
 
-    /** A staged file's whole text, decompressed when the file is gzipped. */
-    private static String readText(final Path file) throws IOException {
-        final StringBuilder text = new StringBuilder();
-        try (BufferedReader reader = StagedFileIo.reader(file)) {
-            final char[] buffer = new char[8192];
-            int read = reader.read(buffer);
-            while (read >= 0) {
-                text.append(buffer, 0, read);
-                read = reader.read(buffer);
-            }
-        }
-        return text.toString();
+    /** A delimiter as the reader takes it: null for NONE, which an empty text stands for too. */
+    private static String noneAsNull(final String delimiter) {
+        return delimiter == null || delimiter.isEmpty() ? null : delimiter;
     }
 
-    /** A staged file's lines, decompressed when the file is gzipped. */
-    private static List<String> readLines(final Path file) throws IOException {
-        final List<String> lines = new ArrayList<>();
-        try (BufferedReader reader = StagedFileIo.reader(file)) {
-            String line = reader.readLine();
-            while (line != null) {
-                lines.add(line);
-                line = reader.readLine();
-            }
-        }
-        return lines;
+    /** The character set a CSV format's ENCODING names, UTF-8 when it names none. */
+    private static Charset csvCharset(final String encoding) {
+        final Charset charset = encoding == null ? null : StagedFileIo.charsetFor(encoding);
+        return charset == null ? StandardCharsets.UTF_8 : charset;
+    }
+
+    /**
+     * A staged file as a refusal names it from the stage's storage: {@code stages/<the stage's id>/<file>}, the id
+     * fixed for the stage's directory (live-verified shape).
+     */
+    private static String storedName(final StagePrefix staged, final String relativeName) {
+        final String root = String.valueOf(staged.getRoot());
+        return "stages/" + UUID.nameUUIDFromBytes(root.getBytes(StandardCharsets.UTF_8)) + "/" + relativeName;
     }
 
     /** A stage reference whose stage has a local directory behind it; any other cannot be read. */
@@ -379,5 +390,13 @@ final class StageQueryExecutor {
             throw new RuntimeException("Stage query: cannot resolve stage location " + location);
         }
         return staged;
+    }
+
+    /** A file format option a staged-file query reads: the query's own options' value, else its named format's. */
+    private static String jsonOption(final FileFormat named, final Map<String, String> kept, final String option) {
+        if (kept.get(option) != null) {
+            return kept.get(option);
+        }
+        return named == null ? null : named.getOption(option);
     }
 }

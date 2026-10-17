@@ -35,7 +35,7 @@ public class ConcatWs extends TextArgumentFunction {
         if (args.get(0) == null && args.size() > 2) {
             return null;
         }
-        final String sep = args.get(0) == null ? "" : args.get(0).toString();
+        final String sep = args.get(0) == null ? "" : SharedFunctionHelpers.textOf(args.get(0));
         final StringBuilder result = new StringBuilder();
         boolean first = true;
         for (int i = 1; i < args.size(); i++) {

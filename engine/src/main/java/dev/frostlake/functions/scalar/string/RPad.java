@@ -46,9 +46,9 @@ public class RPad extends TextArgumentFunction {
         if (args.get(0) instanceof BinaryValue) {
             return padBytes((BinaryValue) args.get(0), args);
         }
-        final String str = args.get(0).toString();
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
         final int targetLength = wholeNumber(args.get(1));
-        final String padStr = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : " ";
+        final String padStr = args.size() > 2 && args.get(2) != null ? SharedFunctionHelpers.textOf(args.get(2)) : " ";
 
         // Live-verified: an input longer than the target length is TRUNCATED to it (RPAD('world', 3, '*')
         // is 'wor'), not returned unchanged.

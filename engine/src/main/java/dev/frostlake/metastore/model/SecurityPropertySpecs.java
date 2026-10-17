@@ -23,8 +23,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The documented properties of network rules, network policies, password policies and secrets, and which secret
- * types take which of them.
+ * The documented properties of network rules, network policies, password policies, session policies and secrets,
+ * and which secret types take which of them.
  */
 public final class SecurityPropertySpecs {
 
@@ -32,6 +32,22 @@ public final class SecurityPropertySpecs {
     public static final List<String> SECRET_TYPES = Collections.unmodifiableList(Arrays.asList(
         "OAUTH2", "CLOUD_PROVIDER_TOKEN", "PASSWORD", "GENERIC_STRING", "SYMMETRIC_KEY",
         "WORKLOAD_IDENTITY_FEDERATION"));
+
+    /** The session policy property naming the secondary roles a session may activate. */
+    public static final String ALLOWED_SECONDARY_ROLES = "ALLOWED_SECONDARY_ROLES";
+
+    /** The session policy property naming the secondary roles a session may not activate. */
+    public static final String BLOCKED_SECONDARY_ROLES = "BLOCKED_SECONDARY_ROLES";
+
+    /**
+     * The row a session policy's description and DDL end on: a scope applied to an agent's sessions, which no
+     * statement here sets.
+     */
+    public static final String AGENT_RESTRICTED_SESSION_SCOPE = "AGENT_RESTRICTED_SESSION_SCOPE";
+
+    /** What DESCRIBE SESSION POLICY says of {@link #AGENT_RESTRICTED_SESSION_SCOPE}. */
+    public static final String AGENT_RESTRICTED_SESSION_SCOPE_DESCRIPTION =
+        "Name of a Restricted Session Scope applied to sessions attributed to an agent identity.";
 
     private static final Map<SecurityObjectKind, List<SecurityPropertySpec>> SPECS =
         new EnumMap<>(SecurityObjectKind.class);
@@ -85,6 +101,27 @@ public final class SecurityPropertySpecs {
         add(passwordPolicy, comment());
         SPECS.put(SecurityObjectKind.PASSWORD_POLICY, passwordPolicy);
 
+        final List<SecurityPropertySpec> sessionPolicy = new ArrayList<>();
+        add(sessionPolicy, minutes("SESSION_IDLE_TIMEOUT_MINS", 5, 1440, "240", """
+            Number of minutes of idle time in a non-UI session (e.g. driver session) before the user must \
+            reauthenticate."""));
+        add(sessionPolicy, minutes("SESSION_UI_IDLE_TIMEOUT_MINS", 5, 1440, "1080", """
+            Number of minutes of idle time in a UI session before the user must reauthenticate."""));
+        add(sessionPolicy, minutes("SESSION_MAX_LIFESPAN_MINS", 0, 43200, "0", """
+            Maximum lifespan in minutes for a non-UI session (e.g. driver session) before the user must \
+            reauthenticate. 0 means no maximum lifespan enforcement."""));
+        add(sessionPolicy, minutes("SESSION_UI_MAX_LIFESPAN_MINS", 0, 43200, "0", """
+            Maximum lifespan in minutes for a UI session before the user must reauthenticate. 0 means no maximum \
+            lifespan enforcement."""));
+        add(sessionPolicy, new SecurityPropertySpec(ALLOWED_SECONDARY_ROLES, SecurityPropertyType.TEXT_LIST)
+            .describedAs("List of secondary roles allowed to be activated in a user session.").alterable()
+            .unsettable());
+        add(sessionPolicy, new SecurityPropertySpec(BLOCKED_SECONDARY_ROLES, SecurityPropertyType.TEXT_LIST)
+            .describedAs("List of secondary roles blocked from activation in a user session.").alterable()
+            .unsettable());
+        add(sessionPolicy, comment());
+        SPECS.put(SecurityObjectKind.SESSION_POLICY, sessionPolicy);
+
         final List<SecurityPropertySpec> secret = new ArrayList<>();
         add(secret, new SecurityPropertySpec("TYPE", SecurityPropertyType.CHOICE)
             .choices(SECRET_TYPES.toArray(new String[0])));
@@ -107,6 +144,13 @@ public final class SecurityPropertySpecs {
         specs.add(spec);
     }
 
+    /** An alterable, unsettable number of minutes within a closed range, with its default and its description. */
+    private static SecurityPropertySpec minutes(final String name, final long lowest, final long highest,
+                                                final String defaultValue, final String description) {
+        return new SecurityPropertySpec(name, SecurityPropertyType.INTEGER).range(lowest, highest)
+            .defaults(defaultValue).describedAs(description).alterable().unsettable();
+    }
+
     private static SecurityPropertySpec comment() {
         return new SecurityPropertySpec("COMMENT", SecurityPropertyType.TEXT)
             .describedAs("user comment associated to an object in the dictionary").alterable().unsettable();
@@ -123,6 +167,24 @@ public final class SecurityPropertySpecs {
             if (spec.getName().equals(name)) {
                 return spec;
             }
+        }
+        return null;
+    }
+
+    /**
+     * The value a property holds when a CREATE leaves it out or an ALTER unsets it: a network rule's value list and
+     * a session policy's blocked roles are empty, its allowed roles are {@code ('ALL')}, and any other property holds
+     * none.
+     *
+     * @param name the property's name
+     * @return the value, a fresh list for a list property
+     */
+    public static Object unsetValue(final String name) {
+        if ("VALUE_LIST".equals(name) || BLOCKED_SECONDARY_ROLES.equals(name)) {
+            return new ArrayList<String>();
+        }
+        if (ALLOWED_SECONDARY_ROLES.equals(name)) {
+            return new ArrayList<String>(Collections.singletonList("ALL"));
         }
         return null;
     }

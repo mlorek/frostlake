@@ -1615,6 +1615,11 @@ final class SignatureRecovery {
         if (type == SignatureTokens.BACKTICKED_NAME) {
             return QUOTED;
         }
+        if (type == FrostlakeParser.TABLE_QUERY) {
+            // Read from a signature's own '(', the lexer types (TABLE x) as a query's TABLE: here it is the item's
+            // word.
+            return TABLE;
+        }
         if (type == FrostlakeLexer.IDENTIFIER) {
             final String word = token.getText().toLowerCase(Locale.ROOT);
             if ("trigger".equals(word) || "whenever".equals(word)) {

@@ -217,11 +217,16 @@ public final class ShowModifierProfile {
             return sorted(false, false, NO_TERSE, null, false);
         }
         if (ctx.MASKING() != null && ctx.POLICIES() != null) {
-            // LIMIT 1 → 1 of 2 masking policies; STARTS WITH 'ZZZ' → none. FROM 'name' starts at the name.
-            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.AT_NAME);
+            // LIMIT 1 → 1 of 2 masking policies; STARTS WITH 'ZZZ' → none. FROM 'name' is read and starts
+            // nothing, in a schema or across a database.
+            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.IGNORED);
         }
         if (ctx.ROW() != null && ctx.POLICIES() != null) {
-            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.AT_NAME);
+            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.IGNORED);
+        }
+        if (ctx.unmodelledListingKind() != null && ctx.unmodelledListingKind().SESSION() != null) {
+            // LIMIT 1 → 1 of 2 session policies, FROM the first name that one; TERSE keeps every column.
+            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.IGNORED);
         }
         if (ctx.TABLES() != null) {
             // 6 tables, LIMIT 2 → the first 2 by name; STARTS WITH 'T' → the 4 uppercase ones, excluding

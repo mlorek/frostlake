@@ -111,7 +111,7 @@ public final class DataTypeParser {
             final DataType mapKey = nested(ctx.mapKey, ctx.mapKeyParameters, bareStringDefault);
             final DataType mapValue = nested(ctx.mapValue, ctx.mapValueParameters, bareStringDefault);
             IntervalTypeSpec.refuseNested(mapValue, "MAP with value type");
-            return new MapType(mapKey, mapValue);
+            return new MapType(mapKey, mapValue, ctx.NOT() != null);
         }
         if (ctx.GEOGRAPHY() != null) return GeographyType.GEOGRAPHY;
         if (ctx.GEOMETRY() != null) {
@@ -148,7 +148,7 @@ public final class DataTypeParser {
             final DataType element = nested(ctx.dataTypeName(0),
                 ctx.typeParameters().isEmpty() ? null : ctx.typeParameters(0), bareStringDefault);
             IntervalTypeSpec.refuseNested(element, "Array with element type");
-            return new StructuredArrayType(element);
+            return new StructuredArrayType(element, ctx.NOT() != null);
         }
         if (ctx.OBJECT() != null) {
             // `OBJECT` (no parentheses) is the plain semi-structured type; `OBJECT()` is the ZERO-FIELD
@@ -239,9 +239,16 @@ public final class DataTypeParser {
         // order classified it as TIME. Live it is TIMESTAMP_LTZ(9).
         if (ctx.TIMESTAMP() != null) {
             DeclaredWidthRules.checkTimestampScale(typeParams);
-            return ctx.LOCAL() != null
-                ? new DateTimeType("TIMESTAMP_LTZ", precision, true)
-                : new DateTimeType("TIMESTAMP", precision, false);
+            if (ctx.LOCAL() != null) {
+                return new DateTimeType("TIMESTAMP_LTZ", precision, true);
+            }
+            // TIMESTAMP WITH TIME ZONE and TIMESTAMP WITHOUT TIME ZONE name the zoned and the zoneless type whatever
+            // TIMESTAMP_TYPE_MAPPING says (live-verified).
+            if (ctx.ZONE() != null) {
+                return ctx.WITH() != null ? new DateTimeType("TIMESTAMP_TZ", precision, true)
+                    : new DateTimeType("TIMESTAMP_NTZ", precision, false);
+            }
+            return new DateTimeType("TIMESTAMP", precision, false);
         }
         // TIME carries its declared precision like the rest of the family — DESCRIBE spells it back
         // as TIME(3) when the column said so, and TIME(9) when it did not.

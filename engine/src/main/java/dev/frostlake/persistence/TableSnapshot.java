@@ -89,6 +89,12 @@ public class TableSnapshot implements Serializable {
     // Only the UNIQUE constraints declared at TABLE level; a column-level UNIQUE is named per column
     // (ColumnSnapshot.uniqueConstraintName) and must not become a table-level constraint on reload.
     public List<UniqueConstraintSnapshot> uniqueConstraints;
+    // The PRIMARY KEY's columns in its declared order and its own RELY, and the columns whose own definition
+    // declared UNIQUE. ownUniqueColumns is never null on a snapshot that keeps RELY per key: null marks one that
+    // kept it on the columns.
+    public List<String> primaryKeyColumns;
+    public Boolean primaryKeyRely;
+    public List<String> ownUniqueColumns;
 
     // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
     public Integer dataRetentionTimeInDays;

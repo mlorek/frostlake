@@ -196,7 +196,7 @@ public class CommentCommandHandler implements CommandHandler {
                 dynamicTable.markDdl(catalog.currentUserForDdl());
 
             } else if (ctx.TABLE() != null) {
-                // COMMENT ON TABLE
+                // COMMENT ON TABLE, and COMMENT ON ICEBERG TABLE, which is the same statement (live-verified)
                 final String tableName = visitor.getText(ctx.qualifiedName());
                 InformationSchemaGuard.refuseWrite(catalog, qualifiedNameParts(ctx.qualifiedName()));
                 queryExecutor.requireOnRelation(Privilege.MODIFY, tableName);

@@ -42,16 +42,16 @@ final class MaterializedViewKeys {
     }
 
     /**
-     * @param clause   the CLUSTER BY clause
+     * @param written  the key's expressions as the CLUSTER BY writes them
      * @param columns  the view's columns, or null when they are not known
      * @param ddl      reads the statement's text
      * @param executor checks an expression over the columns
      * @return the key's expressions, in order
      */
-    static List<String> read(final FrostlakeParser.ClusterByClauseContext clause, final List<TableColumn> columns,
+    static List<String> read(final FrostlakeParser.ExpressionListContext written, final List<TableColumn> columns,
                              final DDLCommandHandler ddl, final QueryExecutor executor) {
         final List<String> keys = new ArrayList<>();
-        for (final FrostlakeParser.ExpressionContext key : clause.expressionList().expression()) {
+        for (final FrostlakeParser.ExpressionContext key : written.expression()) {
             final String text = ddl.getOriginalText(key);
             if (ExpressionEvaluator.parse(text) instanceof LiteralExpression) {
                 // A constant orders nothing; the refusal is no compilation error (live-verified).

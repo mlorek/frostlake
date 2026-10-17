@@ -49,6 +49,10 @@ public final class JavaScriptHost {
      */
     @HostAccess.Export
     public String zoneName(final double epochMillis) {
+        if (JavaScriptZones.namedByOffset(zone)) {
+            final Instant at = Double.isNaN(epochMillis) ? Instant.EPOCH : Instant.ofEpochMilli((long) epochMillis);
+            return JavaScriptZones.offsetName(zone.getRules().getOffset(at));
+        }
         final boolean daylight = !Double.isNaN(epochMillis)
             && zone.getRules().isDaylightSavings(Instant.ofEpochMilli((long) epochMillis));
         return TimeZone.getTimeZone(zone).getDisplayName(daylight, TimeZone.LONG, Locale.US);

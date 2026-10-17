@@ -32,7 +32,9 @@ import java.util.Set;
  * search. Both sides are cut into tokens by the analyzer; OR mode (the default) is TRUE when ANY query token
  * occurs among the data's, AND mode when ALL of them do, and PHRASE mode when they occur side by side in the
  * query's order. {@code data} may be a single value or — for the {@code SEARCH((col1, col2), …)} form — a tuple,
- * which matches across every element. A NULL data or query yields NULL; a query with no token yields FALSE.
+ * which matches across every element, a star written there standing for the row of the columns it names. A NULL
+ * data or query yields NULL; a query with no token yields FALSE. Over a row a number is not searched, and no match
+ * where a searched column is NULL yields NULL (live-verified).
  *
  * <p>EXACT mode finds the query as it is written, the characters between its tokens included: the query must
  * stand in one element of the data, case apart, with no token running on before it or after it. So
@@ -131,6 +133,14 @@ public class Search extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        final Object found = searched(args);
+        // Over a row of columns, no match where a column is NULL is unknown, as an OR over the columns is
+        // (live-verified): SEARCH((a, b), 'x') is NULL for a row whose b is NULL and whose a does not match.
+        return Boolean.FALSE.equals(found) && args.get(0) instanceof List && ((List<?>) args.get(0)).contains(null)
+            ? null : found;
+    }
+
+    private Object searched(final List<Object> args) {
         if (args.size() < 2 || args.get(0) == null || args.get(1) == null) {
             return null;
         }

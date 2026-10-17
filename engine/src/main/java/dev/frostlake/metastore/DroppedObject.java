@@ -53,6 +53,13 @@ public class DroppedObject {
     private final String stageToken;
 
     /**
+     * Where the dropped table's storage waits while other sessions' open transactions that wrote it still commit
+     * there (see {@code TransactionManager.setAsideIfWritten}); null when it was dropped outright. The engine's own,
+     * never saved with a snapshot: a restart reads the rows instead.
+     */
+    private volatile String storageSetAside;
+
+    /**
      * A dropped table (or another object that holds no rows of its own, with null rows).
      *
      * @param object the dropped object
@@ -197,5 +204,19 @@ public class DroppedObject {
      */
     public Map<String, List<Row>> getHiddenTableRows() {
         return hiddenTableRows;
+    }
+
+    /** Where the dropped table's storage waits for the transactions that wrote it, or null. */
+    public String getStorageSetAside() {
+        return storageSetAside;
+    }
+
+    /**
+     * Notes where the dropped table's storage waits for the transactions that wrote it.
+     *
+     * @param key the key it waits under
+     */
+    public void setStorageSetAside(final String key) {
+        this.storageSetAside = key;
     }
 }

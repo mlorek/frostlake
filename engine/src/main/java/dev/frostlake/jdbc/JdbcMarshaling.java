@@ -321,6 +321,21 @@ public final class JdbcMarshaling {
         }
     }
 
+    /**
+     * Refuses a bind of a java.time value as the account's driver refuses it: it binds none of them — a LocalDate, a
+     * LocalDateTime, a LocalTime, an OffsetDateTime or an Instant alike, whatever the column or the session's input
+     * formats — and says {@code Data type not supported for binding: Object type: class java.time.LocalDate.}
+     * (live-verified). A java.sql Date, Time or Timestamp is the bind it takes.
+     *
+     * @param x the value bound
+     * @throws SQLException for a java.time value
+     */
+    public static void requireBindable(final Object x) throws SQLException {
+        if (x != null && x.getClass().getName().startsWith("java.time.")) {
+            throw new SQLException("Data type not supported for binding: Object type: " + x.getClass() + ".");
+        }
+    }
+
     public static Timestamp toTimestamp(final Object v) {
         if (v == null || v instanceof Timestamp) {
             return (Timestamp) v;
@@ -452,6 +467,35 @@ public final class JdbcMarshaling {
         }
         return new CalendarBoundInstant(
             x.toInstant().atZone(cal.getTimeZone().toZoneId()).toLocalDateTime().toInstant(ZoneOffset.UTC));
+    }
+
+    /**
+     * A Timestamp bound without a Calendar, as the account's driver binds one: its moment, a TIMESTAMP_LTZ, so a
+     * TIMESTAMP_NTZ column holds the moment as the session's zone shows it, whatever the client's zone
+     * (live-verified).
+     *
+     * @param x the value
+     * @return the value to bind
+     */
+    public static Object boundMoment(final Timestamp x) {
+        return x == null ? null : new CalendarBoundInstant(x.toInstant());
+    }
+
+    /**
+     * A value bound by setObject, as the account's driver binds it: a Timestamp as its moment and a Time at the clock
+     * its moment shows in UTC, as their own setters bind them; anything else as it is.
+     *
+     * @param x the value
+     * @return the value to bind
+     */
+    public static Object boundObject(final Object x) {
+        if (x instanceof Timestamp) {
+            return boundMoment((Timestamp) x);
+        }
+        if (x instanceof Time) {
+            return timeAtUtc((Time) x);
+        }
+        return x;
     }
 
     /**

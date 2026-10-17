@@ -22,6 +22,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -71,8 +72,11 @@ public class RestTableTest extends BaseRestTest {
         assertEquals("rest", table.path("comment").asString());
         assertEquals(0, table.path("data_retention_time_in_days").asInt());
         assertTrue(table.path("change_tracking").asBoolean());
-        assertEquals("id", table.path("cluster_by").get(0).asString());
-        assertEquals("LINEAR(id)", table.path("cluster_by_raw").asString());
+        assertEquals("ID", table.path("cluster_by").get(0).asString());
+        assertEquals("(id)", table.path("cluster_by_raw").asString());
+        assertEquals(14, table.path("max_data_extension_time_in_days").asInt());
+        assertEquals("", table.path("default_ddl_collation").asString());
+        assertEquals("{\"minutes\":60,\"schedule_type\":\"MINUTES\"}", table.path("data_metric_schedule").toString());
         assertEquals("NORMAL", table.path("table_type").asString());
         assertEquals("REST_DB", table.path("database_name").asString());
         assertTrue(table.path("created_on").asString().contains("T"), table.toString());
@@ -198,6 +202,23 @@ public class RestTableTest extends BaseRestTest {
         ok(post(TABLES + "/t_rc:resume-recluster", null));
         error(404, post(TABLES + "/nosuch:suspend-recluster", null));
         ok(post(TABLES + "/nosuch:suspend-recluster?ifExists=true", null));
+        // A table without a clustering key answers 401 with the account's code (live-verified).
+        ok(post(TABLES, "{\"name\":\"t_flat\",\"columns\":[{\"name\":\"a\",\"datatype\":\"INT\"}]}"));
+        final HttpResponse<String> flat = post(TABLES + "/t_flat:suspend-recluster", null);
+        error(401, flat);
+        assertEquals("003205", json(flat).path("code").asString());
+    }
+
+    @Test
+    public void aClusteringKeyIsToldAsWrittenAndItsKeysAsNamed() throws Exception {
+        sql("CREATE TABLE rest_db.s1.t_keys (id INT, v VARCHAR) CLUSTER BY (    id    , substr(v, 1, 2))");
+        final JsonNode table = ok(get(TABLES + "/t_keys"));
+        assertEquals("(    id    , substr(v, 1, 2))", table.path("cluster_by_raw").asString());
+        assertEquals("ID", table.path("cluster_by").get(0).asString());
+        assertEquals("substr(v, 1, 2)", table.path("cluster_by").get(1).asString());
+        sql("ALTER TABLE rest_db.s1.t_keys SET DATA_METRIC_SCHEDULE = '5 MINUTE'");
+        assertEquals("{\"minutes\":5,\"schedule_type\":\"MINUTES\"}",
+            ok(get(TABLES + "/t_keys")).path("data_metric_schedule").toString());
     }
 
     @Test

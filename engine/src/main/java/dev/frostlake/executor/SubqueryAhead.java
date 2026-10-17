@@ -17,6 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
@@ -114,7 +116,14 @@ public final class SubqueryAhead {
             if (expression == null) {
                 continue;
             }
-            computeAheadIn(executor, ParseTreeText.getOriginalText(expression), evaluator, row);
+            // A refusal is placed in the statement, from where the item stands, as the projection places it.
+            final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
+                expression.getStart().getLine(), expression.getStart().getCharPositionInLine()));
+            try {
+                computeAheadIn(executor, ParseTreeText.getOriginalText(expression), evaluator, row);
+            } finally {
+                ExpressionSource.end(displaced);
+            }
         }
     }
 

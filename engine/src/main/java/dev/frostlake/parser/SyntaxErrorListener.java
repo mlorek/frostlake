@@ -463,6 +463,14 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 stackDecided = stacked != null;
                 openerRefused = true;
             }
+            // ★ A HEXADECIMAL NUMBER OPENING A CALL'S ARGUMENTS names the call's '(' after it — see HexArgumentLines.
+            if (recognizer instanceof Parser && !stackDecided && !openerRefused && errors.size() == 1) {
+                final Token hexStacked = HexArgumentLines.stackedAfter((Parser) recognizer, reported);
+                if (hexStacked != null) {
+                    stacked = hexStacked;
+                    stackDecided = true;
+                }
+            }
             // ★ A NUMBER OR A STRING RUN IN AFTER A COMPLETE STATEMENT lets the later statements be read after a
             // value, a table reference and a few names, and nowhere else — see LiteralRunIn. The parse names such a
             // literal either as the opener of a statement it could not read or where it met it between two statements,
@@ -2269,6 +2277,11 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (bracketWord != null) {
             return bracketWord;
         }
+        final List<String> repeatedModifier = spokenTokens == null || !statementParse || offendingIndexes.isEmpty()
+            ? null : RepeatedStarModifierLines.lines(spokenTokens, offendingIndexes.get(0).intValue(), firstOnly);
+        if (repeatedModifier != null) {
+            return repeatedModifier;
+        }
         final List<String> starModifier = spokenTokens == null || !statementParse ? null
             : StarModifierLines.lines(sql, spokenTokens, firstOnly);
         if (starModifier != null) {
@@ -2297,6 +2310,21 @@ public class SyntaxErrorListener extends BaseErrorListener {
             ? null : OptionListCommaLines.lines(sql, spokenTokens, offendingIndexes.get(0).intValue());
         if (optionListComma != null) {
             return optionListComma;
+        }
+        final List<String> propertyComma = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
+            ? null : PropertyCommaLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
+        if (propertyComma != null) {
+            return propertyComma;
+        }
+        final List<String> alterEvent = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
+            ? null : AlterEventLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
+        if (alterEvent != null) {
+            return alterEvent;
+        }
+        final List<String> eventClone = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
+            ? null : EventTableCloneLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
+        if (eventClone != null) {
+            return eventClone;
         }
         final List<String> keyTail = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
             ? null : KeyConstraintTailLines.lines(sql, spokenTokens, offendingIndexes.get(0).intValue());

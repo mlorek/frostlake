@@ -82,6 +82,9 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // So must UNIFORM's bounds and RANDSTR's length: "Invalid parameter value: NULL. Reason: a must not be
         // NULL" and "… length must not be NULL" (measured). Only a NULL generator answers NULL.
         "UNIFORM", "RANDSTR",
+        // And ZIPF's exponent and N: "Invalid parameter value: NULL. Reason: alpha must not be NULL" and "… n must
+        // not be NULL" (measured). Only a NULL generator answers NULL.
+        "ZIPF",
         // Planned over its values' date parts, which a NULL of no type has none of: MONTHS_BETWEEN(NULL, d) is
         // "Function EXTRACT does not support NULL argument type" while it compiles (live-verified); a typed NULL
         // answers NULL.

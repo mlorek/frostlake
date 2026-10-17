@@ -19,14 +19,20 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.ColumnNullability;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.RecursiveTermItem;
+import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.storage.Row;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.ValueRange;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -170,6 +176,67 @@ final class RecursiveCteColumns {
             }
         }
         return typed(anchor, types, notNull(anchor, first, anchorItems, termItems, followed, qualifiers, names));
+    }
+
+    /**
+     * The columns with each one a fixed-point anchor and a BOOLEAN term meet in declared BOOLEAN, as DESCRIBE reports
+     * it (live-verified); reading the CTE refuses the pair as a type mismatch (see {@link #mismatched}).
+     *
+     * @param columns the columns as resolved
+     * @param anchor  the anchor's columns
+     * @param first   the recursive terms' columns over the anchor's
+     * @return the columns, a BOOLEAN where such a pair meets
+     */
+    static List<ResultSetColumn> booleanTerms(final List<ResultSetColumn> columns, final List<ResultSetColumn> anchor,
+                                              final List<List<ResultSetColumn>> first) {
+        final List<ResultSetColumn> typed = new ArrayList<>(columns);
+        for (int k = 0; k < typed.size() && k < anchor.size(); k++) {
+            if (anchor.get(k).getStaticType() == null || !isFixed(typeOf(anchor.get(k)))) {
+                continue;
+            }
+            for (final List<ResultSetColumn> term : first) {
+                if (k < term.size() && term.get(k).getStaticType() instanceof BooleanType) {
+                    final ResultSetColumn column = typed.get(k);
+                    typed.set(k, new ResultSetColumn(column.getName(), BooleanType.BOOLEAN, column.getTableName(),
+                        BooleanType.BOOLEAN, true, false));
+                    break;
+                }
+            }
+        }
+        return typed;
+    }
+
+    /**
+     * A step's row with each value of another family than its column's converted to the column's type: a DATE
+     * column holds the date of a timestamp a term computes, a timestamp column the timestamp of a date, a FLOAT
+     * column the double of a number (live-verified).
+     *
+     * @param row     the row a recursive term answered
+     * @param columns the CTE's columns
+     * @return the row, its values converted where their family differs
+     */
+    static Row settled(final Row row, final List<ResultSetColumn> columns) {
+        List<Object> values = null;
+        for (int k = 0; k < columns.size() && k < row.getValues().size(); k++) {
+            final Object value = row.getValue(k);
+            final DataType type = typeOf(columns.get(k));
+            if (value != null && ofAnotherFamily(type, value)) {
+                if (values == null) {
+                    values = new ArrayList<>(row.getValues());
+                }
+                values.set(k, ValueCaster.castValue(value, SqlTypeNames.canonical(type), true));
+            }
+        }
+        return values == null ? row : new Row(values);
+    }
+
+    private static boolean ofAnotherFamily(final DataType type, final Object value) {
+        if (type instanceof DateTimeType) {
+            final String name = type.getName().toUpperCase(Locale.ROOT);
+            return "DATE".equals(name) ? value instanceof LocalDateTime
+                : name.startsWith("TIMESTAMP") && value instanceof LocalDate;
+        }
+        return isFloat(type) && value instanceof Number && !(value instanceof Double);
     }
 
     /**

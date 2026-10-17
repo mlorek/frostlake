@@ -61,7 +61,7 @@ public class SnowflakeAPIWrapper {
         }
         try {
             final ResultSet rs = engine.executeQuery(sqlText);
-            return new JavaScriptResultSet(rs, failures);
+            return new JavaScriptResultSet(rs, failures, engine.getExecutor().getResultCache().getLastQueryId());
         } catch (final RuntimeException failed) {
             return failures.statement(failed);
         }

@@ -31,11 +31,16 @@ import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.BooleanType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.SqlTypeNames;
+import dev.frostlake.types.StringType;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -133,15 +138,14 @@ final class DefaultExpressionCalls {
     }
 
     /**
-     * What ALTER TABLE ADD COLUMN echoes of a DEFAULT that is no literal, where the default calls a user-defined
-     * function; a name that is no function at all is refused first, as an unknown function.
+     * What ALTER TABLE ADD COLUMN echoes of a DEFAULT that is no literal: the default as the plan prints it, a
+     * user-defined function under its bare name.
      *
      * @param written the DEFAULT's expression
-     * @return the echo, or null for a default that calls no user-defined function
+     * @return the echo, or null where the plan's printer does not read the default
      */
     String addColumnEcho(final FrostlakeParser.ExpressionContext written) {
-        requireKnownFunctions(written);
-        return callsUserFunction(written) ? planText(barelyNamed(written)) : null;
+        return printedPlan(barelyNamed(written));
     }
 
     /**
@@ -149,7 +153,7 @@ final class DefaultExpressionCalls {
      *
      * @param written the DEFAULT's expression
      */
-    void requireParameterDefault(final FrostlakeParser.ExpressionContext written) {
+    void requireParameterDefault(final ParserRuleContext written) {
         requireKnownFunctions(written);
         final Token query = firstOfType(written, FrostlakeParser.SELECT);
         if (query != null) {
@@ -184,8 +188,47 @@ final class DefaultExpressionCalls {
      * @param written the DEFAULT's expression
      * @return the default as told
      */
-    String toldParameterDefault(final FrostlakeParser.ExpressionContext written) {
+    String toldParameterDefault(final ParserRuleContext written) {
         return planText(ParseTreeText.getOriginalText(written));
+    }
+
+    /**
+     * Refuses a parameter's default of type BOOLEAN that the parameter's type does not take (live-verified): a
+     * predicate — a comparison, a LIKE, an IN, a BETWEEN, an IS — given to any parameter but a BOOLEAN one, and TRUE
+     * or FALSE given to one of neither BOOLEAN nor text, placed at the predicate's operator: {@code p NUMBER DEFAULT
+     * 1 IN (1, 2)} is "default argument data type BOOLEAN does not match expected data type NUMBER(38,0)" at the IN.
+     * A NOT, an AND and an OR are taken by a text parameter.
+     *
+     * @param written   the default
+     * @param parameter the parameter it is given to
+     */
+    static void requireDefaultType(final FrostlakeParser.BooleanExprContext written, final Parameter parameter) {
+        final DataType type = parameter.getDataType();
+        if (type instanceof BooleanType || !(written instanceof FrostlakeParser.ValueExprContext)) {
+            return;
+        }
+        final FrostlakeParser.ExpressionContext value = ((FrostlakeParser.ValueExprContext) written).expression();
+        final boolean predicate = value instanceof FrostlakeParser.ComparisonExprContext
+            || value instanceof FrostlakeParser.DoubledEqualsExprContext
+            || value instanceof FrostlakeParser.LikeExprContext || value instanceof FrostlakeParser.RlikeExprContext
+            || value instanceof FrostlakeParser.LikeAnyAllExprContext
+            || value instanceof FrostlakeParser.LikeAnyAllSingleExprContext
+            || value instanceof FrostlakeParser.InListExprContext || value instanceof FrostlakeParser.BetweenExprContext
+            || value instanceof FrostlakeParser.IsNullExprContext
+            || value instanceof FrostlakeParser.IsDistinctExprContext;
+        final boolean truth = value instanceof FrostlakeParser.LiteralExprContext
+            && (value.getStart().getType() == FrostlakeParser.TRUE
+                || value.getStart().getType() == FrostlakeParser.FALSE)
+            && !(type instanceof StringType);
+        if (!predicate && !truth) {
+            return;
+        }
+        final Token at = predicate && value.getChild(1) instanceof TerminalNode
+            ? ((TerminalNode) value.getChild(1)).getSymbol() : value.getStart();
+        final String expected = type instanceof StringType && parameter.isUnsized()
+            ? "VARCHAR(" + DataTypeParser.CAST_STRING_DEFAULT + ")" : SqlTypeNames.canonical(type);
+        throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+            "default argument data type BOOLEAN does not match expected data type " + expected));
     }
 
     /** Refuse a call that writes more arguments than the widest overload of its function takes. */
@@ -217,7 +260,10 @@ final class DefaultExpressionCalls {
     }
 
     /** Where an expression stands for a refusal: an operation at its operator, anything else where it begins. */
-    private static Token placeOf(final FrostlakeParser.ExpressionContext written) {
+    private static Token placeOf(final ParserRuleContext written) {
+        if (written instanceof FrostlakeParser.ValueExprContext) {
+            return placeOf(((FrostlakeParser.ValueExprContext) written).expression());
+        }
         final boolean operation = written.getChildCount() == 3 && written.getChild(1) instanceof TerminalNode
             && written.getChild(0) instanceof ParserRuleContext && written.getChild(2) instanceof ParserRuleContext;
         if (operation) {
@@ -226,8 +272,12 @@ final class DefaultExpressionCalls {
         return written.getStart();
     }
 
-    /** Refuse a call whose name is no function, built in or user-defined. */
-    private void requireKnownFunctions(final FrostlakeParser.ExpressionContext written) {
+    /**
+     * Refuse a call whose name is no function, built in or user-defined.
+     *
+     * @param written the expression whose calls are judged
+     */
+    void requireKnownFunctions(final ParserRuleContext written) {
         final ExpressionEvaluator scan = new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(),
             queryExecutor.getCatalog(), queryExecutor);
         final List<FrostlakeParser.FunctionCallExprContext> calls = callsUnder(written);
@@ -464,7 +514,7 @@ final class DefaultExpressionCalls {
      * An expression's text with each user-defined function under its bare name, as the plan names it:
      * {@code test_schema.f1() + 1} reads {@code f1() + 1}.
      */
-    private String barelyNamed(final FrostlakeParser.ExpressionContext written) {
+    private String barelyNamed(final ParserRuleContext written) {
         final String text = ParseTreeText.getOriginalText(written);
         final int origin = written.getStart().getStartIndex();
         final List<FrostlakeParser.FunctionCallExprContext> calls = callsUnder(written);
@@ -489,13 +539,19 @@ final class DefaultExpressionCalls {
 
     /** An expression's text as the plan prints it; as written where the plan's printer does not read it. */
     private String planText(final String expression) {
+        final String printed = printedPlan(expression);
+        return printed != null ? printed : expression;
+    }
+
+    /** An expression's text as the plan prints it, or null where the plan's printer does not read it. */
+    private String printedPlan(final String expression) {
         try {
             final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(
                 new Table("$DEFAULT", new ArrayList<TableColumn>(), true), null, queryExecutor.getFunctionRegistry(),
                 queryExecutor.getCatalog());
             return printer.strictPlanText(AntlrExpressionParser.parse(expression));
         } catch (final RuntimeException unprintable) {
-            return expression;
+            return null;
         }
     }
 }

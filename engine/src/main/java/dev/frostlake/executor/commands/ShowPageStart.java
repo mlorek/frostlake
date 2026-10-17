@@ -23,8 +23,9 @@ package dev.frostlake.executor.commands;
  * <pre>
  *   AFTER_NAME    TABLES, VIEWS, SCHEMAS, DATABASES, ROLES, …   the rows whose name sorts after it
  *   FROM_NAME     TASKS                                         the rows whose name sorts at or after it
- *   AT_NAME       STREAMS, TAGS, the policies, NETWORK RULES    the first row whose name sorts at or after it,
+ *   AT_NAME       STREAMS, TAGS, ALERTS, NETWORK RULES          the first row whose name sorts at or after it,
  *                                                               and every row the listing holds after that one
+ *   IGNORED       MASKING, ROW ACCESS and PASSWORD POLICIES     every row: the name is read and starts nothing
  * </pre>
  */
 public enum ShowPageStart {
@@ -33,7 +34,9 @@ public enum ShowPageStart {
     /** The rows whose name sorts at or after the name. */
     FROM_NAME,
     /** The first row whose name sorts at or after the name, and every row after it. */
-    AT_NAME;
+    AT_NAME,
+    /** Every row: the name is read and starts nothing. */
+    IGNORED;
 
     /**
      * Whether a row is kept.
@@ -44,6 +47,9 @@ public enum ShowPageStart {
      * @return true when the row belongs to the page
      */
     public boolean keeps(final String rowName, final String name, final boolean started) {
+        if (this == IGNORED) {
+            return true;
+        }
         if (rowName == null) {
             return this == AT_NAME && started;
         }

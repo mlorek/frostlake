@@ -119,7 +119,8 @@ public class DirectConnection implements Connection, AbortableSession {
         this.engine = engine;
         this.sessionDatabase = engine.getCurrentDatabase();
         this.sessionSchema = engine.getCurrentSchema();
-        this.sessionWarehouse = engine.getCatalog().getCurrentWarehouse();
+        this.sessionWarehouse = ownSession ? engine.getCatalog().sessionStartWarehouse()
+            : engine.getCatalog().getCurrentWarehouse();
         this.sessionAutoCommit = engine.isAutoCommit();
         this.sessionSettings = ownSession ? new SessionSettings() : null;
         if (sessionSettings != null) {

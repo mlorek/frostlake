@@ -29,9 +29,6 @@ import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
 
-import java.util.Map;
-import java.util.Set;
-
 /**
  * Pure JSON/VARIANT path helpers extracted from {@link ExpressionEvaluatorVisitor}: extract an object
  * property or array element from a JSON string, convert a JsonNode to a Java value, and render a Java
@@ -66,25 +63,15 @@ final class JsonPathExtractor {
     }
 
     /**
-     * The RAW child node at {@code property} (same lookup as {@link #extractProperty}, including
-     * the case-insensitive fallback) with NO value conversion — for INTERMEDIATE path steps, where
-     * converting per step wrapped every subtree in a {@code VariantValue} whose constructor
-     * serialized it, only for the next step to unwrap the node again.
+     * The RAW child node at {@code property} (same lookup as {@link #extractProperty}) with NO value
+     * conversion — for INTERMEDIATE path steps, where converting per step wrapped every subtree in a
+     * {@code VariantValue} whose constructor serialized it, only for the next step to unwrap the node
+     * again. A step names a key exactly, whatever its spelling: {@code PARSE_JSON('{"id":1}'):ID} is
+     * NULL, as {@code GET} answers it (live-verified).
      */
     static JsonNode propertyNode(final JsonNode root, final String property) {
         if (root == null || (!root.isObject() && !root.isArray())) return null;
-        JsonNode node = root.get(property);
-        if (node == null && root.isObject()) {
-            // Case-insensitive fallback
-            final Set<Map.Entry<String, JsonNode>> fields = root.properties();
-            for (final Map.Entry<String, JsonNode> field : fields) {
-                if (field.getKey().equalsIgnoreCase(property)) {
-                    node = field.getValue();
-                    break;
-                }
-            }
-        }
-        return node;
+        return root.get(property);
     }
 
     static Object extractJsonArrayElement(final String jsonString, final int index) {

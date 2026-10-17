@@ -74,6 +74,11 @@ public class Catalog {
     private final IntegrationRegistry integrations = new IntegrationRegistry();
     /** The files COPY has loaded, for LOAD_HISTORY and COPY_HISTORY. */
     private final LoadHistory loadHistory = new LoadHistory();
+    /**
+     * The files each permanent table has loaded, by the table's storage key: what a COPY skips unless FORCE = TRUE,
+     * kept with the catalog so a snapshot, a clone and a restored state carry it.
+     */
+    private final Map<String, Set<String>> copyLoadedFiles = new ConcurrentHashMap<>();
     private final ExternalVolumeRegistry externalVolumes = new ExternalVolumeRegistry();
     private final Map<String, User> users;
     private final Map<String, Role> roles;
@@ -96,6 +101,39 @@ public class Catalog {
     private final ObjectParameters accountParameters = new ObjectParameters();
     /** The tags set on the account itself. */
     private final AccountTags accountTags = new AccountTags();
+    /**
+     * The names user aggregate functions have been created under, so that a call no built-in answers to is looked
+     * for among the user's aggregates only when one may go by its name. A name stays after its function is gone.
+     */
+    private final Set<String> aggregateFunctionNames = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Note a name a user aggregate function is created, restored or renamed under.
+     *
+     * @param name the function's canonical name
+     */
+    public void noteAggregateFunction(final String name) {
+        aggregateFunctionNames.add(name);
+    }
+
+    /**
+     * Whether any user aggregate function was ever created here, so that a name may be one's.
+     *
+     * @return false while none was
+     */
+    public boolean holdsAggregateFunctionNames() {
+        return !aggregateFunctionNames.isEmpty();
+    }
+
+    /**
+     * Whether a user aggregate function may go by this name: false for a name no aggregate was ever created under.
+     *
+     * @param name a canonical function name
+     * @return whether a user aggregate may answer to it
+     */
+    public boolean mayNameAggregateFunction(final String name) {
+        return aggregateFunctionNames.contains(name);
+    }
 
     /** The parameters set on the account (its users and their sessions inherit them). */
     public ObjectParameters getAccountParameters() {
@@ -956,6 +994,22 @@ public class Catalog {
         return name != null && warehouses.containsKey(name) ? name : null;
     }
 
+    /**
+     * The warehouse a new session starts in: the one its user's DEFAULT_WAREHOUSE names when that warehouse exists,
+     * otherwise the engine's own current warehouse.
+     *
+     * @return the warehouse's name, or null for none
+     */
+    public String sessionStartWarehouse() {
+        final String userName = sessionContext == null ? null : sessionContext.getCurrentUser();
+        final User user = userName == null ? null : users.get(userName.toUpperCase(Locale.ROOT));
+        final String wanted = user == null ? null : user.getDefaultWarehouse();
+        if (wanted != null && warehouses.containsKey(wanted.toUpperCase(Locale.ROOT))) {
+            return wanted.toUpperCase(Locale.ROOT);
+        }
+        return getCurrentWarehouse();
+    }
+
     public Warehouse getCurrentWarehouseObject() {
         final String name = getCurrentWarehouse();
         return name == null ? null : getWarehouse(name);
@@ -1016,6 +1070,16 @@ public class Catalog {
     /** The files COPY has loaded into the account's tables. */
     public LoadHistory getLoadHistory() {
         return loadHistory;
+    }
+
+    /**
+     * The files each permanent table has loaded, by the table's storage key, each file as its load key: what a COPY
+     * of the table skips unless FORCE = TRUE.
+     *
+     * @return the live map
+     */
+    public Map<String, Set<String>> getCopyLoadedFiles() {
+        return copyLoadedFiles;
     }
 
     /** The account's external volumes. */
@@ -1094,14 +1158,14 @@ public class Catalog {
      * indistinguishable from one that does not exist, so the message cannot confirm either.
      */
     public void useRole(final String roleName) {
-        final String upper = roleName == null ? null : roleName.toUpperCase(Locale.ROOT);
-        if (upper == null || !roles.containsKey(upper)) {
+        // The name is the statement's canonical one: a quoted name reaches only the role of exactly that name.
+        if (roleName == null || !roles.containsKey(roleName)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Object does not exist, or operation cannot be performed."));
         }
-        requireAssigned(upper);
+        requireAssigned(roleName);
         if (sessionContext != null) {
-            sessionContext.setCurrentRole(upper);
+            sessionContext.setCurrentRole(roleName);
         }
     }
 
@@ -1128,7 +1192,7 @@ public class Catalog {
         final Set<String> reached = new HashSet<String>();
         final List<String> pending = new ArrayList<String>(user.getGrantedRoles());
         while (!pending.isEmpty()) {
-            final String next = pending.remove(pending.size() - 1).toUpperCase(Locale.ROOT);
+            final String next = pending.remove(pending.size() - 1);
             final Role held = roles.get(next);
             if (reached.add(next) && held != null) {
                 pending.addAll(held.getGrantedRoles());
@@ -1156,15 +1220,14 @@ public class Catalog {
         final Set<String> wanted = new TreeSet<String>();
         if (!all) {
             for (final String role : named) {
-                final String upper = role.toUpperCase(Locale.ROOT);
-                if ("NONE".equals(upper)) {
+                if ("NONE".equalsIgnoreCase(role)) {
                     continue;
                 }
-                if (!roles.containsKey(upper)) {
+                if (!roles.containsKey(role)) {
                     throw new RuntimeException(SqlCompilationError.of(
                         "Object does not exist, or operation cannot be performed."));
                 }
-                wanted.add(upper);
+                wanted.add(role);
             }
             // Each role named is there: now each must be one the user may activate, as USE ROLE asks.
             for (final String role : wanted) {
@@ -1354,6 +1417,15 @@ public class Catalog {
         resolveSchemaForObject(name).dropStage(objectName(name));
     }
 
+    /**
+     * Drops the stage a statement names, by exactly its canonical name: one differing only in case is another stage.
+     *
+     * @param name the name as written, qualified or not
+     */
+    public void dropStageExact(final String name) {
+        resolveSchemaForObject(name).dropStageExact(objectName(name));
+    }
+
     /** ALTER STAGE … RENAME TO — rekey the schema's map and rename the object itself. */
     public void renameStage(final String name, final String newName) {
         final Schema schema = resolveSchemaForObject(name);
@@ -1409,6 +1481,26 @@ public class Catalog {
         resolveSchemaForObject(name).dropFileFormat(objectName(name));
     }
 
+    /**
+     * Whether a file format of exactly the canonical name a statement writes exists; one differing only in case is
+     * another file format.
+     *
+     * @param name the name as written, qualified or not
+     * @return whether it exists
+     */
+    public boolean hasFileFormatExact(final String name) {
+        return resolveSchemaForObject(name).hasFileFormatExact(objectName(name));
+    }
+
+    /**
+     * Drops the file format a statement names, by exactly its canonical name.
+     *
+     * @param name the name as written, qualified or not
+     */
+    public void dropFileFormatExact(final String name) {
+        resolveSchemaForObject(name).dropFileFormatExact(objectName(name));
+    }
+
     public Pipe getPipe(final String name) {
         return resolveSchemaForObject(name).getPipe(objectName(name));
     }
@@ -1454,6 +1546,39 @@ public class Catalog {
     public boolean hasTag(final String name) {
         try { return resolveSchemaForObject(name).hasTag(objectName(name)); }
         catch (final Exception e) { return false; }
+    }
+
+    /**
+     * The tag a statement names, by exactly its canonical name: a quoted name is that name alone (live-verified).
+     *
+     * @param name the name as written, qualified or not
+     * @return the tag
+     */
+    public Tag getTagExact(final String name) {
+        return resolveSchemaForObject(name).getTagExact(objectName(name));
+    }
+
+    /**
+     * Whether a tag of exactly the canonical name a statement writes is there.
+     *
+     * @param name the name as written, qualified or not
+     * @return whether it is
+     */
+    public boolean hasTagExact(final String name) {
+        try {
+            return resolveSchemaForObject(name).hasTagExact(objectName(name));
+        } catch (final RuntimeException noSchema) {
+            return false;
+        }
+    }
+
+    /**
+     * Drops the tag a statement names, by exactly its canonical name.
+     *
+     * @param name the name as written, qualified or not
+     */
+    public void dropTagExact(final String name) {
+        resolveSchemaForObject(name).dropTagExact(objectName(name));
     }
 
     public List<Tag> getAllTags() {
@@ -1807,30 +1932,39 @@ public class Catalog {
         return new ArrayList<>(users.values());
     }
 
+    /**
+     * Creates a role under the canonical name a statement resolved: an unquoted name in upper case, a quoted one
+     * exactly as written, so {@code "low"} and {@code LOW} are two roles (live-verified).
+     *
+     * @param name the role's canonical name
+     */
     public void createRole(final String name) {
-        final String upperName = name.toUpperCase(Locale.ROOT);
-        if (isSystemRole(upperName)) {
+        if (isSystemRole(name)) {
             throw new RuntimeException("Cannot create system role: " + name);
         }
-        if (roles.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + upperName + "' already exists."));
+        if (roles.containsKey(name)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + name + "' already exists."));
         }
         final Role role = new Role(name);
         role.setOwner(currentRoleForOwner());
-        roles.put(upperName, role);
+        roles.put(name, role);
     }
 
+    /**
+     * Drops the role of exactly that canonical name.
+     *
+     * @param name the role's canonical name
+     */
     public void dropRole(final String name) {
-        final String upperName = name.toUpperCase(Locale.ROOT);
-        if (!roles.containsKey(upperName)) {
+        if (!roles.containsKey(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
         }
         // Cannot drop system roles
-        if (isSystemRole(upperName)) {
+        if (isSystemRole(name)) {
             throw new RuntimeException("Cannot drop system role: " + name);
         }
-        final String heldAs = roles.get(upperName).getName();
-        roles.remove(upperName);
+        final String heldAs = roles.get(name).getName();
+        roles.remove(name);
         // What the role owned is the dropping role's from now on (see RoleOwnership).
         RoleOwnership.handOver(this, heldAs, currentRoleForOwner());
     }
@@ -1848,17 +1982,63 @@ public class Catalog {
                upperName.equals("PUBLIC");
     }
 
-    /** Whether a role of that name exists. */
+    /**
+     * Whether a role answers to that name: the role of exactly that name, or else of the name in upper case — the
+     * engine's own Java callers name roles in any case. A statement's name reaches a role through
+     * {@link #roleExistsExact}.
+     */
     public boolean roleExists(final String name) {
-        return name != null && roles.containsKey(name.toUpperCase(Locale.ROOT));
+        return name != null && (roles.containsKey(name) || roles.containsKey(name.toUpperCase(Locale.ROOT)));
     }
 
+    /**
+     * Whether the role of exactly that canonical name exists: a quoted name reaches no role of another case.
+     *
+     * @param name the role's canonical name
+     * @return whether it exists
+     */
+    public boolean roleExistsExact(final String name) {
+        return name != null && roles.containsKey(name);
+    }
+
+    /** The role answering to that name, as {@link #roleExists} finds it. */
     public Role getRole(final String name) {
-        final Role role = roles.get(name.toUpperCase(Locale.ROOT));
+        Role role = roles.get(name);
+        if (role == null) {
+            role = roles.get(name.toUpperCase(Locale.ROOT));
+        }
         if (role == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
         }
         return role;
+    }
+
+    /**
+     * The role of exactly that canonical name, the one a statement names.
+     *
+     * @param name the role's canonical name
+     * @return the role
+     */
+    public Role getRoleExact(final String name) {
+        final Role role = roles.get(name);
+        if (role == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
+        }
+        return role;
+    }
+
+    /**
+     * The name a role is kept under for a name of any case the engine's own Java callers hand in: the role's own
+     * name when one answers to it, the name in upper case otherwise.
+     *
+     * @param name the name as handed in
+     * @return the role's name
+     */
+    public String resolveRoleName(final String name) {
+        if (name == null) {
+            return null;
+        }
+        return roles.containsKey(name) ? name : name.toUpperCase(Locale.ROOT);
     }
 
     /** The organization's other accounts and this account's managed accounts. */
@@ -1872,13 +2052,13 @@ public class Catalog {
 
     public void grantRoleToUser(final String roleName, final String userName) {
         final User user = getUser(userName);
-        final Role role = getRole(roleName);
+        final Role role = getRoleExact(roleName);
         user.grantRole(role.getName(), currentRoleForOwner());
     }
 
     public void revokeRoleFromUser(final String roleName, final String userName) {
         final User user = getUser(userName);
-        final Role role = getRole(roleName);
+        final Role role = getRoleExact(roleName);
         user.revokeRole(role.getName());
     }
 
@@ -1894,13 +2074,13 @@ public class Catalog {
      */
     public void grantPrivilegeToRole(final String privilege, final String objectType, final String objectName,
                                      final String roleName, final String grantor) {
-        final Role role = getRole(roleName);
+        final Role role = getRoleExact(roleName);
         final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.grantPrivilege(objectType, objectName, priv, grantor != null ? grantor : currentRoleForOwner());
     }
 
     public void revokePrivilegeFromRole(final String privilege, final String objectType, final String objectName, final String roleName) {
-        final Role role = getRole(roleName);
+        final Role role = getRoleExact(roleName);
         final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.revokePrivilege(objectType, objectName, priv);
     }
@@ -1929,14 +2109,14 @@ public class Catalog {
 
     public void grantColumnPrivilegeToRole(final String privilege, final String objectType, final String objectName,
                                            final String columnName, final String roleName) {
-        final Role role = getRole(roleName);
+        final Role role = getRoleExact(roleName);
         final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.grantColumnPrivilege(objectType, objectName, columnName, priv);
     }
 
     public void revokeColumnPrivilegeFromRole(final String privilege, final String objectType, final String objectName,
                                               final String columnName, final String roleName) {
-        final Role role = getRole(roleName);
+        final Role role = getRoleExact(roleName);
         final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.revokeColumnPrivilege(objectType, objectName, columnName, priv);
     }
@@ -1957,8 +2137,8 @@ public class Catalog {
 
     public void grantRoleToRole(final String grantedRoleName, final String targetRoleName) {
         // The role that is to hold the grant is found first (live-verified).
-        final Role targetRole = getRole(targetRoleName);
-        final Role grantedRole = getRole(grantedRoleName);
+        final Role targetRole = getRoleExact(targetRoleName);
+        final Role grantedRole = getRoleExact(grantedRoleName);
 
         // Prevent circular grants
         if (hasCircularRoleGrant(grantedRoleName, targetRoleName)) {
@@ -1969,8 +2149,8 @@ public class Catalog {
     }
 
     public void revokeRoleFromRole(final String revokedRoleName, final String targetRoleName) {
-        final Role targetRole = getRole(targetRoleName);
-        final Role revokedRole = getRole(revokedRoleName);
+        final Role targetRole = getRoleExact(targetRoleName);
+        final Role revokedRole = getRoleExact(revokedRoleName);
         targetRole.revokeRole(revokedRole.getName());
     }
 

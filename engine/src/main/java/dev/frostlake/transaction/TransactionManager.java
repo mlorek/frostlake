@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,6 +45,9 @@ public class TransactionManager {
     private final ThreadLocal<Transaction> abortedCurrent = new ThreadLocal<>();
     private final Catalog catalog;
     private final StorageEngine storageEngine;
+
+    /** How many tables were set aside for the transactions that wrote them (see setAsideIfWritten). */
+    private final AtomicLong setAsideCount = new AtomicLong();
     private StreamManager streamManager;
     private WalSink walSink;   // durability hook: receives a transaction's statements when it commits
 
@@ -296,6 +300,35 @@ public class TransactionManager {
         for (final Transaction txn : getActiveTransactions()) {
             txn.getWriteSet().retarget(moved);
         }
+    }
+
+    /**
+     * A table is dropped or replaced while another session's open transaction has written it: that transaction's
+     * changes belong to the table it wrote, never to one that takes its name, and its COMMIT applies them there
+     * (live-verified) — so the table's storage is set aside under a key no live table has, and the transaction's
+     * buffered changes follow it there. With no other transaction having written it, nothing is set aside and the
+     * caller drops the storage.
+     *
+     * @param fullyQualifiedName the table's storage name
+     * @return the key the storage was set aside under, or null when the caller drops it
+     */
+    public String setAsideIfWritten(final String fullyQualifiedName) {
+        // No other session's transaction reaches a session's own temporary table, whatever wrote its name.
+        if (storageEngine.isOwnSessionTable(fullyQualifiedName)) {
+            return null;
+        }
+        final Transaction own = currentTransaction.get();
+        boolean written = false;
+        for (final Transaction open : activeTransactions.values()) {
+            written = written || open != own && open.hasWritten(fullyQualifiedName);
+        }
+        if (!written) {
+            return null;
+        }
+        final String key = fullyQualifiedName + "#SET_ASIDE_" + setAsideCount.incrementAndGet();
+        storageEngine.retireTable(fullyQualifiedName, key);
+        tablesMoved(Collections.singletonMap(fullyQualifiedName, key));
+        return key;
     }
 
     /**

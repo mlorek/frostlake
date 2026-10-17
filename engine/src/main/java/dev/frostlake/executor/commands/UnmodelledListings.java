@@ -23,9 +23,11 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+import java.util.List;
 import java.util.Locale;
 import org.antlr.v4.runtime.Token;
 
@@ -55,6 +57,9 @@ import org.antlr.v4.runtime.Token;
  *
  * <p>HISTORY is read by every one of the first four families but CHANNELS and the SESSION and AUTHENTICATION
  * POLICIES, which refuse it where it stands.
+ *
+ * <p>SESSION POLICIES is read here with the others and is the one modelled: once its scope is judged, the session
+ * policies of the scope's schemas are its rows ({@link SecurityObjectCommandHandler#showRows}).
  */
 final class UnmodelledListings {
 
@@ -163,17 +168,28 @@ final class UnmodelledListings {
                 ? SqlCompilationError.doesNotExistAsSpelled("Account", named.getText().toUpperCase(Locale.ROOT))
                 : SqlCompilationError.objectDoesNotExist());
         }
+        List<Schema> schemas = null;
         if (listing == ShowListing.DELEGATED_AUTHORIZATIONS) {
             requireGrantee(ctx.delegatedAuthorizationScope());
         } else if (!listing.isAccountLevel()) {
-            requireScope(ctx, listing, scope);
+            schemas = requireScope(ctx, listing, scope);
         }
-        return UnmodelledListing.of(listing).listing(ctx.TERSE() != null);
+        final ResultSet columns = UnmodelledListing.of(listing).listing(ctx.TERSE() != null);
+        if (listing == ShowListing.SESSION_POLICIES && schemas != null) {
+            // The one kind listed here that is modelled: the session policies of the scope's schemas.
+            return new ResultSet(columns.getColumns(),
+                SecurityObjectCommandHandler.showRows(SecurityObjectKind.SESSION_POLICY, schemas));
+        }
+        return columns;
     }
 
-    /** Look the scope of a schema-level listing up, refusing the one that names nothing. */
-    private void requireScope(final FrostlakeParser.ShowStatementContext ctx, final ShowListing listing,
-                              final ShowListingScope scope) {
+    /**
+     * Look the scope of a schema-level listing up, refusing the one that names nothing.
+     *
+     * @return the schemas the scope covers, or null for a table's scope
+     */
+    private List<Schema> requireScope(final FrostlakeParser.ShowStatementContext ctx, final ShowListing listing,
+                                      final ShowListingScope scope) {
         final boolean bare = ctx.IN() != null && ctx.ACCOUNT() == null && ctx.DATABASE() == null
             && ctx.SCHEMA() == null && ctx.TABLE() == null;
         if (ctx.TABLE() != null || bare && listing.readsTableAfterIn()) {
@@ -181,7 +197,7 @@ final class UnmodelledListings {
             if (ctx.objectName() != null && ShowScopeKindRefusal.scopeKind(ctx) != ShowScopeKind.VIEW) {
                 requireTable(queryExecutor.resolveObjectNameParts(ctx.objectName()), listing);
             }
-            return;
+            return null;
         }
         if (listing.readsTableAfterIn() && ctx.SCHEMA() != null && ctx.objectName() != null) {
             final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
@@ -190,7 +206,7 @@ final class UnmodelledListings {
                     "Must specify the full search path starting from database for " + parts[0]));
             }
         }
-        scope.schemas(catalog, listing == ShowListing.INDEXES);
+        return scope.schemas(catalog, listing == ShowListing.INDEXES);
     }
 
     /**

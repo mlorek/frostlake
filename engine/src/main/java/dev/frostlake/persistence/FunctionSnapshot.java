@@ -34,6 +34,8 @@ public class FunctionSnapshot implements Serializable {
     public String returnType;
     /** Whether the RETURNS type was written with its width; null on older snapshots. */
     public Boolean returnSized;
+    /** Whether the RETURNS type was written NOT NULL; absent in a snapshot written before it was recorded. */
+    public Boolean returnNotNull;
     /** The return type itself (see {@link ParameterSnapshot#type}); null on older snapshots. */
     public DataType returnDataType;
     public List<ParameterSnapshot> returnColumns = new ArrayList<>();
@@ -56,6 +58,12 @@ public class FunctionSnapshot implements Serializable {
     public String serviceName;
     public String serviceEndpoint;
     public Long maxBatchRows;
+
+    // An external function's API_INTEGRATION and URL; null for every other function and on old snapshots.
+    /** Whether the function is a user-defined aggregate; false in a snapshot taken before aggregates were kept. */
+    public boolean aggregate;
+    public String apiIntegration;
+    public String externalUrl;
 
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.

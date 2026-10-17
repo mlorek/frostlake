@@ -17,6 +17,13 @@
 package dev.frostlake.executor.procedural;
 
 public class ForStatement extends Statement {
+    /**
+     * The refusal of a loop over a value that is neither an ARRAY nor an OBJECT: while the block compiles for a plain
+     * value or variable, as a STATEMENT_ERROR at the FOR for a query's (live-verified).
+     */
+    public static final String NOT_ITERABLE =
+        "Expression in variant for loop does not evaluate to an array or an object";
+
     private final String variableName;
     private final BaseExpression iterable;       // cursor/list source, or the range's start expression
     private final BaseExpression toExpression;   // range end (null ⇒ a cursor/list FOR, not a range FOR)

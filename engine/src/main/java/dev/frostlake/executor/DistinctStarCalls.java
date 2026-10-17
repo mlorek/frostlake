@@ -56,7 +56,7 @@ final class DistinctStarCalls {
     private static boolean isDistinctStar(final ParseTree node) {
         if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
             final FrostlakeParser.FunctionCallStarExprContext call = (FrostlakeParser.FunctionCallStarExprContext) node;
-            return call.DISTINCT() != null && call.starQualifiedName() == null && call.starArgumentModifier().isEmpty();
+            return call.DISTINCT() != null && call.starQualifiedName() == null && call.starArgumentModifier() == null;
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
@@ -65,7 +65,7 @@ final class DistinctStarCalls {
             }
             final List<FrostlakeParser.FunctionArgContext> arguments = call.functionArgList().functionArg();
             return arguments.size() == 1 && arguments.get(0).STAR() != null
-                && arguments.get(0).starQualifiedName() == null && arguments.get(0).starArgumentModifier().isEmpty();
+                && arguments.get(0).starQualifiedName() == null && arguments.get(0).starArgumentModifier() == null;
         }
         return false;
     }

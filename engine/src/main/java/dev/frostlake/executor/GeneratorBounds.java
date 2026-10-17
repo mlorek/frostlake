@@ -151,9 +151,6 @@ final class GeneratorBounds {
             final FrostlakeParser.MultiplicativeExprContext product = (FrostlakeParser.MultiplicativeExprContext) node;
             return combined(product.expression(), product.STAR() != null, node);
         }
-        if (node instanceof FrostlakeParser.ConcatExprContext) {
-            return combined(((FrostlakeParser.ConcatExprContext) node).expression(), false, node);
-        }
         if (node instanceof FrostlakeParser.IsNullExprContext) {
             final FrostlakeParser.IsNullExprContext test = (FrostlakeParser.IsNullExprContext) node;
             final BoundFold operand = fold(test.expression());

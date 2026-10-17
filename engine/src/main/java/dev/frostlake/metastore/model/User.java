@@ -42,6 +42,7 @@ public class User implements Taggable {
     private final Map<String, Set<Privilege>> objectPrivileges;
     private final Map<String, Map<String, Set<Privilege>>> columnPrivileges;
     private final Map<String, String> privilegeGrantors = new HashMap<>();  // OBJTYPE:OBJNAME:PRIV -> grantor role
+    private final Set<String> grantOptions = new HashSet<>();               // OBJTYPE:OBJNAME:PRIV with the option
     private final Map<String, String> roleGrantors = new HashMap<>();        // granted role name -> grantor role
     private LocalDateTime createdTime;
     private boolean enabled;
@@ -135,15 +136,15 @@ public class User implements Taggable {
     }
 
     public void grantRole(final String roleName) {
-        grantedRoles.add(roleName.toUpperCase(Locale.ROOT));
+        grantedRoles.add(roleName);
     }
 
     public void revokeRole(final String roleName) {
-        grantedRoles.remove(roleName.toUpperCase(Locale.ROOT));
+        grantedRoles.remove(roleName);
     }
 
     public boolean hasRole(final String roleName) {
-        return grantedRoles.contains(roleName.toUpperCase(Locale.ROOT));
+        return grantedRoles.contains(roleName);
     }
 
     /** The key a grant on an object is kept under: its kind, then its name exactly as recorded (see Role). */
@@ -174,9 +175,9 @@ public class User implements Taggable {
 
     public void grantRole(final String roleName, final String grantor) {
         grantRole(roleName);
-        roleGrantors.put(roleName.toUpperCase(Locale.ROOT), grantor);
+        roleGrantors.put(roleName, grantor);
         // The grant is stamped with the statement's own instant, which a replay restores.
-        roleGrantTimes.put(roleName.toUpperCase(Locale.ROOT), StatementClock.instant());
+        roleGrantTimes.put(roleName, StatementClock.instant());
     }
 
     /** When each role in grantedRoles was granted, by role name; none for a grant made with no moment recorded. */
@@ -189,7 +190,7 @@ public class User implements Taggable {
      * @return the moment, or null for a grant with none recorded
      */
     public Instant getRoleGrantTime(final String roleName) {
-        return roleGrantTimes.get(roleName.toUpperCase(Locale.ROOT));
+        return roleGrantTimes.get(roleName);
     }
 
     /**
@@ -200,14 +201,14 @@ public class User implements Taggable {
      */
     public void restoreRoleGrantTime(final String roleName, final Instant granted) {
         if (granted != null) {
-            roleGrantTimes.put(roleName.toUpperCase(Locale.ROOT), granted);
+            roleGrantTimes.put(roleName, granted);
         } else {
-            roleGrantTimes.remove(roleName.toUpperCase(Locale.ROOT));
+            roleGrantTimes.remove(roleName);
         }
     }
 
     public String getRoleGrantor(final String roleName) {
-        return roleGrantors.getOrDefault(roleName.toUpperCase(Locale.ROOT), "SYSADMIN");
+        return roleGrantors.getOrDefault(roleName, "SYSADMIN");
     }
 
     /**
@@ -216,10 +217,41 @@ public class User implements Taggable {
      * SHOW GRANTS TO USER lists only explicit grants — live Snowflake shows zero rows for a fresh user.
      */
     public boolean hasExplicitRoleGrant(final String roleName) {
-        return roleGrantors.containsKey(roleName.toUpperCase(Locale.ROOT));
+        return roleGrantors.containsKey(roleName);
+    }
+
+    /**
+     * Records whether a privilege this user holds on an object carries the grant option.
+     *
+     * @param objectType the object's kind
+     * @param objectName the object's name
+     * @param privilege  the privilege
+     * @param holds      true to record the option, false to take it back and leave the privilege
+     */
+    public void setGrantOption(final String objectType, final String objectName, final Privilege privilege,
+                               final boolean holds) {
+        final String option = key(objectType, objectName) + ":" + privilege.name();
+        if (holds) {
+            grantOptions.add(option);
+        } else {
+            grantOptions.remove(option);
+        }
+    }
+
+    /**
+     * Whether a privilege this user holds on an object carries the grant option.
+     *
+     * @param objectType the object's kind
+     * @param objectName the object's name
+     * @param privilege  the privilege
+     * @return true where the grant gave the option
+     */
+    public boolean hasGrantOption(final String objectType, final String objectName, final Privilege privilege) {
+        return grantOptions.contains(key(objectType, objectName) + ":" + privilege.name());
     }
 
     public void revokePrivilege(final String objectType, final String objectName, final Privilege privilege) {
+        grantOptions.remove(key(objectType, objectName) + ":" + privilege.name());
         final String key = key(objectType, objectName);
         final Set<Privilege> privileges = objectPrivileges.get(key);
         if (privileges != null) {

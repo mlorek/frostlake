@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -39,14 +40,14 @@ public class InitCap extends TextArgumentFunction {
             return null;
         }
         if (args.get(0) == null) return null;
-        final String str = args.get(0).toString();
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
         if (str.isEmpty()) return str;
 
         // A supplied second argument overrides the default delimiter set entirely; an empty string means
         // there are NO delimiters, so the whole input is one word — capitalize the first letter, lowercase
         // the rest. (These characters are matched literally via indexOf, not as a regex.)
         final String delimiters = args.size() > 1 && args.get(1) != null
-            ? args.get(1).toString() : DEFAULT_DELIMITERS;
+            ? SharedFunctionHelpers.textOf(args.get(1)) : DEFAULT_DELIMITERS;
 
         final StringBuilder result = new StringBuilder(str.length());
         boolean capitalizeNext = true;

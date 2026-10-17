@@ -32,6 +32,10 @@ public class Atanh extends NumericArgumentFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final double x = ((Number) args.get(0)).doubleValue();
+        if (Math.abs(x) > 1) {
+            // Outside (-1, 1) the inverse has no value: refused in the runtime's words (live-verified).
+            throw FloatingPointRefusal.of("atanh(" + FloatingPointRefusal.number(x) + ")");
+        }
         return 0.5 * Math.log((1 + x) / (1 - x));
     }
 

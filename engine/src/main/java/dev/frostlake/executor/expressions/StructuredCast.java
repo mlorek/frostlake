@@ -85,6 +85,9 @@ public final class StructuredCast {
     /** The row-time refusal of a value whose shape does not fit the declared structure. */
     static final String SCHEMA_MISMATCH = "Typed object schema mismatch in conversion";
 
+    /** The refusal of a NULL where an ARRAY's element or a MAP's value is declared NOT NULL. */
+    static final String NON_NULLABLE = "NULL result in a non-nullable column";
+
     private StructuredCast() {
     }
 
@@ -348,6 +351,9 @@ public final class StructuredCast {
         while (keys.hasNext()) {
             final String key = keys.next();
             requireWithinWidth(key, target.getKeyType());
+            if (value.get(key).isNull() && target.isValueNotNull()) {
+                throw new RuntimeException(NON_NULLABLE);
+            }
             out.set(key, convert(value.get(key), target.getValueType(), modifier, null));
         }
         return out;
@@ -367,6 +373,10 @@ public final class StructuredCast {
             // value of a typed element: PARSE_JSON('[null, 1]')::ARRAY(NUMBER) is [undefined, 1], its [0] IS NULL and
             // its TYPEOF is NULL (all live-verified). Only an ARRAY of VARIANTs can hold a JSON null, so it keeps one.
             // An OBJECT field or a MAP value keeps its JSON null: {"k": null} stays itself (live-verified).
+            // An element declared NOT NULL takes neither: [1, NULL]::ARRAY(INT NOT NULL) is refused (live-verified).
+            if ((VariantUndefined.isUndefined(element) || element.isNull()) && target.isElementNotNull()) {
+                throw new RuntimeException(NON_NULLABLE);
+            }
             if (VariantUndefined.isUndefined(element)) {
                 out.add(element);
             } else if (element.isNull() && !(target.getElementType() instanceof VariantType)) {

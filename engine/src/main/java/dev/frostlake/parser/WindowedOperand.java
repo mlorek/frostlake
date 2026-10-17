@@ -117,8 +117,13 @@ public final class WindowedOperand {
         return value;
     }
 
-    /** A class instance's method as the account names it: the instance, a '!', the method. */
-    static String methodName(final FrostlakeParser.InstanceMethodCallExprContext call) {
+    /**
+     * A class instance's method as the account names it: the instance, a '!', the method.
+     *
+     * @param call the call
+     * @return the name, each part spelled as the account spells it
+     */
+    public static String methodName(final FrostlakeParser.InstanceMethodCallExprContext call) {
         final StringBuilder name = new StringBuilder();
         for (final String part : ParseTreeText.qualifiedNameParts(call.qualifiedName())) {
             name.append(name.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
@@ -277,9 +282,6 @@ public final class WindowedOperand {
 
     /** The name the account gives an operator applied in parentheses, or null for what is none. */
     private static String operatorOf(final ParseTree value) {
-        if (value instanceof FrostlakeParser.ConcatExprContext) {
-            return "||";
-        }
         if (value instanceof FrostlakeParser.AdditiveExprContext) {
             return ((FrostlakeParser.AdditiveExprContext) value).op.getText();
         }

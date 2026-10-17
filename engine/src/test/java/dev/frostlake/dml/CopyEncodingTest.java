@@ -38,7 +38,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * A delimited file is read in the character set its format's ENCODING names, UTF8 by default, and a byte sequence that
  * set cannot read refuses its record unless REPLACE_INVALID_CHARACTERS = TRUE turns it into U+FFFD (documented on COPY
- * INTO &lt;table&gt;).
+ * INTO &lt;table&gt;), the refusal spelling the byte as its value, {@code caf0xE9}, as a staged-file query spells it. A
+ * JSON file's byte that is no UTF-8 refuses the file in the JSON parser's words unless the option reads it as U+FFFD.
  */
 public class CopyEncodingTest {
 
@@ -149,7 +150,7 @@ public class CopyEncodingTest {
         final ResultSet result = engine.executeQuery("COPY INTO l FROM @s FILES = ('bad.csv')"
             + " FILE_FORMAT = (TYPE = CSV) ON_ERROR = CONTINUE");
         assertEquals("LOAD_FAILED", status(result));
-        assertEquals("Invalid UTF8 detected in string 'caf\ufffd'", firstError(result));
+        assertEquals("Invalid UTF8 detected in string 'caf0xE9'", firstError(result));
         assertEquals("", answer("SELECT v FROM l"));
     }
 
@@ -160,6 +161,22 @@ public class CopyEncodingTest {
         assertEquals("LOADED", status(engine.executeQuery("COPY INTO l FROM @s FILES = ('bad.csv')"
             + " FILE_FORMAT = (TYPE = CSV REPLACE_INVALID_CHARACTERS = TRUE)")));
         assertEquals("636166EFBFBD", answer("SELECT HEX_ENCODE(v) FROM l"));
+    }
+
+    @Test
+    public void aJsonFileReadsInvalidUtf8ByReplaceInvalidCharacters() throws IOException {
+        engine.execute("CREATE TABLE j (v VARIANT)");
+        stage("bad.json", new byte[] {'{', '"', 'a', '"', ':', '"', 'c', 'a', 'f', (byte) 0xE9, '"', '}', '\n'});
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("COPY INTO j FROM @s FILES = ('bad.json') FILE_FORMAT = (TYPE = JSON)");
+            }
+        });
+        assertEquals("Error parsing JSON: invalid UTF-8 sequence: 0xE9", refused.getMessage().split("\n")[0]);
+        assertEquals("LOADED", status(engine.executeQuery("COPY INTO j FROM @s FILES = ('bad.json')"
+            + " FILE_FORMAT = (TYPE = JSON REPLACE_INVALID_CHARACTERS = TRUE)")));
+        assertEquals("636166EFBFBD", answer("SELECT HEX_ENCODE(v:a::VARCHAR) FROM j"));
     }
 
     @Test

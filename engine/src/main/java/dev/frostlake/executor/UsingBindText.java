@@ -20,6 +20,9 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.StringNode;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -31,6 +34,7 @@ import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * What a value of a USING list is bound as. A cursor's {@code OPEN … USING (x)} and a dynamic text's
@@ -50,8 +54,9 @@ import java.util.Locale;
  *   TIMESTAMP_NTZ    2024-01-15 10:20:30.500000000, a TIMESTAMP_LTZ alike
  *   TIMESTAMP_TZ     2024-01-15 10:20:30.000000000 +02:00
  *   BINARY           its hexadecimal digits
+ *   ARRAY, OBJECT    its JSON with each member on a line of its own, nothing indented: [\n1,\n2\n] is a VARCHAR(8)
  * </pre>
- * A NULL and a semi-structured value are bound as before. A statement that wants no text where the bind stands
+ * A NULL and a VARIANT holding no container are bound as before. A statement that wants no text where the bind stands
  * refuses it in its own words: a predicate {@code Invalid data type [VARCHAR(4)] for predicate}, and a row count
  * {@code Invalid row count '?' in limit clause}.
  */
@@ -120,7 +125,31 @@ public final class UsingBindText {
         if (value instanceof BinaryValue) {
             return ((BinaryValue) value).toHex();
         }
+        if (value instanceof VariantValue && ((VariantValue) value).node().isContainer()) {
+            return linePerMember(((VariantValue) value).node());
+        }
         return null;
+    }
+
+    /** A container's JSON as a USING list writes it: each member on a line of its own, nothing indented. */
+    private static String linePerMember(final JsonNode node) {
+        if (!node.isContainer() || node.size() == 0) {
+            return node.toString();
+        }
+        final StringBuilder out = new StringBuilder(node.isArray() ? "[\n" : "{\n");
+        if (node.isArray()) {
+            for (int i = 0; i < node.size(); i++) {
+                out.append(i > 0 ? ",\n" : "").append(linePerMember(node.get(i)));
+            }
+        } else {
+            boolean first = true;
+            for (final Map.Entry<String, JsonNode> field : node.properties()) {
+                out.append(first ? "" : ",\n").append(StringNode.valueOf(field.getKey()).toString()).append(": ")
+                    .append(linePerMember(field.getValue()));
+                first = false;
+            }
+        }
+        return out.append(node.isArray() ? "\n]" : "\n}").toString();
     }
 
     /** A number's text: a FLOAT's by its magnitude, an exact one's digits at the scale its variable declares. */

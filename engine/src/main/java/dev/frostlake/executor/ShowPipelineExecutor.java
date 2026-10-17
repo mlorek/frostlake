@@ -639,7 +639,7 @@ final class ShowPipelineExecutor {
 
         final String dbName = written.database().getName();
         final String scName = written.schema().getName();
-        final Sequence sequence = written.schema().getSequence(written.name());
+        final Sequence sequence = written.schema().getSequenceExact(written.name());
 
         final List<Row> rows = new ArrayList<>();
         // The same ten cells SHOW SEQUENCES prints for the one sequence — the creation instant and

@@ -110,7 +110,7 @@ the account's own result metadata does, and Snowflake's drivers report that numb
 column. Every other type **omits both fields**, as the account's own result metadata leaves them null there —
 text, binary, FLOAT, BOOLEAN, DATE, VARIANT, OBJECT, ARRAY, VECTOR and an untyped NULL — except an interval
 (below); a client reports such a column's precision and scale as unknown, or as 0 where its API has no way to
-say so. A server before 0.2.1 sends 0 for both instead, which reads the same. `length` is sent for
+say so. A server before 0.3.0 sends 0 for both instead, which reads the same. `length` is sent for
 a text (VARCHAR) or binary (BINARY) column only: its length in characters or bytes, the number Snowflake's own
 driver reports as the column's precision and display size. `VARCHAR(9)` sends 9, a table's bare `VARCHAR`
 16777216, a cast to bare `VARCHAR` 134217728, a table's bare `BINARY` 8388608, and a binary the plan never sized

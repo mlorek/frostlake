@@ -29,6 +29,8 @@ public class IcebergMetadataSnapshot implements Serializable {
 
     /** BASE_LOCATION, or null. */
     public String baseLocation;
+    /** Whether GET_DDL spells the base location; false on a snapshot written before it was kept. */
+    public boolean baseLocationSpelled;
 
     /** CATALOG_SYNC, or null. */
     public String catalogSync;

@@ -33,7 +33,7 @@ public class TryBase64Decode extends BuiltInFunction {
             return null;
         }
         try {
-            return DecodedText.lenient(Base64.getDecoder().decode(Base64Options.toStandardAlphabet(
+            return DecodedText.lenient(Base64.getDecoder().decode(Base64Options.decodable(
                 args.get(0).toString(), Base64Options.alphabetOf(args, 1))));
         } catch (final Exception e) { return null; }
     }

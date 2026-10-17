@@ -39,7 +39,7 @@ import java.util.Set;
  *     tests (IS_ARRAY … IS_NULL_VALUE)
  * </pre>
  */
-final class PredicateExpressions {
+public final class PredicateExpressions {
 
     /** The BOOLEAN-returning functions live treats as predicates, each measured. */
     private static final Set<String> PREDICATE_FUNCTIONS = Set.of(
@@ -58,7 +58,7 @@ final class PredicateExpressions {
      * @param expression the expression
      * @return true for a predicate
      */
-    static boolean isPredicate(final Expression expression) {
+    public static boolean isPredicate(final Expression expression) {
         if (expression instanceof BinaryOperationExpression) {
             final BinaryOperationExpression binary = (BinaryOperationExpression) expression;
             switch (binary.getOperator()) {

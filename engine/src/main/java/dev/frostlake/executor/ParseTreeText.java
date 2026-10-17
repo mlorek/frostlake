@@ -257,7 +257,10 @@ public final class ParseTreeText {
         if (body.start == null || last == null || body.start.getInputStream() == null) {
             return getOriginalText(body);
         }
-        return body.start.getInputStream().getText(new Interval(body.start.getStartIndex(), last.getStopIndex()));
+        // A body read with stand-ins for its words that name no type is stored as it was written.
+        final String written = TaskBodyTypeWords.written(body, body.start.getStartIndex(), last.getStopIndex());
+        return written != null ? written
+            : body.start.getInputStream().getText(new Interval(body.start.getStartIndex(), last.getStopIndex()));
     }
 
     /** The last token of a tree that is no ';' and not the end of the input, or null. */

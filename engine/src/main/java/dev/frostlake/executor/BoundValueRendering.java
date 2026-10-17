@@ -16,9 +16,9 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.BoundValueCall;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
-import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -135,7 +135,7 @@ final class BoundValueRendering {
             args.add(new LiteralExpression(Long.valueOf(type.getPrecision()), LiteralType.INTEGER));
             args.add(new LiteralExpression(Long.valueOf(type.getScale()), LiteralType.INTEGER));
         }
-        return new FunctionCallExpression("TO_NUMBER", args);
+        return new BoundValueCall("TO_NUMBER", args);
     }
 
     private static Expression floatOf(final Object value, final boolean planned) {
@@ -239,7 +239,7 @@ final class BoundValueRendering {
     }
 
     private static Expression call(final String function, final Expression argument) {
-        return new FunctionCallExpression(function, Collections.<Expression>singletonList(argument));
+        return new BoundValueCall(function, Collections.<Expression>singletonList(argument));
     }
 
     private static LiteralExpression text(final String value) {
