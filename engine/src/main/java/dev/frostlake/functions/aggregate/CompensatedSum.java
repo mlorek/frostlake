@@ -59,8 +59,21 @@ public final class CompensatedSum {
             // to 0), which IEEE addition would not keep — -0.0 + 0.0 is +0.0.
             return;
         }
+        if (!Double.isFinite(sum) || !Double.isFinite(term)) {
+            // Past an infinity or a NaN the sum is IEEE addition's: inf + 1 is inf and inf + -inf is NaN; no
+            // rounding error is left to carry (live-verified).
+            sum = sum + term;
+            compensation = 0.0;
+            return;
+        }
         final double corrected = term - compensation;
         final double next = sum + corrected;
+        if (!Double.isFinite(next)) {
+            // An overflow is an infinity, as IEEE addition answers it (1e308 + 1e308), never inf - inf.
+            sum = next;
+            compensation = 0.0;
+            return;
+        }
         compensation = (next - sum) - corrected;
         sum = next;
     }

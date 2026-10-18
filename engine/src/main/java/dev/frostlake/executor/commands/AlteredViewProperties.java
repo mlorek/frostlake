@@ -45,10 +45,13 @@ import java.util.Set;
  *                                materialized view's CHANGE_TRACKING among them; of several the first of a table
  *                                hashed by name
  *   SET COMMENT = 5              invalid value [5] for parameter 'COMMENT'
+ *   SET CHANGE_TRACKING = NULL   invalid value 'null' for property 'CHANGE_TRACKING'
  *   SET TIMEZONE = 'UTC'         Insufficient privileges to operate on view 'V0'.  any parameter, set or unset
  * </pre>
  *
- * A view's COMMENT and CHANGE_TRACKING are its properties, a materialized view's COMMENT alone.
+ * A value that is a reserved word ({@code SET COMMENT = ON}) is a syntax error at the list's first name, as an item
+ * without its value is. A view's COMMENT and CHANGE_TRACKING are its properties, a materialized view's COMMENT
+ * alone; {@code COMMENT = NULL} takes the comment away.
  */
 final class AlteredViewProperties {
 
@@ -59,19 +62,18 @@ final class AlteredViewProperties {
     }
 
     /**
-     * Judges a SET's items and answers the comment it sets, the last one written; null when it sets none.
+     * Judges a SET's items.
      *
      * @param items        the items, in the order written
      * @param materialized whether the statement alters a materialized view
      * @param name         the view's name, as the access refusal spells it
      * @param sql          the statement, for a syntax error
-     * @return the comment, or null
      */
-    static String judgeSet(final List<FrostlakeParser.ViewSetItemContext> items, final boolean materialized,
-                           final String name, final String sql) {
+    static void judgeSet(final List<FrostlakeParser.ViewSetItemContext> items, final boolean materialized,
+                         final String name, final String sql) {
         for (final FrostlakeParser.ViewSetItemContext item : items) {
-            if (item.copyOptionValue() == null) {
-                final boolean secureFirst = items.get(0).copyOptionValue() == null && items.size() > 1
+            if (item.copyOptionValue() == null && item.NULL() == null) {
+                final boolean secureFirst = !hasValue(items.get(0)) && items.size() > 1
                     && "SECURE".equalsIgnoreCase(items.get(0).optionKey().getText());
                 throw syntaxError(items.get(secureFirst ? 1 : 0).getStart(), sql);
             }
@@ -85,10 +87,17 @@ final class AlteredViewProperties {
         }
         final List<Integer> order = CreatedObjectProperties.judgedOrder(names);
         rejectUnknown(names, order, materialized);
-        String comment = null;
         for (final Integer i : order) {
             final String key = ParameterRegistry.canonical(names.get(i));
             final FrostlakeParser.CopyOptionValueContext value = items.get(i).copyOptionValue();
+            if (value == null) {
+                // NULL: a view's change tracking takes no NULL, in a sentence of its own (live-verified).
+                if (CHANGE_TRACKING.equals(key)) {
+                    throw new RuntimeException(SqlCompilationError.of("invalid value 'null' for property '"
+                        + CHANGE_TRACKING + "'"));
+                }
+                continue;
+            }
             final boolean number = value.INTEGER_LITERAL() != null;
             final boolean fits = CHANGE_TRACKING.equals(key) ? value.booleanValue() != null
                 : !COMMENT.equals(key) || !number && value.booleanValue() == null;
@@ -97,14 +106,77 @@ final class AlteredViewProperties {
             }
         }
         rejectParameters(names, order, materialized, name);
-        for (int i = 0; i < items.size(); i++) {
-            if (COMMENT.equals(ParameterRegistry.canonical(names.get(i)))) {
-                final FrostlakeParser.CopyOptionValueContext value = items.get(i).copyOptionValue();
-                comment = value.STRING_LITERAL() != null ? SqlStringLiterals.decode(value.STRING_LITERAL().getText())
-                    : value.getText();
+    }
+
+    /**
+     * Whether a judged SET sets the comment.
+     *
+     * @param items the items, judged
+     * @return whether one of them is COMMENT
+     */
+    static boolean setsComment(final List<FrostlakeParser.ViewSetItemContext> items) {
+        return lastItem(items, COMMENT) != null;
+    }
+
+    /**
+     * The comment a judged SET gives, the last one written: null for {@code COMMENT = NULL}, which takes it away.
+     *
+     * @param items the items, judged
+     * @return the comment, or null
+     */
+    static String commentOf(final List<FrostlakeParser.ViewSetItemContext> items) {
+        final FrostlakeParser.ViewSetItemContext item = lastItem(items, COMMENT);
+        if (item == null || item.copyOptionValue() == null) {
+            return null;
+        }
+        final FrostlakeParser.CopyOptionValueContext value = item.copyOptionValue();
+        return value.STRING_LITERAL() != null ? SqlStringLiterals.decode(value.STRING_LITERAL().getText())
+            : value.getText();
+    }
+
+    /**
+     * The change tracking a judged SET of a view gives, the last one written, or null when it gives none.
+     *
+     * @param items the items, judged
+     * @return TRUE, FALSE or null
+     */
+    static Boolean changeTrackingOf(final List<FrostlakeParser.ViewSetItemContext> items) {
+        final FrostlakeParser.ViewSetItemContext item = lastItem(items, CHANGE_TRACKING);
+        if (item == null || item.copyOptionValue() == null || item.copyOptionValue().booleanValue() == null) {
+            return null;
+        }
+        return Boolean.valueOf(item.copyOptionValue().booleanValue().TRUE() != null);
+    }
+
+    /**
+     * Whether a judged UNSET takes a view's change tracking away.
+     *
+     * @param keys the names, judged
+     * @return whether one of them is CHANGE_TRACKING
+     */
+    static boolean unsetsChangeTracking(final List<FrostlakeParser.OptionKeyContext> keys) {
+        for (final FrostlakeParser.OptionKeyContext key : keys) {
+            if (CHANGE_TRACKING.equals(ParameterRegistry.canonical(key.getText()))) {
+                return true;
             }
         }
-        return comment;
+        return false;
+    }
+
+    private static FrostlakeParser.ViewSetItemContext lastItem(final List<FrostlakeParser.ViewSetItemContext> items,
+                                                               final String key) {
+        FrostlakeParser.ViewSetItemContext last = null;
+        for (final FrostlakeParser.ViewSetItemContext item : items) {
+            if (key.equals(ParameterRegistry.canonical(item.optionKey().getText()))) {
+                last = item;
+            }
+        }
+        return last;
+    }
+
+    /** Whether an item carries a value, NULL included. */
+    private static boolean hasValue(final FrostlakeParser.ViewSetItemContext item) {
+        return item.copyOptionValue() != null || item.NULL() != null;
     }
 
     /**

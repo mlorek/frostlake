@@ -99,6 +99,16 @@ public final class CsvRecordReader {
     /** How many fields the first data record held, which stands in for a header's width without one. */
     private int firstWidth = -1;
 
+    /** The line the last record started on. */
+    private int recordStartLine = 1;
+
+    /** Where each field of the last record started, as {line, character}. */
+    private final List<int[]> fieldStarts = new ArrayList<int[]>();
+
+    /** The place just past the last record's last field: its record delimiter's, or the end of the file. */
+    private int recordEndLine = 1;
+    private int recordEndColumn = 1;
+
     /**
      * A reader over one file.
      *
@@ -198,7 +208,9 @@ public final class CsvRecordReader {
             throws IOException {
         enclosedOut.clear();
         unreadable.clear();
+        fieldStarts.clear();
         final int startLine = line;
+        recordStartLine = startLine;
         final List<String> fields = new ArrayList<String>();
         int ending = NEXT_FIELD;
         while (ending == NEXT_FIELD) {
@@ -210,6 +222,7 @@ public final class CsvRecordReader {
             final StringBuilder value = new StringBuilder();
             final int fieldLine = line;
             final int fieldColumn = column;
+            fieldStarts.add(new int[] {fieldLine, fieldColumn});
             final boolean enclosed = enclosureAhead();
             ending = enclosed ? enclosedField(value, header, width, row, startLine, index)
                 : unenclosedField(value, header);
@@ -346,6 +359,8 @@ public final class CsvRecordReader {
     /** The delimiter at the cursor, taken, as the ending it makes; -1 when there is none and the file goes on. */
     private int delimiterEnding() throws IOException {
         if (peek(0) < 0) {
+            recordEndLine = line;
+            recordEndColumn = column;
             return FILE_END;
         }
         final int field = fieldDelimiterLength();
@@ -355,10 +370,68 @@ public final class CsvRecordReader {
         }
         final int record = recordDelimiterLength();
         if (record > 0) {
+            recordEndLine = line;
+            recordEndColumn = column;
             consume(record);
             return RECORD_END;
         }
         return -1;
+    }
+
+    /**
+     * The refusal of the last record's width against a table's, in a load's words, or null when the widths agree.
+     * The rule is COPY's (see {@code CopyCommandExecutor.requireCsvColumnCount}), and a table stage's query follows it
+     * (live-verified): the file's first record of another width is {@code Number of columns in file (F) does not match
+     * that of the corresponding table (T), …}, placed just past the record — at the next line's start when the file
+     * goes on — against column F, named when the table has one; a later record holding more fields is refused at the
+     * delimiter that should have ended it, against the table's last column, and one holding fewer just past its end,
+     * against the first column it never reached.
+     *
+     * @param fieldCount  the last record's fields
+     * @param table       the table's name, as the refusal spells it
+     * @param columns     the table's column names, in order
+     * @param firstRecord whether the record is its file's first
+     * @param row         the record's number
+     * @return the refusal, or null
+     * @throws IOException when the file cannot be read
+     */
+    public RuntimeException tableWidthRefusal(final int fieldCount, final String table, final List<String> columns,
+                                              final boolean firstRecord, final long row) throws IOException {
+        final int width = columns.size();
+        if (fieldCount == width) {
+            return null;
+        }
+        if (firstRecord) {
+            final boolean goesOn = peek(0) >= 0;
+            final String against = fieldCount > width ? "\"" + table + "\"[" + fieldCount + "]"
+                : tableColumn(table, columns, fieldCount);
+            return tableRefusal("Number of columns in file (" + fieldCount
+                + ") does not match that of the corresponding table (" + width
+                + "), use file format option error_on_column_count_mismatch=false to ignore this error",
+                goesOn ? line : recordEndLine, goesOn ? column : recordEndColumn, row, against);
+        }
+        if (fieldCount > width) {
+            final int[] past = fieldStarts.get(width);
+            return tableRefusal("Field delimiter '" + shown(fieldDelimiter)
+                + "' found while expecting record delimiter '" + shown(recordDelimiter) + "'", past[0],
+                past[1] - (fieldDelimiter == null ? 0 : fieldDelimiter.length()), row,
+                tableColumn(table, columns, width));
+        }
+        final String missing = tableColumn(table, columns, fieldCount + 1);
+        return tableRefusal("End of record reached while expected to parse column '" + missing + "'", recordEndLine,
+            recordEndColumn, row, missing);
+    }
+
+    /** {@code "T"["C":n]}, a table's n-th column as a load's refusal names it. */
+    private static String tableColumn(final String table, final List<String> columns, final int ordinal) {
+        return "\"" + table + "\"[\"" + columns.get(ordinal - 1) + "\":" + ordinal + "]";
+    }
+
+    /** A refusal of the last record against a table: the sentence, the file and place, the row and the column. */
+    private RuntimeException tableRefusal(final String detail, final int atLine, final int atColumn, final long row,
+                                          final String against) {
+        return new RuntimeException(detail + "\n  File '" + relativeName + "', line " + atLine + ", character "
+            + atColumn + "\n  Row " + row + startingAt(atLine, recordStartLine) + ", column " + against);
     }
 
     /**

@@ -51,6 +51,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -786,7 +787,7 @@ public final class CopyCommandExecutor {
             final int[] fieldToCol = buildCopyColumnMapping(tableCols, columns);
             final LoadedRowRules rowRules = new LoadedRowRules(loadCharset(encoding), replaceInvalidCharacters,
                 stripNullValues, stripOuterArray, truncateToColumns, omittedColumns(tableCols, columns, fieldToCol),
-                fullyQualifiedTableName, fieldDelimiter, recordDelimiter);
+                fullyQualifiedTableName, fieldDelimiter, recordDelimiter, matchByColumnName);
             // COPY transformation setup: a synthetic COLUMN1..N table lets $1, $2, … resolve to staged fields.
             final List<FrostlakeParser.CopyTransformItemContext> transformItems =
                 transformation != null ? transformation.copyTransformItem() : null;
@@ -820,6 +821,8 @@ public final class CopyCommandExecutor {
                     trimSpace, nullIf, emptyFieldAsNull, checkColumnCount, skipBlankLines, fromLocationDisplay,
                     missingFiles, rowRules);
             }
+            // The load reads the stage's files as they are now, which a replay of its text would not find again.
+            CheckpointDebt.owe();
 
             final Map<String, Set<String>> histories = loadHistory(table.isTemporary());
             Set<String> loadedKeys = histories.get(fullyQualifiedTableName);
@@ -883,7 +886,7 @@ public final class CopyCommandExecutor {
                             try {
                                 final Row row = transformItems != null
                                     ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record, transformEval, transformSlots)
-                                    : buildJsonRow(tableCols, record);
+                                    : buildJsonRow(tableCols, record, rowRules.matchByColumnName());
                                 enforceLoadedRow(table, row, rowRules);
                                 fileRows.add(row);
                             } catch (final RuntimeException rowError) {
@@ -905,7 +908,8 @@ public final class CopyCommandExecutor {
                         // for a large CSV. The one-line lookahead keeps the last-line flag available,
                         // and is advanced BEFORE the blank-line skip so a `continue` can't stall it.
                         try (final BufferedReader reader = StagedFileIo.reader(file, rowRules.charset())) {
-                            final CsvLoadRecords records = new CsvLoadRecords(reader, recordDelimiter, enclosure);
+                            final CsvLoadRecords records = new CsvLoadRecords(reader, recordDelimiter, enclosure,
+                                fieldDelimiter, escapeEnclosed, escapeUnenclosed, trimSpace);
                             for (int skipped = 0; skipped < skipHeader && records.skipLine() != null; skipped++) {
                                 // header lines discarded unread
                             }
@@ -932,10 +936,13 @@ public final class CopyCommandExecutor {
                                 String record = lookahead;
                                 lookahead = records.next();
                                 // An escaped line break carries the record on into the next line, as a staged-file
-                                // query reads it (live-verified); the record is told by its first line.
+                                // query reads it (live-verified); the record is told by its first line. A line break
+                                // inside an enclosed field carries it on too.
                                 final int firstLine = ln;
+                                ln += CsvLoadRecords.lineBreaks(record);
                                 while (records.byLines() && lookahead != null
                                         && CsvEscapes.carriesOn(record, escapeUnenclosed)) {
+                                    ln += CsvLoadRecords.lineBreaks(lookahead);
                                     record = record + "\n" + lookahead;
                                     lookahead = records.next();
                                     ln++;
@@ -1341,7 +1348,7 @@ public final class CopyCommandExecutor {
                     try {
                         final Row row = transformItems != null
                             ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record, transformEval, transformSlots)
-                            : buildJsonRow(tableCols, record);
+                            : buildJsonRow(tableCols, record, rowRules.matchByColumnName());
                         enforceLoadedRow(table, row, rowRules);
                         rows.add(row);
                     } catch (final RuntimeException rowError) {
@@ -1362,8 +1369,8 @@ public final class CopyCommandExecutor {
             } else {
                 // Streamed line read with a one-line lookahead — see the load path's CSV loop.
                 try (final BufferedReader reader = StagedFileIo.reader(file, rowRules.charset())) {
-                    final CsvLoadRecords records =
-                        new CsvLoadRecords(reader, rowRules.recordDelimiter(), enclosure);
+                    final CsvLoadRecords records = new CsvLoadRecords(reader, rowRules.recordDelimiter(), enclosure,
+                        rowRules.fieldDelimiter(), escapeEnclosed, escapeUnenclosed, trimSpace);
                     final String fieldDelimiter = rowRules.fieldDelimiter();
                     // Byte offset of the line about to be read, headers included — the account's
                     // BYTE_OFFSET points into the raw file (line terminators counted one byte each).
@@ -1384,9 +1391,11 @@ public final class CopyCommandExecutor {
                         byteOffset += record.getBytes(StandardCharsets.UTF_8).length + records.terminatorBytes();
                         // An escaped line break carries the record on into the next line (see the load's loop).
                         final int firstLine = ln;
+                        ln += CsvLoadRecords.lineBreaks(record);
                         while (records.byLines() && lookahead != null
                                 && CsvEscapes.carriesOn(record, escapeUnenclosed)) {
                             byteOffset += lookahead.getBytes(StandardCharsets.UTF_8).length + 1L;
+                            ln += CsvLoadRecords.lineBreaks(lookahead);
                             record = record + "\n" + lookahead;
                             lookahead = records.next();
                             ln++;
@@ -2634,6 +2643,10 @@ public final class CopyCommandExecutor {
             if (inQuotes && escapeEnclosed != null && c == escapeEnclosed.charValue() && i + 1 < line.length()) {
                 cur.append(line.charAt(i + 1));
                 i++;
+            } else if (enclosure != null && c == enclosure && !inQuotes && !sawEnclosure && !blank(cur)) {
+                // A field is enclosed only when it starts with the enclosure: a quote inside an unenclosed field is
+                // one of its characters (documented; a staged-file query reads it so).
+                cur.append(c);
             } else if (enclosure != null && c == enclosure) {
                 if (!sawEnclosure) {
                     contentStart = cur.length();
@@ -2676,6 +2689,16 @@ public final class CopyCommandExecutor {
         return fields;
     }
 
+    /** Whether a field read so far holds nothing but spaces, which may come before its enclosure. */
+    private static boolean blank(final StringBuilder field) {
+        for (int i = 0; i < field.length(); i++) {
+            if (field.charAt(i) != ' ') {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** One field's enclosure content — the field itself when no enclosure (or none closed). */
     private static String enclosedContent(final String field, final boolean sawEnclosure,
             final int contentStart, final int contentEnd) {
@@ -2686,22 +2709,46 @@ public final class CopyCommandExecutor {
         return field.substring(Math.min(contentStart, field.length()), Math.min(end, field.length()));
     }
 
-    /** Map a JSON record to a row: a single (VARIANT) column gets the whole element; otherwise object fields map to columns by name. */
-    private static Row buildJsonRow(final List<TableColumn> tableCols, final JsonNode record) {
+    /**
+     * Map a JSON record to a row: a single (VARIANT) column gets the whole element; otherwise object fields map to
+     * columns by name, as MATCH_BY_COLUMN_NAME says: CASE_SENSITIVE takes a key spelled exactly as the column,
+     * CASE_INSENSITIVE a key in any case, the exact spelling first (documented).
+     */
+    private static Row buildJsonRow(final List<TableColumn> tableCols, final JsonNode record,
+                                    final String matchByColumnName) {
         final List<Object> values = new ArrayList<>(tableCols.size());
         if (tableCols.size() == 1) {
             values.add(jsonNodeToValue(record, tableCols.get(0)));
             return new Row(values);
         }
         for (final TableColumn col : tableCols) {
-            values.add(jsonNodeToValue(jsonField(record, col.getName()), col));
+            values.add(jsonNodeToValue(jsonField(record, col.getName(), matchByColumnName), col));
         }
         return new Row(values);
     }
 
-    /** Look up a JSON object field by column name, tolerating case (JSON keys are case-sensitive, SQL columns are not). */
-    private static JsonNode jsonField(final JsonNode record, final String columnName) {
+    /**
+     * Look up a JSON object field by column name. Under MATCH_BY_COLUMN_NAME = CASE_SENSITIVE only the exact spelling
+     * is the column's; under CASE_INSENSITIVE any spelling is, the exact one first; with no mode the column's own,
+     * lower-case and upper-case spellings are tried, as before.
+     */
+    private static JsonNode jsonField(final JsonNode record, final String columnName, final String matchByColumnName) {
         if (record == null || !record.isObject()) {
+            return null;
+        }
+        if ("CASE_SENSITIVE".equalsIgnoreCase(matchByColumnName)) {
+            return record.get(columnName);
+        }
+        if ("CASE_INSENSITIVE".equalsIgnoreCase(matchByColumnName)) {
+            final JsonNode exact = record.get(columnName);
+            if (exact != null) {
+                return exact;
+            }
+            for (final String name : record.propertyNames()) {
+                if (name.equalsIgnoreCase(columnName)) {
+                    return record.get(name);
+                }
+            }
             return null;
         }
         JsonNode value = record.get(columnName);
@@ -3245,7 +3292,9 @@ public final class CopyCommandExecutor {
         }
         final Map<String, String> kept = executor.stageFileFormat(location);
         if (kept.get("FORMAT_NAME") != null) {
-            return resolveFileFormat(kept.get("FORMAT_NAME"));
+            // Read where the stage lives, and refused when it names a format that is not there (see
+            // QueryExecutor.stageNamedFormat): a COPY never falls back to the default CSV in its place.
+            return executor.stageNamedFormat(location, kept.get("FORMAT_NAME"));
         }
         if (kept.isEmpty()) {
             return null;

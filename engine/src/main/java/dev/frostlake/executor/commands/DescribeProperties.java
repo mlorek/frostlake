@@ -24,6 +24,7 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -82,17 +83,26 @@ final class DescribeProperties {
 
     /**
      * The statement is read whole before any property is judged: a name left without its value is the syntax
-     * error, whatever was written before it.
+     * error, whatever was written before it. The words after a name are read in pairs to the end of the statement,
+     * the first of a pair taken as a property's name and the token after it refused — a word, the semicolon or the
+     * end — so {@code x y z w v;} is the y, the w and the ';' (live-verified).
      *
      * @param statement the DESCRIBE of any kind, its properties in the order written
      */
     static void requireValues(final ParserRuleContext statement) {
-        for (final FrostlakeParser.DescribePropertyContext property
-                : statement.getRuleContexts(FrostlakeParser.DescribePropertyContext.class)) {
-            final FrostlakeParser.DescribeParameterContext parameter = property.describeParameter();
+        final List<FrostlakeParser.DescribePropertyContext> properties =
+            statement.getRuleContexts(FrostlakeParser.DescribePropertyContext.class);
+        final List<String> lines = new ArrayList<>();
+        for (int i = 0; i < properties.size(); i++) {
+            final FrostlakeParser.DescribeParameterContext parameter = properties.get(i).describeParameter();
             if (parameter != null && parameter.EQ() == null) {
-                throw new RuntimeException(syntaxErrorAfter(statement, property));
+                lines.add(syntaxErrorAfter(statement, properties.get(i)));
+                // The refused token is the next property's first, and the reading takes up again behind it.
+                i++;
             }
+        }
+        if (!lines.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", lines)));
         }
     }
 
@@ -141,6 +151,10 @@ final class DescribeProperties {
      */
     private static boolean isStage(final FrostlakeParser.DescribeParameterContext parameter, final Object variable) {
         final FrostlakeParser.DescribeParameterValueContext value = parameter.describeParameterValue();
+        if (!value.describePropertyList().isEmpty()) {
+            // A list of property lists is named by the kind the account's parse gives it (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("invalid value [TOK_LIST] for parameter 'TYPE'"));
+        }
         if (value.LPAREN() != null) {
             throw new RuntimeException("Invalid value specified for property 'TYPE'");
         }
@@ -183,8 +197,7 @@ final class DescribeProperties {
             shown = LeadingCommentOffset.rebase(last.getLine(), last.getCharPositionInLine() + last.getText().length());
             text = "<EOF>";
         }
-        return SqlCompilationError.of("syntax error line " + shown[0] + " at position " + shown[1]
-            + " unexpected '" + text + "'.");
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + text + "'.";
     }
 
     /** Whether one TYPE property names STAGE, or COLUMNS; any other value is refused as written. */

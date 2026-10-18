@@ -233,6 +233,69 @@ public final class JarHandlerLoader {
     }
 
     /**
+     * Whether a routine's imports hold its handler class, as the account looks for it when the routine is created: a
+     * JAR that holds the class file, or a stage directory that does (live-verified: a directory that holds nothing
+     * holds no class).
+     *
+     * @param written    the routine's imports, as it keeps them
+     * @param className  the handler's class
+     * @param catalog    the catalog the imports' stages are looked up in
+     * @param s3Resolver the resolver of {@code s3://} imports, or null
+     * @return TRUE or FALSE, or null when an import cannot be read here and nothing can be told
+     */
+    public static Boolean holdsClass(final List<String> written, final String className, final Catalog catalog,
+                                     final S3PathResolver s3Resolver) {
+        if (written == null || written.isEmpty()) {
+            return null;
+        }
+        final String held = className.replace('.', '/') + ".class";
+        for (final String entry : written) {
+            final String trimmed = entry == null ? "" : entry.trim();
+            final File file = localFile(trimmed, catalog, s3Resolver);
+            if (file == null) {
+                return null;
+            }
+            if (trimmed.endsWith("/")) {
+                if (new File(file, held).isFile()) {
+                    return Boolean.TRUE;
+                }
+                continue;
+            }
+            if (!file.isFile()) {
+                return null;
+            }
+            try (JarFile jar = new JarFile(file)) {
+                if (jar.getJarEntry(held) != null) {
+                    return Boolean.TRUE;
+                }
+            } catch (final IOException unreadable) {
+                return null;
+            }
+        }
+        return Boolean.FALSE;
+    }
+
+    /** Where an import lies on this machine, a stage's file or directory included, or null where it cannot be told. */
+    private static File localFile(final String entry, final Catalog catalog, final S3PathResolver s3Resolver) {
+        final ImportLocalizer localizer = LOCALIZER.get();
+        if (localizer != null) {
+            final Path kept = localizer.keptStageFile(entry);
+            if (kept != null) {
+                return kept.toFile();
+            }
+        }
+        if (entry.startsWith("@")) {
+            final String resolved = resolveStageReference(entry.substring(1), catalog, s3Resolver);
+            return resolved == null ? null : new File(resolved);
+        }
+        try {
+            return new File(resolveToLocalPath(entry, catalog, s3Resolver));
+        } catch (final RuntimeException unresolved) {
+            return null;
+        }
+    }
+
+    /**
      * Resolve an IMPORTS entry to a local filesystem path: {@code s3://…} via the resolver, {@code @stage/…}
      * via the catalog (S3 stages map through the resolver, {@code file://} stages use their local dir), and a
      * bare path as-is. A non-resolvable {@code @ref} falls back to its literal text minus the leading {@code @}.

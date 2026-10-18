@@ -96,6 +96,20 @@ public final class StatementHandlerStates {
     }
 
     /**
+     * A relation a statement reads by reference — a view — starts producing its rows: the calls its body makes are
+     * placed in that reference as well, so that two references of one view keep their states apart, as on an account
+     * ({@code SELECT a.x, b.x FROM v a, v b} over a view that counts its calls answers 1 and 1; live-verified).
+     *
+     * @param reference what tells this reference apart from the statement's other references of the relation
+     * @return the place evaluated until now, to hand to {@link #exitSite}
+     */
+    public static Object enterReference(final Object reference) {
+        final Object outer = SITE.get();
+        SITE.set(new CallSite(outer instanceof CallSite ? (CallSite) outer : null, null, reference, null, 0));
+        return outer;
+    }
+
+    /**
      * The call {@link #enterCall} was told of has been evaluated.
      *
      * @param outer what {@link #enterCall} answered

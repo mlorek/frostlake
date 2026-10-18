@@ -258,7 +258,7 @@ final class SubqueryEvaluator {
         final String keysQuery = correlation.keysQuery();
         PreparedKeySet keys = memo.cachedKeySet(keysQuery);
         if (keys == null) {
-            final ResultSet computed = computedOnce(key, keysQuery, correlation.keyCount());
+            final ResultSet computed = computedOnce(key, keysQuery, correlation.keyCount(), correlation.keyCount());
             if (computed == null) {
                 return null;
             }
@@ -293,7 +293,8 @@ final class SubqueryEvaluator {
         final String groupedQuery = correlation.groupedQuery();
         PreparedKeyedValues values = memo.cachedKeyedValues(groupedQuery);
         if (values == null) {
-            final ResultSet computed = computedOnce(key, groupedQuery, correlation.keyCount() + 1);
+            final ResultSet computed = computedOnce(key, groupedQuery, correlation.keyCount() + 1,
+                correlation.keyCount());
             if (computed == null) {
                 return null;
             }
@@ -372,8 +373,11 @@ final class SubqueryEvaluator {
     /**
      * A correlation's once-for-all query, run as a subquery of its own; null — and the copy runs for each row from
      * then on — where it does not run, reads the outer row after all, or answers a key under a collation.
+     *
+     * @param width how many columns the query answers
+     * @param keys  how many of them, from the first, are the correlation's keys
      */
-    private ResultSet computedOnce(final String key, final String query, final int width) {
+    private ResultSet computedOnce(final String key, final String query, final int width, final int keys) {
         final SubqueryMemo memo = visitor.getSubqueryMemo();
         final List<ResultSet> results;
         try {
@@ -384,11 +388,37 @@ final class SubqueryEvaluator {
         }
         if (memo.cachedResult(query) == null || results.isEmpty() || results.get(0) == null
                 || results.get(0).getColumns().size() != width
-                || columnCollation(results.get(0)).toRules() != null) {
+                || comparesUnderACollation(key, results.get(0), keys)) {
             perRowOnly.add(key);
             return null;
         }
         return results.get(0);
+    }
+
+    /**
+     * Whether a key of a copy's equality correlation compares under a collation, which a hash of the values as they
+     * are cannot answer: any inner key's column, the second and later as well as the first, or any outer key.
+     */
+    private boolean comparesUnderACollation(final String key, final ResultSet computed, final int keys) {
+        for (int i = 0; i < keys; i++) {
+            if (columnCollation(computed, i).toRules() != null) {
+                return true;
+            }
+        }
+        final List<Expression> outer = outerKeys.get(key);
+        if (outer == null) {
+            return false;
+        }
+        for (final Expression expression : outer) {
+            try {
+                if (visitor.collationOf(expression).toRules() != null) {
+                    return true;
+                }
+            } catch (final RuntimeException unsettled) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The outer row's keys of a copy's equality correlation, or null where they cannot be read for the row. */
@@ -568,10 +598,15 @@ final class SubqueryEvaluator {
 
     /** The collation a query's one column carries, as a comparison with it would read it. */
     static ExpressionCollation columnCollation(final ResultSet resultSet) {
-        if (resultSet.getColumns().isEmpty()) {
+        return columnCollation(resultSet, 0);
+    }
+
+    /** The collation one column of a query carries, as a comparison with it would read it. */
+    static ExpressionCollation columnCollation(final ResultSet resultSet, final int index) {
+        if (resultSet.getColumns().size() <= index) {
             return ExpressionCollation.NONE;
         }
-        final ResultSetColumn column = resultSet.getColumns().get(0);
+        final ResultSetColumn column = resultSet.getColumns().get(index);
         if (column.getCollation() == null) {
             return ExpressionCollation.NONE;
         }
@@ -595,7 +630,8 @@ final class SubqueryEvaluator {
     /**
      * Whether a probe is NULL before any row is read: it reads no column (see {@link #readsNoColumn}), or the plan
      * knows it holds NULL alone — a derived relation's NULL constant, its CAST(NULL AS INT) or MAX(NULL), through a
-     * LIMIT or a join — which a membership folds with as it folds a NULL written there (live-verified).
+     * LIMIT or a join — which a membership folds with as it folds a NULL written there (live-verified). An aggregate
+     * of a type over NULLs alone — SUM(NULL), AVG(NULL), MAX(NULL::INT) — is no such NULL.
      *
      * @param operand the probe
      * @return whether it is NULL whatever row is read
@@ -605,7 +641,10 @@ final class SubqueryEvaluator {
             return true;
         }
         final ValueRange range = visitor.inferStaticRange(operand);
-        return range != null && range.isEmpty() && range.isNullable();
+        // An aggregate's NULL is folded only when the aggregate is itself of no type, MAX(NULL); a SUM(NULL) or a
+        // MAX(NULL::INT) is NULL only as the rows are aggregated (live-verified).
+        return range != null && range.isEmpty() && range.isNullable()
+            && (!range.isComputedNull() || visitor.inferStaticType(operand) == null);
     }
 
     /**

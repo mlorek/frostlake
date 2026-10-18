@@ -28,6 +28,7 @@ import dev.frostlake.executor.ContinueHandler;
 import dev.frostlake.executor.DeclarationTypes;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.FunctionBodyCompileError;
+import dev.frostlake.executor.InferredInitialiserCalls;
 import dev.frostlake.executor.InfiniteBindRefusal;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ProceduralExecutor;
@@ -392,6 +393,9 @@ public class BeginEndBlockHandler implements CommandHandler {
         if (proceduralExecutor.entersTopBlockOfBody()) {
             CursorSources.require(ctx);
         }
+        // The calls of a declaration whose type is inferred are looked up ahead of every name the block reads (see
+        // InferredInitialiserCalls).
+        InferredInitialiserCalls.require(ctx, queryExecutor);
         final DataType declaredReturn = proceduralExecutor.declaredReturnOfNextBlock();
         ScriptingNameValidator.validate(ctx, inScope, loopRecords, declaredReturn == null ? null
             : new DeclaredReturnJudge(declaredReturn, declaredTypesInScope(), queryExecutor),

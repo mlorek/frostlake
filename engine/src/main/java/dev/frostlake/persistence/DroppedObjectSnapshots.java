@@ -27,6 +27,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.storage.TableStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,7 +43,9 @@ import java.util.Map;
  * and SHOW ... HISTORY list nothing. Each version is saved and restored by the code that saves and restores a live
  * object of its kind ({@link CatalogSnapshotWriter#saveSchema}, {@link CatalogSnapshotReader#loadDatabaseContent}),
  * so a version comes back as complete as a live object does. Its rows are kept beside it, never under a name a live
- * table may hold again.
+ * table may hold again, and so is the storage of each of its tables that waited with it, time-travel history and all
+ * ({@link CatalogSnapshotWriter#buildTableData}): the copy's UNDROP brings a table back with the history the
+ * original's would.
  */
 final class DroppedObjectSnapshots {
 
@@ -54,15 +57,17 @@ final class DroppedObjectSnapshots {
     /**
      * Every dropped version the catalog still keeps, each name's versions the oldest first.
      *
-     * @param catalog the catalog
+     * @param catalog       the catalog
+     * @param storageEngine where the versions' tables' storage waits
      * @return the saved versions
      * @throws IOException never in practice: no rows are written through a store
      */
-    static List<DroppedObjectSnapshot> save(final Catalog catalog) throws IOException {
+    static List<DroppedObjectSnapshot> save(final Catalog catalog, final StorageEngine storageEngine)
+            throws IOException {
         final List<DroppedObjectSnapshot> out = new ArrayList<>();
         for (final Map.Entry<String, List<DroppedObject>> entry : catalog.droppedVersions().entrySet()) {
             for (final DroppedObject version : entry.getValue()) {
-                final DroppedObjectSnapshot saved = save(entry.getKey(), version);
+                final DroppedObjectSnapshot saved = save(entry.getKey(), version, storageEngine);
                 if (saved != null) {
                     out.add(saved);
                 } else {
@@ -73,7 +78,8 @@ final class DroppedObjectSnapshots {
         return out;
     }
 
-    private static DroppedObjectSnapshot save(final String key, final DroppedObject version) throws IOException {
+    private static DroppedObjectSnapshot save(final String key, final DroppedObject version,
+                                              final StorageEngine storageEngine) throws IOException {
         final int colon = key.indexOf(':');
         if (colon < 0) {
             return null;
@@ -114,7 +120,37 @@ final class DroppedObjectSnapshots {
         saved.rows = values(version.getRows());
         saved.tableRows = values(version.getTableRows());
         saved.hiddenTableRows = values(version.getHiddenTableRows());
+        saved.keptTables = keptTables(version, storageEngine);
         return saved;
+    }
+
+    /** The storage of each of a version's tables that waits with it, by the table's fully-qualified name. */
+    private static HashMap<String, TableDataSnapshot> keptTables(final DroppedObject version,
+                                                                final StorageEngine storageEngine) {
+        final HashMap<String, TableDataSnapshot> out = new HashMap<>();
+        for (final Map.Entry<String, String> kept : version.keptStorages().entrySet()) {
+            final String[] parts = QualifiedName.parse(kept.getKey()).parts();
+            final Table table = parts.length == 3 ? tableIn(version.getObject(), parts) : null;
+            final TableStorage storage = storageEngine.retiredStorage(kept.getValue());
+            if (table != null && storage != null) {
+                out.put(kept.getKey(), CatalogSnapshotWriter.buildTableData(parts[0], parts[1], table, storage));
+            }
+        }
+        return out;
+    }
+
+    /** The table of a fully-qualified name in a dropped table, schema or database; null when it holds none. */
+    private static Table tableIn(final Object object, final String[] parts) {
+        if (object instanceof Table) {
+            return ((Table) object).getName().equals(parts[2]) ? (Table) object : null;
+        }
+        Schema schema = null;
+        if (object instanceof Schema) {
+            schema = ((Schema) object).getName().equals(parts[1]) ? (Schema) object : null;
+        } else if (object instanceof Database) {
+            schema = ((Database) object).schemaExact(parts[1]);
+        }
+        return schema == null ? null : schema.tableExact(parts[2]);
     }
 
     /**
@@ -124,9 +160,10 @@ final class DroppedObjectSnapshots {
      * @param saved the saved versions, or null for a snapshot written before they were kept
      * @param catalog the catalog
      * @param s3Resolver where a stage of a dropped schema keeps its files
+     * @param storageEngine where the versions' tables' storage waits again
      */
     static void restore(final List<DroppedObjectSnapshot> saved, final Catalog catalog,
-                        final S3PathResolver s3Resolver) {
+                        final S3PathResolver s3Resolver, final StorageEngine storageEngine) {
         if (saved == null) {
             return;
         }
@@ -137,12 +174,37 @@ final class DroppedObjectSnapshots {
                     logger.warn("Dropped version not restored: {}", version.key);
                     continue;
                 }
-                catalog.recordDropped(keyOf(version, object), DroppedObject.restored(object, rows(version.rows),
+                final DroppedObject restored = DroppedObject.restored(object, rows(version.rows),
                     rows(version.tableRows), rows(version.hiddenTableRows), version.retentionDays, version.droppedOn,
-                    version.stageToken));
+                    version.stageToken);
+                keepTables(restored, version.keptTables, storageEngine);
+                catalog.recordDropped(keyOf(version, object), restored);
             } catch (final IOException | ClassNotFoundException | RuntimeException e) {
                 logger.warn("Dropped version not restored: {}: {}", version.key, e.getMessage());
             }
+        }
+    }
+
+    /**
+     * Puts the storage of each of a restored version's tables back where it waits for the UNDROP, filled with the rows
+     * and the history the snapshot saved; a snapshot written before it was kept restores none, and the UNDROP fills
+     * the tables with their rows.
+     */
+    private static void keepTables(final DroppedObject restored, final Map<String, TableDataSnapshot> kept,
+                                   final StorageEngine storageEngine) {
+        if (kept == null) {
+            return;
+        }
+        for (final Map.Entry<String, TableDataSnapshot> table : kept.entrySet()) {
+            final String[] parts = QualifiedName.parse(table.getKey()).parts();
+            final Table dropped = parts.length == 3 ? tableIn(restored.getObject(), parts) : null;
+            if (dropped == null) {
+                logger.warn("Dropped table storage not restored: {}", table.getKey());
+                continue;
+            }
+            final String key = storageEngine.keepRestored(table.getKey(), dropped);
+            CatalogSnapshotReader.fillTableData(storageEngine.retiredStorage(key), dropped, table.getValue());
+            restored.keepStorage(table.getKey(), key);
         }
     }
 

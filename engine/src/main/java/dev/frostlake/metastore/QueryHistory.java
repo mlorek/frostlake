@@ -45,6 +45,8 @@ public class QueryHistory {
     private final long startSequence = SnapshotSequence.current();
     /** The latest snapshot taken once the statement's changes became visible; -1 while they are not. */
     private volatile long visibleSequence = -1L;
+    /** The query ID the write-ahead log holds the statement under, or null while it holds it not. */
+    private volatile String loggedAs;
     private QueryStatus status;
     private long executionTimeMs;
     private long rowsProduced;
@@ -254,6 +256,34 @@ public class QueryHistory {
     /** Records that the statement's changes are visible as of the latest snapshot taken now. */
     public void markVisibleSequence() {
         this.visibleSequence = SnapshotSequence.current();
+    }
+
+    /**
+     * Records that the write-ahead log holds the statement, so a restart's replay runs it again: under the statement's
+     * own query ID, or, for a replay, under the ID the statement first answered with, which the log keeps.
+     *
+     * @param queryId the ID the log holds the statement under
+     */
+    public void markLogged(final String queryId) {
+        this.loggedAs = queryId;
+    }
+
+    /**
+     * Whether the write-ahead log holds the statement.
+     *
+     * @return whether it was logged
+     */
+    public boolean isLogged() {
+        return loggedAs != null;
+    }
+
+    /**
+     * The query ID the write-ahead log holds the statement under, which a replay anchors its own run to.
+     *
+     * @return the ID, or null when the log holds it not
+     */
+    public String getLoggedAs() {
+        return loggedAs;
     }
 
     /**

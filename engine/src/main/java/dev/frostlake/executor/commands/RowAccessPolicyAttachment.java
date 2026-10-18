@@ -45,10 +45,11 @@ public final class RowAccessPolicyAttachment {
      * @param policyName the policy name as written
      */
     public static RowAccessPolicy require(final Catalog catalog, final String policyName) {
-        final RowAccessPolicy policy = catalog.findRowAccessPolicy(policyName);
+        // The policy of exactly that name: a quoted name in another case is another policy (live-verified).
+        final RowAccessPolicy policy = catalog.findRowAccessPolicyExact(policyName);
         if (policy == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
-                catalog.qualifiedObjectName(policyName)));
+                catalog.qualifiedExactName(policyName)));
         }
         return policy;
     }

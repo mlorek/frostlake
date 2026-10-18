@@ -130,7 +130,8 @@ public class DirectStatement implements Statement {
         }
         applyMultiStatementGate(sql);
         final ExecutionResult result;
-        final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount());
+        final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount(),
+            JdbcMultiStatement.countStatements(sql));
         // The statement runs under a token cancel() reaches from another thread and the query timeout bounds.
         final StatementCancellation token = new StatementCancellation(queryTimeoutSeconds);
         running = token;

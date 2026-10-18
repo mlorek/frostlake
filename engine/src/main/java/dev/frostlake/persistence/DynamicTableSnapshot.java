@@ -20,6 +20,7 @@ import dev.frostlake.types.DataType;
 
 import java.io.Serializable;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 
 /** Serializable snapshot of a DYNAMIC TABLE definition. */
@@ -63,6 +64,8 @@ public class DynamicTableSnapshot implements Serializable {
     public Instant lastSuspendedOn;
     public Integer dataRetentionDays;
     public Integer maxDataExtensionDays;
+    /** The parameters the table set for itself beside its retention; null in a snapshot written before they were. */
+    public HashMap<String, String> parameters;
     public boolean reclusterSuspended;
     public boolean clone;
     // When the object was created. Null on snapshots written before it was saved, which restore it as new.

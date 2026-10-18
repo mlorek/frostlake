@@ -175,10 +175,13 @@ final class UnmodelledListings {
             schemas = requireScope(ctx, listing, scope);
         }
         final ResultSet columns = UnmodelledListing.of(listing).listing(ctx.TERSE() != null);
-        if (listing == ShowListing.SESSION_POLICIES && schemas != null) {
-            // The one kind listed here that is modelled: the session policies of the scope's schemas.
-            return new ResultSet(columns.getColumns(),
-                SecurityObjectCommandHandler.showRows(SecurityObjectKind.SESSION_POLICY, schemas));
+        final SecurityObjectKind modelled = listing == ShowListing.SESSION_POLICIES ? SecurityObjectKind.SESSION_POLICY
+            : listing == ShowListing.AUTHENTICATION_POLICIES ? SecurityObjectKind.AUTHENTICATION_POLICY
+            : listing == ShowListing.PACKAGES_POLICIES ? SecurityObjectKind.PACKAGES_POLICY : null;
+        if (modelled != null && schemas != null) {
+            // The kinds listed here that are modelled: the session, authentication or packages policies of the
+            // scope's schemas.
+            return new ResultSet(columns.getColumns(), SecurityObjectCommandHandler.showRows(modelled, schemas));
         }
         return columns;
     }

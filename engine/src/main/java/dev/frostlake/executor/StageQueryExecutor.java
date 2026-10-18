@@ -23,6 +23,7 @@ import dev.frostlake.executor.copy.JsonStageReader;
 import dev.frostlake.executor.copy.StageFileReader;
 import dev.frostlake.executor.copy.StageReaderFactory;
 import dev.frostlake.executor.copy.StagedFileIo;
+import dev.frostlake.executor.operators.RowsProvider;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Stage;
@@ -30,6 +31,7 @@ import dev.frostlake.metastore.model.StagePositions;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
@@ -137,6 +139,8 @@ final class StageQueryExecutor {
         // the reading COPY gives both (live-verified).
         final StagePrefix staged = requireRoot(executor.resolveStagePrefix(location), location);
         final List<Path> files = staged.files(pattern);
+        // A write that reads these files reads them as they are now (see CheckpointDebt).
+        CheckpointDebt.owe();
         final boolean csv = "CSV".equals(fileFormat);
         final StageFileReader recordReader = csv ? null : StageReaderFactory.forType(fileFormat);
         if (!csv && recordReader == null) {
@@ -148,7 +152,23 @@ final class StageQueryExecutor {
         final List<String> fileNames = new ArrayList<>();
         final List<Long> rowNumbers = new ArrayList<>();
         int width = csv ? 0 : 1;
+        // A CSV query over a table's stage reads its table's columns: as many positions, and every record held to
+        // that width as a load holds it, unless the format turns the check off (see CsvRecordReader.tableWidthRefusal).
+        // The first record refused is refused where the query reads the rows, after its names compile.
+        final Table owner = csv && staged.kind() == StageKind.TABLE ? tableStageOwner(location) : null;
+        final List<String> ownerColumns = new ArrayList<>();
+        if (owner != null) {
+            for (final TableColumn column : owner.getColumns()) {
+                ownerColumns.add(column.getName());
+            }
+        }
+        final boolean widthChecked = owner != null && !"FALSE".equalsIgnoreCase(
+            formatOption(named, kept, "ERROR_ON_COLUMN_COUNT_MISMATCH"));
+        RuntimeException refusedRecord = null;
         for (final Path file : files) {
+            if (refusedRecord != null) {
+                break;
+            }
             final String relativeName = staged.metadataFileName(file);
             long rowNumber = 0;
             try {
@@ -184,6 +204,11 @@ final class StageQueryExecutor {
                     long fileRow = 0;
                     List<String> fields = reader.next(-1, ++fileRow, enclosed);
                     while (fields != null) {
+                        refusedRecord = widthChecked ? reader.tableWidthRefusal(fields.size(), owner.getName(),
+                            ownerColumns, fileRow == 1, fileRow) : null;
+                        if (refusedRecord != null) {
+                            break;
+                        }
                         width = Math.max(width, fields.size());
                         final List<Object> values = new ArrayList<Object>(fields);
                         for (int f = 0; f < values.size(); f++) {
@@ -208,16 +233,23 @@ final class StageQueryExecutor {
             }
         }
 
+        if (owner != null) {
+            width = ownerColumns.size();
+        }
         final List<TableColumn> columns = new ArrayList<>();
         // A positional column's declared width follows the KIND of stage: a named or user stage
         // declares the 128MB text, a table stage the 16MB one (live-verified). The values agree.
         final DataType fieldType = csv ? (staged.kind() == StageKind.TABLE ? StringType.VARCHAR
             : new StringType("VARCHAR", DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR))
             : VariantType.VARIANT;
+        // A star reads a CSV query's fields over a table's stage only: over a named or user stage it reads none, so a
+        // bare star is "SELECT with no columns" and ORDER BY 1 names no column (live-verified).
+        final boolean starless = csv && staged.kind() != StageKind.TABLE;
         for (int i = 1; i <= width; i++) {
             // $N canonicalizes to COLUMNN engine-wide (SqlIdentifiers), so the virtual columns use
             // that name — $1/$2 references resolve, and star output shows COLUMN1.. like COPY does.
-            columns.add(new TableColumn("COLUMN" + i, fieldType, true, null, false, false, false));
+            final TableColumn field = new TableColumn("COLUMN" + i, fieldType, true, null, false, false, false);
+            columns.add(starless ? field.starHiddenCopy() : field);
         }
         columns.add(new TableColumn("METADATA$FILENAME", StringType.VARCHAR, true, null, false, false, false));
         columns.add(new TableColumn("METADATA$FILE_ROW_NUMBER", NumericType.BIGINT, true, null, false, false, false));
@@ -227,6 +259,9 @@ final class StageQueryExecutor {
             final List<Object> values = fieldRows.get(r);
             while (values.size() < width) {
                 values.add(null);
+            }
+            while (values.size() > width) {
+                values.remove(values.size() - 1);
             }
             values.add(fileNames.get(r));
             values.add(rowNumbers.get(r));
@@ -239,28 +274,49 @@ final class StageQueryExecutor {
         // to the positions the query reads: 4096 for a CSV query over a named or user stage, as many as its
         // table's columns over a table stage (see StagePositions).
         final boolean tableStage = staged.kind() == StageKind.TABLE;
-        final int positions = !csv ? width : tableStage ? tableStageColumns(location)
+        final int positions = !csv ? width : tableStage ? ownerColumns.size()
             : StagePositions.NAMED_STAGE_POSITIONS;
         virtualTable.setStagePositions(new StagePositions(width, positions, fieldType, csv && !tableStage));
+        if (refusedRecord != null) {
+            final RuntimeException refused = refusedRecord;
+            return new TableData(virtualTable, new RowsProvider() {
+                @Override
+                public List<Row> rows() {
+                    throw refused;
+                }
+
+                @Override
+                public String describe() {
+                    return null;
+                }
+            }, alias, null);
+        }
         return new TableData(virtualTable, rows, alias);
     }
 
+    /** A CSV format option, the query's or the stage's own taking over a named format's; null when none says. */
+    private static String formatOption(final FileFormat named, final Map<String, String> kept, final String option) {
+        if (kept.get(option) != null) {
+            return kept.get(option);
+        }
+        return named == null ? null : named.getOption(option);
+    }
+
     /**
-     * How many columns the table a table stage belongs to declares, or 0 when the location names none: the
-     * location spells the stage {@code @%<table>[/path]}, as {@link QueryExecutor#resolveStagePrefix} reads it.
+     * The table a table stage belongs to, or null when the location names none: the location spells the stage
+     * {@code @%<table>[/path]}, as {@link QueryExecutor#resolveStagePrefix} reads it.
      */
-    private int tableStageColumns(final String location) {
+    private Table tableStageOwner(final String location) {
         final String body = location.substring(1);
         final int slash = body.indexOf('/');
         final String stagePart = slash >= 0 ? body.substring(0, slash) : body;
         if (!stagePart.startsWith("%")) {
-            return 0;
+            return null;
         }
         try {
-            final Table owner = executor.getCatalog().resolveTable(QualifiedName.parse(stagePart.substring(1)));
-            return owner == null ? 0 : owner.getColumns().size();
+            return executor.getCatalog().resolveTable(QualifiedName.parse(stagePart.substring(1)));
         } catch (final RuntimeException unresolved) {
-            return 0;
+            return null;
         }
     }
 

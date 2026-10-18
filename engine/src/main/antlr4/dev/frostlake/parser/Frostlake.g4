@@ -1300,6 +1300,13 @@ securityObjectStatement
     | CREATE (or_replace | or_alter)? NETWORK POLICY if_not_exists? identifier securityProperty* SEMI?
     | CREATE or_replace? PASSWORD POLICY if_not_exists? qualifiedName securityProperty* SEMI?
     | CREATE or_replace? SESSION POLICY if_not_exists? qualifiedName securityProperty* SEMI?
+    // An authentication policy takes its properties separated by blanks or commas alike (live-verified).
+    | CREATE or_replace? AUTHENTICATION POLICY if_not_exists? qualifiedName
+      (securityProperty (COMMA? securityProperty)*)? SEMI?
+    // A packages policy names its language right after its name, and its properties after that separated by blanks
+    // or commas alike (live-verified).
+    | CREATE or_replace? PACKAGES POLICY if_not_exists? qualifiedName LANGUAGE identifier
+      (securityProperty (COMMA? securityProperty)*)? SEMI?
     | CREATE or_replace? SECRET if_not_exists? qualifiedName securityProperty* SEMI?
     | ALTER NETWORK RULE if_exists? qualifiedName (securityPropertyChange | RENAME TO qualifiedName) SEMI?
     | ALTER NETWORK POLICY if_exists? identifier (securityPropertyChange | RENAME TO identifier
@@ -1308,6 +1315,8 @@ securityObjectStatement
       | tagUnset) SEMI?
     | ALTER SESSION POLICY if_exists? qualifiedName (securityPropertyChange | RENAME TO qualifiedName | tagSet
       | tagUnset) SEMI?
+    | ALTER AUTHENTICATION POLICY if_exists? qualifiedName (securityPropertyChange | RENAME TO qualifiedName) SEMI?
+    | ALTER PACKAGES POLICY if_exists? qualifiedName (securityPropertyChange | RENAME TO qualifiedName) SEMI?
     | ALTER SECRET if_exists? qualifiedName securityPropertyChange SEMI?
     | DROP NETWORK RULE if_exists? qualifiedName objectSignature? dropBehavior? SEMI?
     | DROP NETWORK POLICY if_exists? identifier objectSignature? dropBehavior? SEMI?
@@ -1330,6 +1339,8 @@ securityPropertyValue
     | MINUS? FLOAT_LITERAL
     | identifier
     | LPAREN (STRING_LITERAL (COMMA STRING_LITERAL)*)? RPAREN
+    // NULL takes a session policy's agent scope away; any other property refuses it where it stands.
+    | NULL
     ;
 
 // SET takes its properties separated by blanks or commas alike.
@@ -1379,8 +1390,8 @@ undropStatement
     | UNDROP DATABASE identifier SEMI?
     | UNDROP TAG qualifiedName SEMI?
     | UNDROP DYNAMIC TABLE qualifiedName SEMI?
-    // A session policy is read and restored by no UNDROP (live-verified).
-    | UNDROP SESSION POLICY qualifiedName SEMI?
+    // A session, an authentication or a packages policy is read and restored by no UNDROP (live-verified).
+    | UNDROP (SESSION | AUTHENTICATION | PACKAGES) POLICY qualifiedName SEMI?
     ;
 
 createStatement
@@ -1464,7 +1475,11 @@ createStatement
     | CREATE or_replace? USER if_not_exists? identifier userProperties? SEMI?
     | CREATE or_replace? ROLE if_not_exists? identifier commentClause? SEMI?
     | CREATE or_replace? MASKING POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
+    // CREATE OR ALTER makes the policy, or changes it to what the statement writes: its body, its COMMENT and its
+    // EXEMPT_OTHER_POLICIES, never its signature. It takes no IF NOT EXISTS (live-verified).
+    | CREATE or_alter MASKING POLICY qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
+    | CREATE or_alter ROW ACCESS POLICY qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? CONTACT if_not_exists? qualifiedName contactProperty* SEMI?
     | CREATE or_replace? PROJECTION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? AGGREGATION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
@@ -2073,6 +2088,8 @@ commentStatement
     | COMMENT if_exists? ON MASKING POLICY qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON ROW ACCESS POLICY qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON FILE FORMAT qualifiedName IS stringText SEMI?
+    // A secret takes its comment from ALTER SECRET alone: COMMENT ON SECRET is an unsupported feature (live-verified).
+    | COMMENT if_exists? ON SECRET qualifiedName IS stringText SEMI?
     ;
 
 truncateStatement
@@ -2460,8 +2477,25 @@ routineSignatureItem
     ;
 
 returnType
-    : TABLE LPAREN columnList? RPAREN   // Table function or procedure; a procedure may declare no columns
+    : TABLE LPAREN returnColumnList? RPAREN   // Table function or procedure; a procedure may declare no columns
     | dataTypeName typeParameters? (NOT? NULL)?   // Scalar function; [NOT] NULL is informational
+    ;
+
+// A RETURNS TABLE column reads as a routine's argument does: the words an argument's name takes, CONSTRAINT among
+// them, a type and an optional DEFAULT, though not :=. No column option of a table's follows it - NOT NULL, NULL,
+// COMMENT, COLLATE, a constraint, AUTOINCREMENT, a tag - each refused where it stands. A name with no type parses so it
+// can be refused in the account's own words (all live-verified).
+returnColumnList
+    : returnColumn (COMMA returnColumn)*
+    ;
+
+returnColumn
+    : returnColumnName (dataTypeName typeParameters? (DEFAULT booleanExpr)?)?
+    ;
+
+returnColumnName
+    : identifier
+    | CASE | WHEN | CAST | DEFAULT | CONSTRAINT | JOIN | INNER | CROSS | LEFT
     ;
 
 bodyDefinition
@@ -2738,7 +2772,29 @@ stageOption
     : FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName)
     | ENCRYPTION EQ (booleanValue | parenOptionList)
     | COMMENT EQ STRING_LITERAL
+    | COPY_OPTIONS EQ (stageCopyOptionList | copyOptionValue)
     | identifier EQ (parenOptionList | copyOptionValue)   // CREDENTIALS=(...), TEMPORARY-stage props, ...
+    ;
+
+// A stage's COPY_OPTIONS, of CREATE and ALTER STAGE. The list reads more than another option list does — NULL, a
+// number with a fraction or an exponent, a parenthesized list for a value, and a list of names alone, which is taken
+// and ignored — and the stage's copy options judge each value (live-verified).
+stageCopyOptionList
+    : LPAREN (stageCopyOption (COMMA? stageCopyOption)*)? RPAREN
+    | LPAREN optionKey (COMMA optionKey)* RPAREN
+    ;
+
+stageCopyOption
+    : optionKey EQ (copyOptionValue | NULL | MINUS? FLOAT_LITERAL | LPAREN stringLiteralList? RPAREN
+        | stageCopyPropertyList | stageCopyValueList)
+    ;
+
+stageCopyPropertyList
+    : LPAREN parenOption (COMMA? parenOption)* RPAREN
+    ;
+
+stageCopyValueList
+    : LPAREN copyOptionValue (COMMA copyOptionValue)* RPAREN
     ;
 
 taskAction
@@ -2926,6 +2982,9 @@ tableAction
     // live refuses both as syntax errors, and admitting them would be leniency.
     | RENAME CONSTRAINT identifier TO identifier
     | (ALTER | MODIFY) CONSTRAINT identifier constraintProperty+
+    // A key named by its kind, and a UNIQUE or FOREIGN KEY by its columns, takes the same properties (live-verified).
+    | (ALTER | MODIFY) (UNIQUE LPAREN identifierList RPAREN | PRIMARY KEY | FOREIGN KEY LPAREN identifierList RPAREN)
+        constraintProperty+
     // ALTER TABLE t { ALTER | MODIFY } [(] [COLUMN] c1 action [, [COLUMN] c2 action]* [)] — the
     // column-action list. COLUMN is optional per item, the parens are optional but balanced.
     | (ALTER | MODIFY) LPAREN alterColumnItem (COMMA alterColumnItem)* RPAREN
@@ -3179,10 +3238,15 @@ viewAction
     | DROP ALL ROW ACCESS POLICIES
     ;
 
-// A property a view's SET gives: a name and its value. One written without a value is a syntax error where the
-// list begins (live-verified), which Java judges.
+// A property a view's SET gives: a name and its value, NULL among them. One written without a value, or with a word
+// that is no value (a reserved word), is a syntax error where the list begins (live-verified), which Java judges. A
+// dollar string is no stray word: refused here, it is read again as the quoted string it is (DollarStringLiterals).
 viewSetItem
-    : optionKey (EQ copyOptionValue)?
+    : optionKey (EQ (copyOptionValue | NULL | viewSetStrayValue))?
+    ;
+
+viewSetStrayValue
+    : ~(COMMA | SEMI | DOLLAR_QUOTED_STRING)
     ;
 
 materializedViewAction
@@ -3248,7 +3312,7 @@ dynamicTableAction
 
 dynamicTableSetting
     : dynamicTableProperty EQ (STRING_LITERAL | MINUS? INTEGER_LITERAL | booleanValue | DOWNSTREAM
-        | AUTO | FULL | INCREMENTAL | ON_SCHEDULE | ON_CREATE | identifier)
+        | AUTO | FULL | INCREMENTAL | ON_SCHEDULE | ON_CREATE | NULL | identifier)
     ;
 
 dynamicTableProperty
@@ -3278,6 +3342,7 @@ stageSetting
     | FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName)
     | COMMENT EQ (STRING_LITERAL | NULL | copyOptionValue)
     | ENCRYPTION EQ parenOptionList
+    | COPY_OPTIONS EQ (stageCopyOptionList | copyOptionValue)
     | identifier EQ (parenOptionList | copyOptionValue)
     ;
 
@@ -4689,9 +4754,10 @@ showStatement
     | SHOW TERSE? ICEBERG TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? EVENT TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? EXTERNAL TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
-    // The integration and external volume listings take a LIKE and nothing else.
+    // The integration listing takes a LIKE and nothing else. The external volume listing reads a scope, though only
+    // the account's is listed (live-verified).
     | SHOW integrationKind? INTEGRATIONS (LIKE stringText)? SEMI?
-    | SHOW EXTERNAL VOLUMES (LIKE stringText)? SEMI?
+    | SHOW TERSE? EXTERNAL VOLUMES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? VIEWS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? MATERIALIZED VIEWS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? DYNAMIC TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
@@ -4861,7 +4927,8 @@ className
 classNameKeyword
     : ADMIN_NAME | ADMIN_PASSWORD | ADMIN_RSA_PUBLIC_KEY | ADMIN_USER_TYPE | ALLOWED_VALUES_SEQUENCE
     | ALLOW_OVERLAPPING_EXECUTION | AUTO_INGEST | AUTO_RESUME | AUTO_SUSPEND | AUTO_SUSPEND_SECS | AWS_SNS_TOPIC
-    | BACKUP_INSTANCE_FAMILIES | COMPRESSION | COMPUTE_POOL | CURRENT_DATE | CURRENT_TIME | CURRENT_TIMESTAMP
+    | BACKUP_INSTANCE_FAMILIES | COMPRESSION | COMPUTE_POOL | COPY_OPTIONS | CURRENT_DATE | CURRENT_TIME
+    | CURRENT_TIMESTAMP
     | CURRENT_USER | CURRVAL | DATA_RETENTION_TIME_IN_DAYS | DATE_FORMAT | DEFAULT_NAMESPACE | DEFAULT_ROLE
     | DEFAULT_SECONDARY_ROLES | DEFAULT_WAREHOUSE | DELIMITER | DISABLED | DISPLAY_NAME | DOWNSTREAM | ECONOMY | EMAIL
     | EMBEDDING_MODEL | ENABLE_QUERY_ACCELERATION | ENCRYPTION | EXTERNAL_ACCESS_INTEGRATIONS | FIELD_DELIMITER
@@ -5070,6 +5137,18 @@ describeParameterValue
     | qualifiedName
     | LPAREN describeListItem RPAREN
     | LPAREN (describeListItem (COMMA describeListItem)+)? RPAREN
+    | LPAREN describePropertyList (COMMA describePropertyList)* RPAREN
+    ;
+
+// A list of property lists: each a parenthesized list of name = value properties, the commas between them optional,
+// a name a word, TRUE or FALSE, or a string (live-verified: x = ((a = 1 b = 2), ('c' = (1, 2))) is read, and the
+// property is refused by its name).
+describePropertyList
+    : LPAREN describeNestedProperty (COMMA? describeNestedProperty)* RPAREN
+    ;
+
+describeNestedProperty
+    : (identifier | STRING_LITERAL | TRUE | FALSE) EQ describeParameterValue
     ;
 
 // One value of a list: no list of its own and no stage reference (live-verified).
@@ -5861,9 +5940,10 @@ namedArgumentList
 
 // A positional argument written after a named one, with whatever arguments follow it. The account reads the call
 // whole and refuses it while it compiles — positional argument cannot follow named argument in function call 'F',
-// at the argument — and a call that names a table function for mixing the two ways (see StrayArguments).
+// at the argument — and a call that names a table function for mixing the two ways (see StrayArguments). A star
+// is read among them as a positional argument too (live-verified).
 strayArguments
-    : booleanExpr (COMMA (namedArgument | booleanExpr))*
+    : (mixedStarArgument | booleanExpr) (COMMA (namedArgument | mixedStarArgument | booleanExpr))*
     ;
 
 namedArgument
@@ -6342,7 +6422,7 @@ identifier
     // separate token. Naming the wrong one here quietly makes '@' an identifier.
     | ASYNC | AT_KEYWORD | AUTO | AUTO_INGEST | AWAIT | AWS_SNS_TOPIC
     | BEGIN | BIGINT | BINARY | BOOLEAN | BREAK | BYTEINT
-    | CALL | CASCADE | CLONE | COLLATE | COMMIT | CONTINUE
+    | CALL | CASCADE | CLONE | COLLATE | COMMIT | CONTINUE | COPY_OPTIONS
     | CUBE | CURRVAL | CURSOR | DATA_RETENTION_TIME_IN_DAYS | DECIMAL | DECLARE
     | DESC | DESCRIBE | DISABLE | DOUBLE | ELSEIF | ENABLE
     | ENCRYPTION | END | EXCEPTION | EXECUTE | EXECUTION | EXPLAIN
@@ -6633,6 +6713,7 @@ INSERT: I N S E R T;
 INTO: I N T O;
 VALUES: V A L U E S;
 COPY: C O P Y;
+COPY_OPTIONS: C O P Y UNDERSCORE O P T I O N S;
 UPDATE: U P D A T E;
 DELETE: D E L E T E;
 SET: S E T;

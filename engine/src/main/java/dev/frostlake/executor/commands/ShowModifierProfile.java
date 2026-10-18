@@ -182,9 +182,13 @@ public final class ShowModifierProfile {
             // TERSE reports the kind as EVENT_TABLE.
             return sorted(true, true, STANDARD_TERSE, "EVENT_TABLE", false);
         }
-        if (ctx.INTEGRATIONS() != null || ctx.VOLUMES() != null) {
-            // Account listings with a LIKE and no other modifier, by name.
+        if (ctx.INTEGRATIONS() != null) {
+            // An account listing with a LIKE and no other modifier, by name.
             return sorted(false, false, NO_TERSE, null, false);
+        }
+        if (ctx.VOLUMES() != null) {
+            // An account listing: LIKE, STARTS WITH and LIMIT all act on it (live-verified).
+            return sorted(true, true, NO_TERSE, null, false);
         }
         if (ctx.COMPUTE() != null && ctx.POOLS() != null) {
             // LIKE, STARTS WITH and LIMIT all act on the listing; the family catalog

@@ -23,6 +23,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.List;
 
@@ -37,6 +38,9 @@ import java.util.List;
  *   SELECT UPPER(x =&gt; 'a', 'b')             … in function call 'UPPER'    a built-in, a user's and an unknown name alike
  *   SELECT test_schema."n1"(a =&gt; 1, 2)      … in function call 'n1'       the name's last part, as it resolves
  *   SELECT n1(a =&gt; 1, 1 + 1)                at the '+': the argument's own place (see {@link ExpressionPlace})
+ *   SELECT n1(a =&gt; 1, DATE '2020-01-01')    at the string; a COLLATE at the word, a NOT IN list at the NOT and an
+ *                                           IS DISTINCT FROM at the IS
+ *   SELECT n1(a =&gt; 1, t1.*)                 at the T1; a bare star at line 0, position 0
  *   SELECT n1(a =&gt; UPPER(x =&gt; 'a', 'b'), 2) the inner call's: a call is judged after the calls it holds
  * </pre>
  *
@@ -101,8 +105,25 @@ public final class StrayArguments {
      * @return the refusal
      */
     public static String refusal(final ParserRuleContext call, final FrostlakeParser.StrayArgumentsContext stray) {
+        final String sentence = "positional argument cannot follow named argument in function call '"
+            + calledName(call) + "'";
+        if (stray.getChild(0) instanceof FrostlakeParser.MixedStarArgumentContext) {
+            final FrostlakeParser.MixedStarArgumentContext star =
+                (FrostlakeParser.MixedStarArgumentContext) stray.getChild(0);
+            if (star.starQualifiedName() == null) {
+                // A bare star stands nowhere the account tells.
+                return SqlCompilationError.at(0, 0, sentence);
+            }
+            final Token qualifier = star.getStart();
+            final SourcePosition placed = ExpressionSource.place(qualifier.getLine(),
+                qualifier.getCharPositionInLine());
+            return SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(), sentence);
+        }
         final FrostlakeParser.BooleanExprContext argument = stray.booleanExpr(0);
         SourcePosition at = windowPlace(argument);
+        if (at == null) {
+            at = operatorPlace(argument);
+        }
         if (at == null) {
             try {
                 at = ExpressionPlace.of(new ExpressionAstBuilder().visit(argument));
@@ -115,8 +136,33 @@ public final class StrayArguments {
         final SourcePosition within = at != null ? at
             : new SourcePosition(first.getLine(), first.getCharPositionInLine());
         final SourcePosition placed = ExpressionSource.place(within.getLine(), within.getCharPositionInLine());
-        return SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(),
-            "positional argument cannot follow named argument in function call '" + calledName(call) + "'");
+        return SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(), sentence);
+    }
+
+    /**
+     * Where an argument of four shapes stands, which the account tells by a token of its own: a typed literal at
+     * its string, a COLLATE at the word, a NOT IN list at the NOT and an IS DISTINCT FROM at the IS; null for any
+     * other argument.
+     */
+    private static SourcePosition operatorPlace(final FrostlakeParser.BooleanExprContext argument) {
+        if (!(argument instanceof FrostlakeParser.ValueExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.ExpressionContext value = ((FrostlakeParser.ValueExprContext) argument).expression();
+        final TerminalNode token;
+        if (value instanceof FrostlakeParser.TypedDateTimeLiteralExprContext) {
+            token = ((FrostlakeParser.TypedDateTimeLiteralExprContext) value).STRING_LITERAL();
+        } else if (value instanceof FrostlakeParser.CollateExprContext) {
+            token = ((FrostlakeParser.CollateExprContext) value).COLLATE();
+        } else if (value instanceof FrostlakeParser.InListExprContext) {
+            token = ((FrostlakeParser.InListExprContext) value).NOT();
+        } else if (value instanceof FrostlakeParser.IsDistinctExprContext) {
+            token = ((FrostlakeParser.IsDistinctExprContext) value).IS();
+        } else {
+            token = null;
+        }
+        return token == null ? null
+            : new SourcePosition(token.getSymbol().getLine(), token.getSymbol().getCharPositionInLine());
     }
 
     /** The OVER of an argument that is a call over a window, which is where such a call stands; null for any other. */
@@ -154,7 +200,8 @@ public final class StrayArguments {
      * The arguments a call writes after its named ones, in the order written.
      *
      * @param stray the trailing arguments, or null
-     * @param out   the list each is added to: a {@code NamedArgumentContext} or a {@code BooleanExprContext}
+     * @param out   the list each is added to: a {@code NamedArgumentContext}, a {@code BooleanExprContext} or a
+     *              {@code MixedStarArgumentContext}
      */
     public static void collect(final FrostlakeParser.StrayArgumentsContext stray, final List<ParserRuleContext> out) {
         if (stray == null || stray.children == null) {
@@ -162,7 +209,8 @@ public final class StrayArguments {
         }
         for (final ParseTree child : stray.children) {
             if (child instanceof FrostlakeParser.NamedArgumentContext
-                    || child instanceof FrostlakeParser.BooleanExprContext) {
+                    || child instanceof FrostlakeParser.BooleanExprContext
+                    || child instanceof FrostlakeParser.MixedStarArgumentContext) {
                 out.add((ParserRuleContext) child);
             }
         }

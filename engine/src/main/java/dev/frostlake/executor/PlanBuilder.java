@@ -17,6 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -57,9 +59,13 @@ import java.util.Set;
  *       carries, a COPY an ExternalScan of the stage it loads or the Unload of what it reads.</li>
  * </ul>
  *
+ * <p>A star over the one table a query reads stands for its columns, named by the relation — {@code PQ1.N, PQ1.M},
+ * less what an EXCLUDE names — and the scan lists the columns it reads, {@code N, M} (live-verified).
+ *
  * <p>What the account's optimizer does beyond that is not reproduced: conditions stay above the join they are written
  * over, three and more tables join in the order written, a query the account answers from metadata still reads its
- * table, IN and EXISTS are no joins, and expressions are spelled as written.
+ * table, IN and EXISTS are no joins, a filter or a join over empty tables is no Generator, and expressions other than
+ * such a star are spelled as written.
  */
 final class PlanBuilder {
 
@@ -87,14 +93,124 @@ final class PlanBuilder {
      */
     PlanNode query(final FrostlakeParser.SelectStatementContext query) {
         final FrostlakeParser.SelectClauseContext select = query.selectOperand(0).selectClause();
+        final PlanNode read = queryPlan(query, new HashMap<String, FrostlakeParser.SelectStatementContext>());
+        final PlanNode scanned = query.selectOperand().size() == 1 ? onlyTableScan(select, read) : null;
+        final Table table = scanned == null ? null : scannedTable(scanned);
         final List<String> items = new ArrayList<>();
+        final Set<String> readColumns = new LinkedHashSet<>();
         if (select != null) {
             for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
-                items.add(ParseTreeText.getOriginalText(item));
+                final List<String> expanded = table == null ? null : starColumns(item, table, scanned);
+                if (expanded == null) {
+                    items.add(ParseTreeText.getOriginalText(item));
+                    continue;
+                }
+                // A star reads as the columns it stands for, named by the relation, as the account's plan names them;
+                // the scan then lists the columns it reads (live-verified).
+                for (final String column : expanded) {
+                    items.add(relationName(scanned) + "." + SqlIdentifiers.spellCanonical(column));
+                    readColumns.add(column);
+                }
             }
         }
-        return new PlanNode("Result", NONE, null, items)
-            .over(queryPlan(query, new HashMap<String, FrostlakeParser.SelectStatementContext>()));
+        if (table != null && !readColumns.isEmpty()) {
+            for (final TableColumn column : table.getColumns()) {
+                if (readColumns.contains(column.getName())) {
+                    scanned.with(SqlIdentifiers.spellCanonical(column.getName()));
+                }
+            }
+        }
+        return new PlanNode("Result", NONE, null, items).over(read);
+    }
+
+    /**
+     * The one scan a query of one table reads, when its FROM names that table and nothing else; null otherwise.
+     */
+    private PlanNode onlyTableScan(final FrostlakeParser.SelectClauseContext select, final PlanNode read) {
+        if (select == null || select.tableExpression() == null || !select.tableExpression().joinClause().isEmpty()
+                || select.tableExpression().tableReference().size() != 1) {
+            return null;
+        }
+        final FrostlakeParser.TableReferenceContext reference = select.tableExpression().tableReference(0);
+        if (reference.tableSource().tableQualifiedName() == null || reference.pivotClause() != null
+                || reference.unpivotClause() != null || reference.matchRecognizeClause() != null) {
+            return null;
+        }
+        final List<PlanNode> scans = new ArrayList<>();
+        collectScans(read, scans);
+        return scans.size() == 1 ? scans.get(0) : null;
+    }
+
+    private static void collectScans(final PlanNode node, final List<PlanNode> into) {
+        if ("TableScan".equals(node.getOperation())) {
+            into.add(node);
+        }
+        for (final PlanNode child : node.getChildren()) {
+            collectScans(child, into);
+        }
+    }
+
+    /** The base table a scan reads, or null when it reads none the catalog holds. */
+    private Table scannedTable(final PlanNode scan) {
+        if (scan.getObjects().size() != 1) {
+            return null;
+        }
+        try {
+            return executor.getCatalog().resolveTable(scan.getObjects().get(0));
+        } catch (final RuntimeException unresolved) {
+            return null;
+        }
+    }
+
+    /** The name a scan's relation goes by in its plan: its alias, else its table's own name. */
+    private static String relationName(final PlanNode scan) {
+        if (scan.getAlias() != null) {
+            return scan.getAlias();
+        }
+        final String[] parts = QualifiedName.parse(scan.getObjects().get(0)).parts();
+        return SqlIdentifiers.spellCanonical(parts[parts.length - 1]);
+    }
+
+    /**
+     * The columns a star item stands for over the one table a query reads, less those its EXCLUDE names; a RENAME
+     * changes no column the plan reads. Null for an item that is no star of that table, and for one an ILIKE or a
+     * REPLACE shapes, which keep their written text.
+     */
+    private static List<String> starColumns(final FrostlakeParser.SelectItemContext item, final Table table,
+                                            final PlanNode scan) {
+        final List<FrostlakeParser.StarModifierContext> modifiers;
+        if (item instanceof FrostlakeParser.StarItemContext) {
+            modifiers = ((FrostlakeParser.StarItemContext) item).starModifier();
+        } else if (item instanceof FrostlakeParser.QualifiedStarItemContext) {
+            final FrostlakeParser.QualifiedStarItemContext qualified = (FrostlakeParser.QualifiedStarItemContext) item;
+            final String[] parts = ParseTreeText.qualifiedNameParts(qualified.starQualifiedName());
+            final String written = parts[parts.length - 1];
+            final String[] scanned = QualifiedName.parse(scan.getObjects().get(0)).parts();
+            if (!written.equals(scan.getAlias() != null ? scan.getAlias() : scanned[scanned.length - 1])) {
+                return null;
+            }
+            modifiers = qualified.starModifier();
+        } else {
+            return null;
+        }
+        final Set<String> excluded = new LinkedHashSet<>();
+        for (final FrostlakeParser.StarModifierContext modifier : modifiers) {
+            if (modifier.ILIKE() != null || modifier.REPLACE() != null) {
+                return null;
+            }
+            for (final FrostlakeParser.ExcludedColumnContext column : modifier.excludedColumn()) {
+                if (column.identifier() != null) {
+                    excluded.add(ParseTreeText.getIdentifier(column.identifier()));
+                }
+            }
+        }
+        final List<String> columns = new ArrayList<>();
+        for (final TableColumn column : table.getColumns()) {
+            if (!excluded.contains(column.getName())) {
+                columns.add(column.getName());
+            }
+        }
+        return columns;
     }
 
     /**

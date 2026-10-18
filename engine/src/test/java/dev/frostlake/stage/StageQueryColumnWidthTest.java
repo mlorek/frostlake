@@ -44,7 +44,7 @@ public class StageQueryColumnWidthTest extends BaseDatabaseTest {
         engine.execute("CREATE OR REPLACE TABLE t1 (a INT)");
         engine.execute("CREATE OR REPLACE STAGE st");
         stageLocalFile("st", "rows.csv", "1,a\n2,b\n");
-        stageLocalFile("%t1", "rows.csv", "1,a\n2,b\n");
+        stageLocalFile("%t1", "rows.csv", "1\n2\n");
         stageLocalFile("~", "rows.csv", "1,a\n2,b\n");
     }
 

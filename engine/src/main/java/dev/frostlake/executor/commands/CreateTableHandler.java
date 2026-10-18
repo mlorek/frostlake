@@ -1074,11 +1074,12 @@ public class CreateTableHandler implements CommandHandler {
                 continue;
             }
             final String written = getText(tail.aggregationPolicyClause().qualifiedName());
-            if (catalog.findAggregationPolicy(written) == null) {
+            // The policy of exactly that name, recorded so (live-verified).
+            if (catalog.findAggregationPolicyExact(written) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
-                    catalog.qualifiedObjectName(written)));
+                    catalog.qualifiedExactName(written)));
             }
-            table.setAggregationPolicyName(catalog.qualifiedObjectName(written));
+            table.setAggregationPolicyName(catalog.qualifiedExactName(written));
             final List<String> entityKey = new ArrayList<>();
             if (tail.aggregationPolicyClause().identifierList() != null) {
                 for (final FrostlakeParser.IdentifierContext id
@@ -1111,7 +1112,7 @@ public class CreateTableHandler implements CommandHandler {
             }
             RowAccessPolicyAttachment.check(catalog, policy, table, table.getName(), written, policyCols, true);
             // Recorded in full, as every policy attachment is (see PolicyReferences).
-            table.setRowAccessPolicyName(catalog.qualifiedObjectName(written));
+            table.setRowAccessPolicyName(catalog.qualifiedExactName(written));
             table.setRowAccessPolicyColumns(policyCols);
         }
     }

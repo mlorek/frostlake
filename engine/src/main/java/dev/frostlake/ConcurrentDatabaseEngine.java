@@ -351,6 +351,17 @@ public class ConcurrentDatabaseEngine {
         return sessionManager.getSession(sessionId);
     }
 
+    /**
+     * The session held under an id, or null, found without ending the sessions an abort left: ending one waits for the
+     * engine, and a cancel must never wait behind the statement it cancels.
+     *
+     * @param sessionId the session's id
+     * @return the session, or null
+     */
+    public SessionContext findSession(final String sessionId) {
+        return sessionManager.getSession(sessionId);
+    }
+
     public void removeSession(final String sessionId) {
         final AbortableHttpSession entry = abortable.remove(sessionId);
         if (entry != null) {

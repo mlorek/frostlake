@@ -98,7 +98,7 @@ public final class StatementCount {
             }
             sawContent = true;
             if (type == FrostlakeLexer.BEGIN) {
-                if (!startsTransaction(tokens, i)) {
+                if (!startsTransaction(tokens, i) && !standsAsAName(tokens, i)) {
                     if (headerBeginPending && parentheses == 0) {
                         headerBeginPending = false;
                     } else {
@@ -140,6 +140,25 @@ public final class StatementCount {
         return follower == Token.EOF || follower == FrostlakeLexer.SEMI || follower == FrostlakeLexer.RPAREN
             || follower == FrostlakeLexer.TRANSACTION || follower == FrostlakeLexer.WORK
             || follower == FrostlakeLexer.NAME;
+    }
+
+    /**
+     * Whether the BEGIN at {@code index} is a name — an alias or a column — rather than a block's opening: no block
+     * goes on with a ',', a '.', an operator or a clause's word, so {@code SELECT 1 AS begin, 2 AS b; DELETE FROM t}
+     * is two statements.
+     */
+    private static boolean standsAsAName(final List<Token> tokens, final int index) {
+        switch (tokens.get(index + 1).getType()) {
+            case FrostlakeLexer.COMMA: case FrostlakeLexer.DOT: case FrostlakeLexer.FROM: case FrostlakeLexer.WHERE:
+            case FrostlakeLexer.GROUP: case FrostlakeLexer.ORDER: case FrostlakeLexer.HAVING:
+            case FrostlakeLexer.QUALIFY: case FrostlakeLexer.LIMIT: case FrostlakeLexer.UNION:
+            case FrostlakeLexer.INTERSECT: case FrostlakeLexer.EXCEPT: case FrostlakeLexer.MINUS_KW:
+            case FrostlakeLexer.MINUS:
+            case FrostlakeLexer.EQ: case FrostlakeLexer.PLUS: case FrostlakeLexer.STAR: case FrostlakeLexer.SLASH:
+                return true;
+            default:
+                return false;
+        }
     }
 
     /** The lexer's tokens of {@code sql}, comments and blanks dropped, the end of the text last. */

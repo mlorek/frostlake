@@ -135,7 +135,7 @@ public class ResultScan extends TableFunction {
         }
         final List<Row> held = new ArrayList<>();
         // A write over the scan raises it as it is, with no DML sentence around it (live-verified).
-        held.add(new Row(DeferredFault.bare(new ColumnLengthException(width, (String) answer))));
+        held.add(new Row(DeferredFault.heldAnswer(new ColumnLengthException(width, (String) answer), answer, true)));
         return held;
     }
 
@@ -160,8 +160,8 @@ public class ResultScan extends TableFunction {
             return rows;
         }
         final List<Row> held = new ArrayList<>();
-        held.add(new Row(new DeferredFault(
-            new RuntimeException("Failed to cast variant value " + text + " to OBJECT"))));
+        held.add(new Row(DeferredFault.heldAnswer(
+            new RuntimeException("Failed to cast variant value " + text + " to OBJECT"), answer, false)));
         return held;
     }
 

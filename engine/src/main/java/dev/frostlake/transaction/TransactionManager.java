@@ -211,6 +211,20 @@ public class TransactionManager {
         return txn != null && txn.isExplicit();
     }
 
+    /**
+     * Whether the current transaction outlives the statement running in it: one an explicit BEGIN opened, or the
+     * implicit one a session with AUTOCOMMIT off holds open until its COMMIT or ROLLBACK. A statement that fails in
+     * it undoes only itself and leaves it open, explicit or implicit alike: "the changes made by that failed
+     * statement are rolled back. However, the transaction stays active" (live-verified with AUTOCOMMIT off, a
+     * refused DDL included).
+     *
+     * @return whether such a transaction is open
+     */
+    public boolean isLastingTransaction() {
+        final Transaction txn = currentTransaction.get();
+        return txn != null && (txn.isExplicit() || !isAutoCommit());
+    }
+
     // Session AUTOCOMMIT setting. Lives here (not on the engine facade) so statement-end autocommit can
     // run at EVERY statement chokepoint — top-level execute() and each statement inside a stored
     // procedure, which Snowflake commits individually unless an explicit BEGIN is open.

@@ -701,7 +701,9 @@ final class ValueRangeInferencer {
         }
         aggregateDepth++;
         try {
-            return rangeOfCall(call);
+            // An aggregate over NULLs alone answers NULL as the rows are aggregated: the plan holds no NULL for it.
+            final ValueRange range = rangeOfCall(call);
+            return range == null ? null : range.computedNull();
         } finally {
             aggregateDepth--;
         }

@@ -99,6 +99,12 @@ public final class StatementSeparation {
         rejectSplitSelectInto(script, tokens, sql);
         final MissingSeparator fault = firstFault(script, tokens, sql, true);
         if (fault != null) {
+            // A bracket after a LIMIT read as an alias is the clause's value to the account (see RowLimitWordLines).
+            final List<String> bracketed = sql == null ? null
+                : RowLimitWordLines.bracketedValueLines(sql, tokens, fault.firstLine());
+            if (bracketed != null) {
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", bracketed)), bracketed, sql);
+            }
             throw fault.refusal(sql);
         }
     }
@@ -131,6 +137,12 @@ public final class StatementSeparation {
         final MissingSeparator fault = firstFault(script, tokens, sql, true);
         if (fault != null && fault.precedes(parseFaultAt) && separatesRealStatements(script, fault, queryOrDml)
                 && (queryOrDml || opensOnlyAStatement(script, fault))) {
+            // A bracket after a LIMIT read as an alias is the clause's value to the account (see RowLimitWordLines).
+            final List<String> bracketed = sql == null ? null
+                : RowLimitWordLines.bracketedValueLines(sql, tokens, fault.firstLine());
+            if (bracketed != null) {
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", bracketed)), bracketed, sql);
+            }
             throw readingOn(script, tokens, sql, listener, fault);
         }
     }

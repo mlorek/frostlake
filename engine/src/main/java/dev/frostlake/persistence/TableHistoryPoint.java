@@ -28,4 +28,8 @@ public class TableHistoryPoint implements Serializable {
     public long sequence;
     /** Each row: a stored row's place as {@code -(place + 1)}, or a past row's index. */
     public List<Integer> rows = new ArrayList<>();
+    /** The shape the snapshot was taken in, as its index among the history's structures; null for the current one. */
+    public Integer layout;
+    /** The rows as the snapshot took them, as indexes into the history's taken rows; null where they are its rows. */
+    public List<Integer> takenRows;
 }

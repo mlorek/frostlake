@@ -1051,7 +1051,7 @@ public class FunctionRegistry {
         register(this.currentTransaction);
         register(new LastTransaction(sessionContext));
         register(new CurrentSchemas(catalog));
-        register(new InvokerRole(sessionContext));
+        register(new InvokerRole(sessionContext, catalog));
         register(new IsRoleInSession(catalog, sessionContext));
         register(new IsDatabaseRoleInSession(catalog, sessionContext));
         // Snowflake-name aliases over existing implementations.

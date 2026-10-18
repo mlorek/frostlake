@@ -22,9 +22,10 @@ import java.util.HashMap;
 import java.util.List;
 
 /**
- * One dropped version UNDROP can still restore, as a snapshot keeps it: the object saved as a live one is, its rows,
- * when it was dropped and for how long it is kept. A table, dynamic table or tag is saved inside a schema of its own
- * that holds nothing else; a dropped schema is that schema, a dropped database the whole database.
+ * One dropped version UNDROP can still restore, as a snapshot keeps it: the object saved as a live one is, its rows
+ * and its tables' storage, when it was dropped and for how long it is kept. A table, dynamic table or tag is saved
+ * inside a schema of its own that holds nothing else; a dropped schema is that schema, a dropped database the whole
+ * database.
  */
 public class DroppedObjectSnapshot implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -61,4 +62,11 @@ public class DroppedObjectSnapshot implements Serializable {
 
     /** The rows of the permanent tables temporary ones hid in a dropped schema or database, keyed alike. */
     public HashMap<String, List<List<Object>>> hiddenTableRows;
+
+    /**
+     * The storage of each dropped table that waited with the version — its rows, their identities and its time-travel
+     * history — by the table's fully-qualified name; null in a snapshot written before it was kept, whose UNDROP fills
+     * the tables with their rows.
+     */
+    public HashMap<String, TableDataSnapshot> keptTables;
 }

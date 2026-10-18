@@ -1568,6 +1568,47 @@ final class RoutineBodyCompiler {
         }
     }
 
+    /**
+     * A Java routine whose code its IMPORTS hold — no inline body — has its handler looked for in them as it is
+     * created: a handler that names no method is {@code Invalid function name JS in function F with handler JS}, and a
+     * class no import holds is refused as the account's class loader refuses it, {@code
+     * java.lang.ClassNotFoundException: JS} with the loader's frames, a stage directory that holds nothing included
+     * (live-verified). An import this engine cannot read here tells nothing, and the routine is created.
+     *
+     * @param handler        the routine's HANDLER, or null
+     * @param classHandler   whether the handler names a class alone, as a table function's and an aggregate's do
+     * @param imports        its imports, as it keeps them
+     * @param body           its inline body, or null
+     * @param runtimeVersion its RUNTIME_VERSION, or null
+     * @param routineName    its name, as the sentence prints it
+     * @param queryExecutor  the executor creating it, which finds the files its imports name
+     */
+    static void requireImportedHandler(final String handler, final boolean classHandler, final List<String> imports,
+                                       final String body, final String runtimeVersion, final String routineName,
+                                       final QueryExecutor queryExecutor) {
+        if (handler == null || imports == null || imports.isEmpty() || body != null && !body.trim().isEmpty()) {
+            return;
+        }
+        final String where = " in function " + routineName + " with handler " + handler;
+        final int dot = handler.lastIndexOf('.');
+        if (!classHandler && dot < 0) {
+            throw new RuntimeException("Invalid function name " + handler + where);
+        }
+        final String className = classHandler ? handler : handler.substring(0, dot);
+        final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+        final Boolean held;
+        try {
+            held = JarHandlerLoader.holdsClass(imports, className, queryExecutor.getCatalog(),
+                queryExecutor.getS3PathResolver());
+        } finally {
+            JarHandlerLoader.restore(outer);
+        }
+        if (Boolean.FALSE.equals(held)) {
+            throw new RuntimeException(JavaHandlerFailure.missingClass(className,
+                JavaRuntimeLevel.declared(runtimeVersion), where));
+        }
+    }
+
     /** Compile {@code function}'s body, throwing whatever its compiler said if it will not build. */
     static void compileFunctionBody(final Function function) {
         if (function == null || !judgeable(function.getUdfLanguage(), function.getBody(),
@@ -1683,6 +1724,11 @@ final class RoutineBodyCompiler {
                     JavaRuntimeLevel.declared(runtimeVersion), where), unloaded);
             }
             throw unloaded;
+        }
+        if (!compiled.getPackageName().isEmpty()) {
+            // A class an inline body declares in a package is found by no name, its own included (live-verified).
+            throw new RuntimeException(JavaHandlerFailure.missingClass(className,
+                JavaRuntimeLevel.declared(runtimeVersion), where));
         }
         if (arity < 0) {
             return;

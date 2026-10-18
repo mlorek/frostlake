@@ -792,14 +792,17 @@ public class Schema extends SqlObject {
     public AggregationPolicy getAggregationPolicy(final String name) { return aggregationPolicies.get(keyFor(aggregationPolicies, name)); }
     public boolean hasAggregationPolicy(final String name) { return aggregationPolicies.containsKey(keyFor(aggregationPolicies, name)); }
     public List<AggregationPolicy> getAggregationPolicies() { return new ArrayList<>(aggregationPolicies.values()); }
+    /** The aggregation policy of exactly this canonical name, or null: one differing only in case is another. */
+    public AggregationPolicy getAggregationPolicyExact(final String name) { return aggregationPolicies.get(name); }
+    /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameAggregationPolicy(final String oldName, final String newName) {
         final AggregationPolicy policy = aggregationPolicies.get(keyFor(aggregationPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Aggregation policy not found: " + oldName);
         }
         aggregationPolicies.remove(keyFor(aggregationPolicies, oldName));
-        policy.rename(newName.toUpperCase(Locale.ROOT));
-        aggregationPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
+        policy.rename(newName);
+        aggregationPolicies.put(newName, policy);
     }
 
     // Projection Policies
@@ -810,14 +813,17 @@ public class Schema extends SqlObject {
     public ProjectionPolicy getProjectionPolicy(final String name) { return projectionPolicies.get(keyFor(projectionPolicies, name)); }
     public boolean hasProjectionPolicy(final String name) { return projectionPolicies.containsKey(keyFor(projectionPolicies, name)); }
     public List<ProjectionPolicy> getProjectionPolicies() { return new ArrayList<>(projectionPolicies.values()); }
+    /** The projection policy of exactly this canonical name, or null: one differing only in case is another. */
+    public ProjectionPolicy getProjectionPolicyExact(final String name) { return projectionPolicies.get(name); }
+    /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameProjectionPolicy(final String oldName, final String newName) {
         final ProjectionPolicy policy = projectionPolicies.get(keyFor(projectionPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Projection policy not found: " + oldName);
         }
         projectionPolicies.remove(keyFor(projectionPolicies, oldName));
-        policy.rename(newName.toUpperCase(Locale.ROOT));
-        projectionPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
+        policy.rename(newName);
+        projectionPolicies.put(newName, policy);
     }
 
     // Masking Policies
@@ -828,14 +834,17 @@ public class Schema extends SqlObject {
     public MaskingPolicy getMaskingPolicy(final String name) { return maskingPolicies.get(keyFor(maskingPolicies, name)); }
     public boolean hasMaskingPolicy(final String name) { return maskingPolicies.containsKey(keyFor(maskingPolicies, name)); }
     public List<MaskingPolicy> getMaskingPolicies() { return new ArrayList<>(maskingPolicies.values()); }
+    /** The masking policy of exactly this canonical name, or null: one differing only in case is another. */
+    public MaskingPolicy getMaskingPolicyExact(final String name) { return maskingPolicies.get(name); }
+    /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameMaskingPolicy(final String oldName, final String newName) {
         final MaskingPolicy policy = maskingPolicies.get(keyFor(maskingPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Masking policy not found: " + oldName);
         }
         maskingPolicies.remove(keyFor(maskingPolicies, oldName));
-        policy.rename(newName.toUpperCase(Locale.ROOT));
-        maskingPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
+        policy.rename(newName);
+        maskingPolicies.put(newName, policy);
     }
 
     // Row Access Policies
@@ -846,14 +855,17 @@ public class Schema extends SqlObject {
     public RowAccessPolicy getRowAccessPolicy(final String name) { return rowAccessPolicies.get(keyFor(rowAccessPolicies, name)); }
     public boolean hasRowAccessPolicy(final String name) { return rowAccessPolicies.containsKey(keyFor(rowAccessPolicies, name)); }
     public List<RowAccessPolicy> getRowAccessPolicies() { return new ArrayList<>(rowAccessPolicies.values()); }
+    /** The row access policy of exactly this canonical name, or null: one differing only in case is another. */
+    public RowAccessPolicy getRowAccessPolicyExact(final String name) { return rowAccessPolicies.get(name); }
+    /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameRowAccessPolicy(final String oldName, final String newName) {
         final RowAccessPolicy policy = rowAccessPolicies.get(keyFor(rowAccessPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Row access policy not found: " + oldName);
         }
         rowAccessPolicies.remove(keyFor(rowAccessPolicies, oldName));
-        policy.rename(newName.toUpperCase(Locale.ROOT));
-        rowAccessPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
+        policy.rename(newName);
+        rowAccessPolicies.put(newName, policy);
     }
 
     // Procedures and functions. A routine is stored under its canonical name - an unquoted name
@@ -1759,6 +1771,31 @@ public class Schema extends SqlObject {
         return streams.containsKey(name);
     }
 
+    /**
+     * The stream of EXACTLY this name, as SQL names one: a name that differs only in case is another stream, which
+     * is not here (live-verified).
+     *
+     * @param name the canonical name
+     * @return the stream
+     */
+    public Stream getStreamExact(final String name) {
+        final Stream stream = streams.get(name);
+        if (stream == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
+        }
+        return stream;
+    }
+
+    /**
+     * Drops the stream of EXACTLY this name.
+     *
+     * @param name the canonical name
+     */
+    public void dropStreamExact(final String name) {
+        getStreamExact(name);
+        streams.remove(name);
+    }
+
     // Tasks
     public void addTask(final Task task) {
         final String upperName = task.getName();
@@ -1790,6 +1827,36 @@ public class Schema extends SqlObject {
 
     public List<Task> getTasks() {
         return new ArrayList<>(tasks.values());
+    }
+
+    /** Whether a task of EXACTLY this name is here: a name that differs only in case is another task. */
+    public boolean hasTaskExact(final String name) {
+        return tasks.containsKey(name);
+    }
+
+    /**
+     * The task of EXACTLY this name, as SQL names one: a name that differs only in case is another task, which is
+     * not here (live-verified).
+     *
+     * @param name the canonical name
+     * @return the task
+     */
+    public Task getTaskExact(final String name) {
+        final Task task = tasks.get(name);
+        if (task == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
+        }
+        return task;
+    }
+
+    /**
+     * Drops the task of EXACTLY this name.
+     *
+     * @param name the canonical name
+     */
+    public void dropTaskExact(final String name) {
+        getTaskExact(name);
+        tasks.remove(name);
     }
 
     // Alerts
@@ -1955,6 +2022,16 @@ public class Schema extends SqlObject {
 
     public boolean hasFileFormat(final String name) {
         return getFileFormat(name) != null;
+    }
+
+    /**
+     * The file format of exactly this canonical name, or null: one differing only in case is another.
+     *
+     * @param name the canonical name
+     * @return the format, or null
+     */
+    public FileFormat getFileFormatExact(final String name) {
+        return hasFileFormatExact(name) ? fileFormats.get(name) : null;
     }
 
     /** Whether a file format carries exactly this canonical name; one differing only in case is another. */
@@ -2361,6 +2438,19 @@ public class Schema extends SqlObject {
         return s;
     }
 
+    /**
+     * The stage of exactly this canonical name, refused as missing when only another case of it exists.
+     *
+     * @param name the canonical name
+     * @return the stage
+     */
+    public Stage getStageExact(final String name) {
+        if (!hasStageExact(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
+        }
+        return stages.get(name);
+    }
+
     public boolean hasStage(final String name) {
         final Stage stage = stages.get(keyFor(stages, name));
         return stage != null && !othersTemporary(stage, stage.isTemporary());
@@ -2579,32 +2669,38 @@ public class Schema extends SqlObject {
 
     /**
      * The kind of the policy that holds a name, as a refusal spells it, or null when no policy does: the
-     * policies of a schema — masking, row access, join, aggregation, projection, password and session policies —
-     * share one namespace (live-verified).
+     * policies of a schema — masking, row access, join, aggregation, projection, password, session, authentication
+     * and packages policies — share one namespace (live-verified).
      *
      * @param name the policy's name
      * @return the holder's kind, e.g. {@code MASKING_POLICY}, or null
      */
     public String policyKindHolding(final String name) {
-        if (hasMaskingPolicy(name)) {
+        // A masking, row access, aggregation or projection policy holds exactly its own name: one that differs only
+        // in case is another policy's (live-verified).
+        if (getMaskingPolicyExact(name) != null) {
             return "MASKING_POLICY";
         }
-        if (hasRowAccessPolicy(name)) {
+        if (getRowAccessPolicyExact(name) != null) {
             return "ROW_ACCESS_POLICY";
         }
         if (hasJoinPolicy(name)) {
             return "JOIN_POLICY";
         }
-        if (hasAggregationPolicy(name)) {
+        if (getAggregationPolicyExact(name) != null) {
             return "AGGREGATION_POLICY";
         }
-        if (hasProjectionPolicy(name)) {
+        if (getProjectionPolicyExact(name) != null) {
             return "PROJECTION_POLICY";
         }
-        if (getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name) != null) {
-            return "PASSWORD_POLICY";
+        for (final SecurityObjectKind kind : new SecurityObjectKind[] {SecurityObjectKind.PASSWORD_POLICY,
+                SecurityObjectKind.SESSION_POLICY, SecurityObjectKind.AUTHENTICATION_POLICY,
+                SecurityObjectKind.PACKAGES_POLICY}) {
+            if (getSecurityObjects().get(kind, name) != null) {
+                return kind.name();
+            }
         }
-        return getSecurityObjects().get(SecurityObjectKind.SESSION_POLICY, name) != null ? "SESSION_POLICY" : null;
+        return null;
     }
 
     /**

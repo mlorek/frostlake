@@ -27,20 +27,22 @@ import java.util.Map;
  * forms, and a value written into a column (all live-verified). A format other than AUTO is the only reading: text it
  * does not fit is not recognized, an ISO date and a string of digits included, and the TRY_ forms answer NULL for it.
  *
- * <p>DATE_INPUT_FORMAT, TIME_INPUT_FORMAT and TIMESTAMP_INPUT_FORMAT, the last for all three timestamp kinds; a COPY
- * load takes them over with its file format's DATE_FORMAT, TIME_FORMAT and TIMESTAMP_FORMAT, and pins its BINARY_FORMAT
- * as the reading of a BINARY column's text. Pinned per statement in a ThreadLocal, as {@link SessionOutputFormats}
- * is: the conversions live deep in static helpers with no session to ask, and one engine serves many sessions.
+ * <p>DATE_INPUT_FORMAT, TIME_INPUT_FORMAT and TIMESTAMP_INPUT_FORMAT, the last for all three timestamp kinds, and
+ * BINARY_INPUT_FORMAT, which every reading of TEXT as BINARY follows when no format of its own is written: a cast, a
+ * one-argument TO_BINARY and TRY_TO_BINARY, and a value written into a column (live-verified). A COPY load takes them
+ * over with its file format's DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT and BINARY_FORMAT. Pinned per statement in a
+ * ThreadLocal, as {@link SessionOutputFormats} is: the conversions live deep in static helpers with no session to ask,
+ * and one engine serves many sessions.
  */
 public final class SessionInputFormats {
 
     public static final String DATE = "DATE_INPUT_FORMAT";
     public static final String TIME = "TIME_INPUT_FORMAT";
     public static final String TIMESTAMP = "TIMESTAMP_INPUT_FORMAT";
-    /** How a BINARY column's text reads — HEX, BASE64 or UTF8 — which only a COPY load's BINARY_FORMAT pins. */
+    /** How a text reads as BINARY — HEX (the default), BASE64, or UTF8 (also spelled UTF-8), in any case. */
     public static final String BINARY = "BINARY_INPUT_FORMAT";
 
-    private static final String[] NAMES = {DATE, TIME, TIMESTAMP};
+    private static final String[] NAMES = {DATE, TIME, TIMESTAMP, BINARY};
 
     private static final ThreadLocal<Map<String, String>> PINNED = new ThreadLocal<Map<String, String>>();
 
@@ -132,22 +134,44 @@ public final class SessionInputFormats {
     }
 
     /**
-     * A text read as BINARY bytes: as BASE64 or as its UTF-8 bytes where a load's BINARY_FORMAT says so, as hex
-     * digits otherwise.
+     * A text read as BINARY bytes: as BASE64 or as its UTF-8 bytes where the session's BINARY_INPUT_FORMAT, or a
+     * load's BINARY_FORMAT, says so, as hex digits otherwise.
      *
      * @param text the text
      * @return its bytes
      */
     public static BinaryValue binary(final String text) {
         final Map<String, String> pinned = PINNED.get();
-        final String format = pinned == null ? null : pinned.get(BINARY);
+        return binary(text, pinned == null ? null : pinned.get(BINARY));
+    }
+
+    /**
+     * A text read as BINARY bytes by a format of its own: BASE64, UTF8 (also spelled UTF-8), or hex digits for HEX or
+     * no format at all, the name in any case.
+     *
+     * @param text   the text
+     * @param format the format, or null for hex
+     * @return its bytes
+     */
+    public static BinaryValue binary(final String text, final String format) {
         if ("BASE64".equalsIgnoreCase(format)) {
-            return BinaryValue.fromBase64(text);
+            return BinaryValue.fromBase64Input(text);
         }
         if ("UTF8".equalsIgnoreCase(format) || "UTF-8".equalsIgnoreCase(format)) {
             return BinaryValue.of(text.getBytes(StandardCharsets.UTF_8));
         }
-        return BinaryValue.fromHex(text);
+        return BinaryValue.fromHexInput(text);
+    }
+
+    /**
+     * Whether a name is one of the binary formats: HEX, BASE64, UTF8 or UTF-8, in any case.
+     *
+     * @param format the name
+     * @return true for a binary format
+     */
+    public static boolean isBinaryFormat(final String format) {
+        return "HEX".equalsIgnoreCase(format) || "BASE64".equalsIgnoreCase(format) || "UTF8".equalsIgnoreCase(format)
+            || "UTF-8".equalsIgnoreCase(format);
     }
 
     private static String usable(final String name) {

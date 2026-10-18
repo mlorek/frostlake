@@ -60,6 +60,9 @@ import java.util.Set;
  */
 final class PivotUnpivotExecutor {
 
+    /** The aggregates that only count what they read, which hand out none of its values. */
+    private static final List<String> COUNTING = List.of("COUNT", "COUNT_IF", "APPROX_COUNT_DISTINCT", "HLL");
+
     private final QueryExecutor executor;
 
     PivotUnpivotExecutor(final QueryExecutor executor) {
@@ -83,12 +86,21 @@ final class PivotUnpivotExecutor {
                               final List<Row> rowsForAny, final List<String> renamedColumns,
                               final String relationName) {
         // The aggregate is one registered aggregate over one column of the relation (see PivotAggregateCall).
-        final String aggColumn = PivotAggregateCall.column(pivotCtx.aggregateFunction(), table,
-            executor.getFunctionRegistry());
+        final String aggColumn = PivotAggregateCall.column(pivotCtx, table, executor.getFunctionRegistry());
         final String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase(Locale.ROOT);
         final String aggregateText = ParseTreeText.getOriginalText(pivotCtx.aggregateFunction());
         final FrostlakeParser.ExpressionContext aggregateCall = executor.parsedExpression(aggregateText);
         final String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.pivotColumn);
+        if (!table.hasColumn(pivotColumn)) {
+            // Refused where the FOR column is written (live-verified).
+            final Token at = pivotCtx.pivotColumn.getStart();
+            final SourcePosition shown = ExpressionSource.place(at.getLine(), at.getCharPositionInLine());
+            throw new RuntimeException(SqlCompilationError.invalidIdentifier(shown.getLine(),
+                shown.getCharPositionInLine(), pivotColumn));
+        }
+        PivotAggregateCall.requireArity(pivotCtx, table, executor.getFunctionRegistry(),
+            PivotRewrite.relation((FrostlakeParser.TableReferenceContext) pivotCtx.getParent()), aggColumn,
+            pivotColumn);
         final String aggregateAlias = pivotCtx.pivotAggregateAlias == null ? null
             : ParseTreeText.getIdentifier(pivotCtx.pivotAggregateAlias);
         // Get column indices
@@ -188,14 +200,21 @@ final class PivotUnpivotExecutor {
         final List<ResultSetColumn> resultColumns = new ArrayList<>();
         for (final int idx : groupByColIndices) {
             final TableColumn col = table.getColumns().get(idx);
-            resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null));
+            resultColumns.add(withPolicy(new ResultSetColumn(col.getName(), col.getDataType(), null),
+                col.getProjectionPolicyName()));
         }
+        // A pivoted column hands out the aggregated column's values, and comes under its projection policy, unless
+        // the aggregate only counts them (live-verified: MAX(ssn) is refused by the pivoted columns, COUNT(ssn) is
+        // not).
+        final String pivotedPolicy = aggColIndex < 0 || COUNTING.contains(aggFuncName.toUpperCase(Locale.ROOT)) ? null
+            : table.getColumns().get(aggColIndex).getProjectionPolicyName();
         final DataType aggregated = aggColIndex >= 0 ? table.getColumns().get(aggColIndex).getDataType() : null;
         requireAggregable(aggFuncName, aggregated);
         final DataType pivotedType = pivotColumnType(aggFuncName, aggregated, aggregateText, table,
             inList.pivotValueList() != null);
         for (final PivotValue pivotValue : pivotValues) {
-            resultColumns.add(new ResultSetColumn(pivotValue.name(aggregateAlias), pivotedType, null));
+            resultColumns.add(withPolicy(new ResultSetColumn(pivotValue.name(aggregateAlias), pivotedType, null),
+                pivotedPolicy));
         }
         final Table shape = executor.resultSetToTable(
             new ResultSet(renamed(resultColumns, renamedColumns), new ArrayList<Row>()), relationName);
@@ -327,13 +346,22 @@ final class PivotUnpivotExecutor {
         }
         for (final int idx : preserveColIndices) {
             final TableColumn col = table.getColumns().get(idx);
-            resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null,
-                declared || col.isStaticallyTyped() ? col.getDataType() : null));
+            resultColumns.add(withPolicy(new ResultSetColumn(col.getName(), col.getDataType(), null,
+                declared || col.isStaticallyTyped() ? col.getDataType() : null), col.getProjectionPolicyName()));
         }
         resultColumns.add(new ResultSetColumn(nameColumn, WidthlessStringType.WIDTHLESS, null,
             WidthlessStringType.WIDTHLESS));
         final DataType valueType = unpivotedType(table, unpivotColIndices);
-        resultColumns.add(new ResultSetColumn(valueColumn, valueType, null, unpivotedKnown ? valueType : null));
+        // The value column hands out the unpivoted columns' values, and comes under a projection policy any of them
+        // carries (live-verified).
+        String valuePolicy = null;
+        for (final int idx : unpivotColIndices) {
+            if (valuePolicy == null) {
+                valuePolicy = table.getColumns().get(idx).getProjectionPolicyName();
+            }
+        }
+        resultColumns.add(withPolicy(new ResultSetColumn(valueColumn, valueType, null,
+            unpivotedKnown ? valueType : null), valuePolicy));
         // Snowflake EXCLUDEs NULL values by default (a row is emitted only for a non-NULL unpivoted
         // value); the optional INCLUDE NULLS modifier keeps them, EXCLUDE NULLS is the explicit default.
         final boolean includeNulls = unpivotCtx.unpivotNulls() != null
@@ -558,4 +586,9 @@ final class PivotUnpivotExecutor {
         return evaluator.evaluate(ParseTreeText.getOriginalText(expr), new Row(new ArrayList<>()));
     }
 
+
+    /** A result column put under a projection policy, or as it is when there is none. */
+    private static ResultSetColumn withPolicy(final ResultSetColumn column, final String policy) {
+        return policy == null ? column : column.withProjectionPolicy(policy);
+    }
 }

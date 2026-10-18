@@ -29,14 +29,26 @@ public final class AggFactKey {
     private final Object context2;
     private final Object context3;
     private final String text;
+    private final int shape;
 
     public AggFactKey(final String kind, final Object context1, final Object context2,
                       final Object context3, final String text) {
+        this(kind, context1, context2, context3, text, 0);
+    }
+
+    /**
+     * A key that also holds the shape of the table its facts read (see {@code Table.getShapeVersion}): a table
+     * changed in place by ALTER TABLE is the same object with other columns, and a fact about its old columns must
+     * not be read for its new ones.
+     */
+    public AggFactKey(final String kind, final Object context1, final Object context2,
+                      final Object context3, final String text, final int shape) {
         this.kind = kind;
         this.context1 = context1;
         this.context2 = context2;
         this.context3 = context3;
         this.text = text;
+        this.shape = shape;
     }
 
     @Override
@@ -46,7 +58,7 @@ public final class AggFactKey {
         }
         final AggFactKey key = (AggFactKey) other;
         return kind.equals(key.kind) && context1 == key.context1 && context2 == key.context2
-            && context3 == key.context3 && text.equals(key.text);
+            && context3 == key.context3 && text.equals(key.text) && shape == key.shape;
     }
 
     @Override
@@ -56,6 +68,7 @@ public final class AggFactKey {
         h = 31 * h + System.identityHashCode(context2);
         h = 31 * h + System.identityHashCode(context3);
         h = 31 * h + text.hashCode();
+        h = 31 * h + shape;
         return h;
     }
 }

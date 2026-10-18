@@ -140,6 +140,25 @@ public class QueryHistoryTracker {
     }
 
     /**
+     * The logged statement whose changes became visible last at or before a place in the order snapshots are taken
+     * in: what a replay maps that place through, since the replay runs the statement again under another place.
+     *
+     * @param sequence the place
+     * @return the statement, or null when no logged statement this engine ran was visible by then
+     */
+    public QueryHistory lastLoggedVisibleBy(final long sequence) {
+        QueryHistory last = null;
+        for (final QueryHistory query : queryHistory) {
+            final long visible = query.getVisibleSequence();
+            if (query.isLogged() && visible >= 0 && visible <= sequence
+                    && (last == null || visible >= last.getVisibleSequence())) {
+                last = query;
+            }
+        }
+        return last;
+    }
+
+    /**
      * Get history filtered by user
      */
     public List<QueryHistory> getHistoryByUser(final String user) {

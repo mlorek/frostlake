@@ -713,9 +713,9 @@ final class OrderByExecutor {
 
     /**
      * The select list as the OUTPUT columns it projects, each star expanded against its relation — the
-     * width a position is judged against, and the expression a position resolves to. Returns null when
-     * a star cannot be expanded (no relation supplied, an unresolvable qualifier, or modifiers that
-     * reshape the projection), so the caller steps aside instead of guessing.
+     * width a position is judged against, and the expression a position resolves to; a star's EXCLUDE,
+     * ILIKE, RENAME and REPLACE shape the columns it counts (live-verified). Returns null when a star cannot be
+     * expanded (no relation supplied, an unresolvable qualifier), so the caller steps aside instead of guessing.
      */
     private List<String> projectedExpressions(final List<FrostlakeParser.SelectItemContext> items,
                                               final Table table, final Map<String, Table> aliasToTable) {
@@ -731,7 +731,7 @@ final class OrderByExecutor {
                 projected.add(ParseTreeText.getOriginalText(e));
                 continue;
             }
-            if (table == null || !SelectItemAccessors.getStarModifiers(item).isEmpty()) {
+            if (table == null) {
                 return null;
             }
             if (SelectItemAccessors.isObjectStarItem(item)) {
@@ -739,9 +739,11 @@ final class OrderByExecutor {
                 continue;
             }
             final List<StarColumn> starColumns = executor.starItemColumns(item, table, aliasToTable);
-            if (starColumns.isEmpty()) {
+            if (starColumns.isEmpty() && table.getColumns().isEmpty()) {
                 return null;
             }
+            // A star over columns it does not read — a named stage's fields — projects nothing, so an ordinal past
+            // the rest of the list is refused (live-verified).
             for (final StarColumn starColumn : starColumns) {
                 projected.add(starColumn.getExpression());
             }

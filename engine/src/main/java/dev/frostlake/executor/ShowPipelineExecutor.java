@@ -422,9 +422,13 @@ final class ShowPipelineExecutor {
 
     /**
      * The tables a stream reads, as SHOW STREAMS lists them: a table stream's table, and the tables a view stream's
-     * view reads rather than the view itself, or how many of them are gone (live-verified).
+     * view reads rather than the view itself, or how many of them are gone, as for a table stream lost in a clone
+     * (live-verified).
      */
     private String baseTablesText(final Stream stream, final String source, final boolean tableGone) {
+        if (stream.isLostInClone()) {
+            return "1 inaccessible table(s)";
+        }
         if (tableGone) {
             return TABLE_GONE;
         }
@@ -598,7 +602,8 @@ final class ShowPipelineExecutor {
     /** DESCRIBE TASK returns the task's SHOW TASKS row — live gives the two commands one shape. */
     public ResultSet describeTask(final SchemaObjectName written) {
         final Schema schema = written.schema();
-        final Task task = schema.getTask(written.name());
+        // Named exactly: a quoted name in another case is another task, which is not there (live-verified).
+        final Task task = schema.getTaskExact(written.name());
         final List<Row> rows = new ArrayList<>();
         rows.add(taskRow(task, written.database().getName(), schema.getName()));
         return new ResultSet(taskColumns(), rows);

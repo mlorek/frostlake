@@ -45,6 +45,8 @@ public class Function extends SqlObject {
     private volatile Schema home;
     private boolean memoizable = false;
     private boolean temporary = false;
+    // A temporary handler function created without its handler judged: the first call judges it.
+    private volatile boolean unvalidated = false;
     private List<String> imports = new ArrayList<>();
     private RoutineEnvironment environment = new RoutineEnvironment();
 
@@ -178,6 +180,15 @@ public class Function extends SqlObject {
     public boolean isTemporary() { return temporary; }
 
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }
+
+    /**
+     * Whether the function was created without its handler judged: a TEMPORARY Python or Java function is, and the
+     * judgment waits for its first call (live-verified).
+     */
+    public boolean isUnvalidated() { return unvalidated; }
+
+    /** Records whether the handler is still to be judged. */
+    public void setUnvalidated(final boolean unvalidated) { this.unvalidated = unvalidated; }
 
     /** What the routine is given to run with: packages, repository, target path, integrations and secrets. */
     public RoutineEnvironment getEnvironment() { return environment; }

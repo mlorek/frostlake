@@ -2346,6 +2346,16 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (negatedLike != null) {
             return negatedLike;
         }
+        final List<String> frameOffset = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
+            ? null : FrameOffsetLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
+        if (frameOffset != null) {
+            return frameOffset;
+        }
+        final List<String> returnColumn = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
+            ? null : ReturnColumnLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
+        if (returnColumn != null) {
+            return returnColumn;
+        }
         final List<String> exitWhen = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
             ? null : ExitWhenLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
         if (exitWhen != null) {

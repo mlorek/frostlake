@@ -29,6 +29,10 @@ public enum SecurityObjectKind {
     PASSWORD_POLICY("Password policy", "PASSWORD POLICY", true),
     /** A session policy: a schema object stating how long a session may idle or last, and its secondary roles. */
     SESSION_POLICY("Session policy", "SESSION POLICY", true),
+    /** An authentication policy: a schema object stating how users may authenticate, and from which clients. */
+    AUTHENTICATION_POLICY("Authentication policy", "AUTHENTICATION POLICY", true),
+    /** A packages policy: a schema object stating the packages a handler language may use. */
+    PACKAGES_POLICY("Packages policy", "PACKAGES POLICY", true),
     /** A secret: a schema object holding credentials. */
     SECRET("Secret", "SECRET", true);
 

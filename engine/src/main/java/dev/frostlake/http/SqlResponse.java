@@ -17,6 +17,7 @@
 package dev.frostlake.http;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import dev.frostlake.executor.StatementCanceledException;
 import dev.frostlake.storage.ResultSet;
 
 import java.util.ArrayList;
@@ -43,6 +44,10 @@ public class SqlResponse {
     // them: the driver keeps the session alive by them. Absent when the session sets none.
     private Boolean clientSessionKeepAlive;
     private Integer clientSessionKeepAliveHeartbeatFrequency;
+    // The SQLSTATE and vendor code of a failed statement, where the account's are known: a canceled statement's
+    // 57014, with 604 for a cancel or a query timeout and 630 for the session's STATEMENT_TIMEOUT_IN_SECONDS.
+    private String sqlState;
+    private Integer errorCode;
 
     public SqlResponse() {
         this.resultSets = new ArrayList<>();
@@ -68,6 +73,11 @@ public class SqlResponse {
     public static SqlResponse error(final String sessionId, final String errorMessage) {
         final SqlResponse response = new SqlResponse(false, sessionId);
         response.setErrorMessage(errorMessage);
+        final Integer canceled = StatementCanceledException.codeOf(errorMessage);
+        if (canceled != null) {
+            response.setSqlState(StatementCanceledException.SQL_STATE);
+            response.setErrorCode(canceled);
+        }
         return response;
     }
 
@@ -152,6 +162,26 @@ public class SqlResponse {
 
     public void setClientSessionKeepAliveHeartbeatFrequency(final Integer clientSessionKeepAliveHeartbeatFrequency) {
         this.clientSessionKeepAliveHeartbeatFrequency = clientSessionKeepAliveHeartbeatFrequency;
+    }
+
+    /** The failed statement's SQLSTATE, or null when the answer carries none. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public String getSqlState() {
+        return sqlState;
+    }
+
+    public void setSqlState(final String sqlState) {
+        this.sqlState = sqlState;
+    }
+
+    /** The failed statement's vendor code, or null when the answer carries none. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Integer getErrorCode() {
+        return errorCode;
+    }
+
+    public void setErrorCode(final Integer errorCode) {
+        this.errorCode = errorCode;
     }
 
     /**

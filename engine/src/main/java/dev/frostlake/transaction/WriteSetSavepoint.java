@@ -16,6 +16,7 @@
 
 package dev.frostlake.transaction;
 
+import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.storage.Row;
 
 import java.util.HashMap;
@@ -53,6 +54,9 @@ public final class WriteSetSavepoint {
     /** Whether a statement began a savepoint of its own while this one's was running. */
     private boolean superseded;
 
+    /** The streams the transaction's consuming reads had registered when the statement began, or null. */
+    private Map<Stream, StreamReadScope> streamReadsBefore;
+
     WriteSetSavepoint(final Map<String, TableLock> lockSnapshot, final long ordinal) {
         this.locksBefore = lockSnapshot;
         this.ordinal = ordinal;
@@ -73,6 +77,25 @@ public final class WriteSetSavepoint {
 
     void markSuperseded() {
         superseded = true;
+    }
+
+    /**
+     * Notes the streams the transaction's consuming reads had registered when the statement began, which a failure
+     * of the statement puts back: a stream it read is not advanced by the transaction's COMMIT.
+     *
+     * @param registered the registrations, copied
+     */
+    void noteStreamReads(final Map<Stream, StreamReadScope> registered) {
+        this.streamReadsBefore = registered;
+    }
+
+    /**
+     * The streams registered when the statement began (see {@link #noteStreamReads}).
+     *
+     * @return the registrations, or null when none were noted
+     */
+    Map<Stream, StreamReadScope> streamReadsBefore() {
+        return streamReadsBefore;
     }
 
     /** How many rows and row ids the pre-images hold: what keeping this savepoint costs. */

@@ -31,6 +31,8 @@ public class BinaryOperationExpression implements Expression {
     private boolean simpleCaseTest;
     /** Whether an inequality was written {@code !=} rather than {@code <>}. */
     private boolean bangSpelled;
+    /** Whether the operation was written inside parentheses of its own. */
+    private boolean writtenInParentheses;
 
     public BinaryOperationExpression(final Expression left, final BinaryOperator operator, final Expression right) {
         this(left, operator, right, null);
@@ -90,6 +92,21 @@ public class BinaryOperationExpression implements Expression {
     /** Mark this inequality as written {@code !=} — see {@link #isBangSpelled()}. */
     public void markBangSpelled() {
         this.bangSpelled = true;
+    }
+
+    /**
+     * Whether the operation was written inside parentheses of its own, {@code (2 + 3)}. A routine parameter's
+     * default told back prints such an operand of an arithmetic operation as the cast to its type (live-verified).
+     *
+     * @return true for an operation written in parentheses
+     */
+    public boolean isWrittenInParentheses() {
+        return writtenInParentheses;
+    }
+
+    /** Mark this operation as written in parentheses — see {@link #isWrittenInParentheses()}. */
+    public void markWrittenInParentheses() {
+        this.writtenInParentheses = true;
     }
 
     public Expression getLeft() {

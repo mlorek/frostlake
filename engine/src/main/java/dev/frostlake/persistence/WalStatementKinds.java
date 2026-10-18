@@ -110,6 +110,36 @@ public final class WalStatementKinds {
     }
 
     /**
+     * Whether a script runs statements of its own — a CALL, a block or another compound statement, an EXECUTE
+     * IMMEDIATE — whose work stands when the script fails: each statement it runs commits as it ends under autocommit,
+     * or stays in the caller's transaction, and a procedure's failure undoes none of them. No record of the script
+     * carries that work, since the script is logged only when it succeeds.
+     *
+     * @param script the script's parse
+     * @return whether one of its statements runs statements of its own
+     */
+    public static boolean runsStatementsOfItsOwn(final FrostlakeParser.SqlScriptContext script) {
+        if (script == null) {
+            return false;
+        }
+        for (final FrostlakeParser.FlowChainContext chain : script.flowChain()) {
+            for (final FrostlakeParser.StatementContext statement : chain.statement()) {
+                final FrostlakeParser.ProceduralStatementContext procedural = statement.proceduralStatement();
+                if (procedural != null && (procedural.beginEndBlock() != null || procedural.ifStatement() != null
+                        || procedural.caseStatement() != null || procedural.loopStatement() != null
+                        || procedural.whileStatement() != null || procedural.repeatStatement() != null
+                        || procedural.forStatement() != null || procedural.callIntoStatement() != null
+                        || procedural.callStatement() != null || procedural.systemCallStatement() != null
+                        || procedural.asyncStatement() != null || procedural.awaitStatement() != null
+                        || procedural.executeImmediateStatement() != null)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Whether a statement commits work in a session of its own, whatever transaction runs it: EXECUTE TASK, EXECUTE
      * ALERT and ALTER PIPE … REFRESH. A block or a procedure that runs one has it logged in a record of its own.
      *

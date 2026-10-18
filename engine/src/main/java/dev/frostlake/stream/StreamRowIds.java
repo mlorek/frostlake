@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import java.util.List;
 
 /**
  * How a row's identity is spelled as METADATA$ROW_ID. The account spells a table row's id as forty lower-case hex
@@ -35,11 +36,12 @@ public final class StreamRowIds {
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
-    /** Tells a table row's digest from a view branch's, a join row's and a refreshed source's. */
+    /** Tells a table row's digest from a view branch's, a join row's, a refreshed source's and joined rows'. */
     private static final byte TABLE_ROW = 1;
     private static final byte BRANCH_ROW = 2;
     private static final byte JOIN_ROW = 3;
     private static final byte REFRESHED_ROW = 4;
+    private static final byte JOINED_ROWS = 5;
 
     private StreamRowIds() {
     }
@@ -75,6 +77,21 @@ public final class StreamRowIds {
      */
     public static String ofJoinRow(final String content) {
         return hex(digest(JOIN_ROW, content.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * The id of a join view's row, from the identities of the table rows it joins: an UPDATE of either keeps the
+     * row's id, so the change reads as a DELETE and an INSERT of one row (live-verified).
+     *
+     * @param rowIds the joined rows' identities in their tables' storage, in the order the view's query reads them
+     * @return forty lower-case hex digits
+     */
+    public static String ofJoinedRows(final List<Long> rowIds) {
+        final ByteBuffer ids = ByteBuffer.allocate(Long.BYTES * rowIds.size());
+        for (final Long rowId : rowIds) {
+            ids.putLong(rowId.longValue());
+        }
+        return hex(digest(JOINED_ROWS, ids.array()));
     }
 
     /**

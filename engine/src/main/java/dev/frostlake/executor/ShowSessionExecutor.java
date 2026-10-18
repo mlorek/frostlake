@@ -23,6 +23,7 @@ import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.metastore.model.Account;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.ManagedAccount;
 import dev.frostlake.metastore.model.ObjectParameters;
@@ -472,9 +473,20 @@ final class ShowSessionExecutor {
         final Schema schema = written.schema();
         final String name = written.name();
         final List<Row> rows = new ArrayList<>();
+        if (!schema.hasTable(name) && schema.hasDynamicTable(name)) {
+            // A dynamic table lists its own parameters, a table's less a few and with its log and trace levels
+            // (live-verified).
+            final DynamicTable dynamicTable = schema.getDynamicTable(name);
+            for (final SessionParameterRow parameter : ContainerParameterCatalog.dynamicTableRows()) {
+                if (matchesLike(parameter.getName(), likePattern)) {
+                    rows.add(inheritedRow(parameter, dynamicTableValue(parameter.getName(), dynamicTable), schema,
+                        written.database()));
+                }
+            }
+            return new ResultSet(parameterColumns(), rows);
+        }
         if (!schema.hasTable(name)) {
-            if (schema.hasView(name) || schema.hasMaterializedView(name) || schema.hasStreamExact(name)
-                    || schema.hasDynamicTable(name)) {
+            if (schema.hasView(name) || schema.hasMaterializedView(name) || schema.hasStreamExact(name)) {
                 return new ResultSet(parameterColumns(), rows);
             }
             // A missing table is named as the statement wrote it, bare or in full (live-verified).
@@ -485,27 +497,48 @@ final class ShowSessionExecutor {
         final Database database = written.database();
         for (final SessionParameterRow parameter : ContainerParameterCatalog.tableRows()) {
             final String key = parameter.getName();
-            if (!matchesLike(key, likePattern)) {
-                continue;
+            if (matchesLike(key, likePattern)) {
+                rows.add(inheritedRow(parameter, tableValue(key, table), schema, database));
             }
-            String value = tableValue(key, table);
-            String level = "TABLE";
-            if (value == null) {
-                value = containerValue(key, schema.getDataRetentionTimeInDays(), schema.getParameters());
-                level = "SCHEMA";
-            }
-            if (value == null) {
-                value = containerValue(key, database.getDataRetentionTimeInDays(), database.getParameters());
-                level = "DATABASE";
-            }
-            if (value == null) {
-                value = parameter.getDefaultValue();
-                level = "";
-            }
-            rows.add(new Row(Arrays.asList(key, value, parameter.getDefaultValue(), level,
-                parameter.getDescription(), parameter.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
+    }
+
+    /**
+     * One parameter's row for a table or a dynamic table: its own value at the TABLE level, else its schema's, else
+     * its database's, else the default.
+     */
+    private static Row inheritedRow(final SessionParameterRow parameter, final String own, final Schema schema,
+                                    final Database database) {
+        final String key = parameter.getName();
+        String value = own;
+        String level = "TABLE";
+        if (value == null) {
+            value = containerValue(key, schema.getDataRetentionTimeInDays(), schema.getParameters());
+            level = "SCHEMA";
+        }
+        if (value == null) {
+            value = containerValue(key, database.getDataRetentionTimeInDays(), database.getParameters());
+            level = "DATABASE";
+        }
+        if (value == null) {
+            value = parameter.getDefaultValue();
+            level = "";
+        }
+        return new Row(Arrays.asList(key, value, parameter.getDefaultValue(), level, parameter.getDescription(),
+            parameter.getType()));
+    }
+
+    /** A dynamic table's own setting of a parameter, or null when it inherits it. */
+    private static String dynamicTableValue(final String key, final DynamicTable dynamicTable) {
+        if ("DATA_RETENTION_TIME_IN_DAYS".equals(key)) {
+            return dynamicTable.isDataRetentionSet() ? String.valueOf(dynamicTable.getDataRetentionDays()) : null;
+        }
+        if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equals(key)) {
+            return dynamicTable.isMaxDataExtensionSet() ? String.valueOf(dynamicTable.getMaxDataExtensionDays())
+                : null;
+        }
+        return dynamicTable.getParameter(key);
     }
 
     /** A table's own setting of a parameter, or null when it inherits it. */

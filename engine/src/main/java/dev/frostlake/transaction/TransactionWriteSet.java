@@ -217,15 +217,18 @@ public class TransactionWriteSet {
     /**
      * Restore exactly the entries the failed statement touched, and the lock map. A statement that ran statements
      * of its own restores nothing: each of those undid itself or stands.
+     *
+     * @param savepoint what {@link #beginStatementSavepoint} returned for the statement
+     * @return whether the statement's own changes were undone
      */
-    public void rollbackToSavepoint(final WriteSetSavepoint savepoint) {
+    public boolean rollbackToSavepoint(final WriteSetSavepoint savepoint) {
         if (!unwindTo(savepoint)) {
-            return;
+            return false;
         }
         noteLastRunBy(savepoint);
         if (savepoint.isSuperseded()) {
             activeSavepoint = enclosing.pollLast();
-            return;
+            return false;
         }
         for (final String table : savepoint.touchedTables()) {
             final List<Row> insertsPre = savepoint.insertsBefore(table);
@@ -251,6 +254,7 @@ public class TransactionWriteSet {
         tableLocks.putAll(savepoint.locksBefore());
         lockNotedRaw.clear();
         activeSavepoint = enclosing.pollLast();
+        return true;
     }
 
     private void snapshotForSavepoint(final String table) {

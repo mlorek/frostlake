@@ -826,7 +826,8 @@ public final class JdbcMarshaling {
                 if (numbered) {
                     requireNoRowCount(tokens, i);
                 }
-                final String literal = formatLiteral(params.get(param));
+                final String literal = !numbered ? formatLiteral(params.get(param))
+                    : aloneInValuesRow(tokens, i) ? formatLiteral(params.get(param)) : usingLiteral(params.get(param));
                 out.append(sql, cursor, t.getStartIndex());
                 out.append(literal);
                 cursor = t.getStopIndex() + 1;
@@ -836,7 +837,8 @@ public final class JdbcMarshaling {
                 final Token digits = tokens.get(i + 1);
                 final Integer number = bindNumber(digits.getText());
                 if (number != null && params.containsKey(number) && !unbound.contains(number)) {
-                    final String literal = formatLiteral(params.get(number));
+                    final String literal = aloneInValuesRow(tokens, i + 1) ? formatLiteral(params.get(number))
+                        : usingLiteral(params.get(number));
                     out.append(sql, cursor, t.getStartIndex());
                     out.append(literal);
                     cursor = digits.getStopIndex() + 1;
@@ -848,6 +850,88 @@ public final class JdbcMarshaling {
         }
         out.append(sql, cursor, sql.length());
         return out.toString();
+    }
+
+    /**
+     * A USING value as the text written in its placeholder's place: a NULL is bound as a text with no value, a
+     * widthless VARCHAR — {@code SYSTEM$TYPEOF(?)} over it is {@code VARCHAR[LOB]} whatever the variable's type
+     * (live-verified) — and every other value as {@link #formatLiteral} writes it.
+     *
+     * @param value the value
+     * @return its text
+     */
+    public static String usingLiteral(final Object value) {
+        return value == null ? "NULL::VARCHAR" : formatLiteral(value);
+    }
+
+    /**
+     * Whether the bind ending at token {@code last} stands alone as an item of a VALUES row, where a NULL carries no
+     * type and fits any column (live-verified: {@code VALUES (?)} bound to a NULL is inserted into a VARIANT column).
+     */
+    private static boolean aloneInValuesRow(final List<Token> tokens, final int last) {
+        int first = last;
+        if (first > 0 && tokens.get(first).getType() == FrostlakeLexer.INTEGER_LITERAL
+                && tokens.get(first - 1).getType() == FrostlakeLexer.COLON) {
+            first--;
+        }
+        final int before = spokenBefore(tokens, first);
+        final int after = spokenAfter(tokens, last);
+        if (before < 0 || after < 0) {
+            return false;
+        }
+        final int previous = tokens.get(before).getType();
+        final int next = tokens.get(after).getType();
+        if (previous != FrostlakeLexer.LPAREN && previous != FrostlakeLexer.COMMA
+                || next != FrostlakeLexer.RPAREN && next != FrostlakeLexer.COMMA) {
+            return false;
+        }
+        // The row's opening bracket, then the rows before it, each a bracketed list after a ',', back to the VALUES.
+        int open = openingBracket(tokens, first);
+        int row = open < 0 ? -1 : spokenBefore(tokens, open);
+        while (row >= 0 && tokens.get(row).getType() == FrostlakeLexer.COMMA) {
+            final int close = spokenBefore(tokens, row);
+            if (close < 0 || tokens.get(close).getType() != FrostlakeLexer.RPAREN) {
+                return false;
+            }
+            open = openingBracket(tokens, close);
+            row = open < 0 ? -1 : spokenBefore(tokens, open);
+        }
+        return row >= 0 && tokens.get(row).getType() == FrostlakeLexer.VALUES;
+    }
+
+    /** The first '(' before the token at {@code index} that no ')' between them closes, or -1. */
+    private static int openingBracket(final List<Token> tokens, final int index) {
+        int depth = 0;
+        for (int i = index - 1; i >= 0; i--) {
+            final int type = tokens.get(i).getType();
+            if (type == FrostlakeLexer.RPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.LPAREN) {
+                if (depth == 0) {
+                    return i;
+                }
+                depth--;
+            }
+        }
+        return -1;
+    }
+
+    private static int spokenBefore(final List<Token> tokens, final int index) {
+        for (int i = index - 1; i >= 0; i--) {
+            if (tokens.get(i).getChannel() == Token.DEFAULT_CHANNEL) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static int spokenAfter(final List<Token> tokens, final int index) {
+        for (int i = index + 1; i < tokens.size(); i++) {
+            if (tokens.get(i).getChannel() == Token.DEFAULT_CHANNEL) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** The number a {@code :n} bind is written with, or null for digits that name none: a leading zero, or too many. */

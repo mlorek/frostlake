@@ -771,23 +771,24 @@ public class ColumnDefinitionParser implements CommandHandler {
         column.setIdentityOrdered(identityOrdered);
         column.setFormatType(formatType);
         if (projectionPolicy != null) {
-            if (catalog.findProjectionPolicy(projectionPolicy) == null) {
+            // The policy of exactly that name, recorded so (live-verified).
+            if (catalog.findProjectionPolicyExact(projectionPolicy) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
-                    catalog.qualifiedObjectName(projectionPolicy)));
+                    catalog.qualifiedExactName(projectionPolicy)));
             }
-            column.setProjectionPolicyName(catalog.qualifiedObjectName(projectionPolicy));
+            column.setProjectionPolicyName(catalog.qualifiedExactName(projectionPolicy));
         }
         if (maskingPolicy != null) {
             // Recorded in full, exactly as the ALTER path records it: DESCRIBE and GET_DDL report an
             // attached policy fully qualified whichever statement attached it (live-verified). The
             // policy has to be there — live refuses this column definition otherwise, in the same
             // sentence the ALTER form uses.
-            if (catalog.findMaskingPolicy(maskingPolicy) == null) {
+            if (catalog.findMaskingPolicyExact(maskingPolicy) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
-                    catalog.qualifiedObjectName(maskingPolicy)));
+                    catalog.qualifiedExactName(maskingPolicy)));
             }
-            MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicy(maskingPolicy), column);
-            column.setMaskingPolicyName(catalog.qualifiedObjectName(maskingPolicy));
+            MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicyExact(maskingPolicy), column);
+            column.setMaskingPolicyName(catalog.qualifiedExactName(maskingPolicy));
             column.setMaskingPolicyArguments(maskingArguments);
         }
 

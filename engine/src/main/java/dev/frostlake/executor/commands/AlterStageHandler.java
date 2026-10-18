@@ -95,7 +95,8 @@ final class AlterStageHandler {
             logger.debug("Stage does not exist (IF EXISTS): {}", stageName);
             return null;
         }
-        final Stage stage = catalog.getStage(stageName);
+        // Named exactly: a quoted name in another case is another stage, which is not there (live-verified).
+        final Stage stage = catalog.getStageExact(stageName);
         if (queryExecutor.getSecurityManager() != null) {
             queryExecutor.getSecurityManager().checkAlter(SecurableObjectType.STAGE, stageName);
         }
@@ -137,7 +138,7 @@ final class AlterStageHandler {
 
     private boolean exists(final String stageName) {
         try {
-            return catalog.getStage(stageName) != null;
+            return catalog.getStageExact(stageName) != null;
         } catch (final RuntimeException missing) {
             return false;
         }
@@ -161,6 +162,15 @@ final class AlterStageHandler {
             if (apply) {
                 stage.setComment(setting.NULL() != null ? null
                     : visitor.extractStringLiteral(setting.STRING_LITERAL()));
+            }
+        } else if (setting.COPY_OPTIONS() != null) {
+            if (setting.stageCopyOptionList() != null) {
+                // The list judged takes the place of the stage's whole set (live-verified).
+                final Map<String, String> options = StageCopyOptions.read(setting.stageCopyOptionList());
+                if (apply) {
+                    stage.getCopyOptions().clear();
+                    stage.getCopyOptions().putAll(options);
+                }
             }
         } else {
             setNamed(stage, setting, apply);

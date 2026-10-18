@@ -70,17 +70,20 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     private final ParsedQueryEcho queries;
     /** Whether a call is named as one no function has been found for yet (see {@link #printUnresolved}). */
     private final boolean unresolved;
+    /** How the calls it spells its own way are printed, or null for none. */
+    private final CallEcho spelled;
 
     ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries) {
-        this(calls, inQuery, queries, false);
+        this(calls, inQuery, queries, false, null);
     }
 
     private ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries,
-                              final boolean unresolved) {
+                              final boolean unresolved, final CallEcho spelled) {
         this.calls = calls;
         this.inQuery = inQuery;
         this.queries = queries;
         this.unresolved = unresolved;
+        this.spelled = spelled;
     }
 
     /**
@@ -90,9 +93,30 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
      * @return its text
      */
     public static String print(final Expression expression) {
+        return print(expression, null);
+    }
+
+    /**
+     * An expression as the tree as parsed prints it, each call {@code spelled} spells printed its way.
+     *
+     * @param expression the expression
+     * @param spelled    how the calls it knows are printed, or null for none
+     * @return its text
+     */
+    public static String print(final Expression expression, final CallEcho spelled) {
         final QueryOrWindowWalk walk = new QueryOrWindowWalk();
         expression.accept(walk);
-        return expression.accept(new ParsedEchoPrinter(walk.found(), false, new ParsedQueryEcho()));
+        return expression.accept(new ParsedEchoPrinter(walk.found(), false, new ParsedQueryEcho(), false, spelled));
+    }
+
+    /**
+     * An expression printed by this printer, as a {@link CallEcho} prints a call's arguments.
+     *
+     * @param expression the expression
+     * @return its text
+     */
+    public String printed(final Expression expression) {
+        return expression.accept(this);
     }
 
     /**
@@ -110,7 +134,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
      * @return its text
      */
     public static String printUnresolved(final Expression expression) {
-        return expression.accept(new ParsedEchoPrinter(true, true, new ParsedQueryEcho(), true));
+        return expression.accept(new ParsedEchoPrinter(true, true, new ParsedQueryEcho(), true, null));
     }
 
     /** A call's name, told as unresolved where the list being printed has not found its functions yet. */
@@ -566,6 +590,10 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
 
     @Override
     public String visitFunctionCall(final FunctionCallExpression expr) {
+        final String own = spelled == null ? null : spelled.spell(expr, this);
+        if (own != null) {
+            return own;
+        }
         final String name = name(expr.getNameParts(), expr.getFunctionName());
         final List<Expression> arguments = expr.getArguments();
         if (expr.getNameParts() == null && expr.getNameExpression() == null && arguments.isEmpty()

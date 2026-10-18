@@ -59,6 +59,8 @@ public class Stream implements Taggable {
     private LocalDateTime createdAt;
     private long currentOffset;
     private boolean stale;
+    /** Whether the stream is a table stream cloned with its schema or database after its table went. */
+    private boolean lostInClone;
     private String comment;
     /**
      * The rows a SHOW_INITIAL_ROWS stream reports until it is first consumed — the source's rows at the
@@ -534,6 +536,20 @@ public class Stream implements Taggable {
 
     public void setStale(final boolean stale) {
         this.stale = stale;
+    }
+
+    /**
+     * Whether the stream is a table stream cloned with its schema or database after its table went: the clone has no
+     * table to read, and says so where it is read, listed and described (live-verified).
+     */
+    public boolean isLostInClone() {
+        return lostInClone;
+    }
+
+    /** Mark the stream lost in the clone that made it: stale, and bound to no table, whatever later takes the name. */
+    public void markLostInClone() {
+        this.lostInClone = true;
+        this.stale = true;
     }
 
     public int getUnconsumedCount() {

@@ -249,6 +249,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final Stage pipeStage;
             try {
                 pipeStage = validatePipeCopyBody(ctx.copyStatement());
+                requirePipeCopyPrivileges(ctx.copyStatement(), pipeStage);
             } finally {
                 catalog.restoreSessionScope(priorScope);
             }
@@ -349,23 +350,12 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
     /** COPY INTO's target must exist when the PIPE is created, live-verified wording. */
     private void requirePipeTargetTableExists(final FrostlakeParser.CopyStatementContext copyCtx) {
-        final FrostlakeParser.QualifiedNameContext target = copyCtx.qualifiedName();
-        if (target == null) {
+        final List<String> parts = pipeTargetParts(copyCtx);
+        if (parts.isEmpty()) {
             return;
         }
-        final List<String> parts = new ArrayList<>();
-        parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(target.nameStartPart())));
-        for (final FrostlakeParser.NamePartContext part : target.namePart()) {
-            parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(part)));
-        }
-        final StringBuilder written = new StringBuilder();
-        for (final String part : parts) {
-            if (written.length() > 0) {
-                written.append('.');
-            }
-            written.append(part);
-        }
-        final Schema container = ddl.resolveSchemaFromQualifiedName(written.toString());
+        final String written = String.join(".", parts);
+        final Schema container = ddl.resolveSchemaFromQualifiedName(written);
         Table targetTable;
         try {
             targetTable = container.getTable(parts.get(parts.size() - 1));
@@ -375,6 +365,41 @@ public class CreateInfrastructureHandler implements CommandHandler {
         if (targetTable == null) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Table '" + written + "' does not exist"));
+        }
+    }
+
+    /** The canonical parts of the table a pipe's COPY loads, as the COPY names it; empty when it names none. */
+    private static List<String> pipeTargetParts(final FrostlakeParser.CopyStatementContext copyCtx) {
+        final List<String> parts = new ArrayList<>();
+        final FrostlakeParser.QualifiedNameContext target = copyCtx.qualifiedName();
+        if (target == null) {
+            return parts;
+        }
+        parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(target.nameStartPart())));
+        for (final FrostlakeParser.NamePartContext part : target.namePart()) {
+            parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(part)));
+        }
+        return parts;
+    }
+
+    /**
+     * What a pipe's COPY asks of the role creating the pipe, as Snowflake's CREATE PIPE page lists it: READ on an
+     * internal stage the COPY reads, USAGE on an external one, and SELECT and INSERT on the table it loads. The pipe
+     * loads with its owner's rights later, so they are asked of the creator now.
+     */
+    private void requirePipeCopyPrivileges(final FrostlakeParser.CopyStatementContext copyCtx, final Stage stage) {
+        if (copyCtx == null || queryExecutor.getSecurityManager() == null) {
+            return;
+        }
+        if (stage != null) {
+            final List<String> stageParts = pipeStageParts(copyCtx);
+            queryExecutor.requirePrivilege(stage.getUrl() != null ? Privilege.USAGE : Privilege.READ, "STAGE",
+                stageParts.toArray(new String[0]), null);
+        }
+        final List<String> target = pipeTargetParts(copyCtx);
+        if (!target.isEmpty()) {
+            queryExecutor.requireOnRelation(Privilege.INSERT, String.join(".", target));
+            queryExecutor.requireOnRelation(Privilege.SELECT, String.join(".", target));
         }
     }
 
@@ -405,11 +430,24 @@ public class CreateInfrastructureHandler implements CommandHandler {
      * @return the named stage, or null when the pipe reads a table's own
      */
     private Stage requirePipeStageExists(final FrostlakeParser.CopyStatementContext copyCtx) {
-        if (copyCtx == null || copyCtx.copyRestOfStatement() == null
-                || copyCtx.copyRestOfStatement().children == null) {
+        final List<String> parts = pipeStageParts(copyCtx);
+        if (parts.isEmpty()) {
             return null;
         }
+        return ddl.resolveSchemaFromQualifiedName(String.join(".", parts)).getStage(parts.get(parts.size() - 1));
+    }
+
+    /**
+     * The canonical parts of the named stage a pipe's COPY reads, read off the body's tokens as
+     * {@link #requirePipeStageExists} describes; empty for a table's stage or a body naming none. A user stage is
+     * refused.
+     */
+    private static List<String> pipeStageParts(final FrostlakeParser.CopyStatementContext copyCtx) {
         final List<String> parts = new ArrayList<>();
+        if (copyCtx == null || copyCtx.copyRestOfStatement() == null
+                || copyCtx.copyRestOfStatement().children == null) {
+            return parts;
+        }
         boolean inStageName = false;
         boolean expectPart = false;
         for (final ParseTree child : copyCtx.copyRestOfStatement().children) {
@@ -430,7 +468,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     + " Stage: '~' cannot be a user stage in the pipe definition.");
             }
             if (type == FrostlakeParser.PERCENT) {
-                return null;
+                return new ArrayList<>();
             }
             if (expectPart && (type == FrostlakeParser.IDENTIFIER
                     || type == FrostlakeParser.QUOTED_IDENTIFIER
@@ -445,17 +483,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             break;
         }
-        if (parts.isEmpty()) {
-            return null;
-        }
-        final StringBuilder joined = new StringBuilder();
-        for (final String part : parts) {
-            if (joined.length() > 0) {
-                joined.append('.');
-            }
-            joined.append(part);
-        }
-        return ddl.resolveSchemaFromQualifiedName(joined.toString()).getStage(parts.get(parts.size() - 1));
+        return parts;
     }
 
     public Object handleCreateSequence(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
@@ -917,7 +945,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         }
                     } else if (option.COMMENT() != null) {
                         comment = ddl.extractStringLiteral(option.STRING_LITERAL());
+                    } else if (option.COPY_OPTIONS() != null) {
+                        if (option.stageCopyOptionList() != null) {
+                            copyOptions.putAll(StageCopyOptions.read(option.stageCopyOptionList()));
+                        }
                     } else if (option.identifier() != null) {
+                        if (option.identifier().getText().startsWith("\"")) {
+                            // A quoted word is no property's name, whatever it spells (live-verified).
+                            throw ParameterRegistry.invalidProperty(option.identifier().getText(), "STAGE");
+                        }
                         final String key = ParseTreeText.getIdentifier(option.identifier()).toUpperCase(Locale.ROOT);
                         if ("URL".equals(key) && option.copyOptionValue() != null
                                 && option.copyOptionValue().STRING_LITERAL() != null) {
@@ -1155,15 +1191,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
     public Object handleAlterFileFormat(final FrostlakeParser.AlterStatementContext ctx) {
         final String name = getText(ctx.qualifiedName());
-        final FileFormat fileFormat = catalog.getFileFormat(name);
+        // Named exactly: a quoted name in another case is another file format, which is not there, refused by its
+        // full path (live-verified).
+        final FileFormat fileFormat = catalog.getFileFormatExact(name);
         if (fileFormat == null) {
             if (ctx.if_exists() != null) {
                 return null;
             }
             throw new RuntimeException(SqlCompilationError.doesNotExist("File format",
-                catalog.getCurrentDatabase().toUpperCase(Locale.ROOT) + "."
-                    + ddl.resolveSchemaFromQualifiedName(name).getName().toUpperCase(Locale.ROOT) + "."
-                    + ddl.extractObjectName(name).toUpperCase(Locale.ROOT)));
+                catalog.qualifiedExactName(name)));
         }
         final FrostlakeParser.FileFormatActionContext action = ctx.fileFormatAction();
         if (action.RENAME() == null) {

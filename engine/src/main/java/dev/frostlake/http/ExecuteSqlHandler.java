@@ -23,6 +23,7 @@ import dev.frostlake.ExecutionResult;
 import dev.frostlake.executor.DynamicStatementCount;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ReadOnlyRequest;
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.executor.StatementCount;
 import dev.frostlake.values.VariantJsonFormat;
 
@@ -36,8 +37,8 @@ import java.io.IOException;
  * {@code POST /api/execute} — runs SQL in a session.
  *
  * <p>Body: {@code { "sql": "SELECT * FROM users", "sessionId": "optional-session-id",
- * "requireSession": true, "autoCommit": true }}. The wire contract — statuses, fields, the session
- * rules — is in {@code docs/http-api.md}.
+ * "requireSession": true, "autoCommit": true, "queryTimeout": 30 }}. The wire contract — statuses, fields, the
+ * session rules — is in {@code docs/http-api.md}.
  */
 final class ExecuteSqlHandler implements HttpHandler {
 
@@ -108,10 +109,15 @@ final class ExecuteSqlHandler implements HttpHandler {
             final long startTime = System.currentTimeMillis();
             SqlResponse response;
             // The count the request asked for gates the text of an EXECUTE IMMEDIATE among its statements too.
-            final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount(request, session));
+            final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount(request, session),
+                StatementCount.countStatements(request.getSql()));
             if (readOnly) {
                 ReadOnlyRequest.enter();
             }
+            // The statement runs under a token a cancel reaches through the session, and the query timeout bounds.
+            final StatementCancellation token = new StatementCancellation(queryTimeoutOf(request));
+            session.setRunning(token);
+            StatementCancellation.offer(token);
             try {
                 final ExecutionResult result = engine.execute(request.getSql(), session, request.getAutoCommit());
                 // The rows are rendered after the statement's own scope has closed, so the session's
@@ -134,6 +140,8 @@ final class ExecuteSqlHandler implements HttpHandler {
                     statementFailure.getMessage());
                 response = SqlResponse.error(session.getSessionId(), messageOf(statementFailure));
             } finally {
+                StatementCancellation.offer(null);
+                session.setRunning(null);
                 if (readOnly) {
                     ReadOnlyRequest.exit();
                 }
@@ -193,6 +201,12 @@ final class ExecuteSqlHandler implements HttpHandler {
         }
         return "Actual statement count " + actual + " did not match the desired statement count "
             + desired + ".";
+    }
+
+    /** The query timeout a request sets in seconds, 0 for none: a negative one sets none either. */
+    private static int queryTimeoutOf(final SqlRequest request) {
+        final Integer seconds = request.getQueryTimeout();
+        return seconds == null || seconds.intValue() < 0 ? 0 : seconds.intValue();
     }
 
     /** The statement count a request asks for: its own, else its session's MULTI_STATEMENT_COUNT. */

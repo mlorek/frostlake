@@ -60,7 +60,8 @@ import org.graalvm.polyglot.Value;
  * <p>A polyglot {@link Context} is NOT thread-safe and costs over a second to build, so one is kept per
  * thread — matching the per-thread interpreter the Jython path used, and for the same reason: building
  * one per row made Python UDFs orders of magnitude slower than a built-in. {@link Source} objects are
- * cached per thread as well so an unchanged body is parsed once per thread rather than per row.
+ * cached per thread as well so an unchanged body is parsed once per thread rather than per row. Each routine's
+ * call runs in a module namespace of its own on that interpreter (see {@link #enterModule()}).
  */
 public final class PythonRuntime {
 
@@ -117,54 +118,113 @@ public final class PythonRuntime {
      */
     private static final List<Context> ALL_CONTEXTS = new CopyOnWriteArrayList<>();
 
-    private static final ThreadLocal<Context> CONTEXT = new ThreadLocal<Context>() {
+    /** This thread's interpreter, built on first use (see {@link #context()}). */
+    private static final ThreadLocal<Context> CONTEXT = new ThreadLocal<>();
+
+    /** The runtime's own module on this thread's interpreter (see {@link #RUNTIME_SOURCE}). */
+    private static final ThreadLocal<Value> RUNTIME = new ThreadLocal<>();
+
+    /** The helper modules made on this thread's interpreter, by name (see {@link #module}). */
+    private static final ThreadLocal<Map<String, Value>> MODULES = new ThreadLocal<Map<String, Value>>() {
         @Override
-        protected Context initialValue() {
-            final Context.Builder builder = Context.newBuilder("python")
-                // Handlers receive engine objects (a session facade, semi-structured values) and may
-                // import from the bundled standard library, so host access and IO stay open — this is
-                // an embedded test engine, executing SQL the caller already controls.
-                .allowAllAccess(true)
-                .engine(SHARED_ENGINE)
-                // No async-action thread per context. GraalPy otherwise starts a helper thread that must
-                // ENTER the context to run finalizers/weakref callbacks; while a caller is blocked inside
-                // the same context on a Python-level lock, that helper cannot get in and the lock is never
-                // released — a hang that also strands every thread queued behind the engine's own lock
-                // (observed with abandoned harness threads: a worker parked in PLock.acquireBlocking for
-                // 14 minutes on 0.5s of CPU). Actions run inline at safepoints instead.
-                .option("python.NoAsyncActions", "true")
-                // Do not install process-wide signal handlers from an embedded library.
-                .option("python.InstallSignalHandlers", "false")
-                // The venv's native modules (numpy/pandas .so) otherwise log one "Python C API is
-                // considered experimental" warning per module load; the limitation is known and
-                // accepted, so drop the noise.
-                .option("python.WarnExperimentalFeatures", "false")
-                // Hand Python the host's zone explicitly: without TZ, GraalPy's tzset falls back to GMT
-                // and (see HOST_TIME_ZONE) mutates the JVM default when pandas imports.
-                .environment("TZ", HOST_TIME_ZONE.getID());
-            final String venv = venvDirectory;
-            if (venv != null) {
-                // Pointing the interpreter's executable into the venv is how GraalPy activates one when
-                // embedded: site.py finds pyvenv.cfg next to the executable and adds the venv's
-                // site-packages to sys.path. ForceImportSite makes that site initialization run even
-                // though the context is embedded rather than launched.
-                builder.option("python.Executable", venv + "/bin/python");
-                builder.option("python.ForceImportSite", "true");
-                // Native extension modules (numpy/pandas .so) otherwise bind to the FIRST context in
-                // the process; contexts are per-thread AND recreated after a failure (discardContext),
-                // so the second context to import numpy died with "a second GraalPy context attempted
-                // to load a native module". IsolateNativeModules loads a private copy per context.
-                builder.option("python.IsolateNativeModules", "true");
-                // Isolated loading relocates each copy with the patchelf BINARY, resolved via PATH.
-                // The venv carries one (pip install patchelf), so put its bin directory in front.
-                final String hostPath = System.getenv("PATH");
-                builder.environment("PATH", venv + "/bin" + (hostPath == null ? "" : ":" + hostPath));
-            }
-            final Context context = builder.build();
-            ALL_CONTEXTS.add(context);
-            return context;
+        protected Map<String, Value> initialValue() {
+            return new LinkedHashMap<>();
         }
     };
+
+    /**
+     * The runtime's own module, made on each interpreter as it is built: {@code enter} empties the interpreter's
+     * module namespace for a routine about to run and answers what it held, {@code leave} puts that back, and
+     * {@code module} makes a helper module of the runtime's from its source. A namespace keeps only the names the
+     * interpreter itself defines in it, the dunder ones.
+     */
+    private static final String RUNTIME_SOURCE = """
+        import types as _types
+        _namespace = None
+        _base = None
+        def bind(namespace):
+            global _namespace, _base
+            _namespace = namespace
+            _base = dict((k, v) for k, v in namespace.items() if k.startswith('__') and k.endswith('__'))
+        def enter():
+            saved = dict(_namespace)
+            _namespace.clear()
+            _namespace.update(_base)
+            return saved
+        def leave(saved):
+            _namespace.clear()
+            _namespace.update(saved)
+        def module(name, source):
+            made = _types.ModuleType(name)
+            exec(compile(source, '<' + name + '>', 'exec'), made.__dict__)
+            return made
+        """;
+
+    /** Makes {@link #RUNTIME_SOURCE} a module bound to the namespace it runs in, leaving no name of its own there. */
+    private static final String INSTALL_RUNTIME = """
+        import types as __fl_types
+        __fl_runtime = __fl_types.ModuleType('__frostlake_runtime')
+        exec(compile(__fl_runtime_source, '<frostlake>', 'exec'), __fl_runtime.__dict__)
+        del __fl_types, __fl_runtime_source
+        __fl_runtime.bind(globals())
+        """;
+
+    /** A new interpreter, with the runtime's own module made on it. */
+    private static Context newContext() {
+        final Context.Builder builder = Context.newBuilder("python")
+            // Handlers receive engine objects (a session facade, semi-structured values) and may
+            // import from the bundled standard library, so host access and IO stay open — this is
+            // an embedded test engine, executing SQL the caller already controls.
+            .allowAllAccess(true)
+            .engine(SHARED_ENGINE)
+            // No async-action thread per context. GraalPy otherwise starts a helper thread that must
+            // ENTER the context to run finalizers/weakref callbacks; while a caller is blocked inside
+            // the same context on a Python-level lock, that helper cannot get in and the lock is never
+            // released — a hang that also strands every thread queued behind the engine's own lock
+            // (observed with abandoned harness threads: a worker parked in PLock.acquireBlocking for
+            // 14 minutes on 0.5s of CPU). Actions run inline at safepoints instead.
+            .option("python.NoAsyncActions", "true")
+            // Do not install process-wide signal handlers from an embedded library.
+            .option("python.InstallSignalHandlers", "false")
+            // The venv's native modules (numpy/pandas .so) otherwise log one "Python C API is
+            // considered experimental" warning per module load; the limitation is known and
+            // accepted, so drop the noise.
+            .option("python.WarnExperimentalFeatures", "false")
+            // Hand Python the host's zone explicitly: without TZ, GraalPy's tzset falls back to GMT
+            // and (see HOST_TIME_ZONE) mutates the JVM default when pandas imports.
+            .environment("TZ", HOST_TIME_ZONE.getID());
+        final String venv = venvDirectory;
+        if (venv != null) {
+            // Pointing the interpreter's executable into the venv is how GraalPy activates one when
+            // embedded: site.py finds pyvenv.cfg next to the executable and adds the venv's
+            // site-packages to sys.path. ForceImportSite makes that site initialization run even
+            // though the context is embedded rather than launched.
+            builder.option("python.Executable", venv + "/bin/python");
+            builder.option("python.ForceImportSite", "true");
+            // Native extension modules (numpy/pandas .so) otherwise bind to the FIRST context in
+            // the process; contexts are per-thread AND recreated after a failure (discardContext),
+            // so the second context to import numpy died with "a second GraalPy context attempted
+            // to load a native module". IsolateNativeModules loads a private copy per context.
+            builder.option("python.IsolateNativeModules", "true");
+            // Isolated loading relocates each copy with the patchelf BINARY, resolved via PATH.
+            // The venv carries one (pip install patchelf), so put its bin directory in front.
+            final String hostPath = System.getenv("PATH");
+            builder.environment("PATH", venv + "/bin" + (hostPath == null ? "" : ":" + hostPath));
+        }
+        final Context context = builder.build();
+        ALL_CONTEXTS.add(context);
+        return context;
+    }
+
+    /** Makes the runtime's own module on a new interpreter, answering it. */
+    private static Value installRuntime(final Context context) {
+        final Value bindings = context.getBindings("python");
+        bindings.putMember("__fl_runtime_source", RUNTIME_SOURCE);
+        context.eval(Source.create("python", INSTALL_RUNTIME));
+        final Value runtime = bindings.getMember("__fl_runtime");
+        bindings.removeMember("__fl_runtime");
+        return runtime;
+    }
 
     private static final ThreadLocal<Map<String, Source>> SOURCES = new ThreadLocal<Map<String, Source>>() {
         @Override
@@ -208,7 +268,69 @@ public final class PythonRuntime {
 
     /** This thread's Python context, created on first use. */
     public static Context context() {
-        return CONTEXT.get();
+        Context context = CONTEXT.get();
+        if (context == null) {
+            context = newContext();
+            RUNTIME.set(installRuntime(context));
+            CONTEXT.set(context);
+        }
+        return context;
+    }
+
+    /**
+     * Enter a module namespace of its own for one routine's call (live-verified): the routine sees only the names its
+     * own body defines, none another routine's body left, whichever engine ran it, and a routine called while another
+     * runs - a function a procedure's query calls - leaves its caller's names as they were. Nothing a call defines
+     * outlives it.
+     *
+     * @return the frame, to be left with {@link #leaveModule(PythonModuleFrame)} once the call is through
+     */
+    static PythonModuleFrame enterModule() {
+        final Context context = context();
+        return new PythonModuleFrame(context, RUNTIME.get().invokeMember("enter"));
+    }
+
+    /**
+     * Leave a frame {@link #enterModule()} entered, its namespace holding again what it held before. A frame whose
+     * interpreter was thrown away meanwhile has nothing to put back, and an interpreter that cannot put it back is
+     * thrown away.
+     *
+     * @param frame the frame, or null when none was entered
+     */
+    static void leaveModule(final PythonModuleFrame frame) {
+        if (frame == null || frame.getContext() != CONTEXT.get()) {
+            return;
+        }
+        try {
+            RUNTIME.get().invokeMember("leave", frame.getSaved());
+        } catch (final RuntimeException unrestorable) {
+            discardContext();
+        }
+    }
+
+    /**
+     * A helper module of the runtime's on this thread's interpreter, made from its source on first use: what it
+     * defines lives in no routine's namespace, so no routine sees it or disturbs it.
+     *
+     * @param name   the module's name
+     * @param source the module's source
+     * @return the module
+     */
+    static Value module(final String name, final String source) {
+        context();
+        final Map<String, Value> modules = MODULES.get();
+        Value module = modules.get(name);
+        if (module == null) {
+            module = RUNTIME.get().invokeMember("module", name, source);
+            modules.put(name, module);
+        }
+        return module;
+    }
+
+    /** Bind a second name to what a global holds. */
+    static void alias(final String alias, final String name) {
+        final Value bindings = context().getBindings("python");
+        bindings.putMember(alias, bindings.getMember(name));
     }
 
     /**
@@ -223,6 +345,8 @@ public final class PythonRuntime {
     public static void discardContext() {
         final Context poisoned = CONTEXT.get();
         CONTEXT.remove();
+        RUNTIME.remove();
+        MODULES.remove();
         SOURCES.remove();
         if (poisoned == null) {
             return;
@@ -285,12 +409,12 @@ public final class PythonRuntime {
             eval(name + " = None\n");
             return;
         }
-        CONTEXT.get().getBindings("python").putMember(name, value);
+        context().getBindings("python").putMember(name, value);
     }
 
     /** Read a global left behind by the executed source, or null when it is unset. */
     public static Value global(final String name) {
-        final Value bindings = CONTEXT.get().getBindings("python");
+        final Value bindings = context().getBindings("python");
         return bindings.hasMember(name) ? bindings.getMember(name) : null;
     }
 
@@ -309,7 +433,7 @@ public final class PythonRuntime {
             source = Source.newBuilder("python", code, "<udf>").buildLiteral();
             cache.put(code, source);
         }
-        final Context context = CONTEXT.get();
+        final Context context = context();
         final ScheduledFuture<?> alarm = WATCHDOG.schedule(new Runnable() {
             @Override
             public void run() {

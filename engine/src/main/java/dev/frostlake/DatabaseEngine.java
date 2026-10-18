@@ -33,8 +33,10 @@ import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.executor.udf.UserAggregates;
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.metastore.BuiltInObjects;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.CounterDraw;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.StatementAnswers;
 import dev.frostlake.metastore.StatementDraws;
 import dev.frostlake.metastore.TemporaryObjects;
@@ -42,6 +44,7 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.persistence.CatalogSnapshot;
+import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
 import dev.frostlake.persistence.WalRecord;
@@ -115,6 +118,8 @@ public class DatabaseEngine {
     /** How many transaction records this engine appended to the WAL: what places a logged statement on replay. */
     private final AtomicLong walAppends = new AtomicLong();
     private long checkpointSeq = 0;       // monotonic sequence for naming checkpoint snapshot directories
+    /** When this engine started: the instant its built-in objects are created at (see BuiltInObjects). */
+    private final Instant started;
 
     public DatabaseEngine() {
         this(new EngineConfig());
@@ -123,6 +128,7 @@ public class DatabaseEngine {
     public DatabaseEngine(final EngineConfig config) {
         logger.info("Initializing Frostlake SQL Engine");
 
+        this.started = StatementClock.instant();
         this.config = config;
         // Hand every discovered language runtime this engine's configuration (e.g. python.venv).
         // Runtime state is JVM-wide by nature (polyglot contexts are per-thread, not per-engine), so
@@ -234,6 +240,8 @@ public class DatabaseEngine {
         functionRegistry.setUserAggregates(new UserAggregates(catalog, queryExecutor));
 
         initializeSystemObjects();
+        // The objects the engine makes for itself are all created at its start.
+        BuiltInObjects.stamp(catalog, started);
         queryExecutor.prepareStageRoot();
         initializePersistence();
 
@@ -275,7 +283,7 @@ public class DatabaseEngine {
             return null;
         }
         try {
-            return new WriteAheadLog(Path.of(config.getWalFile()));
+            return new WriteAheadLog(Path.of(config.getWalFile()), started);
         } catch (final Exception e) {
             logger.error("Failed to open write-ahead log at {}", config.getWalFile(), e);
             return null;
@@ -310,6 +318,17 @@ public class DatabaseEngine {
                 wal.appendTransaction(statements, instants, placed);
                 walAppends.incrementAndGet();
             }
+            // A statement the log holds is one a restart's replay runs again, which a later statement's point may be
+            // mapped through (see QueryExecutor.statementSequence).
+            if (contexts != null) {
+                for (final WalStatementContext context : contexts) {
+                    final QueryHistory logged = context == null || context.getQueryId() == null ? null
+                        : queryExecutor.getQueryHistoryTracker().getQueryById(context.getQueryId());
+                    if (logged != null) {
+                        logged.markLogged(context.getQueryId());
+                    }
+                }
+            }
             txnsSinceCheckpoint++;
         } catch (final Exception e) {
             throw new RuntimeException("WAL append failed: " + e.getMessage(), e);
@@ -331,6 +350,17 @@ public class DatabaseEngine {
         final String[] scopeBefore = catalog.currentSessionScope();
         try {
             final List<WalRecord> records = wal.readAll();
+            int lastCheckpoint = -1;
+            for (int i = 0; i < records.size(); i++) {
+                if (records.get(i).getType() == WalRecordType.CHECKPOINT) {
+                    lastCheckpoint = i;
+                }
+            }
+            if (lastCheckpoint < 0) {
+                // No checkpoint keeps the built-in objects' creation: they were created when the engine that began
+                // the log first started, which the log keeps.
+                BuiltInObjects.stamp(catalog, wal.firstStart());
+            }
             if (records.isEmpty()) {
                 return;
             }
@@ -338,13 +368,6 @@ public class DatabaseEngine {
             // The logged statements were authorized when they first ran; replaying them re-applies what was
             // committed, under whatever role and session happen to be current now.
             sessionContext.setSecurityEnabled(false);
-
-            int lastCheckpoint = -1;
-            for (int i = 0; i < records.size(); i++) {
-                if (records.get(i).getType() == WalRecordType.CHECKPOINT) {
-                    lastCheckpoint = i;
-                }
-            }
 
             String fromCheckpoint = null;
             int start = 0;
@@ -601,8 +624,13 @@ public class DatabaseEngine {
             queryExecutor.getResultCache().alias(context.getQueryId(), replayedId);
             // A later statement, replayed or run after the restart, naming the first run's query ID as a time-travel
             // point names this replay of it, placed by the order the snapshots were taken in.
-            queryExecutor.getQueryHistoryTracker().anchor(context.getQueryId(),
-                queryExecutor.getQueryHistoryTracker().getQueryById(replayedId));
+            final QueryHistory replayed = queryExecutor.getQueryHistoryTracker().getQueryById(replayedId);
+            queryExecutor.getQueryHistoryTracker().anchor(context.getQueryId(), replayed);
+            // The log still holds the statement under its first ID, which a point read after the restart maps
+            // through on the next one.
+            if (replayed != null) {
+                replayed.markLogged(context.getQueryId());
+            }
         }
     }
 
@@ -728,7 +756,7 @@ public class DatabaseEngine {
         if (!Boolean.TRUE.equals(runCheckpointDue.get())) {
             return;
         }
-        if (wal != null && !replaying && transactionManager.isExplicitTransaction()) {
+        if (wal != null && !replaying && transactionManager.isLastingTransaction()) {
             return;
         }
         runCheckpointDue.remove();
@@ -863,16 +891,16 @@ public class DatabaseEngine {
     /**
      * Write a WAL checkpoint: snapshot the full state durably, append a checkpoint marker (the atomic pivot —
      * recovery keys off the LAST marker, so a crash before it leaves an ignored orphan snapshot), then
-     * truncate the log to the marker and drop superseded snapshots. No-op while an explicit transaction is
-     * open (its statements aren't committed yet). Safe to call explicitly; also driven by
-     * {@code durability.checkpointInterval}.
+     * truncate the log to the marker and drop superseded snapshots. No-op while a transaction is open, an
+     * explicit one or the implicit one AUTOCOMMIT off keeps (its statements aren't committed yet). Safe to call
+     * explicitly; also driven by {@code durability.checkpointInterval}.
      */
     public synchronized void checkpoint() {
         if (wal == null) {
             return;
         }
-        if (transactionManager.isExplicitTransaction()) {
-            logger.warn("Skipping WAL checkpoint while an explicit transaction is open");
+        if (transactionManager.isLastingTransaction()) {
+            logger.warn("Skipping WAL checkpoint while a transaction is open");
             return;
         }
         try {
@@ -897,7 +925,7 @@ public class DatabaseEngine {
             return;
         }
         final int interval = config.getWalCheckpointInterval();
-        if (interval > 0 && txnsSinceCheckpoint >= interval && !transactionManager.isExplicitTransaction()) {
+        if (interval > 0 && txnsSinceCheckpoint >= interval && !transactionManager.isLastingTransaction()) {
             checkpoint();
         }
     }
@@ -998,17 +1026,23 @@ public class DatabaseEngine {
     private void applyConfiguredDefaults() {
         final String defaultDatabase = config.getDefaultDatabase().toUpperCase(Locale.ROOT);
         final String defaultSchema = config.getDefaultSchema().toUpperCase(Locale.ROOT);
+        // Created at the engine's first start, as the built-in objects are: a restart that makes them again from no
+        // checkpoint reports the creation they had.
+        final Instant firstStart = wal != null ? wal.firstStart() : started;
         try {
             catalog.getDatabase(defaultDatabase);
         } catch (final RuntimeException e) {
             catalog.createDatabase(defaultDatabase);
+            BuiltInObjects.stamp(catalog.getDatabase(defaultDatabase), firstStart);
         }
         catalog.useDatabase(defaultDatabase);
         final Database database = catalog.getDatabase(defaultDatabase);
         try {
             database.getSchema(defaultSchema);
         } catch (final RuntimeException e) {
-            database.addSchema(new Schema(defaultSchema));
+            final Schema schema = new Schema(defaultSchema);
+            schema.restoreCreatedTime(firstStart);
+            database.addSchema(schema);
         }
         catalog.useSchema(defaultSchema);
     }
@@ -1057,8 +1091,8 @@ public class DatabaseEngine {
         // transaction open. In deferred-apply mode, snapshot the write set so we can restore exactly this
         // statement's changes on failure (statement-level rollback); otherwise fall back to full rollback.
         final WriteSetSavepoint stmtSavepoint =
-            (config.isDeferredApply() && transactionManager.isExplicitTransaction())
-                ? transactionManager.getCurrentTransaction().getWriteSet().beginStatementSavepoint() : null;
+            (config.isDeferredApply() && transactionManager.isLastingTransaction())
+                ? transactionManager.getCurrentTransaction().beginStatementSavepoint() : null;
 
         // A request of several statements commits, logs and rolls back statement by statement, as the
         // account does; the flag records that its boundaries were reported, so the request as a whole is
@@ -1066,21 +1100,25 @@ public class DatabaseEngine {
         final boolean[] statementByStatement = {false};
         final WriteSetSavepoint[] statementSavepoint = {null};
         statementDepth.set(Integer.valueOf(statementDepth.get().intValue() + 1));
+        if (statementDepth.get().intValue() == 1) {
+            // A debt an earlier statement on this thread left unsettled is not this one's.
+            CheckpointDebt.settle();
+        }
         final StatementBoundaries displacedBoundaries = queryExecutor.bindStatementBoundaries(new StatementBoundaries() {
             @Override
             public void begin() {
                 statementByStatement[0] = true;
                 queryExecutor.takeRanInOwnSession();
                 beginWalStatement();
-                statementSavepoint[0] = config.isDeferredApply() && transactionManager.isExplicitTransaction()
-                    ? transactionManager.getCurrentTransaction().getWriteSet().beginStatementSavepoint() : null;
+                statementSavepoint[0] = config.isDeferredApply() && transactionManager.isLastingTransaction()
+                    ? transactionManager.getCurrentTransaction().beginStatementSavepoint() : null;
             }
 
             @Override
             public void complete(final String statementText) {
                 recordStatementForWal(statementText);
                 transactionManager.autocommitStatementEnd();
-                if (statementSavepoint[0] != null && transactionManager.isExplicitTransaction()) {
+                if (statementSavepoint[0] != null && transactionManager.isLastingTransaction()) {
                     transactionManager.getCurrentTransaction().getWriteSet()
                         .endStatementSavepoint(statementSavepoint[0]);
                 }
@@ -1119,7 +1157,7 @@ public class DatabaseEngine {
             // Get the query ID from the result cache
             final String queryId = queryExecutor.getResultCache().getLastQueryId();
 
-            if (stmtSavepoint != null && transactionManager.isExplicitTransaction()) {
+            if (stmtSavepoint != null && transactionManager.isLastingTransaction()) {
                 transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint(stmtSavepoint);
             }
 
@@ -1148,6 +1186,7 @@ public class DatabaseEngine {
             } else {
                 releaseRequestSavepoint(stmtSavepoint);
             }
+            oweCheckpointForFailedStatements(sql);
             // Re-throw exception so tests can catch it
             throw e;
         } catch (final StackOverflowError overflow) {
@@ -1160,14 +1199,41 @@ public class DatabaseEngine {
             } else {
                 releaseRequestSavepoint(stmtSavepoint);
             }
+            oweCheckpointForFailedStatements(sql);
             throw failure;
         } finally {
             queryExecutor.restoreStatementBoundaries(displacedBoundaries);
             statementDepth.set(Integer.valueOf(statementDepth.get().intValue() - 1));
             if (statementDepth.get().intValue() == 0) {
                 endWalStatement();
+                oweCheckpointForUnreplayableReads(sql);
                 checkpointAfterRun();
             }
+        }
+    }
+
+    /**
+     * An outermost CALL, block or EXECUTE IMMEDIATE that failed may leave work its statements committed, or kept in
+     * the session's transaction, which no log record carries: the statement is logged only when it succeeds, and the
+     * statements it ran never are. Such a failure owes a checkpoint, as a task's run does (see {@link
+     * #checkpointAfterRun}), which keeps that work, the sequence values it drew included, across a restart.
+     */
+    private void oweCheckpointForFailedStatements(final String sql) {
+        if (wal == null || replaying || statementDepth.get().intValue() != 1
+                || !queryExecutor.runsStatementsOfItsOwn(sql)) {
+            return;
+        }
+        runCheckpointDue.set(Boolean.TRUE);
+    }
+
+    /**
+     * A logged statement that read what its record cannot read again — a stage's files, a handler function's answers
+     * (see {@link CheckpointDebt}) — owes a checkpoint, as a task's run does: a restart then starts after it and does
+     * not run it a second time over files a purge or an overwrite changed, or a handler that answers otherwise.
+     */
+    private void oweCheckpointForUnreplayableReads(final String sql) {
+        if (CheckpointDebt.settle() && wal != null && !replaying && isLoggableStatement(sql)) {
+            runCheckpointDue.set(Boolean.TRUE);
         }
     }
 
@@ -1176,8 +1242,8 @@ public class DatabaseEngine {
      * failed rolled itself back, and the ones before it stand.
      */
     private void releaseRequestSavepoint(final WriteSetSavepoint stmtSavepoint) {
-        if (stmtSavepoint != null && stmtSavepoint.isSuperseded() && transactionManager.isExplicitTransaction()) {
-            transactionManager.getCurrentTransaction().getWriteSet().rollbackToSavepoint(stmtSavepoint);
+        if (stmtSavepoint != null && stmtSavepoint.isSuperseded() && transactionManager.isLastingTransaction()) {
+            transactionManager.getCurrentTransaction().rollbackToSavepoint(stmtSavepoint);
         }
     }
 
@@ -1188,8 +1254,8 @@ public class DatabaseEngine {
      * whole transaction, which for an autocommit statement is exactly that one statement.
      */
     private void rollbackFailedStatement(final WriteSetSavepoint stmtSavepoint, final Exception cause) {
-        if (stmtSavepoint != null && transactionManager.isExplicitTransaction()) {
-            transactionManager.getCurrentTransaction().getWriteSet().rollbackToSavepoint(stmtSavepoint);
+        if (stmtSavepoint != null && transactionManager.isLastingTransaction()) {
+            transactionManager.getCurrentTransaction().rollbackToSavepoint(stmtSavepoint);
         } else if (transactionManager.hasActiveTransaction()) {
             try {
                 // A statement refused while it compiled never ran, so it ran in no transaction: LAST_TRANSACTION

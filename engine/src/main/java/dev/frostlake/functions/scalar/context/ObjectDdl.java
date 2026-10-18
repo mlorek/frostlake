@@ -23,6 +23,7 @@ import dev.frostlake.executor.SessionParameterRow;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AppObject;
@@ -67,6 +68,15 @@ final class ObjectDdl {
     private static final String[] TASK_PARAMETERS = {
         "USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE", "SUSPEND_TASK_AFTER_NUM_FAILURES", "USER_TASK_TIMEOUT_MS",
         "TASK_AUTO_RETRY_ATTEMPTS"};
+
+    /** The MFA, PAT and workload identity settings an authentication policy's DDL spells, at their defaults. */
+    private static final String AUTHENTICATION_POLICY_SETTINGS = """
+        MFA_POLICY=(ENFORCE_MFA_ON_EXTERNAL_AUTHENTICATION='NONE',ALLOWED_METHODS=('ALL')) \
+        PAT_POLICY=(DEFAULT_EXPIRY_IN_DAYS=15,REQUIRE_ROLE_RESTRICTION_FOR_PERSON_USERS=false,\
+        NETWORK_POLICY_EVALUATION=ENFORCED_REQUIRED,REQUIRE_ROLE_RESTRICTION_FOR_SERVICE_USERS=true,\
+        MAX_EXPIRY_IN_DAYS=365,BLOCKED_ROLES_LIST=()) \
+        WORKLOAD_IDENTITY_POLICY=(ALLOWED_AWS_PARTITIONS=('ALL'),ALLOWED_OIDC_ISSUERS=('ALL'),\
+        ALLOWED_PROVIDERS=('ALL'),ALLOWED_AZURE_ISSUERS=('ALL'),ALLOWED_AWS_ACCOUNTS=('ALL'))""";
 
     private ObjectDdl() {
     }
@@ -244,12 +254,14 @@ final class ObjectDdl {
 
     /**
      * As {@link #stream(Stream, String)}, for a table stream whose table is gone: its source is the table's full
-     * name quoted as one identifier, {@code on table "DB.S.RAW"} (live-verified).
+     * name quoted as one identifier, {@code on table "DB.S.RAW"}, and a stream lost in a clone's is
+     * {@code on table CLONED_FROM_STREAM_WITH_DROPPED_SOURCE} (live-verified).
      *
      * @param goneSource the full name of the stream's table when it is gone, or null
      */
     static String stream(final Stream stream, final String name, final String goneSource) {
-        final String source = goneSource != null ? "\"" + goneSource + "\""
+        final String source = stream.isLostInClone() ? StreamSources.LOST_SOURCE
+            : goneSource != null ? "\"" + goneSource + "\""
             : stream.getSourceTableName() == null ? ""
             : SqlIdentifiers.spellCanonicalEscaped(QualifiedName.parse(stream.getSourceTableName()).last());
         final String kind = stream.getSourceType() == null ? "TABLE" : stream.getSourceType().name();
@@ -508,7 +520,8 @@ final class ObjectDdl {
     /**
      * {@code create or replace session policy P SESSION_IDLE_TIMEOUT_MINS=240 … ALLOWED_SECONDARY_ROLES=('ALL')
      * BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL ;} — every property but the comment, each
-     * followed by a space, its default where the policy set none and a role list in parentheses (live-verified).
+     * followed by a space, its default where the policy set none, a role list in parentheses and the agent scope
+     * quoted (live-verified).
      */
     static String sessionPolicy(final SecurityObject policy, final String name) {
         final StringBuilder sb = new StringBuilder("create or replace session policy ").append(name).append(' ');
@@ -524,13 +537,52 @@ final class ObjectDdl {
                     sb.append(i > 0 ? ", " : "").append(quoted(roles.get(i)));
                 }
                 sb.append(')');
+            } else if (spec.getType() == SecurityPropertyType.SESSION_SCOPE) {
+                final Object value = policy.getProperty(spec.getName());
+                sb.append(value == null ? "NULL" : quoted(value.toString()));
             } else {
                 final Object value = policy.getProperty(spec.getName());
                 sb.append(value == null ? spec.getDefaultValue() : value);
             }
             sb.append(' ');
         }
-        return sb.append(SecurityPropertySpecs.AGENT_RESTRICTED_SESSION_SCOPE).append("=NULL ;").toString();
+        return sb.append(';').toString();
+    }
+
+    /**
+     * {@code create or replace authentication policy P AUTHENTICATION_METHODS=('ALL') CLIENT_TYPES=('ALL')
+     * CLIENT_POLICY=() SECURITY_INTEGRATIONS=('ALL') MFA_ENROLLMENT=OPTIONAL MFA_POLICY=(…) PAT_POLICY=(…)
+     * WORKLOAD_IDENTITY_POLICY=(…) COMMENT='c' ;} — every setting, a list's items joined by a bare comma, the client,
+     * MFA, PAT and workload identity ones as their defaults, and the comment only when there is one (live-verified).
+     */
+    static String authenticationPolicy(final SecurityObject policy, final String name) {
+        final StringBuilder sb = new StringBuilder("create or replace authentication policy ").append(name).append(' ');
+        for (final SecurityPropertySpec spec : SecurityPropertySpecs.of(SecurityObjectKind.AUTHENTICATION_POLICY)) {
+            if ("COMMENT".equals(spec.getName())) {
+                continue;
+            }
+            sb.append(spec.getName()).append('=');
+            if (spec.getType() == SecurityPropertyType.CHOICE || spec.getType() == SecurityPropertyType.TEXT) {
+                final Object value = policy.getProperty(spec.getName());
+                sb.append(value == null ? spec.getDefaultValue() : value);
+            } else {
+                final List<String> items = policy.list(spec.getName());
+                sb.append('(');
+                for (int i = 0; i < items.size(); i++) {
+                    sb.append(i > 0 ? "," : "").append(quoted(items.get(i)));
+                }
+                sb.append(')');
+            }
+            sb.append(' ');
+            if ("CLIENT_TYPES".equals(spec.getName())) {
+                sb.append("CLIENT_POLICY=() ");
+            }
+        }
+        sb.append(AUTHENTICATION_POLICY_SETTINGS).append(' ');
+        if (policy.getComment() != null) {
+            sb.append("COMMENT=").append(quoted(policy.getComment())).append(' ');
+        }
+        return sb.append(';').toString();
     }
 
     // ─────────────────────────── CONTACT / STREAMLIT ───────────────────────────

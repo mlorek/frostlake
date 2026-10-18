@@ -21,6 +21,7 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
@@ -28,6 +29,7 @@ import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
@@ -40,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * GRANT OWNERSHIP moving an object to another role, as live moves it: the role becomes the object's owner, the one
@@ -51,7 +54,7 @@ import java.util.List;
 final class OwnershipTransfer {
 
     private static final String DEPENDENT_GRANT = "SQL execution error: Dependent grant of privilege '%s' on "
-        + "securable '%s' to role '%s' exists.  It must be revoked first.  More than one dependent grant may exist: "
+        + "securable '%s' to %s '%s' exists.  It must be revoked first.  More than one dependent grant may exist: "
         + "use 'SHOW GRANTS' command to view them.  To revoke all dependent grants while transferring object "
         + "ownership, use convenience command 'GRANT OWNERSHIP ON <target_objects> TO <target_role> REVOKE CURRENT "
         + "GRANTS'.";
@@ -218,15 +221,10 @@ final class OwnershipTransfer {
         final List<String> spellings = new ArrayList<>();
         spellings.add(writtenName);
         spellings.addAll(granted.getSpellings());
-        final List<Role> holders = new ArrayList<>(catalog.getAllRoles());
-        Collections.sort(holders, new Comparator<Role>() {
-            @Override
-            public int compare(final Role left, final Role right) {
-                return left.getName().compareTo(right.getName());
-            }
-        });
+        final List<Role> holders = holders();
+        final List<User> users = users();
         if (tail == null && !owner.equals(granted.getOwner())) {
-            rejectDependentGrant(objectType, granted, spellings, holders);
+            rejectDependentGrant(objectType, granted, spellings, holders, users);
         }
         final boolean revoke = tail != null && tail.REVOKE_CURRENT_GRANTS() != null;
         for (final Role holder : holders) {
@@ -241,8 +239,58 @@ final class OwnershipTransfer {
                 }
             }
         }
+        for (final User user : users) {
+            for (final String spelling : spellings) {
+                for (final Privilege privilege : new ArrayList<>(user.getPrivileges(objectType, spelling))) {
+                    if (privilege == Privilege.OWNERSHIP || revoke) {
+                        user.revokePrivilege(objectType, spelling, privilege);
+                    } else {
+                        user.grantPrivilege(objectType, spelling, privilege, owner);
+                    }
+                }
+            }
+        }
         executor.assignOwner(objectType, parts, arity, owner);
         return true;
+    }
+
+    /**
+     * Every role an object's grant may be held by, in the order a dependent grant is reported in: the account roles
+     * by name, then each database's roles by their qualified names. A database role's grant is an outbound grant of
+     * the object like an account role's, which a move with no COPY or REVOKE CURRENT GRANTS finds in its way.
+     */
+    private List<Role> holders() {
+        final List<Role> holders = new ArrayList<>(catalog.getAllRoles());
+        Collections.sort(holders, new Comparator<Role>() {
+            @Override
+            public int compare(final Role left, final Role right) {
+                return left.getName().compareTo(right.getName());
+            }
+        });
+        final List<DatabaseRole> databaseRoles = new ArrayList<>();
+        for (final Database database : catalog.getAllDatabases()) {
+            databaseRoles.addAll(database.getDatabaseRoles());
+        }
+        Collections.sort(databaseRoles, new Comparator<DatabaseRole>() {
+            @Override
+            public int compare(final DatabaseRole left, final DatabaseRole right) {
+                return left.getQualifiedName().compareTo(right.getQualifiedName());
+            }
+        });
+        holders.addAll(databaseRoles);
+        return holders;
+    }
+
+    /** Every user, by name: a privilege granted to a user is an outbound grant of the object too. */
+    private List<User> users() {
+        final List<User> users = new ArrayList<>(catalog.getAllUsers());
+        Collections.sort(users, new Comparator<User>() {
+            @Override
+            public int compare(final User left, final User right) {
+                return left.getName().compareTo(right.getName());
+            }
+        });
+        return users;
     }
 
     /**
@@ -313,23 +361,51 @@ final class OwnershipTransfer {
             || "PROCEDURE".equals(kind) || "TASK".equals(kind) || "PIPE".equals(kind);
     }
 
-    /** The first grant, in SHOW GRANTS order, that blocks a move with no COPY or REVOKE CURRENT GRANTS. */
+    /**
+     * The first grant, in SHOW GRANTS order, that blocks a move with no COPY or REVOKE CURRENT GRANTS: an account
+     * role's, then a database role's, named by its qualified name, then a user's.
+     */
     private static void rejectDependentGrant(final String objectType, final GrantedObject granted,
-                                             final List<String> spellings, final List<Role> holders) {
+                                             final List<String> spellings, final List<Role> holders,
+                                             final List<User> users) {
         for (final Role holder : holders) {
             final List<String> held = new ArrayList<>();
             for (final String spelling : spellings) {
-                for (final Privilege privilege : holder.getPrivileges(objectType, spelling)) {
-                    if (privilege != Privilege.OWNERSHIP) {
-                        held.add(privilege.name());
-                    }
-                }
+                held.addAll(outbound(holder.getPrivileges(objectType, spelling)));
             }
             if (!held.isEmpty()) {
-                Collections.sort(held);
-                throw new RuntimeException(String.format(DEPENDENT_GRANT, Privilege.valueOf(held.get(0)).displayName(),
-                    granted.getName(), holder.getName()));
+                final boolean databaseRole = holder instanceof DatabaseRole;
+                throw dependentGrant(held, granted, databaseRole ? "database role" : "role",
+                    databaseRole ? ((DatabaseRole) holder).getQualifiedName() : holder.getName());
             }
         }
+        for (final User user : users) {
+            final List<String> held = new ArrayList<>();
+            for (final String spelling : spellings) {
+                held.addAll(outbound(user.getPrivileges(objectType, spelling)));
+            }
+            if (!held.isEmpty()) {
+                throw dependentGrant(held, granted, "user", user.getName());
+            }
+        }
+    }
+
+    /** The privileges of a holder's grant that block a move: every one but OWNERSHIP. */
+    private static List<String> outbound(final Set<Privilege> privileges) {
+        final List<String> held = new ArrayList<>();
+        for (final Privilege privilege : privileges) {
+            if (privilege != Privilege.OWNERSHIP) {
+                held.add(privilege.name());
+            }
+        }
+        return held;
+    }
+
+    /** The refusal naming a holder's first blocking privilege, in name order. */
+    private static RuntimeException dependentGrant(final List<String> held, final GrantedObject granted,
+                                                   final String holderKind, final String holderName) {
+        Collections.sort(held);
+        return new RuntimeException(String.format(DEPENDENT_GRANT, Privilege.valueOf(held.get(0)).displayName(),
+            granted.getName(), holderKind, holderName));
     }
 }

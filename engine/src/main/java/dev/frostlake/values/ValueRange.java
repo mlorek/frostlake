@@ -62,9 +62,17 @@ public final class ValueRange {
     private final boolean nullable;
     private final boolean opaqueToConditions;
     private final boolean opaqueToComputation;
+    private final boolean computedNull;
 
     private ValueRange(final BigDecimal min, final BigDecimal max, final boolean nullable,
                        final boolean opaqueToConditions, final boolean opaqueToComputation) {
+        this(min, max, nullable, opaqueToConditions, opaqueToComputation, false);
+    }
+
+    private ValueRange(final BigDecimal min, final BigDecimal max, final boolean nullable,
+                       final boolean opaqueToConditions, final boolean opaqueToComputation,
+                       final boolean computedNull) {
+        this.computedNull = computedNull;
         this.min = min;
         this.max = max;
         this.nullable = nullable;
@@ -150,6 +158,27 @@ public final class ValueRange {
             return this;
         }
         return new ValueRange(min, max, mayBeNull, opaqueToConditions, opaqueToComputation);
+    }
+
+    /**
+     * This empty interval as an aggregate's answer over NULLs alone: NULL as the rows are aggregated, not a NULL the
+     * plan holds while it compiles, so a membership of it is not folded to NULL (see {@link #isComputedNull}).
+     *
+     * @return the interval so marked, or this one when it is not empty
+     */
+    public ValueRange computedNull() {
+        return !isEmpty() || computedNull ? this : new ValueRange(null, null, true, false, false, true);
+    }
+
+    /**
+     * Whether this empty interval is an aggregate's answer over NULLs alone — SUM(NULL), MAX(NULL::INT) — which the
+     * plan does not hold as a NULL: {@code x IN (SELECT 1 WHERE FALSE)} over it is FALSE, where over a NULL constant it
+     * is NULL (live-verified).
+     *
+     * @return true for such an interval
+     */
+    public boolean isComputedNull() {
+        return computedNull;
     }
 
     /** This interval, as one no condition is settled by; {@link #EMPTY} stays itself. */

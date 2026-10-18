@@ -28,6 +28,8 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Integration;
+import dev.frostlake.metastore.model.IntegrationKind;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObject;
@@ -38,6 +40,7 @@ import dev.frostlake.metastore.model.SecurityPropertySpecs;
 import dev.frostlake.metastore.model.SecurityPropertyType;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.UnmodelledDropKind;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -61,10 +64,10 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * CREATE, ALTER, DROP, SHOW and DESCRIBE of network rules, network policies, password policies, session policies and
- * secrets, and the attachment of a password policy or a network policy to the account or to a user. A session
- * policy's DROP, SHOW and DESCRIBE are read with the kinds that model no object, and reach it through
- * {@link #dropFound}, {@link #showRows} and {@link #describeSessionPolicy}.
+ * CREATE, ALTER, DROP, SHOW and DESCRIBE of network rules, network policies, password, session, authentication and
+ * packages policies and secrets, and the attachment of a password policy or a network policy to the account or to a
+ * user. A session, an authentication and a packages policy's DROP, SHOW and DESCRIBE are read with the kinds that
+ * model no object, and reach it through {@link #dropFound}, {@link #showRows} and {@link #describeModelled}.
  *
  * <p>The objects have no behaviour: nothing here authenticates, allows or blocks anyone. They are recorded so that
  * scripts that set an account up can create, describe, alter and drop them as they would on a real account. A
@@ -75,6 +78,26 @@ import java.util.Map;
 public final class SecurityObjectCommandHandler {
 
     private static final String ACCOUNT = "ACCOUNT";
+    private static final String LANGUAGE = "LANGUAGE";
+    private static final String PYTHON = "PYTHON";
+
+    /** The capitalized prefix an authentication policy's refusals open with. */
+    private static final String COMPILATION_ERROR = "SQL Compilation Error:";
+
+    /** What DESCRIBE AUTHENTICATION POLICY shows of the MFA settings, as value and as default. */
+    private static final String MFA_POLICY_DEFAULT =
+        "{ALLOWED_METHODS=[ALL], ENFORCE_MFA_ON_EXTERNAL_AUTHENTICATION=NONE}";
+
+    /** What DESCRIBE AUTHENTICATION POLICY shows of the programmatic access token settings. */
+    private static final String PAT_POLICY_DEFAULT = """
+        {DEFAULT_EXPIRY_IN_DAYS=15, MAX_EXPIRY_IN_DAYS=365, NETWORK_POLICY_EVALUATION=ENFORCED_REQUIRED, \
+        REQUIRE_ROLE_RESTRICTION_FOR_SERVICE_USERS=true, REQUIRE_ROLE_RESTRICTION_FOR_PERSON_USERS=false, \
+        BLOCKED_ROLES_LIST=[]}""";
+
+    /** What DESCRIBE AUTHENTICATION POLICY shows of the workload identity settings. */
+    private static final String WORKLOAD_IDENTITY_POLICY_DEFAULT = """
+        {ALLOWED_PROVIDERS=[ALL], ALLOWED_AWS_ACCOUNTS=[ALL], ALLOWED_AWS_PARTITIONS=[ALL], \
+        ALLOWED_AZURE_ISSUERS=[ALL], ALLOWED_OIDC_ISSUERS=[ALL]}""";
     private static final String PASSWORD_POLICY_PREFIX = "PASSWORD_POLICY|";
     private static final String NETWORK_POLICY_PREFIX = "NETWORK_POLICY|";
 
@@ -133,7 +156,7 @@ public final class SecurityObjectCommandHandler {
     // ---- CREATE / ALTER / DROP ---------------------------------------------------------------------------------
 
     /**
-     * Runs one CREATE, ALTER or DROP of the five kinds, or an attachment of a policy to the account or a user.
+     * Runs one CREATE, ALTER or DROP of these kinds, or an attachment of a policy to the account or a user.
      *
      * @param ctx the statement
      * @return null: the statement answers with its status sentence
@@ -142,8 +165,7 @@ public final class SecurityObjectCommandHandler {
         if (ctx.ACCOUNT() != null || ctx.USER() != null) {
             return attach(ctx);
         }
-        final SecurityObjectKind kind = kindOf(ctx.RULE() != null, ctx.NETWORK() != null, ctx.SECRET() != null,
-            ctx.SESSION() != null);
+        final SecurityObjectKind kind = kindOf(ctx);
         if (ctx.CREATE() != null) {
             return create(ctx, kind);
         }
@@ -153,23 +175,35 @@ public final class SecurityObjectCommandHandler {
         return alter(ctx, kind);
     }
 
-    private static SecurityObjectKind kindOf(final boolean rule, final boolean network, final boolean secret,
-                                             final boolean session) {
-        if (rule) {
+    private static SecurityObjectKind kindOf(final FrostlakeParser.SecurityObjectStatementContext ctx) {
+        if (ctx.RULE() != null) {
             return SecurityObjectKind.NETWORK_RULE;
         }
-        if (network) {
+        if (ctx.NETWORK() != null) {
             return SecurityObjectKind.NETWORK_POLICY;
         }
-        if (session) {
+        if (ctx.SESSION() != null) {
             return SecurityObjectKind.SESSION_POLICY;
         }
-        return secret ? SecurityObjectKind.SECRET : SecurityObjectKind.PASSWORD_POLICY;
+        if (ctx.AUTHENTICATION() != null) {
+            return SecurityObjectKind.AUTHENTICATION_POLICY;
+        }
+        if (ctx.PACKAGES() != null) {
+            return SecurityObjectKind.PACKAGES_POLICY;
+        }
+        return ctx.SECRET() != null ? SecurityObjectKind.SECRET : SecurityObjectKind.PASSWORD_POLICY;
     }
 
-    /** Whether a kind's names are shared with the other policies of its schema: a password or a session policy's. */
-    private static boolean sharesPolicyNames(final SecurityObjectKind kind) {
-        return kind == SecurityObjectKind.PASSWORD_POLICY || kind == SecurityObjectKind.SESSION_POLICY;
+    /**
+     * Whether a kind's names are shared with the other policies of its schema: a password, a session, an
+     * authentication or a packages policy's.
+     *
+     * @param kind the kind
+     * @return whether it shares them
+     */
+    static boolean sharesPolicyNames(final SecurityObjectKind kind) {
+        return kind == SecurityObjectKind.PASSWORD_POLICY || kind == SecurityObjectKind.SESSION_POLICY
+            || kind == SecurityObjectKind.AUTHENTICATION_POLICY || kind == SecurityObjectKind.PACKAGES_POLICY;
     }
 
     private Schema owningSchema(final FrostlakeParser.QualifiedNameContext name) {
@@ -210,6 +244,9 @@ public final class SecurityObjectCommandHandler {
             && ctx.or_alter() == null && (existing != null || otherPolicy != null);
         if (schema != null && !plainOverTaken) {
             queryExecutor.requireCreatePrivilege(Privilege.valueOf("CREATE_" + kind.name()), schema);
+        }
+        if (kind == SecurityObjectKind.PACKAGES_POLICY) {
+            requirePython(ctx);
         }
         final Map<String, Object> properties = read(kind, ctx.securityProperty());
         if (kind == SecurityObjectKind.NETWORK_POLICY) {
@@ -270,21 +307,44 @@ public final class SecurityObjectCommandHandler {
                 created.setProperty(spec.getName(), unset);
             }
         }
+        if (kind == SecurityObjectKind.PACKAGES_POLICY) {
+            created.setProperty(LANGUAGE, PYTHON);
+        }
         apply(created, properties);
         store.add(created);
         return created(kind, name);
     }
 
     /**
-     * The sentence a CREATE answers with: a network rule or a network policy "is created", a password policy is
-     * "created successfully" under its quoted name, a session policy as well with a full stop after it, and a secret
-     * takes the common sentence.
+     * A packages policy's language, which is PYTHON alone: any other word is no value of the languages a function
+     * is written in, {@code invalid property 'JAVA' for 'FUNCTION_LANGUAGE'} (live-verified).
+     */
+    private static void requirePython(final FrostlakeParser.SecurityObjectStatementContext ctx) {
+        final FrostlakeParser.IdentifierContext language = ctx.identifier(0);
+        if (language.getStart().getType() == FrostlakeLexer.QUOTED_IDENTIFIER) {
+            // A quoted word is read as no language: it is refused, and the token after it (live-verified).
+            final Token after = !ctx.securityProperty().isEmpty() ? ctx.securityProperty(0).getStart()
+                : ctx.SEMI() != null ? ctx.SEMI().getSymbol() : null;
+            throw new RuntimeException(SqlCompilationError.of(syntaxLine(language.getStart())
+                + "\n" + (after != null ? syntaxLine(after) : endOfInputLine(language.getStop()))));
+        }
+        final String word = SqlIdentifiers.canonical(language);
+        if (!PYTHON.equals(word)) {
+            throw new RuntimeException(SqlCompilationError.invalidPropertyFor(word, "FUNCTION_LANGUAGE"));
+        }
+    }
+
+    /**
+     * The sentence a CREATE answers with: a network rule or a network policy "is created", a password, an
+     * authentication and a packages policy are "created successfully" under their quoted name, a session policy as
+     * well with a full stop after it, and a secret takes the common sentence.
      */
     private static ResultSet created(final SecurityObjectKind kind, final String name) {
         final String sentence;
         if (kind == SecurityObjectKind.NETWORK_RULE || kind == SecurityObjectKind.NETWORK_POLICY) {
             sentence = kind.noun() + " " + name + " is created.";
-        } else if (kind == SecurityObjectKind.PASSWORD_POLICY) {
+        } else if (kind == SecurityObjectKind.PASSWORD_POLICY || kind == SecurityObjectKind.AUTHENTICATION_POLICY
+                || kind == SecurityObjectKind.PACKAGES_POLICY) {
             sentence = kind.noun() + " '" + name + "' created successfully";
         } else if (kind == SecurityObjectKind.SESSION_POLICY) {
             sentence = kind.noun() + " '" + name + "' created successfully.";
@@ -396,9 +456,42 @@ public final class SecurityObjectCommandHandler {
             if (key.endsWith("_SECONDARY_ROLES")) {
                 value = secondaryRoles(key, asStrings(value));
             }
+            if (SecurityPropertySpecs.SECURITY_INTEGRATIONS.equals(key)) {
+                value = securityIntegrations(asStrings(value));
+            }
             properties.put(key, value);
         }
+        // An agent scope is looked up once every other value is judged (live-verified).
+        final Object scope = properties.get(SecurityPropertySpecs.AGENT_RESTRICTED_SESSION_SCOPE);
+        if (scope != null) {
+            AgentSessionScopes.require(scope.toString());
+        }
         return properties;
+    }
+
+    /**
+     * The security integrations an authentication policy names: a list that holds ALL, written in capitals, is taken
+     * as it is, and any other names integrations of the account that are there and enabled — the others refused
+     * together, as written, {@code Security integrations [nosuch_si] do not exist or are inactive.}, {@code 'all'}
+     * among them (live-verified).
+     */
+    private List<String> securityIntegrations(final List<String> written) {
+        if (written.contains("ALL")) {
+            return written;
+        }
+        final List<String> missing = new ArrayList<>();
+        for (final String item : written) {
+            final Integration integration = catalog.getIntegrations().find(SqlIdentifiers.canonicalText(item));
+            if (integration == null || integration.getKind() != IntegrationKind.SECURITY
+                    || !integration.isEnabled()) {
+                missing.add(item);
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new RuntimeException(COMPILATION_ERROR + " Security integrations " + missing
+                + " do not exist or are inactive.");
+        }
+        return written;
     }
 
     @SuppressWarnings("unchecked")
@@ -440,12 +533,28 @@ public final class SecurityObjectCommandHandler {
                                 final FrostlakeParser.SecurityPropertyValueContext v) {
         final String written = v.getText();
         final String key = spec.getName();
+        if (v.NULL() != null) {
+            // A session policy reads NULL as a value: its scope and its comment take it, a number refuses it as the
+            // value 'null' (live-verified).
+            if (spec.getType() == SecurityPropertyType.SESSION_SCOPE
+                    || kind == SecurityObjectKind.SESSION_POLICY && spec.getType() == SecurityPropertyType.TEXT) {
+                return null;
+            }
+            if (kind == SecurityObjectKind.SESSION_POLICY && spec.getType() == SecurityPropertyType.INTEGER) {
+                throw invalidValue("null", key);
+            }
+            // NULL is no value of any other property: the statement is refused where it stands.
+            final Token at = v.NULL().getSymbol();
+            final int[] shown = LeadingCommentOffset.rebase(at.getLine(), at.getCharPositionInLine());
+            throw new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
+                + shown[1] + " unexpected 'NULL'."));
+        }
         final TerminalNode text = v.STRING_LITERAL().isEmpty() || v.LPAREN() != null ? null : v.STRING_LITERAL(0);
         final String word = v.identifier() != null ? v.identifier().getText().toUpperCase(Locale.ROOT)
             : text != null ? SqlStringLiterals.decode(text.getText()).toUpperCase(Locale.ROOT) : null;
         switch (spec.getType()) {
             case TEXT:
-                if (text == null && kind == SecurityObjectKind.SESSION_POLICY) {
+                if (text == null && kind != SecurityObjectKind.PASSWORD_POLICY && sharesPolicyNames(kind)) {
                     // A session policy reads a value of another shape as a parameter's (live-verified).
                     throw new RuntimeException(SqlCompilationError.invalidValueForParameter(written, key));
                 }
@@ -490,6 +599,10 @@ public final class SecurityObjectCommandHandler {
                     return Boolean.valueOf("TRUE".equals(word));
                 }
                 throw invalidValue(written, key);
+            case CHOICE_LIST:
+                return choices(spec, v, written);
+            case SESSION_SCOPE:
+                return sessionScope(v, written, key);
             case CHOICE:
             default:
                 if (word != null && Arrays.asList(spec.getChoices()).contains(word)) {
@@ -506,8 +619,77 @@ public final class SecurityObjectCommandHandler {
                 if ("MODE".equals(key) && spec.getChoices().length > 0 && "INGRESS".equals(spec.getChoices()[0])) {
                     throw NetworkRuleChecks.unknownMode();
                 }
+                if (kind == SecurityObjectKind.AUTHENTICATION_POLICY) {
+                    if (word == null) {
+                        throw new RuntimeException(SqlCompilationError.invalidValueForParameter(written, key));
+                    }
+                    // A string is named as written, a word as it resolves (live-verified).
+                    throw new RuntimeException(COMPILATION_ERROR + " " + (text != null
+                        ? SqlStringLiterals.decode(text.getText()) : word) + " invalid for " + key + ". ");
+                }
                 throw invalidValue(written, key);
         }
+    }
+
+    /** The syntax-error line of a token the statement does not read where it stands. */
+    private static String syntaxLine(final Token token) {
+        final int[] shown = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + token.getText() + "'.";
+    }
+
+    /** The syntax-error line of the end of the input, after a statement's last token. */
+    private static String endOfInputLine(final Token last) {
+        final int[] shown = LeadingCommentOffset.rebase(last.getLine(),
+            last.getCharPositionInLine() + last.getText().length());
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '<EOF>'.";
+    }
+
+    /**
+     * A list of words of a fixed set, written as strings in any case and kept upper-cased: an authentication policy's
+     * methods and client types. A word of no set is refused in the list's own words, {@code NOPE invalid for
+     * Authentication Methods.} (live-verified).
+     */
+    private static List<String> choices(final SecurityPropertySpec spec,
+                                        final FrostlakeParser.SecurityPropertyValueContext v, final String written) {
+        if (v.LPAREN() == null) {
+            throw new RuntimeException(SqlCompilationError.of("invalid type of property '" + written + "' for '"
+                + spec.getName() + "'"));
+        }
+        final List<String> words = new ArrayList<>();
+        for (final TerminalNode item : v.STRING_LITERAL()) {
+            final String word = SqlStringLiterals.decode(item.getText()).toUpperCase(Locale.ROOT);
+            if (!Arrays.asList(spec.getChoices()).contains(word)) {
+                throw new RuntimeException(COMPILATION_ERROR + " " + word + " invalid for "
+                    + choiceListNoun(spec.getName()) + ". ");
+            }
+            words.add(word);
+        }
+        return words;
+    }
+
+    /** The words a refusal of a choice list names the list by. */
+    private static String choiceListNoun(final String key) {
+        return "AUTHENTICATION_METHODS".equals(key) ? "Authentication Methods" : "Client Types";
+    }
+
+    /**
+     * A session policy's agent scope as written: a string kept as it is, a word as it resolves. A list is no value of
+     * it, refused without the compilation prefix, and a number or a boolean is no value of the parameter; whether the
+     * value names a scope is judged once the statement's other values are (see {@link AgentSessionScopes}).
+     */
+    private static String sessionScope(final FrostlakeParser.SecurityPropertyValueContext v, final String written,
+                                       final String key) {
+        if (v.LPAREN() != null) {
+            throw new RuntimeException("Invalid value specified for property '" + key + "'");
+        }
+        if (!v.STRING_LITERAL().isEmpty()) {
+            return SqlStringLiterals.decode(v.STRING_LITERAL(0).getText());
+        }
+        final String word = v.identifier() == null ? null : SqlIdentifiers.canonical(v.identifier());
+        if (word == null || "TRUE".equals(word) || "FALSE".equals(word)) {
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(written, key));
+        }
+        return word;
     }
 
     /** The object's name, part by part: a schema object's as written, a network policy's its own. */
@@ -676,6 +858,12 @@ public final class SecurityObjectCommandHandler {
         final SecurityObjectStore store = store(kind, schema);
         final SecurityObject target = store.get(kind, name);
         if (target == null) {
+            final String otherPolicy = schema != null && sharesPolicyNames(kind) ? schema.policyKindHolding(name)
+                : null;
+            if (otherPolicy != null) {
+                // A policy of another kind holds the name (live-verified).
+                throw new RuntimeException(SqlCompilationError.objectOfOtherType(otherPolicy, kind.name()));
+            }
             if (ctx.if_exists() != null) {
                 return null;
             }
@@ -882,14 +1070,16 @@ public final class SecurityObjectCommandHandler {
     // ---- SHOW / DESCRIBE ---------------------------------------------------------------------------------------
 
     /**
-     * Runs one SHOW or DESCRIBE of the four kinds.
+     * Runs one SHOW or DESCRIBE of a network rule, a network policy, a password policy or a secret.
      *
      * @param ctx the statement
      * @return the listing or the description
      */
     public ResultSet list(final FrostlakeParser.SecurityObjectListingContext ctx) {
-        final SecurityObjectKind kind = kindOf(ctx.RULE() != null || ctx.RULES() != null, ctx.NETWORK() != null,
-            ctx.SECRET() != null || ctx.SECRETS() != null, false);
+        final SecurityObjectKind kind = ctx.RULE() != null || ctx.RULES() != null ? SecurityObjectKind.NETWORK_RULE
+            : ctx.NETWORK() != null ? SecurityObjectKind.NETWORK_POLICY
+            : ctx.SECRET() != null || ctx.SECRETS() != null ? SecurityObjectKind.SECRET
+            : SecurityObjectKind.PASSWORD_POLICY;
         if (ctx.DESCRIBE() != null || ctx.DESC() != null) {
             return describe(ctx, kind);
         }
@@ -1358,20 +1548,49 @@ public final class SecurityObjectCommandHandler {
     }
 
     /**
-     * DESCRIBE SESSION POLICY of a policy that is there, read with the kinds that model no object: a row per
-     * property — the policy's creation, name, owner and comment, each of its settings with its default, and the agent
-     * scope no statement sets — as property, value, default and description (live-verified).
+     * The modelled kind a statement read with the kinds that model no object names: a session, an authentication or a
+     * packages policy.
      *
-     * @param parts the policy's name as the statement wrote it, part by part
-     * @return the description, or null when no session policy has the name
+     * @param kind the kind the statement names
+     * @return the kind of object it reaches, or null for a kind no object is modelled of
      */
-    ResultSet describeSessionPolicy(final String[] parts) {
-        final SecurityObjectKind kind = SecurityObjectKind.SESSION_POLICY;
+    static SecurityObjectKind modelledKind(final UnmodelledDropKind kind) {
+        if (kind == UnmodelledDropKind.SESSION_POLICY) {
+            return SecurityObjectKind.SESSION_POLICY;
+        }
+        if (kind == UnmodelledDropKind.AUTHENTICATION_POLICY) {
+            return SecurityObjectKind.AUTHENTICATION_POLICY;
+        }
+        return kind == UnmodelledDropKind.PACKAGES_POLICY ? SecurityObjectKind.PACKAGES_POLICY : null;
+    }
+
+    /**
+     * DESCRIBE of a session, an authentication or a packages policy that is there, read with the kinds that model no
+     * object.
+     *
+     * @param kind  the policy's kind
+     * @param parts the policy's name as the statement wrote it, part by part
+     * @return the description, or null when no policy of the kind has the name
+     */
+    ResultSet describeModelled(final SecurityObjectKind kind, final String[] parts) {
         final SecurityObject policy = catalog.requireOwningSchema(QualifiedName.of(parts)).getSecurityObjects()
             .get(kind, parts[parts.length - 1]);
         if (policy == null) {
             return null;
         }
+        if (kind == SecurityObjectKind.AUTHENTICATION_POLICY) {
+            return describeAuthenticationPolicy(policy);
+        }
+        return kind == SecurityObjectKind.PACKAGES_POLICY ? describePackagesPolicy(policy)
+            : describeSessionPolicy(policy);
+    }
+
+    /**
+     * DESCRIBE SESSION POLICY: a row per property — the policy's creation, name, owner and comment, each of its
+     * settings with its default, and its agent scope — as property, value, default and description (live-verified).
+     */
+    private static ResultSet describeSessionPolicy(final SecurityObject policy) {
+        final SecurityObjectKind kind = SecurityObjectKind.SESSION_POLICY;
         final List<Row> rows = new ArrayList<>();
         rows.add(describedRow("CREATED_ON", SharedFunctionHelpers.offsetTimestampText(ShowResultHelpers.createdOn(
             policy.getCreatedTime())), null, "Timestamp when the session policy was created."));
@@ -1392,9 +1611,65 @@ public final class SecurityObjectCommandHandler {
                     spec.getDefaultValue(), spec.getDescription()));
             }
         }
-        rows.add(describedRow(SecurityPropertySpecs.AGENT_RESTRICTED_SESSION_SCOPE, null, null,
-            SecurityPropertySpecs.AGENT_RESTRICTED_SESSION_SCOPE_DESCRIPTION));
         return new ResultSet(columns("property", "value", "default", "description"), rows);
+    }
+
+    /**
+     * DESCRIBE AUTHENTICATION POLICY: the policy's name, owner and comment, then each setting with its default — a
+     * list in brackets, the client, MFA, PAT and workload identity settings as their defaults, which no statement
+     * here sets — as property, value, default and description (live-verified).
+     */
+    private static ResultSet describeAuthenticationPolicy(final SecurityObject policy) {
+        final List<Row> rows = new ArrayList<>();
+        rows.add(describedRow("NAME", policy.getName(), null, "Name of authentication policy."));
+        rows.add(describedRow("OWNER", policy.getOwner(), null, "Owner of authentication policy."));
+        for (final SecurityPropertySpec spec : SecurityPropertySpecs.of(SecurityObjectKind.AUTHENTICATION_POLICY)) {
+            if ("COMMENT".equals(spec.getName())) {
+                rows.add(2, describedRow(spec.getName(), policy.getComment(), null, spec.getDescription()));
+            } else if (spec.getType() == SecurityPropertyType.TEXT_LIST
+                    || spec.getType() == SecurityPropertyType.CHOICE_LIST) {
+                rows.add(describedRow(spec.getName(), "[" + String.join(", ", policy.list(spec.getName())) + "]",
+                    spec.getDefaultValue(), spec.getDescription()));
+            } else {
+                final String value = policy.text(spec.getName());
+                rows.add(describedRow(spec.getName(), value != null ? value : spec.getDefaultValue(),
+                    spec.getDefaultValue(), spec.getDescription()));
+            }
+            if ("CLIENT_TYPES".equals(spec.getName())) {
+                rows.add(describedRow("CLIENT_POLICY", "{}", null, "Client policy for the authentication policy."));
+            }
+        }
+        rows.add(describedRow("MFA_POLICY", MFA_POLICY_DEFAULT, MFA_POLICY_DEFAULT,
+            "MFA-specific configuration for the authentication policy."));
+        rows.add(describedRow("PAT_POLICY", PAT_POLICY_DEFAULT, null,
+            "PAT-specific configuration for the authentication policy."));
+        rows.add(describedRow("WORKLOAD_IDENTITY_POLICY", WORKLOAD_IDENTITY_POLICY_DEFAULT, null,
+            "Workload identity-specific configuration for the authentication policy."));
+        return new ResultSet(columns("property", "value", "default", "description"), rows);
+    }
+
+    /**
+     * DESCRIBE PACKAGES POLICY: one row of the policy's creation, name, language and lists — each in brackets, its
+     * packages quoted, the creation blocklist NULL until one is set — and comment (live-verified).
+     */
+    private static ResultSet describePackagesPolicy(final SecurityObject policy) {
+        return new ResultSet(columns("created_on", "name", "language", "allowlist", "blocklist",
+            "additional_creation_blocklist", "comment"), Collections.singletonList(new Row(Arrays.<Object>asList(
+            ShowResultHelpers.createdOn(policy.getCreatedTime()), policy.getName(), policy.text(LANGUAGE),
+            packages(policy, SecurityPropertySpecs.ALLOWLIST), packages(policy, SecurityPropertySpecs.BLOCKLIST),
+            packages(policy, "ADDITIONAL_CREATION_BLOCKLIST"), policy.getComment()))));
+    }
+
+    /** A packages policy's list as DESCRIBE shows it, {@code ['numpy','pandas>=1']}, or null when it holds none. */
+    private static String packages(final SecurityObject policy, final String key) {
+        if (policy.getProperty(key) == null) {
+            return null;
+        }
+        final StringBuilder shown = new StringBuilder("[");
+        for (final String item : policy.list(key)) {
+            shown.append(shown.length() > 1 ? "," : "").append('\'').append(item).append('\'');
+        }
+        return shown.append(']').toString();
     }
 
     private static Row describedRow(final String property, final Object value, final String defaultValue,

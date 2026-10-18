@@ -75,7 +75,8 @@ public class WriteAheadLog {
     private static final Logger logger = LoggerFactory.getLogger(WriteAheadLog.class);
 
     private static final int MAGIC = 0x53465731;          // "SFW1"
-    private static final byte VERSION = 6;                // v6: v5 + each statement's identity answers, runs apart
+    private static final byte VERSION = 7;                // v7: v6 + the engine's first start in the header
+    private static final byte VERSION_WITH_ANSWERS = 6;   // still readable; its first start is its first record's
     private static final byte VERSION_WITH_STATE = 5;     // still readable; its identities answer as they do now
     private static final byte VERSION_WITH_CONTEXT = 4;   // still readable; its statements replay where logged
     private static final byte VERSION_WITH_INSTANT = 3;   // still readable; its records replay in one session
@@ -99,17 +100,71 @@ public class WriteAheadLog {
     private final Path path;
     private FileOutputStream fileOut;
     private DataOutputStream out;
+    /**
+     * When the engine that began the log first started, which its header keeps: the instant the engine's built-in
+     * objects were created at, which a restart with no checkpoint to read stamps them with again.
+     */
+    private Instant firstStart;
 
     public WriteAheadLog(final Path path) throws IOException {
+        this(path, Instant.now());
+    }
+
+    /**
+     * Opens the log at a path, beginning it when there is none.
+     *
+     * @param path        the log's file
+     * @param engineStart the opening engine's start, which a log begun now keeps as its first start
+     * @throws IOException when the log cannot be read or written
+     */
+    public WriteAheadLog(final Path path, final Instant engineStart) throws IOException {
         this.path = path;
         if (path.getParent() != null) {
             Files.createDirectories(path.getParent());
         }
+        final Instant written = writtenFirstStart();
+        this.firstStart = written != null ? written : engineStart;
         openForAppend();
-        // A log of an earlier version is rewritten in this one, so the records appended to it read as written.
+        // A log of an earlier version is rewritten in this one, so the records appended to it read as written. Its
+        // first start, which it did not keep, is taken from its first record's instant, the earliest it tells.
         if (writtenVersion() < VERSION) {
-            rewrite(readAll());
+            final List<WalRecord> records = readAll();
+            firstStart = firstRecordInstant(records, engineStart);
+            rewrite(records);
         }
+    }
+
+    /**
+     * When the engine that began the log first started: what a restart with no checkpoint stamps the built-in objects
+     * with.
+     *
+     * @return the instant
+     */
+    public synchronized Instant firstStart() {
+        return firstStart;
+    }
+
+    /** The first start a v7 header keeps, or null for a log with no such header. */
+    private Instant writtenFirstStart() throws IOException {
+        if (!Files.exists(path) || Files.size(path) < Integer.BYTES + 1L + Long.BYTES) {
+            return null;
+        }
+        try (DataInputStream in = new DataInputStream(new FileInputStream(path.toFile()))) {
+            if (in.readInt() != MAGIC || in.readByte() < VERSION) {
+                return null;
+            }
+            return instantFrom(in.readLong());
+        }
+    }
+
+    /** The earliest instant an older log's records tell, or the fallback when none tells one. */
+    private static Instant firstRecordInstant(final List<WalRecord> records, final Instant fallback) {
+        for (final WalRecord rec : records) {
+            if (rec.getType() == WalRecordType.TRANSACTION && rec.getStatementInstant(0) != null) {
+                return rec.getStatementInstant(0);
+            }
+        }
+        return fallback;
     }
 
     /** The version the log's header names, the current one for a log with no header yet. */
@@ -129,6 +184,7 @@ public class WriteAheadLog {
         if (needHeader) {
             out.writeInt(MAGIC);
             out.writeByte(VERSION);
+            out.writeLong(toNanos(firstStart));
             out.flush();
             fileOut.getFD().sync();
         }
@@ -398,12 +454,19 @@ public class WriteAheadLog {
             }
             // v2 records carry no instant; v3 onwards prefix each statement with one, v4 with its context, v5
             // adds the session state, results and place to the context, and v6 its identities' answers and whether
-            // its runs went to records of their own.
+            // its runs went to records of their own. A v7 header goes on with the engine's first start.
             final byte version = in.readByte();
             readsInstants = version >= VERSION_WITH_INSTANT;
             readsContexts = version >= VERSION_WITH_CONTEXT;
             readsStatementState = version >= VERSION_WITH_STATE;
-            readsAnswers = version >= VERSION;
+            readsAnswers = version >= VERSION_WITH_ANSWERS;
+            if (version >= VERSION) {
+                try {
+                    in.readLong();
+                } catch (final EOFException torn) {
+                    return records;   // a header torn before its first start: nothing was logged after it
+                }
+            }
             while (true) {
                 final WalRecord rec = readRecord(in);
                 if (rec == null) {
@@ -505,6 +568,7 @@ public class WriteAheadLog {
              DataOutputStream tmpOut = new DataOutputStream(new BufferedOutputStream(tmpFileOut))) {
             tmpOut.writeInt(MAGIC);
             tmpOut.writeByte(VERSION);
+            tmpOut.writeLong(toNanos(firstStart));
             for (final WalRecord rec : keep) {
                 if (rec.getType() == WalRecordType.TRANSACTION) {
                     // In this version's layout, which the header names: the instants and contexts kept too.

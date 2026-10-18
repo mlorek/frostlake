@@ -25,6 +25,10 @@ import java.util.List;
  * history starts, whether its window had dropped snapshots, and each snapshot it keeps. A snapshot's row is either a
  * row stored now — its place among the saved rows, written as {@code -(place + 1)} — or one of the past rows kept
  * here once however many snapshots hold it, with the identity it had.
+ *
+ * <p>The table's shapes over its history are kept too, and each snapshot names the one it was taken in, with its rows
+ * as it took them where a column change has rewritten its rows since: a CLONE ... AT a point before the change takes
+ * the shape and the rows of the point.
  */
 public class TableHistorySnapshot implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -38,4 +42,8 @@ public class TableHistorySnapshot implements Serializable {
     public List<Long> pastRowIds = new ArrayList<>();
     public List<List<Object>> pastRows = new ArrayList<>();
     public List<TableHistoryPoint> points = new ArrayList<>();
+    /** The table's shapes over its history, oldest first; null in a snapshot written before shapes were kept. */
+    public List<TableStructureSnapshot> structures;
+    /** The rows snapshots took in a shape a column change has rewritten since, each kept once. */
+    public List<List<Object>> takenRows;
 }

@@ -76,6 +76,17 @@ public class StreamRecord {
         return new StreamRecord(this, kept);
     }
 
+    /**
+     * This change with other values in its row's place — what a reader whose policies narrow the row reads. The
+     * change's kind, row id, capture time and table are kept.
+     *
+     * @param replaced the values the reader reads
+     * @return the record holding them
+     */
+    public StreamRecord withValues(final List<Object> replaced) {
+        return new StreamRecord(this, replaced);
+    }
+
     public StreamRecord withoutSlot(final int index) {
         if (values == null || index >= values.size()) {
             return this;

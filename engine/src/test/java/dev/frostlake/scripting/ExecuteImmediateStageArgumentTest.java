@@ -42,10 +42,6 @@ public class ExecuteImmediateStageArgumentTest extends BaseDatabaseTest {
 
     @Override
     protected void setupTest() {
-        // The JDBC-mode harness lifts the session's count for its own scripts; these cells start from the default.
-        if (FrostlakeJdbc.enabled()) {
-            engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 1");
-        }
         engine.execute("CREATE OR REPLACE TABLE t2 (v VARCHAR)");
         engine.execute("CREATE OR REPLACE STAGE st");
     }
@@ -101,12 +97,14 @@ public class ExecuteImmediateStageArgumentTest extends BaseDatabaseTest {
     }
 
     /**
-     * The count a top-level text answers to is its request's, which the live harness pins to 1, so these run embedded
-     * only (they were measured over a plain connection under a session count of 0).
+     * The count a top-level text answers to is its request's, which the live and the FL-over-JDBC harnesses declare
+     * for each request, so these run embedded only (they were measured over a plain connection under a session count
+     * of 0).
      */
     @Test
     public void underACountOfZeroEachStatementIsJudgedInItsOwnText() {
-        assumeFalse(isLiveSnowflake(), "the live harness pins each request's MULTI_STATEMENT_COUNT to 1");
+        assumeFalse(isLiveSnowflake() || FrostlakeJdbc.enabled(),
+            "the live and FL-over-JDBC harnesses declare each request's own MULTI_STATEMENT_COUNT");
         engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
         try {
             final String second = refusal(

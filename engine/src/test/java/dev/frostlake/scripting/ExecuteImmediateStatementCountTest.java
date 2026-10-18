@@ -117,12 +117,13 @@ public class ExecuteImmediateStatementCountTest extends BaseDatabaseTest {
 
     /**
      * The count the text answers to is its request's: the live harness pins every request's own count to 1, which the
-     * account applies to the text whatever the session's is, so this runs embedded only (the session-level cells are
-     * measured over a plain connection).
+     * account applies to the text whatever the session's is, and the FL-over-JDBC harness declares each request's own
+     * count the same way, so this runs embedded only (the session-level cells are measured over a plain connection).
      */
     @Test
     public void underACountOfZeroTheTextRunsAsAMultiStatementRequest() {
-        assumeFalse(isLiveSnowflake(), "the live harness pins each request's MULTI_STATEMENT_COUNT to 1");
+        assumeFalse(isLiveSnowflake() || FrostlakeJdbc.enabled(),
+            "the live and FL-over-JDBC harnesses declare each request's own MULTI_STATEMENT_COUNT");
         engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
         try {
             engine.execute("EXECUTE IMMEDIATE 'CREATE OR REPLACE TABLE ms1 (a INT); CREATE OR REPLACE TABLE ms2 (a INT)'");

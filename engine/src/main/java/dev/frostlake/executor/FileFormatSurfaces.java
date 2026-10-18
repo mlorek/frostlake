@@ -240,6 +240,12 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter '" + upper + "'"));
         }
+        // BINARY_FORMAT names how a BINARY column's text reads, in any case, and the refusal echoes the name without
+        // its quotes (live-verified).
+        if ("BINARY_FORMAT".equals(upper) && !SessionInputFormats.isBinaryFormat(value)) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid binary format string '" + value
+                + "': Must be 'HEX', 'BASE64', or 'UTF-8'"));
+        }
         // ENCODING names one of the account's character sets, by its own name (ISO88591) or the set's (ISO-8859-1).
         if ("ENCODING".equals(upper) && !StagedFileIo.isEncodingName(value)) {
             throw new RuntimeException(SqlCompilationError.of(

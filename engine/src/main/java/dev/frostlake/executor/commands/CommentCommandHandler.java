@@ -59,7 +59,6 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Handles {@code COMMENT ON <object-type> …} statements, extracted verbatim from
@@ -111,7 +110,10 @@ public class CommentCommandHandler implements CommandHandler {
             final boolean ifExists = ctx.if_exists() != null;
             final String comment = ParseTreeText.stringValue(ctx.stringText());
 
-            if (ctx.DATABASE() != null) {
+            if (ctx.SECRET() != null) {
+                // Refused whatever the name, before it is looked up (live-verified).
+                throw new RuntimeException("Unsupported feature 'SECRET'.");
+            } else if (ctx.DATABASE() != null) {
                 // COMMENT ON DATABASE
                 final String dbName = visitor.getText(ctx.identifier());
                 final Database db;
@@ -427,16 +429,16 @@ public class CommentCommandHandler implements CommandHandler {
                 try {
                     if (parts.length == 1) {
                         schema = visitor.resolveCurrentSchema();
-                        strmName = parts[0].toUpperCase(Locale.ROOT);
+                        strmName = parts[0];
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
                             throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        strmName = parts[1].toUpperCase(Locale.ROOT);
+                        strmName = parts[1];
                     } else if (parts.length == 3) {
                         schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        strmName = parts[2].toUpperCase(Locale.ROOT);
+                        strmName = parts[2];
                     } else {
                         throw new RuntimeException("Invalid stream name: " + streamName);
                     }
@@ -450,16 +452,15 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Stream stream;
                 try {
-                    stream = schema.getStream(strmName);
+                    // Named exactly: a quoted name in another case is another stream, which is not there, refused
+                    // fully qualified like the other schema-object shapes (live-verified).
+                    stream = schema.getStreamExact(strmName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Stream does not exist (IF EXISTS): {}", streamName);
                         return null;
                     }
-                    // Fully qualified, like the other schema-object shapes (live-verified).
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Stream",
-                        ((parts.length == 3 ? parts[0] : catalog.getCurrentDatabase()) + "."
-                            + schema.getName() + "." + strmName).toUpperCase(Locale.ROOT)));
+                    throw e;
                 }
                 stream.setComment(comment);
                 logger.trace("Set comment on stream: {}", streamName);
@@ -474,16 +475,16 @@ public class CommentCommandHandler implements CommandHandler {
                 try {
                     if (parts.length == 1) {
                         schema = visitor.resolveCurrentSchema();
-                        tskName = parts[0].toUpperCase(Locale.ROOT);
+                        tskName = parts[0];
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
                             throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        tskName = parts[1].toUpperCase(Locale.ROOT);
+                        tskName = parts[1];
                     } else if (parts.length == 3) {
                         schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        tskName = parts[2].toUpperCase(Locale.ROOT);
+                        tskName = parts[2];
                     } else {
                         throw new RuntimeException("Invalid task name: " + taskName);
                     }
@@ -497,7 +498,8 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Task task;
                 try {
-                    task = schema.getTask(tskName);
+                    // Named exactly: a quoted name in another case is another task, which is not there (live-verified).
+                    task = schema.getTaskExact(tskName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Task does not exist (IF EXISTS): {}", taskName);
@@ -536,7 +538,9 @@ public class CommentCommandHandler implements CommandHandler {
                 final String stageName = visitor.getText(ctx.qualifiedName());
                 final Stage stage;
                 try {
-                    stage = catalog.getStage(stageName);
+                    // Named exactly: a quoted name in another case is another stage, which is not there
+                    // (live-verified).
+                    stage = catalog.getStageExact(stageName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Stage does not exist (IF EXISTS): {}", stageName);
@@ -606,7 +610,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final String tagName = visitor.getText(ctx.qualifiedName());
                 final Tag tag;
                 try {
-                    tag = catalog.getTag(tagName);
+                    // Named exactly, as a stage is (live-verified).
+                    tag = catalog.getTagExact(tagName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Tag does not exist (IF EXISTS): {}", tagName);
@@ -626,8 +631,9 @@ public class CommentCommandHandler implements CommandHandler {
             } else if (ctx.SEQUENCE() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
                 try {
-                    final Sequence sequence =
-                        commentTargetSchema(ctx.qualifiedName()).getSequence(commentSimpleName(ctx.qualifiedName()));
+                    // Named exactly, as a stage is (live-verified).
+                    final Sequence sequence = commentTargetSchema(ctx.qualifiedName())
+                        .getSequenceExact(commentSimpleName(ctx.qualifiedName()));
                     sequence.setComment(comment);
                     sequence.markDdl();
                 } catch (final RuntimeException e) {
@@ -643,29 +649,36 @@ public class CommentCommandHandler implements CommandHandler {
                     if (!ifExists) throw e;
                 }
             } else if (ctx.MASKING() != null && ctx.POLICY() != null) {
-                final String n = visitor.getText(ctx.qualifiedName());
-                final MaskingPolicy p = commentTargetSchema(ctx.qualifiedName()).getMaskingPolicy(commentSimpleName(ctx.qualifiedName()));
+                // Named exactly, as a stage is, and refused by its full path when missing (live-verified).
+                final Schema home = commentTargetSchema(ctx.qualifiedName());
+                final String n = commentSimpleName(ctx.qualifiedName());
+                final MaskingPolicy p = home.getMaskingPolicyExact(n);
                 if (p != null) {
                     p.setComment(comment);
                 } else if (!ifExists) {
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", n));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
+                        home.qualifiedName(n)));
                 }
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
-                final String n = visitor.getText(ctx.qualifiedName());
-                final RowAccessPolicy p = commentTargetSchema(ctx.qualifiedName()).getRowAccessPolicy(commentSimpleName(ctx.qualifiedName()));
+                final Schema home = commentTargetSchema(ctx.qualifiedName());
+                final String n = commentSimpleName(ctx.qualifiedName());
+                final RowAccessPolicy p = home.getRowAccessPolicyExact(n);
                 if (p != null) {
                     p.setComment(comment);
                 } else if (!ifExists) {
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", n));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
+                        home.qualifiedName(n)));
                 }
             } else if (ctx.FILE() != null && ctx.FORMAT() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
-                final FileFormat ff = catalog.getFileFormat(n);
+                // Named exactly, as a stage is, and refused by its full path when missing (live-verified).
+                final FileFormat ff = catalog.getFileFormatExact(n);
                 if (ff != null) {
                     ff.setComment(comment);
                     ff.markDdl();
                 } else if (!ifExists) {
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("File format", n));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("File format",
+                        catalog.qualifiedExactName(n)));
                 }
             }
 

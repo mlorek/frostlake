@@ -36,6 +36,7 @@ import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.parser.FrostlakeLexer;
@@ -1134,12 +1135,20 @@ public class ShowCommandHandler implements CommandHandler {
                 DescribeProperties.describesStage(ctx, queryExecutor);
             }
             final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
-            if (unmodelled == UnmodelledDropKind.SESSION_POLICY) {
-                // The one kind read here that is modelled: a session policy that is there is described.
+            final SecurityObjectKind modelled = SecurityObjectCommandHandler.modelledKind(unmodelled);
+            if (modelled != null) {
+                // The kinds read here that are modelled: a session, an authentication or a packages policy that is
+                // there is described.
                 final ResultSet described = new SecurityObjectCommandHandler(catalog, queryExecutor)
-                    .describeSessionPolicy(parts);
+                    .describeModelled(modelled, parts);
                 if (described != null) {
                     return described;
+                }
+                if (catalog.requireOwningSchema(QualifiedName.of(parts)).policyKindHolding(parts[parts.length - 1])
+                        != null) {
+                    // A policy of another kind holds the name (live-verified).
+                    throw new RuntimeException(SqlCompilationError.of("Invalid object type: '" + modelled.name()
+                        + "'"));
                 }
             }
             throw describeUnmodelled(unmodelled, parts);

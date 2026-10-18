@@ -19,7 +19,6 @@ package dev.frostlake.rt.py;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.udf.HandlerJson;
 import dev.frostlake.executor.udf.HandlerResults;
-import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
@@ -28,6 +27,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
+import org.graalvm.polyglot.Value;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -38,12 +38,13 @@ import java.time.OffsetDateTime;
 import java.util.Locale;
 
 /**
- * What a Python procedure's handler hands back, as the value of the declared RETURNS type (live-verified). The
- * Python side ({@link #CONVERT}) applies the language's own conversions — {@code int(value)} for a whole NUMBER,
+ * What a Python handler hands back, as the value of its declared type (live-verified): a procedure's or a function's
+ * answer as its RETURNS type, an aggregate's as well, and each value a table function writes as its column's type.
+ * The Python side ({@link #CONVERT}) applies the language's own conversions — {@code int(value)} for a whole NUMBER,
  * which truncates, {@code float(value)}, {@code str(value)}, {@code bool(value)} — and judges the classes a DATE,
- * a TIMESTAMP, an ARRAY, an OBJECT and a BINARY take; this side builds the SQL value from the text it reports,
- * rounds a NUMBER with a scale half to even, and words the refusals as the account does, each naming the
- * procedure and its handler.
+ * a TIMESTAMP, an ARRAY, an OBJECT and a BINARY take, a TIMESTAMP_NTZ and a TIMESTAMP_LTZ a {@code datetime}
+ * without an offset; this side builds the SQL value from the text it reports, rounds a NUMBER with a scale half to
+ * even, and words the refusals as the account does, each naming the routine and its handler.
  *
  * <p>A semi-structured answer is the value's JSON with every float marked as a DOUBLE (see {@link HandlerJson}),
  * a tuple as a list, and a date, a time, a datetime, a {@code Decimal} and {@code bytes} as {@code str(value)};
@@ -52,9 +53,16 @@ import java.util.Locale;
  */
 final class PythonReturn {
 
+    /** What {@link #declared} answers for a type that takes the answer as the runtime holds it. */
+    static final Object AS_IS = new Object();
+
+    /** The name of the module {@link #CONVERT} is made into on each interpreter. */
+    private static final String MODULE = "__frostlake_returns";
+
     /**
-     * Defines {@code __fl_convert(value, kind, scale)}, answering a pair: what became of the value ({@code null},
-     * {@code value}, {@code int}, {@code decimal}, {@code python}, {@code refuse}, {@code pass}) and its text.
+     * Defines {@code __fl_converted(value, kind, scale)}, answering a pair: what became of the value ({@code null},
+     * {@code value}, {@code int}, {@code decimal}, {@code python}, {@code refuse}, {@code raise}, {@code pass}) and its
+     * text.
      */
     static final String CONVERT = """
         import datetime as __fl_datetime
@@ -97,10 +105,12 @@ final class PythonReturn {
                 if isinstance(v, __fl_datetime.time):
                     return ('value', v.isoformat())
                 return ('pass', '')
-            if kind == 'TIMESTAMP':
-                if isinstance(v, __fl_datetime.datetime):
-                    return ('value', v.isoformat())
-                return ('refuse', 'Return value should be a datetime object')
+            if kind.startswith('TIMESTAMP'):
+                if not isinstance(v, __fl_datetime.datetime):
+                    return ('refuse', 'Return value should be a datetime object')
+                if kind != 'TIMESTAMP_TZ' and v.utcoffset() is not None:
+                    return ('refuse', 'Datetime object must be naive to be convertible to ' + kind)
+                return ('value', v.isoformat())
             if kind == 'ARRAY':
                 if isinstance(v, list):
                     return ('value', __fl_json.dumps(__fl_spell(v)))
@@ -116,6 +126,11 @@ final class PythonReturn {
                     raise TypeError("cannot convert '" + type(v).__name__ + "' object to bytes")
                 return ('value', bytes(v).hex())
             return ('pass', '')
+        def __fl_converted(v, kind, scale):
+            try:
+                return __fl_convert(v, kind, scale)
+            except Exception as __fl_error:
+                return ('raise', type(__fl_error).__name__ + ': ' + str(__fl_error))
         """.replace("@DOUBLE@", HandlerJson.DOUBLE_IN_SOURCE);
 
     private PythonReturn() {
@@ -144,12 +159,18 @@ final class PythonReturn {
         if (declared instanceof VariantType) {
             return "VARIANT";
         }
-        final String name = declared == null || declared.getName() == null ? ""
+        final String written = declared == null || declared.getName() == null ? ""
             : declared.getName().toUpperCase(Locale.ROOT);
+        final int precision = written.indexOf('(');
+        final String name = precision < 0 ? written : written.substring(0, precision).trim();
         if ("ARRAY".equals(name) || "DATE".equals(name) || "TIME".equals(name)) {
             return name;
         }
-        return name.startsWith("TIMESTAMP") || "DATETIME".equals(name) ? "TIMESTAMP" : null;
+        if (!name.startsWith("TIMESTAMP") && !"DATETIME".equals(name)) {
+            return null;
+        }
+        // A TIMESTAMP and a DATETIME are the NTZ one.
+        return name.endsWith("_TZ") ? "TIMESTAMP_TZ" : name.endsWith("_LTZ") ? "TIMESTAMP_LTZ" : "TIMESTAMP_NTZ";
     }
 
     /** The scale {@link #CONVERT} is told: a NUMBER's declared scale, zero for any other type. */
@@ -158,21 +179,60 @@ final class PythonReturn {
     }
 
     /**
+     * The handler's answer as the value of a declared type, converted as Python converts and judged as the account
+     * judges it (see {@link #CONVERT}), or {@link #AS_IS} when the type takes the answer as the runtime holds it.
+     *
+     * @param answer   what the handler answered, or null when it left nothing
+     * @param declared the declared type, or null for none
+     * @param name     the routine's name, which a refusal carries
+     * @param handler  the routine's handler, which a refusal carries
+     * @return the value, or {@link #AS_IS}
+     * @throws PythonReturnRefusal when the type does not take the answer
+     */
+    static Object declared(final Value answer, final DataType declared, final String name, final String handler) {
+        final String kind = kindOf(declared);
+        if (kind == null) {
+            return AS_IS;
+        }
+        if (answer == null) {
+            return "VARIANT".equals(kind) ? HandlerJson.toVariant("null") : null;
+        }
+        final Value pair = PythonRuntime.module(MODULE, CONVERT)
+            .invokeMember("__fl_converted", answer, kind, Integer.valueOf(scaleOf(declared)));
+        final String outcome = pair.getArrayElement(0).asString();
+        final String text = pair.getArrayElement(1).asString();
+        if ("pass".equals(outcome)) {
+            return AS_IS;
+        }
+        final String where = " in function " + name + " with handler " + handler;
+        if ("raise".equals(outcome)) {
+            throw new PythonReturnRefusal("Python Interpreter Error:\n" + text + where);
+        }
+        try {
+            return toSql(outcome, text, declared, where);
+        } catch (final PythonReturnRefusal refused) {
+            throw refused;
+        } catch (final RuntimeException refused) {
+            throw new PythonReturnRefusal(refused.getMessage());
+        }
+    }
+
+    /**
      * Builds the SQL value from what the Python side reported.
      *
-     * @param outcome   what became of the value, as {@link #CONVERT} names it; never {@code pass}
-     * @param text      the value's text, or the refusal's sentence
-     * @param procedure the procedure, whose RETURNS type and name the answer and the refusals carry
-     * @return the value the CALL answers
+     * @param outcome  what became of the value, as {@link #CONVERT} names it; never {@code pass} or {@code raise}
+     * @param text     the value's text, or the refusal's sentence
+     * @param declared the declared type
+     * @param where    where a refusal says it happened: the routine and its handler
+     * @return the value
      */
-    static Object toSql(final String outcome, final String text, final Procedure procedure) {
-        final DataType declared = procedure.getReturnType();
-        final String where = " in function " + procedure.getName() + " with handler " + procedure.getHandler();
+    private static Object toSql(final String outcome, final String text, final DataType declared,
+                                final String where) {
         if ("null".equals(outcome)) {
             return null;
         }
         if ("refuse".equals(outcome)) {
-            throw new RuntimeException(text + where);
+            throw new PythonReturnRefusal(text + where);
         }
         if (declared instanceof NumericType) {
             final NumericType numeric = (NumericType) declared;
@@ -192,8 +252,9 @@ final class PythonReturn {
         if ("TIME".equals(kind)) {
             return LocalTime.parse(text);
         }
-        if ("TIMESTAMP".equals(kind)) {
-            return zoned(text) ? (Object) OffsetDateTime.parse(text) : LocalDateTime.parse(text);
+        if (kind != null && kind.startsWith("TIMESTAMP")) {
+            // Only a TIMESTAMP_TZ takes a datetime with an offset, and it keeps that offset as its own.
+            return zoned(text) ? (Object) OffsetDateTime.parse(text).toZonedDateTime() : LocalDateTime.parse(text);
         }
         if ("ARRAY".equals(kind) || "OBJECT".equals(kind) || "VARIANT".equals(kind)) {
             return HandlerJson.toVariant(text);
@@ -220,7 +281,7 @@ final class PythonReturn {
     private static Object exact(final String outcome, final String text, final NumericType type, final String where) {
         final BigDecimal held = new BigDecimal(text).setScale(type.getScale(), RoundingMode.HALF_EVEN);
         if (type.getPrecision() > 0 && NumericRangeRefusal.exceeds(held, type.getPrecision(), type.getScale())) {
-            throw new RuntimeException(("decimal".equals(outcome)
+            throw new PythonReturnRefusal(("decimal".equals(outcome)
                 ? "Decimal value cannot be losslessly represented as a Snowflake NUMBER with a precision of "
                     + type.getPrecision() + " and a scale of " + type.getScale()
                 : "Python value cannot be losslessly represented as a Snowflake NUMBER with a precision of "

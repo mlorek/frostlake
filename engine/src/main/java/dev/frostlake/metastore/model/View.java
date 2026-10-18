@@ -199,8 +199,8 @@ public class View extends SqlObject {
 
     /**
      * A full-fidelity duplicate for CLONE DATABASE/SCHEMA: keeps the explicit column list, the SECURE
-     * flag, the comment and any attached row access policy (the name-and-definition constructor alone
-     * silently dropped all of these from clones).
+     * flag, the comment, the change tracking a stream on the clone reads by, and any attached row access policy
+     * (the name-and-definition constructor alone silently dropped all of these from clones).
      */
     public View copy() {
         final View clone = columnNames != null
@@ -212,6 +212,7 @@ public class View extends SqlObject {
         clone.listedText = listedText;
         clone.setResolvedColumns(resolvedColumns);
         clone.secure = secure;
+        clone.changeTracking = changeTracking;
         clone.recursive = recursive;
         clone.writtenBody = writtenBody;
         clone.rowAccessPolicyName = rowAccessPolicyName;

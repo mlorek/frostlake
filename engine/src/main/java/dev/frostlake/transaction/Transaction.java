@@ -225,6 +225,33 @@ public class Transaction {
         streamsToConsume.put(stream, scope);
     }
 
+    /**
+     * Begin a statement's savepoint ({@link TransactionWriteSet#beginStatementSavepoint}), the streams the
+     * transaction's consuming reads registered so far noted beside it.
+     *
+     * @return the savepoint
+     */
+    public WriteSetSavepoint beginStatementSavepoint() {
+        final WriteSetSavepoint savepoint = writeSet.beginStatementSavepoint();
+        savepoint.noteStreamReads(new LinkedHashMap<>(streamsToConsume));
+        return savepoint;
+    }
+
+    /**
+     * Undo a failed statement ({@link TransactionWriteSet#rollbackToSavepoint}), the stream reads it registered
+     * included: "the changes made by that failed statement are rolled back", and a stream advances at COMMIT only
+     * for a statement that consumed it (live-verified: a failed INSERT … SELECT FROM a stream leaves the stream
+     * whole after the transaction commits).
+     *
+     * @param savepoint what {@link #beginStatementSavepoint} returned for the statement
+     */
+    public void rollbackToSavepoint(final WriteSetSavepoint savepoint) {
+        if (writeSet.rollbackToSavepoint(savepoint) && savepoint.streamReadsBefore() != null) {
+            streamsToConsume.clear();
+            streamsToConsume.putAll(savepoint.streamReadsBefore());
+        }
+    }
+
     /** True if started by an explicit BEGIN — statement-end autocommit is suspended until COMMIT/ROLLBACK. */
     public boolean isExplicit() {
         return explicit;

@@ -33,8 +33,11 @@ import java.util.regex.Pattern;
  *       is read and DROPPED: these parse to a wall-clock {@link LocalDateTime}, which is the TIMESTAMP_NTZ
  *       semantic (the caller decides what to do about zones).</li>
  *   <li>{@code MM/DD/YYYY [HH24:MI:SS]} with a one-digit month or day, e.g. {@code 3/5/2024 12:34:59}
- *       (Snowflake's own example is {@code 2/18/2008 02:36:48}).</li>
- *   <li>{@code DD-MON-YYYY}, e.g. {@code 17-DEC-1980}.</li>
+ *       (Snowflake's own example is {@code 2/18/2008 02:36:48}). The time after it is that one form alone: an
+ *       {@code HH24:MI} time, a fraction, a zone, a {@code T} and an hour alone are not recognized
+ *       (live-verified).</li>
+ *   <li>{@code DD-MON-YYYY}, e.g. {@code 17-DEC-1980}, with no time after it (live-verified).</li>
+ *   <li>an ISO date with an hour alone, {@code 2013-04-28 20} (documented, live-verified).</li>
  *   <li>whitespace variation between the date and the time — Snowflake "allows some whitespace differences
  *       in order to handle variably-formatted data", so {@code 2024-03-29  15:00:11} (two blanks) is the same
  *       instant as with one. The previous implementation swapped a single blank for {@code T}, which turned a
@@ -53,7 +56,7 @@ public final class AutoTemporalParser {
     private static final Pattern DASHED_TRIPLE = Pattern.compile("\\d+-\\d+-\\d+.*");
     private static final Pattern ISO_WIDTHS = Pattern.compile(
         "\\d{1,4}-\\d{1,2}-\\d{1,2}"
-        + "([ T]+\\d{1,2}:\\d{1,2}(:\\d{1,2}(\\.\\d+)?)?)?"
+        + "([ T]+\\d{1,2}(:\\d{1,2}(:\\d{1,2}(\\.\\d+)?)?)?)?"
         + "\\s*(Z|[+-]\\d{1,2}(:?\\d{1,2})?)?");
 
     private AutoTemporalParser() {
@@ -65,6 +68,13 @@ public final class AutoTemporalParser {
 
     /** The widest digit run still read as one field; anything longer overflows a year and is not a temporal. */
     private static final int MAX_FIELD_DIGITS = 9;
+
+    /** {@code YYYY-MM-DD}, after which any ISO time may follow. */
+    private static final int ISO_DATE = 0;
+    /** {@code MM/DD/YYYY}, after which only an {@code HH24:MI:SS} time may follow. */
+    private static final int SLASHED_DATE = 1;
+    /** {@code DD-MON-YYYY}, after which no time may follow. */
+    private static final int NAMED_DATE = 2;
 
     /**
      * Whether an ISO-shaped temporal STRING carries a field wider than its canonical width — a year of
@@ -117,9 +127,16 @@ public final class AutoTemporalParser {
         }
         offsetOut[0] = NO_OFFSET;
         final int[] pos = {0};
-        final LocalDate date = scanDate(s, pos);
+        final int[] form = {ISO_DATE};
+        final LocalDate date = scanDate(s, pos, form);
         if (date == null) {
             return null;
+        }
+        if (form[0] == NAMED_DATE) {
+            return pos[0] == s.length() ? date.atStartOfDay() : null;
+        }
+        if (form[0] == SLASHED_DATE) {
+            return pos[0] == s.length() ? date.atStartOfDay() : slashedDateTime(date, s, pos);
         }
         LocalTime time = LocalTime.MIDNIGHT;
         if (skipDateTimeSeparator(s, pos) && pos[0] < s.length()) {
@@ -142,10 +159,44 @@ public final class AutoTemporalParser {
     }
 
     /**
-     * Scan the date part at {@code pos}: {@code YYYY-MM-DD}, {@code MM/DD/YYYY} or {@code DD-MON-YYYY}.
-     * Returns null (leaving {@code pos} unspecified) when the text does not start with a date.
+     * The {@code MM/DD/YYYY HH24:MI:SS} timestamp: blanks after the date, then an hour of one or two digits, its
+     * minutes and its seconds, and nothing after them.
      */
-    private static LocalDate scanDate(final String s, final int[] pos) {
+    private static LocalDateTime slashedDateTime(final LocalDate date, final String s, final int[] pos) {
+        final int start = pos[0];
+        while (pos[0] < s.length() && isBlank(s.charAt(pos[0]))) {
+            pos[0]++;
+        }
+        if (pos[0] == start) {
+            return null;
+        }
+        final int hour = scanDigits(s, pos, 2);
+        if (hour < 0 || pos[0] >= s.length() || s.charAt(pos[0]) != ':') {
+            return null;
+        }
+        pos[0]++;
+        final int minute = scanDigitRun(s, pos);
+        if (minute < 0 || pos[0] >= s.length() || s.charAt(pos[0]) != ':') {
+            return null;
+        }
+        pos[0]++;
+        final int second = scanDigitRun(s, pos);
+        if (second < 0 || pos[0] != s.length()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.of(date, LocalTime.of(hour, minute, second));
+        } catch (final DateTimeException outOfRange) {
+            return null;
+        }
+    }
+
+    /**
+     * Scan the date part at {@code pos}: {@code YYYY-MM-DD}, {@code MM/DD/YYYY} or {@code DD-MON-YYYY}, reporting
+     * which through {@code form}. Returns null (leaving {@code pos} unspecified) when the text does not start with a
+     * date.
+     */
+    private static LocalDate scanDate(final String s, final int[] pos, final int[] form) {
         final int firstStart = pos[0];
         final int first = scanDigitRun(s, pos);
         if (first < 0 || pos[0] >= s.length()) {
@@ -156,6 +207,7 @@ public final class AutoTemporalParser {
 
         if (sep == '/') {
             // MM/DD/YYYY — month and day may be a single digit.
+            form[0] = SLASHED_DATE;
             pos[0]++;
             final int day = scanDigits(s, pos, 2);
             if (day < 0 || pos[0] >= s.length() || s.charAt(pos[0]) != '/') {
@@ -171,6 +223,7 @@ public final class AutoTemporalParser {
         pos[0]++;
         if (pos[0] < s.length() && isLetter(s.charAt(pos[0]))) {
             // DD-MON-YYYY
+            form[0] = NAMED_DATE;
             final int month = scanMonthName(s, pos);
             if (month < 0 || pos[0] >= s.length() || s.charAt(pos[0]) != '-') {
                 return null;
@@ -192,11 +245,19 @@ public final class AutoTemporalParser {
         return day < 0 ? null : dateOf(first, month, day);
     }
 
-    /** Scan {@code HH:MI[:SS[.fraction]]} at {@code pos}; null when it is not a valid time. */
+    /** Scan {@code HH[:MI[:SS[.fraction]]]} at {@code pos}; null when it is not a valid time. */
     private static LocalTime scanTime(final String s, final int[] pos) {
         final int hour = scanDigitRun(s, pos);
-        if (hour < 0 || pos[0] >= s.length() || s.charAt(pos[0]) != ':') {
+        if (hour < 0) {
             return null;
+        }
+        if (pos[0] >= s.length() || s.charAt(pos[0]) != ':') {
+            // An hour alone: YYYY-MM-DD HH24 (documented).
+            try {
+                return LocalTime.of(hour, 0);
+            } catch (final DateTimeException outOfRange) {
+                return null;
+            }
         }
         pos[0]++;
         final int minute = scanDigitRun(s, pos);

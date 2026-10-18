@@ -39,21 +39,20 @@ public final class PythonProcedureExecutor {
     private static final Logger logger = LoggerFactory.getLogger(PythonProcedureExecutor.class);
 
     /**
-     * The pure-Python {@code snowflake.snowpark} emulation, evaluated into each context before a
-     * procedure body so the body's snowpark imports resolve locally. Idempotent (guarded on
-     * {@code sys.modules}), and the per-thread {@link PythonRuntime} source cache makes re-evaluation
-     * per call cheap.
+     * The pure-Python {@code snowflake.snowpark} emulation, installed on each context before a
+     * procedure body so the body's snowpark imports resolve locally. It runs once per context, as a
+     * module of the runtime's own (see {@link PythonRuntime#module}), so its code reads its own names
+     * whatever a routine's body defines, and it installs itself on {@code sys.modules}.
      */
     private static final String SNOWPARK_SHIM = loadSnowparkShim();
 
     /**
-     * Evaluate the snowpark shim into the CURRENT thread's context, so a body's
+     * Install the snowpark shim on the CURRENT thread's context, so a body's
      * {@code from snowflake.snowpark…} import resolves locally. FUNCTIONS need it exactly as
-     * procedures do — a scalar UDF importing snowpark types is a shape the vendor schemas use —
-     * and the shim itself is idempotent (guarded on {@code sys.modules}).
+     * procedures do — a scalar UDF importing snowpark types is a shape the vendor schemas use.
      */
     static void installSnowparkShim() {
-        PythonRuntime.eval(SNOWPARK_SHIM);
+        PythonRuntime.module("__frostlake_snowpark", SNOWPARK_SHIM);
     }
 
     private static String loadSnowparkShim() {
@@ -79,7 +78,9 @@ public final class PythonProcedureExecutor {
         }
 
         RuntimeException typedFailure = null;
+        PythonModuleFrame frame = null;
         try {
+            frame = PythonRuntime.enterModule();
             for (int i = 0; i < parameters.size(); i++) {
                 PythonRuntime.bindArgument(parameters.get(i).getName(), arguments.get(i),
                     parameters.get(i).getDataType());
@@ -94,7 +95,7 @@ public final class PythonProcedureExecutor {
             // snowpark DataFrame code (session.table(...).select(...), df.write, udtf) works; plain
             // session.sql(...).collect()/count() callers see the same surface snowpark itself has.
             PythonRuntime.bind("__frostlake_java_session", session);
-            PythonRuntime.eval(SNOWPARK_SHIM);
+            installSnowparkShim();
             PythonRuntime.eval("import snowflake.snowpark as __frostlake_sp\n"
                 + "session = __frostlake_sp.Session(__frostlake_java_session)\n");
 
@@ -129,31 +130,26 @@ public final class PythonProcedureExecutor {
             }
 
             PythonHandlerCheck.forget(handlerName);
+            if (handlerName != null && !handlerName.isEmpty() && !PythonHandlerCheck.isDotted(handlerName)) {
+                // The body runs first, and a handler it does not define is refused before any call, in the
+                // sentence a function's missing handler gets (live-verified).
+                PythonRuntime.eval(body);
+                if (PythonRuntime.global(handlerName) == null) {
+                    typedFailure = new RuntimeException("Could not find handler in function " + procedure.getName()
+                        + " with handler " + handlerName);
+                    throw typedFailure;
+                }
+                pythonCode = pythonCode.substring(body.length() + 1);
+            }
             PythonRuntime.eval(pythonCode);
 
             // A procedure that answers a value answers it as its declared RETURNS type, converted as Python
             // converts and judged as the account judges it (see PythonReturn).
-            final String kind = procedure.returnsTable() ? null : PythonReturn.kindOf(procedure.getReturnType());
-            if (kind != null) {
-                PythonRuntime.eval(PythonReturn.CONVERT);
-                PythonRuntime.eval("try:\n    __fl_outcome, __fl_text = __fl_convert(__result, '" + kind + "', "
-                    + PythonReturn.scaleOf(procedure.getReturnType()) + ")\n"
-                    + "except Exception as __fl_error:\n"
-                    + "    __fl_outcome, __fl_text = 'raise', type(__fl_error).__name__ + ': ' + str(__fl_error)\n");
-                final String outcome = PythonRuntime.global("__fl_outcome").asString();
-                final String text = PythonRuntime.global("__fl_text").asString();
-                if ("raise".equals(outcome)) {
-                    typedFailure = new RuntimeException("Python Interpreter Error:\n" + text + " in function "
-                        + procedure.getName() + " with handler " + procedure.getHandler());
-                    throw typedFailure;
-                }
-                if (!"pass".equals(outcome)) {
-                    try {
-                        return PythonReturn.toSql(outcome, text, procedure);
-                    } catch (final RuntimeException refused) {
-                        typedFailure = refused;
-                        throw refused;
-                    }
+            if (!procedure.returnsTable()) {
+                final Object declared = PythonReturn.declared(PythonRuntime.global("__result"),
+                    procedure.getReturnType(), procedure.getName(), procedure.getHandler());
+                if (declared != PythonReturn.AS_IS) {
+                    return declared;
                 }
             }
 
@@ -177,10 +173,13 @@ public final class PythonProcedureExecutor {
 
             return javaResult;
 
+        } catch (final PythonReturnRefusal refused) {
+            // The handler ran; what it handed back does not fit the declared type. The refusal is worded already,
+            // and the interpreter is as sound as it was.
+            throw refused;
         } catch (final Exception e) {
             if (e == typedFailure) {
-                // The handler ran; what it handed back does not fit the declared type. The refusal is worded
-                // already, and the interpreter is as sound as it was.
+                // The body ran and defines no such handler; the refusal is worded already.
                 throw typedFailure;
             }
             // Worded before the context is settled: a discarded context answers nothing more of its failure, so the
@@ -192,6 +191,8 @@ public final class PythonProcedureExecutor {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
+        } finally {
+            PythonRuntime.leaveModule(frame);
         }
     }
 

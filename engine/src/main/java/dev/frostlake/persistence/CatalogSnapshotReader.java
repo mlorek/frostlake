@@ -325,7 +325,7 @@ final class CatalogSnapshotReader {
         GrantNames.qualifyLegacy(catalog);
 
         // The dropped versions UNDROP can still restore, which a snapshot written before they were kept has none of.
-        DroppedObjectSnapshots.restore(snapshot.droppedObjects, catalog, s3Resolver);
+        DroppedObjectSnapshots.restore(snapshot.droppedObjects, catalog, s3Resolver, storageEngine);
         // Restore current context
         if (snapshot.currentDatabase != null) {
             catalog.useDatabase(snapshot.currentDatabase);
@@ -443,43 +443,7 @@ final class CatalogSnapshotReader {
             for (final TableSnapshot tableSnapshot : schemaSnapshot.tables) {
                 final List<TableColumn> columns = new ArrayList<>();
                 for (final ColumnSnapshot colSnapshot : tableSnapshot.columns) {
-                    // Identity start/increment only apply when autoIncrement; for other columns pass the
-                    // model default (1/1). Old snapshots have autoIncrement=false, so identity is irrelevant.
-                    final long identityStart = colSnapshot.autoIncrement ? colSnapshot.identityStart : 1L;
-                    final long identityIncrement = colSnapshot.autoIncrement ? colSnapshot.identityIncrement : 1L;
-                    // Re-wrap an expression default so INSERT evaluates it again; a literal stays a plain value.
-                    final Object columnDefault = colSnapshot.defaultIsExpression && colSnapshot.defaultValue != null
-                        ? new DefaultValueExpression(colSnapshot.defaultValue)
-                        : colSnapshot.defaultLiteral != null ? colSnapshot.defaultLiteral : colSnapshot.defaultValue;
-                    final TableColumn col = new TableColumn(
-                        colSnapshot.name,
-                        restoredColumnType(colSnapshot),
-                        colSnapshot.nullable,
-                        columnDefault,
-                        colSnapshot.primaryKey,
-                        colSnapshot.unique,
-                        colSnapshot.autoIncrement,
-                        identityStart,
-                        identityIncrement
-                    );
-                    col.setIdentityOrdered(colSnapshot.autoIncrement && colSnapshot.identityOrdered);
-                    col.setComment(colSnapshot.comment);
-                    col.setMaskingPolicyName(colSnapshot.maskingPolicyName);
-                    col.setMaskingPolicyArguments(colSnapshot.maskingPolicyArguments);
-                    col.setProjectionPolicyName(colSnapshot.projectionPolicyName);
-                    col.setCollation(colSnapshot.collation);
-                    col.setFormatType(colSnapshot.formatType);
-                    col.setOrdinalPosition(colSnapshot.ordinalPosition);
-                    SnapshotTags.restore(col, colSnapshot.tags);
-                    // Column-level FOREIGN KEY (REFERENCES) and its RELY flag, when present.
-                    if (colSnapshot.referencedTable != null) {
-                        col.setReferencedTable(colSnapshot.referencedTable);
-                        col.setReferencedColumn(colSnapshot.referencedColumn);
-                        col.setOnDelete(colSnapshot.onDelete);
-                        col.setOnUpdate(colSnapshot.onUpdate);
-                    }
-                    col.setRely(colSnapshot.rely);
-                    columns.add(col);
+                    columns.add(restoredColumn(colSnapshot));
                 }
 
                 final Table table = new Table(tableSnapshot.name, columns,
@@ -696,6 +660,9 @@ final class CatalogSnapshotReader {
                         stream.setBaseTableName(streamSnapshot.baseTableName);
                     }
                     stream.setStale(streamSnapshot.stale);
+                    if (streamSnapshot.lostInClone) {
+                        stream.markLostInClone();
+                    }
                     stream.setComment(streamSnapshot.comment);
                     if (streamSnapshot.owner != null) {
                         stream.setOwner(streamSnapshot.owner);
@@ -1066,6 +1033,11 @@ final class CatalogSnapshotReader {
                     if (dtSnapshot.dataRetentionDays != null) {
                         dt.setDataRetentionDays(dtSnapshot.dataRetentionDays);
                     }
+                    if (dtSnapshot.parameters != null) {
+                        for (final Map.Entry<String, String> parameter : dtSnapshot.parameters.entrySet()) {
+                            dt.setParameter(parameter.getKey(), parameter.getValue());
+                        }
+                    }
                     if (dtSnapshot.maxDataExtensionDays != null) {
                         dt.setMaxDataExtensionDays(dtSnapshot.maxDataExtensionDays);
                     }
@@ -1148,6 +1120,52 @@ final class CatalogSnapshotReader {
     }
 
     /**
+     * A table column as a snapshot kept it: a live table's, or one of a past shape's.
+     *
+     * @param colSnapshot the saved column
+     * @return the column
+     */
+    static TableColumn restoredColumn(final ColumnSnapshot colSnapshot) {
+        // Identity start/increment only apply when autoIncrement; for other columns pass the
+        // model default (1/1). Old snapshots have autoIncrement=false, so identity is irrelevant.
+        final long identityStart = colSnapshot.autoIncrement ? colSnapshot.identityStart : 1L;
+        final long identityIncrement = colSnapshot.autoIncrement ? colSnapshot.identityIncrement : 1L;
+        // Re-wrap an expression default so INSERT evaluates it again; a literal stays a plain value.
+        final Object columnDefault = colSnapshot.defaultIsExpression && colSnapshot.defaultValue != null
+            ? new DefaultValueExpression(colSnapshot.defaultValue)
+            : colSnapshot.defaultLiteral != null ? colSnapshot.defaultLiteral : colSnapshot.defaultValue;
+        final TableColumn col = new TableColumn(
+            colSnapshot.name,
+            restoredColumnType(colSnapshot),
+            colSnapshot.nullable,
+            columnDefault,
+            colSnapshot.primaryKey,
+            colSnapshot.unique,
+            colSnapshot.autoIncrement,
+            identityStart,
+            identityIncrement
+        );
+        col.setIdentityOrdered(colSnapshot.autoIncrement && colSnapshot.identityOrdered);
+        col.setComment(colSnapshot.comment);
+        col.setMaskingPolicyName(colSnapshot.maskingPolicyName);
+        col.setMaskingPolicyArguments(colSnapshot.maskingPolicyArguments);
+        col.setProjectionPolicyName(colSnapshot.projectionPolicyName);
+        col.setCollation(colSnapshot.collation);
+        col.setFormatType(colSnapshot.formatType);
+        col.setOrdinalPosition(colSnapshot.ordinalPosition);
+        SnapshotTags.restore(col, colSnapshot.tags);
+        // Column-level FOREIGN KEY (REFERENCES) and its RELY flag, when present.
+        if (colSnapshot.referencedTable != null) {
+            col.setReferencedTable(colSnapshot.referencedTable);
+            col.setReferencedColumn(colSnapshot.referencedColumn);
+            col.setOnDelete(colSnapshot.onDelete);
+            col.setOnUpdate(colSnapshot.onUpdate);
+        }
+        col.setRely(colSnapshot.rely);
+        return col;
+    }
+
+    /**
      * Load table data from disk
      */
     static void loadTableData(final TableDataStore tableData, final String database, final String schema,
@@ -1163,7 +1181,20 @@ final class CatalogSnapshotReader {
         final String qualifiedName = QualifiedName.key(database, schema, table.getName());
         final TableStorage storage = shadowed
             ? storageEngine.getShadowedTableStorage(qualifiedName) : storageEngine.getTableStorage(qualifiedName);
+        fillTableData(storage, table, dataSnapshot);
+        logger.debug("Loaded table data: {}.{}.{} ({} rows)",
+                    database, schema, table.getName(), dataSnapshot.rows.size());
+    }
 
+    /**
+     * Fills a table's empty storage with what a snapshot saved of it: its rows, under the identities they had, and its
+     * time-travel history — a live table's, or a dropped table's that waits for its UNDROP.
+     *
+     * @param storage      the storage
+     * @param table        the table
+     * @param dataSnapshot the saved rows and history
+     */
+    static void fillTableData(final TableStorage storage, final Table table, final TableDataSnapshot dataSnapshot) {
         // Insert all rows — each row's values defensively copied, so a snapshot applied from memory
         // never shares mutable lists with the engine it builds — under the identities they had.
         final boolean keptIds = dataSnapshot.rowIds != null && dataSnapshot.rowIds.size() == dataSnapshot.rows.size();
@@ -1178,15 +1209,16 @@ final class CatalogSnapshotReader {
         if (dataSnapshot.history != null) {
             restoreHistory(storage, table, dataSnapshot.history, keptIds);
         }
-        logger.debug("Loaded table data: {}.{}.{} ({} rows)",
-                    database, schema, table.getName(), dataSnapshot.rows.size());
     }
 
     /**
      * Puts a table's time-travel history back on its storage, just filled with the saved rows. A saved identity is
      * kept where the rows kept theirs, and is otherwise renumbered: a snapshot's row that is stored now is that stored
      * row, and a past row an UPDATE rewrote shares its identity with the row stored now. The snapshots hold their rows
-     * in the table's current columns, as the saved ones did, so their shape is the one the table has now.
+     * in the table's current columns, as the saved ones did. The table's shapes come back first, and each snapshot
+     * takes the one it was taken in, with its rows as it took them, so a clone as of a point before a column change
+     * takes the shape and the rows of the point; a snapshot written before shapes were kept takes the shape the table
+     * has now.
      *
      * @param storage the table's storage, holding the saved rows in their saved order
      * @param table   the table
@@ -1217,7 +1249,15 @@ final class CatalogSnapshotReader {
             past.add(new Row(new ArrayList<>(history.pastRows.get(p))));
             pastIds.add(id);
         }
+        final List<TableStructure> shapes = restoredStructures(history);
+        table.restoreStructureHistory(shapes);
         final TableStructure layout = table.currentStructure();
+        final List<Row> taken = new ArrayList<>();
+        if (history.takenRows != null) {
+            for (final List<Object> values : history.takenRows) {
+                taken.add(new Row(new ArrayList<>(values)));
+            }
+        }
         final List<dev.frostlake.storage.TableSnapshot> restored = new ArrayList<>(history.points.size());
         for (final TableHistoryPoint point : history.points) {
             final List<Row> rows = new ArrayList<>(point.rows.size());
@@ -1231,10 +1271,35 @@ final class CatalogSnapshotReader {
                     rowIds.add(pastIds.get(place));
                 }
             }
+            final boolean ownShape = point.layout != null && point.layout >= 0 && point.layout < shapes.size();
+            List<Row> asTaken = null;
+            if (ownShape && point.takenRows != null) {
+                asTaken = new ArrayList<>(point.takenRows.size());
+                for (final Integer index : point.takenRows) {
+                    asTaken.add(taken.get(index));
+                }
+            }
             restored.add(new dev.frostlake.storage.TableSnapshot(point.epochMillis, point.sequence, rows, rowIds,
-                layout, null));
+                ownShape ? shapes.get(point.layout) : layout, asTaken));
         }
         storage.restoreHistory(history.startMillis, history.startSequence, history.evicted, restored);
+    }
+
+    /** The table's shapes a history saved, oldest first; none for a history written before shapes were kept. */
+    private static List<TableStructure> restoredStructures(final TableHistorySnapshot history) {
+        final List<TableStructure> shapes = new ArrayList<>();
+        if (history.structures == null) {
+            return shapes;
+        }
+        for (final TableStructureSnapshot saved : history.structures) {
+            final List<TableColumn> columns = new ArrayList<>(saved.columns.size());
+            for (final ColumnSnapshot column : saved.columns) {
+                columns.add(restoredColumn(column));
+            }
+            shapes.add(TableStructure.restored(saved.fromMillis, saved.fromSequence, columns, saved.highestOrdinal));
+            SnapshotSequence.advancePast(saved.fromSequence);
+        }
+        return shapes;
     }
 
     /**

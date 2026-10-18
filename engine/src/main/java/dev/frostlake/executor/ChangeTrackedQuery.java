@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
@@ -29,7 +30,9 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -92,10 +95,123 @@ public final class ChangeTrackedQuery {
         if (!judged.walk(query)) {
             return null;
         }
-        final String place = judged.at == null ? "line 0 at position -1"
-            : "line " + judged.at.getLine() + " at position " + judged.at.getCharPositionInLine();
-        return SqlCompilationError.PREFIX + " " + place + ":\n" + judged.refusal
-            + (judged.insideView == null ? "" : " (inside view '" + judged.insideView + "').");
+        return judged.sentence(judged.insideView);
+    }
+
+    /**
+     * The refusal of a view whose query cannot track its changes, as an ALTER VIEW ... SET CHANGE_TRACKING = TRUE
+     * gives it: the place counted in the view's own CREATE statement, the view named as the one the refusal is
+     * inside (live-verified).
+     *
+     * @param catalog  the catalog
+     * @param database the view's database
+     * @param schema   the view's schema
+     * @param view     the view
+     * @return the refusal, or null when the view can track its changes
+     */
+    public static String viewRefusal(final Catalog catalog, final String database, final String schema,
+                                     final View view) {
+        final FrostlakeParser.SelectStatementContext body = body(view);
+        if (body == null) {
+            return null;
+        }
+        final ChangeTrackedQuery judged = new ChangeTrackedQuery(catalog, database, schema, 1, body);
+        if (!judged.walk(body)) {
+            return null;
+        }
+        return judged.sentence(judged.insideView != null ? judged.insideView
+            : database + "." + schema + "." + view.getName());
+    }
+
+    /**
+     * The tables a view reads, through the views it reads too: those whose change tracking turns on with the view's.
+     *
+     * @param catalog  the catalog
+     * @param database the view's database
+     * @param schema   the view's schema
+     * @param view     the view
+     * @return the tables, each once
+     */
+    public static List<Table> trackedTables(final Catalog catalog, final String database, final String schema,
+                                            final View view) {
+        final List<Table> tables = new ArrayList<>();
+        collectTables(catalog, database, schema, body(view), 0, tables);
+        return tables;
+    }
+
+    /**
+     * The tables a view's query reads, through the views it reads too, as a CREATE VIEW ... CHANGE_TRACKING = TRUE
+     * turns their change tracking on with the view's.
+     *
+     * @param catalog the catalog, its session's database and schema in force
+     * @param query   the view's query
+     * @return the tables, each once
+     */
+    public static List<Table> trackedTables(final Catalog catalog, final FrostlakeParser.SelectStatementContext query) {
+        final List<Table> tables = new ArrayList<>();
+        collectTables(catalog, catalog.getCurrentDatabase(), catalog.getCurrentSchema(), query, 0, tables);
+        return tables;
+    }
+
+    private static void collectTables(final Catalog catalog, final String database, final String schema,
+                                      final FrostlakeParser.SelectStatementContext body, final int depth,
+                                      final List<Table> out) {
+        if (body == null || depth >= MAX_DEPTH) {
+            return;
+        }
+        final Set<String> ctes = new HashSet<>();
+        QueryExecutor.collectCteNames(body, ctes);
+        final List<FrostlakeParser.TableQualifiedNameContext> names = new ArrayList<>();
+        relationNames(body, names);
+        for (final FrostlakeParser.TableQualifiedNameContext name : names) {
+            if (ctes.contains(ParseTreeText.getQualifiedName(name).toUpperCase(Locale.ROOT))) {
+                continue;
+            }
+            final String[] parts = catalog.withoutAccount(ParseTreeText.qualifiedNameParts(name), 3);
+            final String relationDatabase = parts.length == 3 ? parts[0] : database;
+            final String relationSchema = parts.length >= 2 ? parts[parts.length - 2] : schema;
+            final Schema container = schemaNamed(catalog, relationDatabase, relationSchema);
+            final String relation = parts[parts.length - 1];
+            if (container == null) {
+                continue;
+            }
+            if (container.hasViewExact(relation)) {
+                collectTables(catalog, relationDatabase, relationSchema, body(container.getView(relation)), depth + 1,
+                    out);
+            } else if (container.tableExact(relation) != null && !out.contains(container.tableExact(relation))) {
+                out.add(container.tableExact(relation));
+            }
+        }
+    }
+
+    private static void relationNames(final ParseTree node, final List<FrostlakeParser.TableQualifiedNameContext> out) {
+        if (node instanceof FrostlakeParser.TableSourceContext
+                && ((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null) {
+            out.add(((FrostlakeParser.TableSourceContext) node).tableQualifiedName());
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            relationNames(node.getChild(i), out);
+        }
+    }
+
+    private static Schema schemaNamed(final Catalog catalog, final String database, final String schema) {
+        if (database == null || schema == null) {
+            return null;
+        }
+        try {
+            final Database holder = catalog.databaseExact(database);
+            return holder == null ? null : holder.schemaExact(schema);
+        } catch (final RuntimeException missing) {
+            return null;
+        }
+    }
+
+    /** The refusal's sentence: the place, the construct, and the view it is inside, if any. */
+    private String sentence(final String inside) {
+        final String place = at == null ? "line 0 at position -1"
+            : "line " + at.getLine() + " at position " + at.getCharPositionInLine();
+        return SqlCompilationError.PREFIX + " " + place + ":\n" + refusal
+            + (inside == null ? "" : " (inside view '" + inside + "').");
     }
 
     /**

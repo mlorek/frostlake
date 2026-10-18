@@ -20,8 +20,7 @@ import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
-import dev.frostlake.types.TypeCategory;
-import dev.frostlake.values.BinaryValue;
+import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -55,14 +54,20 @@ public final class PythonExecutor {
                 + parameters.size() + " arguments but got " + arguments.size());
         }
 
+        PythonModuleFrame frame = null;
         try {
+            frame = PythonRuntime.enterModule();
             for (int i = 0; i < parameters.size(); i++) {
-                // Bind each argument under both its canonical (upper-cased) name and its lower-cased form:
-                // the generated def uses the canonical name, a lower-case body reference finds the global.
+                // Bind each argument as the Python value its parameter's type maps to (see
+                // PythonRuntime.bindArgument), under both its canonical (upper-cased) name and its lower-cased
+                // form: the generated def uses the canonical name, a lower-case body reference finds the global.
                 final Parameter parameter = parameters.get(i);
                 final String pName = parameter.getName();
-                bindArgument(parameter, pName, arguments.get(i));
-                bindArgument(parameter, pName.toLowerCase(Locale.ROOT), arguments.get(i));
+                PythonRuntime.bindArgument(pName, arguments.get(i), parameter.getDataType());
+                final String lower = pName.toLowerCase(Locale.ROOT);
+                if (!lower.equals(pName)) {
+                    PythonRuntime.alias(lower, pName);
+                }
             }
 
             // A FUNCTION body may import snowflake.snowpark exactly like a procedure body; the
@@ -73,9 +78,11 @@ public final class PythonExecutor {
             }
             PythonRuntime.eval(buildCode(function, parameters));
 
-            final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
+            final Object answer = answered(function);
             logger.debug("Python function {} executed successfully", function.getName());
-            return sqlResult(javaResult);
+            return answer;
+        } catch (final PythonReturnRefusal refused) {
+            throw refused;
         } catch (final Exception e) {
             // Worded before the context is settled (see PythonRuntime.settleAfter): a discarded context answers
             // nothing more of its failure, so the refusal then travels as text alone.
@@ -86,7 +93,21 @@ public final class PythonExecutor {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
+        } finally {
+            PythonRuntime.leaveModule(frame);
         }
+    }
+
+    /**
+     * What the handler left in {@code __result}, as the function's RETURNS type holds it: converted as Python
+     * converts and judged as the account judges it (see {@link PythonReturn}), and a type that takes the answer as
+     * the runtime holds it reading a dict or a list as a VARIANT.
+     */
+    private static Object answered(final Function function) {
+        final Value answer = PythonRuntime.global("__result");
+        final Object declared = PythonReturn.declared(answer, function.getReturnType(), function.getName(),
+            function.getHandler());
+        return declared != PythonReturn.AS_IS ? declared : sqlResult(PythonRuntime.toJava(answer));
     }
 
     /**
@@ -120,7 +141,9 @@ public final class PythonExecutor {
     static Object executePythonAggregate(final Function function, final List<List<Object>> rows) {
         final List<Parameter> parameters = function.getParameters();
         final String handlerName = function.getHandler();
+        PythonModuleFrame frame = null;
         try {
+            frame = PythonRuntime.enterModule();
             PythonProcedureExecutor.installSnowparkShim();
             PythonRuntime.eval(dedent(function.getBody()));
             if (PythonHandlerCheck.isDotted(handlerName)) {
@@ -136,12 +159,15 @@ public final class PythonExecutor {
             final String accumulate = call.append(')').toString();
             for (final List<Object> row : rows) {
                 for (int i = 0; i < parameters.size(); i++) {
-                    bindArgument(parameters.get(i), AGGREGATE_ARGUMENT + i, i < row.size() ? row.get(i) : null);
+                    PythonRuntime.bindArgument(AGGREGATE_ARGUMENT + i, i < row.size() ? row.get(i) : null,
+                        parameters.get(i).getDataType());
                 }
                 PythonRuntime.eval(accumulate);
             }
             PythonRuntime.eval("__result = __fl_aggregate.finish()");
-            return sqlResult(PythonRuntime.toJava(PythonRuntime.global("__result")));
+            return answered(function);
+        } catch (final PythonReturnRefusal refused) {
+            throw refused;
         } catch (final Exception e) {
             final String refusal = PythonRuntimeDiagnostics.describeFailure(
                 "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
@@ -149,6 +175,8 @@ public final class PythonExecutor {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
+        } finally {
+            PythonRuntime.leaveModule(frame);
         }
     }
 
@@ -162,30 +190,36 @@ public final class PythonExecutor {
      * identical nonsense body is refused for a function and accepted for a procedure.
      */
     static void compilePythonFunction(final Function function) {
+        PythonModuleFrame frame = null;
         try {
-            // The body's module-level snowpark imports must resolve at CREATE exactly as they do at
-            // execution; without the shim the compile refused every function importing snowpark.
-            PythonProcedureExecutor.installSnowparkShim();
-            PythonHandlerCheck.forget(function.getHandler());
-            PythonRuntime.eval(dedent(function.getBody()));
-        } catch (final Exception e) {
-            // Same discipline as execution (see PythonRuntime.settleAfter).
-            final String refusal = PythonRuntimeDiagnostics.describeFailure(
-                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
-            if (!PythonRuntime.settleAfter(e)) {
-                throw new RuntimeException(refusal);
+            try {
+                frame = PythonRuntime.enterModule();
+                // The body's module-level snowpark imports must resolve at CREATE exactly as they do at
+                // execution; without the shim the compile refused every function importing snowpark.
+                PythonProcedureExecutor.installSnowparkShim();
+                PythonHandlerCheck.forget(function.getHandler());
+                PythonRuntime.eval(dedent(function.getBody()));
+            } catch (final Exception e) {
+                // Same discipline as execution (see PythonRuntime.settleAfter).
+                final String refusal = PythonRuntimeDiagnostics.describeFailure(
+                    "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
+                if (!PythonRuntime.settleAfter(e)) {
+                    throw new RuntimeException(refusal);
+                }
+                throw new RuntimeException(refusal, e);
             }
-            throw new RuntimeException(refusal, e);
-        }
-        final String handlerName = function.getHandler();
-        if (handlerName == null) {
-            return;
-        }
-        final String refusal = PythonHandlerCheck.refusal(handlerName, function.isTableFunction(),
-            function.isAggregate(), function.getParameters() == null ? 0 : function.getParameters().size());
-        if (refusal != null) {
-            throw new RuntimeException(refusal + (handlerName.isEmpty() ? " in function " + function.getName()
-                : " in function " + function.getName() + " with handler " + handlerName));
+            final String handlerName = function.getHandler();
+            if (handlerName == null) {
+                return;
+            }
+            final String refusal = PythonHandlerCheck.refusal(handlerName, function.isTableFunction(),
+                function.isAggregate(), function.getParameters() == null ? 0 : function.getParameters().size());
+            if (refusal != null) {
+                throw new RuntimeException(refusal + (handlerName.isEmpty() ? " in function " + function.getName()
+                    : " in function " + function.getName() + " with handler " + handlerName));
+            }
+        } finally {
+            PythonRuntime.leaveModule(frame);
         }
     }
 
@@ -282,23 +316,6 @@ public final class PythonExecutor {
             }
         }
         return result.toString().trim();
-    }
-
-    /**
-     * Bind one argument. A parameter DECLARED as semi-structured (ARRAY / OBJECT / VARIANT) has its JSON
-     * text turned into native Python dict/list values so the handler can index/iterate it; everything else is
-     * bound as-is, so a VARCHAR that merely looks like JSON still arrives as a string.
-     */
-    private static void bindArgument(final Parameter parameter, final String name, final Object value) {
-        if (parameter.getDataType() != null
-                && parameter.getDataType().getCategory() == TypeCategory.SEMI_STRUCTURED
-                && PythonRuntime.bindJson(name, value)) {
-            return;
-        }
-        if (value instanceof BinaryValue && PythonRuntime.bindBytes(name, ((BinaryValue) value).toHex())) {
-            return;
-        }
-        PythonRuntime.bind(name, value);
     }
 
     /**

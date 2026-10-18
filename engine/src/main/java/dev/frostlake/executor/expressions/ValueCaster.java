@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SessionInputFormats;
 import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SignedStorageWidth;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
@@ -180,15 +181,16 @@ public final class ValueCaster {
                 return SemiStructuredCasts.toObjectText(value);
 
             case BINARY:
-                // Snowflake's VARCHAR-to-BINARY cast interprets the string as hex (an illegal hex
-                // string is an error); an existing binary value passes through unchanged.
+                // Snowflake's VARCHAR-to-BINARY cast reads the string as the session's BINARY_INPUT_FORMAT says,
+                // hex unless set (a string that format refuses is an error); an existing binary value passes
+                // through unchanged.
                 if (value instanceof BinaryValue) {
                     return value;
                 }
                 if (value instanceof byte[]) {
                     return BinaryValue.of((byte[]) value);
                 }
-                return BinaryValue.fromHex(value.toString());
+                return SessionInputFormats.binary(value.toString());
 
             default:
                 return value;
@@ -224,6 +226,10 @@ public final class ValueCaster {
         final int open = targetType.indexOf('(');
         final int close = targetType.indexOf(')');
         if (open < 0 || close <= open) {
+            // A bare NUMBER is NUMBER(38,0): a text past it is refused as that one would refuse it.
+            if (source instanceof CharSequence && NumericRangeRefusal.exceeds(number, MAX_NUMBER_PRECISION, 0)) {
+                throw new RuntimeException(rangeRefusal(number, source, MAX_NUMBER_PRECISION, 0, nullableSource));
+            }
             return number.setScale(0, RoundingMode.HALF_UP);
         }
         final String[] parts = targetType.substring(open + 1, close).split(",");

@@ -379,13 +379,14 @@ public final class AccessControlHandler {
                 throw new RuntimeException(SqlCompilationError.of("Cannot grant database role '"
                     + shown(role.getDatabase(), role.getName()) + "' to itself."));
             }
+            requireDatabaseRoleAuthority(role);
             holder.grantDatabaseRole(role.getQualifiedName(), grantor);
         } else if (ctx.USER() != null) {
             final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
-            holder.grantDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
+            holder.grantDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
-            holder.grantDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
+            holder.grantDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         }
         return null;
     }
@@ -395,15 +396,33 @@ public final class AccessControlHandler {
         if (ctx.databaseRoleGrantee() != null) {
             final DatabaseRole holder = databaseRole(catalog,
                 PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
-            holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
+            holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else if (ctx.USER() != null) {
             final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
-            holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
+            holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
-            holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
+            holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         }
         return null;
+    }
+
+    /** {@link #grantedDatabaseRole}, once the session is found to decide its grants. */
+    private DatabaseRole authorizedDatabaseRole(final FrostlakeParser.ReferencedNameContext name) {
+        final DatabaseRole role = grantedDatabaseRole(name);
+        requireDatabaseRoleAuthority(role);
+        return role;
+    }
+
+    /**
+     * GRANT and REVOKE DATABASE ROLE are decided by the database role's owner beside the roles that decide every
+     * grant: the SYSTEM user's, an administrative role and a role holding MANAGE GRANTS.
+     */
+    private void requireDatabaseRoleAuthority(final DatabaseRole role) {
+        if (queryExecutor.getSecurityManager() != null) {
+            queryExecutor.getSecurityManager().checkManageGrants("database role '" + role.getQualifiedName() + "'",
+                "DATABASE ROLE", role.getQualifiedName(), role.getOwner());
+        }
     }
 
     /**

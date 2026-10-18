@@ -40,6 +40,8 @@ public class StreamSnapshot implements Serializable {
     public String streamType;
     public boolean showInitialRows;
     public boolean stale;
+    // Whether the stream is a table stream a clone made lost. False on older snapshots.
+    public boolean lostInClone;
     public String comment;
     public String owner;
     public List<StreamRecordSnapshot> records = new ArrayList<>();

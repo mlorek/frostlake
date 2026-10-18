@@ -144,6 +144,10 @@ public final class DdlStatusMessage {
         if (statement != null && branch != null) {
             final String name = referencedName != null ? referencedName : objectName(statement);
             if (name != null) {
+                if (branch == ConditionalDdlBranch.CREATED_UNVALIDATED) {
+                    // A temporary Python or Java function's handler waits for the first call (live-verified).
+                    return "Temporary function " + name + " successfully created, but not validated.";
+                }
                 if (branch == ConditionalDdlBranch.CREATE_SKIPPED) {
                     return name + " already exists, statement succeeded.";
                 }

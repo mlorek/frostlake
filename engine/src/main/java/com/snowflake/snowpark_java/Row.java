@@ -17,13 +17,19 @@
 package com.snowflake.snowpark_java;
 
 import com.snowflake.snowpark.SnowparkClientException;
+import com.snowflake.snowpark_java.types.Geography;
+import com.snowflake.snowpark_java.types.Geometry;
 import com.snowflake.snowpark_java.types.Variant;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.GeoValue;
 import dev.frostlake.values.VariantValue;
+
+import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Date;
+import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -37,6 +43,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -50,8 +57,17 @@ import java.util.Map;
  */
 public class Row {
 
-    /** The digits a whole number may have and still be handed over as a Long. */
-    private static final int LONG_DIGITS = 18;
+    /** The smallest whole number a cell of no scale may hold and still be handed over. */
+    private static final BigInteger LONG_MIN = BigInteger.valueOf(Long.MIN_VALUE);
+
+    /** The largest whole number a cell of no scale may hold and still be handed over. */
+    private static final BigInteger LONG_MAX = BigInteger.valueOf(Long.MAX_VALUE);
+
+    /** The SQLSTATE of the driver's refusal of a whole number no Long holds. */
+    private static final String NOT_CONVERTED_STATE = "0A000";
+
+    /** The driver's error code for that refusal. */
+    private static final int NOT_CONVERTED_CODE = 200038;
 
     private final Object[] values;
 
@@ -72,17 +88,33 @@ public class Row {
         return values.length;
     }
 
+    /** The cell, a geospatial one as the {@code com.snowflake.snowpark_java.types} class of its kind. */
     public Object get(final int index) {
-        return values[index];
+        return javaValue(values[index]);
     }
 
     public boolean isNullAt(final int index) {
         return values[index] == null;
     }
 
-    /** The row's values, in their order. */
+    /** The row's values, in their order, each as {@link #get} hands it. */
     public List<Object> toList() {
-        return Collections.unmodifiableList(Arrays.asList(Arrays.copyOf(values, values.length)));
+        final Object[] read = new Object[values.length];
+        for (int i = 0; i < values.length; i++) {
+            read[i] = javaValue(values[i]);
+        }
+        return Collections.unmodifiableList(Arrays.asList(read));
+    }
+
+    /** A value as the Java surface hands it: a geospatial one as that surface's class, any other as it is. */
+    private static Object javaValue(final Object value) {
+        if (value instanceof com.snowflake.snowpark.types.Geography) {
+            return Geography.fromGeoJSON(((com.snowflake.snowpark.types.Geography) value).asGeoJSON());
+        }
+        if (value instanceof com.snowflake.snowpark.types.Geometry) {
+            return Geometry.fromGeoJSON(value.toString());
+        }
+        return value;
     }
 
     @Override
@@ -106,6 +138,10 @@ public class Row {
                 told.append(told.length() > 1 ? "," : "").append(one);
             }
             return told.append(']').toString();
+        }
+        if (value instanceof com.snowflake.snowpark.types.Geography
+                || value instanceof com.snowflake.snowpark.types.Geometry) {
+            return value.toString();
         }
         return (String) value;
     }
@@ -175,6 +211,40 @@ public class Row {
         return (Row) values[index];
     }
 
+    /**
+     * A GEOGRAPHY's cell. Any other cell fails the cast to the class Snowpark holds it as, {@code class
+     * java.lang.Long cannot be cast to class com.snowflake.snowpark.types.Geography}, and a NULL is no value
+     * (live-verified).
+     */
+    public Geography getGeography(final int index) {
+        final Object value = values[index];
+        if (value instanceof Geography) {
+            return (Geography) value;
+        }
+        final com.snowflake.snowpark.types.Geography held = (com.snowflake.snowpark.types.Geography) value;
+        if (held == null) {
+            throw new NullPointerException();
+        }
+        return Geography.fromGeoJSON(held.asGeoJSON());
+    }
+
+    /**
+     * A GEOMETRY's cell. Any other cell fails the cast to the class Snowpark holds it as, a GEOGRAPHY's among them
+     * — {@code class com.snowflake.snowpark.types.Geography cannot be cast to class
+     * com.snowflake.snowpark.types.Geometry} — and a NULL is no value (live-verified).
+     */
+    public Geometry getGeometry(final int index) {
+        final Object value = values[index];
+        if (value instanceof Geometry) {
+            return (Geometry) value;
+        }
+        final com.snowflake.snowpark.types.Geometry held = (com.snowflake.snowpark.types.Geometry) value;
+        if (held == null) {
+            throw new NullPointerException();
+        }
+        return Geometry.fromGeoJSON(held.toString());
+    }
+
     public List<?> getList(final int index) {
         return (List<?>) values[index];
     }
@@ -234,17 +304,44 @@ public class Row {
     /**
      * A row of the engine's cells, each as the class Snowpark hands a handler: a NUMBER of no scale a Long and
      * one with a scale a BigDecimal, a FLOAT a Double, a DATE, a TIME and a TIMESTAMP the java.sql classes, a
-     * BINARY its bytes, and a VARIANT, an ARRAY or an OBJECT its JSON text (live-verified).
+     * BINARY its bytes, a VARIANT, an ARRAY or an OBJECT its JSON text, and a GEOGRAPHY or a GEOMETRY its
+     * GeoJSON (live-verified). A whole number no Long holds is not handed over at all: the driver under Snowpark
+     * reads a NUMBER of no scale as a Long, and the collect fails, {@code Cannot convert value in the driver from
+     * type:FIXED(null,null) to type:Long, value=12345678901234567890.}, as a {@link SQLException} of SQLSTATE
+     * 0A000 and code 200038 — over a table's NUMBER(38,0) column as over a literal, whichever row holds it.
      *
      * @param cells the engine's values
+     * @param whole for each cell, whether its column is a NUMBER of no scale; null where no column is known
      * @return the row a handler reads
      */
-    static Row ofEngineCells(final List<Object> cells) {
+    static Row ofEngineCells(final List<Object> cells, final boolean[] whole) {
         final Object[] read = new Object[cells == null ? 0 : cells.size()];
         for (int i = 0; i < read.length; i++) {
-            read[i] = handed(cells.get(i));
+            final Object cell = cells.get(i);
+            read[i] = whole != null && i < whole.length && whole[i] && cell instanceof Number
+                ? wholeNumber((Number) cell) : handed(cell);
         }
         return new Row(read);
+    }
+
+    /** A whole number's cell as a Long, or the driver's refusal when no Long holds it. */
+    private static Long wholeNumber(final Number cell) {
+        final BigInteger whole = cell instanceof BigDecimal ? ((BigDecimal) cell).toBigInteger()
+            : cell instanceof BigInteger ? (BigInteger) cell : BigInteger.valueOf(cell.longValue());
+        if (whole.compareTo(LONG_MIN) < 0 || whole.compareTo(LONG_MAX) > 0) {
+            throw Row.<RuntimeException>unchecked(new SQLException("Cannot convert value in the driver from "
+                + "type:FIXED(null,null) to type:Long, value=" + whole + ".", NOT_CONVERTED_STATE, NOT_CONVERTED_CODE));
+        }
+        return Long.valueOf(whole.longValue());
+    }
+
+    /**
+     * Throws a checked exception where no method declares it, as the Scala code under Snowpark lets the driver's
+     * {@link SQLException} through {@code collect()}.
+     */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> RuntimeException unchecked(final Throwable failure) throws T {
+        throw (T) failure;
     }
 
     private static Object handed(final Object cell) {
@@ -276,18 +373,56 @@ public class Row {
             return Long.valueOf(((Number) cell).longValue());
         }
         if (cell instanceof BigInteger) {
-            final BigInteger whole = (BigInteger) cell;
-            return whole.bitLength() < Long.SIZE ? (Object) Long.valueOf(whole.longValue()) : new BigDecimal(whole);
+            return wholeNumber((BigInteger) cell);
         }
         if (cell instanceof BigDecimal) {
             final BigDecimal number = (BigDecimal) cell;
-            return number.scale() <= 0 && number.precision() - number.scale() <= LONG_DIGITS
-                ? (Object) Long.valueOf(number.longValue()) : number;
+            return number.scale() <= 0 ? (Object) wholeNumber(number) : number;
         }
         if (cell instanceof Float) {
             return Double.valueOf(((Float) cell).doubleValue());
         }
+        if (cell instanceof GeoValue) {
+            final GeoValue geo = (GeoValue) cell;
+            return geo.isGeography() ? (Object) com.snowflake.snowpark.types.Geography.fromGeoJSON(geo.geoJson())
+                : com.snowflake.snowpark.types.Geometry.fromGeoJSON(geometryText(geo.node()));
+        }
         return cell;
+    }
+
+    /**
+     * A GEOMETRY's GeoJSON as the driver hands it over: its keys in order and every number written with fifteen
+     * decimals and an exponent, {@code {"coordinates":[1.000000000000000e+00,2.000000000000000e+00],"type":"Point"}}
+     * (live-verified).
+     */
+    private static String geometryText(final JsonNode node) {
+        final StringBuilder text = new StringBuilder();
+        writeGeometry(node, text);
+        return text.toString();
+    }
+
+    private static void writeGeometry(final JsonNode node, final StringBuilder text) {
+        if (node.isObject()) {
+            text.append('{');
+            boolean first = true;
+            for (final Map.Entry<String, JsonNode> member : node.properties()) {
+                text.append(first ? "" : ",").append('"').append(member.getKey()).append("\":");
+                writeGeometry(member.getValue(), text);
+                first = false;
+            }
+            text.append('}');
+        } else if (node.isArray()) {
+            text.append('[');
+            for (int i = 0; i < node.size(); i++) {
+                text.append(i > 0 ? "," : "");
+                writeGeometry(node.get(i), text);
+            }
+            text.append(']');
+        } else if (node.isNumber()) {
+            text.append(String.format(Locale.ROOT, "%.15e", node.doubleValue()));
+        } else {
+            text.append(node.toString());
+        }
     }
 
     /** The row as Snowpark prints it: its values between brackets, a text between double quotes. */

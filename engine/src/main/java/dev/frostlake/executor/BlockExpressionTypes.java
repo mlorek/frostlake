@@ -54,7 +54,8 @@ import java.util.regex.Pattern;
  * value's width, as a bound value's is. The place counts from the expression's own start, after a lead-in on its
  * first line: seven columns when the expression holds a subquery or a call of a user-defined function (the
  * account compiles it as a query), and eight more for a value given to a variable — a LET, an assignment, a
- * DECLARE default; a later line keeps its own columns (all live-verified).
+ * DECLARE default, the bound a range FOR's counter starts from (the upper one of a REVERSE loop); a later line
+ * keeps its own columns (all live-verified).
  *
  * <p>A call given more or fewer arguments than it takes is judged with the types and placed the same way:
  * {@code RETURN 1 + ABS(1, 2)} is {@code too many arguments for function [ABS(1, 2)] expected 1, got 2} at
@@ -417,11 +418,20 @@ public final class BlockExpressionTypes {
         return null;
     }
 
-    /** Whether the expression is the value a LET, an assignment or a DECLARE default gives a variable. */
+    /**
+     * Whether the expression is the value a LET, an assignment or a DECLARE default gives a variable, or the bound a
+     * range FOR's counter starts from: the first, or the second of a REVERSE loop.
+     */
     private static boolean assignsAValue(final ParserRuleContext expression) {
+        ParseTree held = expression;
         ParseTree holder = expression.getParent();
         while (holder instanceof FrostlakeParser.BooleanExprContext || holder instanceof FrostlakeParser.ExpressionContext) {
+            held = holder;
             holder = holder.getParent();
+        }
+        if (holder instanceof FrostlakeParser.ForStatementContext) {
+            final FrostlakeParser.ForStatementContext loop = (FrostlakeParser.ForStatementContext) holder;
+            return loop.TO() != null && held == loop.expression(loop.REVERSE() != null ? 1 : 0);
         }
         return holder instanceof FrostlakeParser.LetStatementContext
             || holder instanceof FrostlakeParser.AssignmentStatementContext

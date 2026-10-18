@@ -48,6 +48,7 @@ import dev.frostlake.metastore.model.RefreshMode;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.State;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
@@ -380,6 +381,12 @@ public class CreateRelationalHandler implements CommandHandler {
                         throw new RuntimeException(untracked);
                     }
                     view.setChangeTracking(tracked);
+                    if (tracked) {
+                        // The tables the view reads track their changes with it, as they do for a stream on it.
+                        for (final Table read : ChangeTrackedQuery.trackedTables(catalog, ctx.selectStatement())) {
+                            read.setChangeTracking(true);
+                        }
+                    }
                 }
             }
             if (comment != null) {
@@ -473,9 +480,17 @@ public class CreateRelationalHandler implements CommandHandler {
         return null;
     }
 
-    /** Whether a query's top level unions its branches: {@code a UNION [ALL] b}. */
+    /**
+     * Whether a query's top level unions branches: {@code a UNION [ALL] b}, also after an anchor that combines its own
+     * operands otherwise, {@code SELECT 5 EXCEPT SELECT 6 UNION ALL …} (live-verified).
+     */
     private static boolean unionsBranches(final FrostlakeParser.SelectStatementContext query) {
-        return !query.setOperator().isEmpty() && query.setOperator(0).UNION() != null;
+        for (final FrostlakeParser.SetOperatorContext operator : query.setOperator()) {
+            if (operator.UNION() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -27,7 +27,8 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * The properties ALTER DYNAMIC TABLE sets or unsets. The account refuses any other by name, as
+ * The properties ALTER DYNAMIC TABLE sets or unsets: its lag, warehouse and comment, and the parameters it lists
+ * for itself (see {@code DynamicTableParameters}). The account refuses any other by name, as
  * {@code invalid property 'X' for 'DYNAMIC_TABLE'}, before it looks the table up and before it notices a
  * session with no current database: the refresh mode and INITIALIZE are fixed at creation, and
  * CHANGE_TRACKING or a name it does not know is no dynamic table property (live-verified).
@@ -35,7 +36,9 @@ import java.util.Set;
 public final class DynamicTableProperties {
 
     private static final Set<String> TAKEN = new HashSet<>(Arrays.asList(
-        "TARGET_LAG", "WAREHOUSE", "COMMENT", "DATA_RETENTION_TIME_IN_DAYS", "MAX_DATA_EXTENSION_TIME_IN_DAYS"));
+        "TARGET_LAG", "WAREHOUSE", "COMMENT", "DATA_RETENTION_TIME_IN_DAYS", "MAX_DATA_EXTENSION_TIME_IN_DAYS",
+        "LOG_LEVEL", "TRACE_LEVEL", "LOG_EVENT_LEVEL", "DATA_METRIC_SCHEDULE", "DEFAULT_DDL_COLLATION",
+        "ENABLE_DATA_COMPACTION", "QUOTED_IDENTIFIERS_IGNORE_CASE"));
 
     private DynamicTableProperties() {
     }

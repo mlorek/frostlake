@@ -27,6 +27,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.misc.IntervalSet;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -76,7 +77,10 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * {@code (DEFAULT x)} describes the table and {@code (DEFAULT)} names the ')' — while a type that is the word
  * DEFAULT is refused where it stands; an ARRAY's and an OBJECT's parentheses are theirs unless a TABLE or a SELECT
  * follows the '('. The word TIMESTAMP predicts its longer spellings, so a '.' after it is named there and again by
- * the list: {@code DESCRIBE TABLE t1 (TIMESTAMP.a)} is the '.' twice and then the ')' (all live-verified).
+ * the list: {@code DESCRIBE TABLE t1 (TIMESTAMP.a)} is the '.' twice and then the ')'. A literal after a signature's
+ * own TIMESTAMP is named twice too, and the signature given up at the next word or ')': {@code (TIMESTAMP 1, INT)}
+ * is the 1 twice and then the ')' after INT. A DROP gives a TABLE item's path up at its fourth part, passing the rest
+ * of the path over (all live-verified).
  *
  * <p>A SHOW listing's scope reads the same signature after its name, and nothing of a DROP's tail: what follows
  * the list there is the listing's own modifiers, so a reading whose first fault lies past the list answers nothing
@@ -143,8 +147,14 @@ final class SignatureRecovery {
         | bit(HEX);
     private static final long FIRST_ITEM_READ_ON = bit(INT) | bit(NUM) | bit(NULL_WORD) | bit(QUESTION) | bit(MINUS);
     private static final long LIST_END = bit(COMMA) | bit(RPAREN);
+    /** What names a property inside a list of property lists: a word, TRUE or FALSE, a string. */
+    private static final long NESTED_NAME = WORD_VALUE | bit(BOOLEAN) | bit(STR);
 
     private static final int[] CLASSES = classes();
+
+    /** The tokens a name may be. */
+    private static final IntervalSet NAMES =
+        FrostlakeParser._ATN.nextTokens(FrostlakeParser._ATN.ruleToStartState[FrostlakeParser.RULE_identifier]);
 
     private final List<Token> tokens;
     private final int lexerLineAt;
@@ -163,6 +173,8 @@ final class SignatureRecovery {
     /** Whether the statement stands in the body of an IF, a CASE or a loop, which is given up with it. */
     private boolean inBody;
     private boolean givesConstructUp;
+    /** Whether a property's name was due at the statement's own ';', which a block's statement then reads past. */
+    private boolean nameDueAtEnd;
     private boolean readsNoFurther;
     /** Whether the statement ends at a ';' written inside its brackets, after which the account reads nothing. */
     private boolean endsInsideBrackets;
@@ -172,6 +184,8 @@ final class SignatureRecovery {
     private int pathLimit;
     private int at;
     private boolean recovering;
+    /** Whether a DESCRIBE's signature was given up after a TIMESTAMP's literal, its properties read from there. */
+    private boolean signatureGivenUp;
     private int lastErrorIndex = -1;
 
     private SignatureRecovery(final SignatureTokens read, final List<Token> written, final boolean describe,
@@ -545,6 +559,58 @@ final class SignatureRecovery {
         return tokens.get(Math.max(0, tokens.size() - 2));
     }
 
+    /** Whether the reading ended at its statement's own ';' where a property's name was due. */
+    boolean nameDueAtItsEnd() {
+        return nameDueAtEnd && last().getType() == FrostlakeLexer.SEMI;
+    }
+
+    /**
+     * The lines a block's DESCRIBE reads on to when a property's name is due at its ';': a word after the ';' — the
+     * next statement's first, the block's END too — is read as that name, the ';' passed over, and the token after the
+     * word stands where the '=' is due: a value there is named as the '=' it lacks and read, the token after it refused
+     * unless the statement ends there, and anything else is refused. A block whose END was read so has lost it, and the
+     * end of the input is refused (all live-verified: {@code BEGIN DESCRIBE TABLE t x = ,; RETURN 1; END;} names the
+     * ',', the ';' and the 1, and a SELECT after the ';' is no name).
+     *
+     * @param spoken    the text's default-channel tokens, end of input included
+     * @param semicolon the index of the statement's ';' among them
+     * @return the lines after the ';''s
+     */
+    static List<String> namedPastItsEnd(final List<Token> spoken, final int semicolon) {
+        final List<String> lines = new ArrayList<>();
+        if (semicolon + 2 >= spoken.size()) {
+            return lines;
+        }
+        final Token word = spoken.get(semicolon + 1);
+        if (word.getType() != FrostlakeLexer.END && !NAMES.contains(word.getType())) {
+            return lines;
+        }
+        int at = semicolon + 2;
+        final Token due = spoken.get(at);
+        if (due.getType() == FrostlakeLexer.EQ || due.getType() == Token.EOF) {
+            return lines;
+        }
+        lines.add(SyntaxErrorListener.sentence(due));
+        if (in(classOf(due), EQ_FOLLOW) && due.getType() != FrostlakeLexer.LPAREN) {
+            at++;
+            final Token next = spoken.get(at);
+            if (next.getType() != FrostlakeLexer.SEMI && next.getType() != Token.EOF) {
+                lines.add(SyntaxErrorListener.sentence(next));
+            }
+        }
+        if (word.getType() == FrostlakeLexer.END) {
+            int end = at;
+            while (end < spoken.size() - 1 && spoken.get(end).getType() != FrostlakeLexer.SEMI) {
+                end++;
+            }
+            if (end + 1 < spoken.size() && spoken.get(end).getType() == FrostlakeLexer.SEMI
+                    && spoken.get(end + 1).getType() == Token.EOF) {
+                lines.add(SyntaxErrorListener.sentence(spoken.get(end + 1)));
+            }
+        }
+        return lines;
+    }
+
     /**
      * Whether a word the grammar reads as a signature item is one the account takes as none: a keyword, TRUE or
      * FALSE, NULL — any word that is no plain word, no type's word and not quoted.
@@ -573,7 +639,7 @@ final class SignatureRecovery {
      * @return the lines, or null
      */
     List<String> lines() {
-        if (!modelled(tokens)) {
+        if (!modelled(tokens, describe)) {
             return null;
         }
         try {
@@ -758,13 +824,22 @@ final class SignatureRecovery {
      * Whether every token of the region is one this reading classifies and the region holds one statement: a ';'
      * only as its last token, and none of the spellings the account reads as one word where this lexer reads two.
      */
-    private static boolean modelled(final List<Token> region) {
+    private static boolean modelled(final List<Token> region, final boolean describe) {
+        int depth = 0;
         for (int i = 0; i < region.size(); i++) {
             final Token token = region.get(i);
             final int type = token.getType();
             if (classOf(token) == UNMODELLED) {
                 return false;
             }
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth--;
+            }
+            final int previousType = i > 0 ? region.get(i - 1).getType() : Token.INVALID_TYPE;
+            final boolean ownItem = depth == 1
+                && (previousType == FrostlakeLexer.LPAREN || previousType == FrostlakeLexer.COMMA);
             if (type == FrostlakeLexer.SEMI && i != region.size() - 2) {
                 return false;
             }
@@ -775,7 +850,7 @@ final class SignatureRecovery {
                         && nextType == FrostlakeLexer.VARYING
                     || type == FrostlakeLexer.TIMESTAMP && nextType != FrostlakeLexer.LPAREN
                         && nextType != FrostlakeLexer.COMMA && nextType != FrostlakeLexer.RPAREN
-                        && nextType != FrostlakeLexer.DOT
+                        && nextType != FrostlakeLexer.DOT && !(describe && ownItem && isLiteral(nextType))
                     || type == FrostlakeLexer.FLOAT_LITERAL && next != null && nextType == FrostlakeLexer.DOT
                         && next.getStartIndex() == token.getStopIndex() + 1) {
                 return false;
@@ -886,9 +961,13 @@ final class SignatureRecovery {
                 throw fault(1);
             }
             item();
-            while (la(1) == COMMA) {
+            while (!signatureGivenUp && la(1) == COMMA) {
                 matched();
                 item();
+            }
+            if (signatureGivenUp) {
+                signatureGivenUp = false;
+                return;
             }
             match(RPAREN, EOR);
         } catch (final SignatureFault fault) {
@@ -899,6 +978,19 @@ final class SignatureRecovery {
     private void item() {
         if (lt(1).getType() == FrostlakeLexer.DEFAULT) {
             defaultItem();
+            return;
+        }
+        if (describe && lt(1).getType() == FrostlakeLexer.TIMESTAMP && isLiteral(lt(2).getType()) && !recovering) {
+            // The word predicts its longer spellings and the list reads none of them: the literal is named by both,
+            // and the signature is given up at the next word or ')', which the properties then read.
+            matched();
+            reported.add(SyntaxErrorListener.sentence(lt(1)));
+            reported.add(SyntaxErrorListener.sentence(lt(1)));
+            consume();
+            while (la(1) != EOF_CLASS && la(1) != SEMI && la(1) != RPAREN && !in(la(1), PROPERTY)) {
+                consume();
+            }
+            signatureGivenUp = true;
             return;
         }
         type(LIST_END);
@@ -1195,7 +1287,15 @@ final class SignatureRecovery {
         while (la(1) == DOT) {
             matched();
             parts++;
-            pathPart(pathLimit > 0 && parts > pathLimit ? 0L : PART);
+            final boolean beyond = pathLimit > 0 && parts > pathLimit;
+            pathPart(beyond ? 0L : PART);
+            if (beyond && !describe) {
+                // A DROP gives the path up at its first part too many: the rest of it is passed over unread.
+                while (la(1) == DOT || in(la(1), PART)) {
+                    consume();
+                }
+                return;
+            }
         }
     }
 
@@ -1285,6 +1385,7 @@ final class SignatureRecovery {
                     // After a ',' an '=' is named as the name it lacks, and read.
                     report(lt(1));
                 } else {
+                    nameDueAtEnd = la(1) == SEMI;
                     throw fault(1);
                 }
                 match(EQ, EQ_FOLLOW);
@@ -1397,6 +1498,10 @@ final class SignatureRecovery {
      */
     private void valueList() {
         final int first = la(2);
+        if (first == LPAREN) {
+            propertyLists();
+            return;
+        }
         if (first == RPAREN) {
             matched();
             matched();
@@ -1424,6 +1529,95 @@ final class SignatureRecovery {
             listItem(false);
         }
         match(RPAREN, EOR);
+    }
+
+    /**
+     * A list of property lists, which a value list opening with a second '(' is: each item a parenthesized list of
+     * name = value properties, the commas between them optional — {@code x = ((a = 1 b = 2), (c = (1, 2)))}. An item
+     * whose first token names no property is refused at that token, and the reading skips from the item's '(' to the
+     * next token a rule being read takes; a token after an item that is neither ',' nor ')' is passed over when one
+     * of them follows it, and otherwise refused and the list given up, the properties read on from the next name
+     * (all live-verified).
+     */
+    private void propertyLists() {
+        matched();
+        following.add(LIST_END);
+        try {
+            propertyListItem();
+            while (la(1) != RPAREN) {
+                if (la(1) == COMMA) {
+                    matched();
+                    propertyListItem();
+                } else if (la(2) == COMMA || la(2) == RPAREN) {
+                    report(lt(1));
+                    consume();
+                } else {
+                    throw fault(1);
+                }
+            }
+        } finally {
+            following.remove(following.size() - 1);
+        }
+        matched();
+    }
+
+    /** One parenthesized list of properties, predicted from its first two tokens. */
+    private void propertyListItem() {
+        if (la(1) != LPAREN || !in(la(2), NESTED_NAME)) {
+            report(la(1) == LPAREN ? lt(2) : lt(1));
+            recover();
+            return;
+        }
+        matched();
+        nestedProperty();
+        while (la(1) == COMMA || in(la(1), NESTED_NAME)) {
+            if (la(1) == COMMA) {
+                matched();
+            }
+            nestedProperty();
+        }
+        match(RPAREN, LIST_END);
+    }
+
+    /**
+     * One name = value property of such a list: a value where the '=' is due is read as the value, the '=' named as
+     * missing — {@code (a b)} names the b — and any other token there refused.
+     */
+    private void nestedProperty() {
+        following.add(bit(COMMA) | bit(RPAREN) | NESTED_NAME);
+        try {
+            if (!in(la(1), NESTED_NAME)) {
+                throw fault(1);
+            }
+            matched();
+            if (la(1) == EQ) {
+                matched();
+            } else if (in(la(1), EQ_FOLLOW)) {
+                report(lt(1));
+            } else {
+                throw fault(1);
+            }
+            nestedValue();
+        } catch (final SignatureFault fault) {
+            handle(fault);
+        }
+        following.remove(following.size() - 1);
+    }
+
+    /** A property's value inside such a list: a literal, a signed number, a dotted word, or a list of its own. */
+    private void nestedValue() {
+        final int kind = la(1);
+        if (kind == LPAREN) {
+            valueList();
+        } else if (kind == MINUS) {
+            signedNumber();
+        } else if (in(kind, PATH_START)) {
+            listPath();
+        } else if (in(kind, LITERAL) || kind == STAGE || kind == HEX || kind == SESSION_VARIABLE) {
+            matched();
+        } else {
+            throw fault(1);
+        }
     }
 
     /**
@@ -1590,6 +1784,12 @@ final class SignatureRecovery {
 
     private int la(final int ahead) {
         return classOf(lt(ahead));
+    }
+
+    /** Whether a token type is a number or a string literal. */
+    private static boolean isLiteral(final int type) {
+        return type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.STRING_LITERAL;
     }
 
     private static boolean in(final int kind, final long set) {

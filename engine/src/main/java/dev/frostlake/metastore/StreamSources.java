@@ -44,7 +44,48 @@ import java.util.List;
  */
 public final class StreamSources {
 
+    /** What a table stream lost in a clone names as its table, in GET_DDL and in a refusal (live-verified). */
+    public static final String LOST_SOURCE = "CLONED_FROM_STREAM_WITH_DROPPED_SOURCE";
+
     private StreamSources() {
+    }
+
+    /**
+     * The sentence a read of a table stream lost in a clone is refused with (live-verified).
+     *
+     * @param stream the stream
+     * @return the sentence
+     */
+    public static String lostInCloneRefusal(final Stream stream) {
+        return "Table for stream '" + stream.getName()
+            + "' invalid due to loss of table before or during cloning of parent entity";
+    }
+
+    /**
+     * Give a clone's streams their sources' state where a source is gone, as a clone keeps what each stream is bound
+     * to (live-verified). A table stream whose table went before the clone is lost in the clone, whatever table now
+     * holds the name, and so is one a clone made lost. A view stream any of whose view's tables went keeps the
+     * tables it read, so it is as stale in the clone as in place. A stream whose source is there reads, in the
+     * clone, what its recorded name reads there.
+     *
+     * @param catalog the catalog
+     * @param source  the schema cloned
+     * @param clone   its clone
+     */
+    public static void carryClonedStates(final Catalog catalog, final Schema source, final Schema clone) {
+        for (final Stream stream : source.getStreams()) {
+            if (!clone.hasStreamExact(stream.getName())) {
+                continue;
+            }
+            final Stream copy = clone.getStream(stream.getName());
+            if (stream.getSourceType() == StreamSourceType.TABLE) {
+                if (stream.isLostInClone() || sourceOf(catalog, source, stream) == null) {
+                    copy.markLostInClone();
+                }
+            } else if (stream.getSourceType() == StreamSourceType.VIEW && missingBaseOf(catalog, stream) != null) {
+                copy.bindBaseTables(stream.getBaseTables());
+            }
+        }
     }
 
     /**

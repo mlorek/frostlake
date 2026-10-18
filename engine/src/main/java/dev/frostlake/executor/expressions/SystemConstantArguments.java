@@ -78,7 +78,12 @@ import java.util.Set;
  *   … ((SELECT n FROM t LIMIT 1))           [(SELECT T.N AS "N" FROM T AS T LIMIT 1 OFFSET 0)]
  *   … ('e1'::VARCHAR(2))   … (TRIM(' e1 '))    ['e1']   [TRIM(' e1 ')]
  *   … ('e' || 1)                            ['e' || (CAST(1 AS VARCHAR(134217728)))]
+ *   … (UPPER('e1')::VARCHAR || 'x')         [('E1') || 'x']: what folds early prints as its value
+ *   … (CURRENT_SCHEMA()::VARCHAR)           ['TEST_SCHEMA'], and a date as its text under the cast
+ *   … ('e1'::VARCHAR || '')                 ['e1']: a text joined to the empty string prints alone
  * </pre>
+ *
+ * <p>A wrong count of SYSTEM$GET_TAG's arguments echoes each column as written, {@code [SYSTEM$GET_TAG(N, 'tt')]}.
  */
 final class SystemConstantArguments {
 
@@ -130,7 +135,7 @@ final class SystemConstantArguments {
         } else if ("SYSTEM$GET_TAG_ALLOWED_VALUES".equals(funcName)) {
             if (!RelationShapeOnly.isActive() && !foldsEarly(args.get(0), visitor)) {
                 throw new RuntimeException(SqlCompilationError.of("Invalid value ["
-                    + visitor.strictPlanText(args.get(0)).replace(TYPED_NULL, "null")
+                    + visitor.strictFoldedPlanText(args.get(0)).replace(TYPED_NULL, "null")
                     + "] for function 'SYSTEM$GET_TAG_ALLOWED_VALUES', parameter 0: constant arguments expected"));
             }
         } else if (CLUSTERING.contains(funcName)) {
@@ -318,7 +323,7 @@ final class SystemConstantArguments {
      * Whether SYSTEM$GET_TAG_ALLOWED_VALUES takes an argument as a constant: what the plan has folded by the
      * time the call is judged.
      */
-    private static boolean foldsEarly(final Expression argument, final ExpressionEvaluatorVisitor visitor) {
+    static boolean foldsEarly(final Expression argument, final ExpressionEvaluatorVisitor visitor) {
         if (argument instanceof LiteralExpression || argument instanceof SessionVarExpression || isNull(argument)) {
             return true;
         }

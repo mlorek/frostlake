@@ -110,6 +110,12 @@ public final class ParseTreeText {
             : part.getText().toUpperCase(Locale.ROOT);
     }
 
+    /** The RETURNS TABLE column flavour — an argument's vocabulary, CONSTRAINT and LEFT among it. */
+    public static String namePartText(final FrostlakeParser.ReturnColumnNameContext part) {
+        return part.identifier() != null ? getIdentifier(part.identifier())
+            : part.getText().toUpperCase(Locale.ROOT);
+    }
+
     /** The FROM-position flavour: a {@code tableQualifiedName}'s parts. */
     public static String[] qualifiedNameParts(final FrostlakeParser.TableQualifiedNameContext ctx) {
         final List<FrostlakeParser.NamePartContext> rest = ctx.namePart();

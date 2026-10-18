@@ -49,6 +49,7 @@ import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.TableStructure;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
@@ -124,7 +125,7 @@ final class CatalogSnapshotWriter {
             snapshot.databases.add(saveDatabase(catalog, db, storageEngine, tableData));
         }
         // And the dropped ones UNDROP can still restore
-        snapshot.droppedObjects = DroppedObjectSnapshots.save(catalog);
+        snapshot.droppedObjects = DroppedObjectSnapshots.save(catalog, storageEngine);
 
         snapshot.securityObjects = SecurityObjectSnapshots.save(catalog.getSecurityObjects());
         snapshot.securityAttachments = new HashMap<>(catalog.getSecurityObjects().attachments());
@@ -275,57 +276,7 @@ final class CatalogSnapshotWriter {
             tableSnapshot.clusterByText = table.getClusterByText();
 
             for (final TableColumn col : table.getColumns()) {
-                final ColumnSnapshot colSnapshot = new ColumnSnapshot();
-                colSnapshot.name = col.getName();
-                colSnapshot.dataType = col.getDataType().getName();
-                colSnapshot.type = col.getDataType();
-                if (col.getDataType() instanceof NumericType) {
-                    final NumericType numericType = (NumericType) col.getDataType();
-                    colSnapshot.precision = numericType.getPrecision();
-                    colSnapshot.scale = numericType.getScale();
-                } else if (col.getDataType() instanceof StringType) {
-                    colSnapshot.maxLength = ((StringType) col.getDataType()).getMaxLength();
-                } else if (col.getDataType() instanceof BinaryType) {
-                    // The width AND the fixedness: the name says BINARY for both spellings, so
-                    // neither survives on its own.
-                    colSnapshot.maxLength = ((BinaryType) col.getDataType()).getMaxLength();
-                    colSnapshot.binaryFixed =
-                        Boolean.valueOf(((BinaryType) col.getDataType()).isFixed());
-                }
-                colSnapshot.nullable = col.isNullable();
-                colSnapshot.primaryKey = col.isPrimaryKey();
-                colSnapshot.defaultValue = col.getDefaultValue() != null ? col.getDefaultValue().toString() : null;
-                colSnapshot.defaultIsExpression = col.getDefaultValue() instanceof DefaultValueExpression;
-                if (!colSnapshot.defaultIsExpression && col.getDefaultValue() instanceof Serializable) {
-                    // A literal keeps its value, so a number stays a number rather than coming back as its text.
-                    colSnapshot.defaultLiteral = (Serializable) col.getDefaultValue();
-                }
-                colSnapshot.comment = col.getComment();
-                colSnapshot.maskingPolicyName = col.getMaskingPolicyName();
-                colSnapshot.maskingPolicyArguments = col.getMaskingPolicyArguments();
-                colSnapshot.projectionPolicyName = col.getProjectionPolicyName();
-                colSnapshot.unique = col.isUnique();
-                colSnapshot.autoIncrement = col.isAutoIncrement();
-                colSnapshot.identityStart = col.getIdentityStart();
-                colSnapshot.identityIncrement = col.getIdentityIncrement();
-                colSnapshot.identityOrdered = col.isIdentityOrdered();
-                colSnapshot.collation = col.getCollation();
-                colSnapshot.formatType = col.getFormatType();
-                colSnapshot.ordinalPosition = col.getOrdinalPosition();
-                colSnapshot.tags = SnapshotTags.of(col);
-                colSnapshot.referencedTable = col.getReferencedTable();
-                colSnapshot.referencedColumn = col.getReferencedColumn();
-                colSnapshot.onDelete = col.getOnDelete();
-                colSnapshot.onUpdate = col.getOnUpdate();
-                colSnapshot.rely = col.getRely();
-                // Constraint names, so a restored table keeps reporting the same ones. Reading them
-                // is what generates an as-yet-unnamed constraint's SYS_CONSTRAINT_<uuid>, which is
-                // exactly what should be pinned into the snapshot.
-                colSnapshot.uniqueConstraintName = col.isUnique()
-                    ? table.uniqueConstraintName(col.getName()) : null;
-                colSnapshot.foreignKeyConstraintName = col.hasForeignKey()
-                    ? table.columnForeignKeyConstraintName(col.getName()) : null;
-                tableSnapshot.columns.add(colSnapshot);
+                tableSnapshot.columns.add(columnSnapshot(table, col));
             }
 
             // PRIMARY KEY name (null when the table has no primary key) and the table-level UNIQUE
@@ -504,6 +455,7 @@ final class CatalogSnapshotWriter {
             streamSnapshot.stale = stream.isStale() || catalog != null
                 && (stream.getSourceType() == StreamSourceType.TABLE && StreamSources.sourceOf(catalog, schema, stream) == null
                 || StreamSources.missingBaseOf(catalog, stream) != null);
+            streamSnapshot.lostInClone = stream.isLostInClone();
             streamSnapshot.comment = stream.getComment();
             streamSnapshot.owner = stream.getOwner();
             streamSnapshot.createdAt = stream.getCreatedAt();
@@ -805,7 +757,9 @@ final class CatalogSnapshotWriter {
             dtSnapshot.schedulingState = dt.getSchedulingState();
             dtSnapshot.lastSuspendedOn = dt.getLastSuspendedOn();
             dtSnapshot.dataRetentionDays = dt.isDataRetentionSet() ? Integer.valueOf(dt.getDataRetentionDays()) : null;
-            dtSnapshot.maxDataExtensionDays = dt.getMaxDataExtensionDays();
+            dtSnapshot.maxDataExtensionDays = dt.isMaxDataExtensionSet()
+                ? Integer.valueOf(dt.getMaxDataExtensionDays()) : null;
+            dtSnapshot.parameters = new HashMap<>(dt.getParameters());
             dtSnapshot.reclusterSuspended = dt.isReclusterSuspended();
             dtSnapshot.clone = dt.isClone();
             schemaSnapshot.dynamicTables.add(dtSnapshot);
@@ -947,6 +901,69 @@ final class CatalogSnapshotWriter {
     }
 
     /**
+     * A table column as a snapshot value: its type, nullability, default, keys, IDENTITY, comment, policies, tags,
+     * position and foreign-key reference, with its constraint names when it is a live table's.
+     *
+     * @param table the table the column stands in, or null for a column of one of its past shapes, which names no
+     *              constraint
+     * @param col   the column
+     * @return the snapshot value
+     */
+    static ColumnSnapshot columnSnapshot(final Table table, final TableColumn col) {
+        final ColumnSnapshot colSnapshot = new ColumnSnapshot();
+        colSnapshot.name = col.getName();
+        colSnapshot.dataType = col.getDataType().getName();
+        colSnapshot.type = col.getDataType();
+        if (col.getDataType() instanceof NumericType) {
+            final NumericType numericType = (NumericType) col.getDataType();
+            colSnapshot.precision = numericType.getPrecision();
+            colSnapshot.scale = numericType.getScale();
+        } else if (col.getDataType() instanceof StringType) {
+            colSnapshot.maxLength = ((StringType) col.getDataType()).getMaxLength();
+        } else if (col.getDataType() instanceof BinaryType) {
+            // The width AND the fixedness: the name says BINARY for both spellings, so
+            // neither survives on its own.
+            colSnapshot.maxLength = ((BinaryType) col.getDataType()).getMaxLength();
+            colSnapshot.binaryFixed =
+                Boolean.valueOf(((BinaryType) col.getDataType()).isFixed());
+        }
+        colSnapshot.nullable = col.isNullable();
+        colSnapshot.primaryKey = col.isPrimaryKey();
+        colSnapshot.defaultValue = col.getDefaultValue() != null ? col.getDefaultValue().toString() : null;
+        colSnapshot.defaultIsExpression = col.getDefaultValue() instanceof DefaultValueExpression;
+        if (!colSnapshot.defaultIsExpression && col.getDefaultValue() instanceof Serializable) {
+            // A literal keeps its value, so a number stays a number rather than coming back as its text.
+            colSnapshot.defaultLiteral = (Serializable) col.getDefaultValue();
+        }
+        colSnapshot.comment = col.getComment();
+        colSnapshot.maskingPolicyName = col.getMaskingPolicyName();
+        colSnapshot.maskingPolicyArguments = col.getMaskingPolicyArguments();
+        colSnapshot.projectionPolicyName = col.getProjectionPolicyName();
+        colSnapshot.unique = col.isUnique();
+        colSnapshot.autoIncrement = col.isAutoIncrement();
+        colSnapshot.identityStart = col.getIdentityStart();
+        colSnapshot.identityIncrement = col.getIdentityIncrement();
+        colSnapshot.identityOrdered = col.isIdentityOrdered();
+        colSnapshot.collation = col.getCollation();
+        colSnapshot.formatType = col.getFormatType();
+        colSnapshot.ordinalPosition = col.getOrdinalPosition();
+        colSnapshot.tags = SnapshotTags.of(col);
+        colSnapshot.referencedTable = col.getReferencedTable();
+        colSnapshot.referencedColumn = col.getReferencedColumn();
+        colSnapshot.onDelete = col.getOnDelete();
+        colSnapshot.onUpdate = col.getOnUpdate();
+        colSnapshot.rely = col.getRely();
+        // Constraint names, so a restored table keeps reporting the same ones. Reading them
+        // is what generates an as-yet-unnamed constraint's SYS_CONSTRAINT_<uuid>, which is
+        // exactly what should be pinned into the snapshot.
+        colSnapshot.uniqueConstraintName = table != null && col.isUnique()
+            ? table.uniqueConstraintName(col.getName()) : null;
+        colSnapshot.foreignKeyConstraintName = table != null && col.hasForeignKey()
+            ? table.columnForeignKeyConstraintName(col.getName()) : null;
+        return colSnapshot;
+    }
+
+    /**
      * Save table data to disk
      */
     /** A table's rows as a snapshot value (each row's values defensively copied). */
@@ -955,6 +972,21 @@ final class CatalogSnapshotWriter {
         final String qualifiedName = QualifiedName.key(database, schema, table.getName());
         final TableStorage storage = shadowed
             ? storageEngine.getShadowedTableStorage(qualifiedName) : storageEngine.getTableStorage(qualifiedName);
+        return buildTableData(database, schema, table, storage);
+    }
+
+    /**
+     * A table's storage as a snapshot value: its rows, their identities and its time-travel history — a live table's,
+     * or a dropped table's that waits for its UNDROP.
+     *
+     * @param database the table's database
+     * @param schema   its schema
+     * @param table    the table
+     * @param storage  its storage
+     * @return the snapshot value
+     */
+    static TableDataSnapshot buildTableData(final String database, final String schema, final Table table,
+                                            final TableStorage storage) {
         final TableDataSnapshot dataSnapshot = new TableDataSnapshot();
         dataSnapshot.database = database;
         dataSnapshot.schema = schema;
@@ -965,27 +997,39 @@ final class CatalogSnapshotWriter {
             dataSnapshot.rows.add(new ArrayList<>(row.getValues()));
         }
         dataSnapshot.rowIds = new ArrayList<>(ids);
-        dataSnapshot.history = buildHistory(storage, current, ids);
+        dataSnapshot.history = buildHistory(table, storage, current, ids);
         return dataSnapshot;
     }
 
     /**
      * A table's time-travel history as a snapshot value. A snapshot's row that is stored now is saved as its place
      * among the rows; any other is saved once however many snapshots hold it, with its identity, so the restored
-     * snapshots tell an updated row from a deleted one as these do.
+     * snapshots tell an updated row from a deleted one as these do. The table's shapes are saved with it, each
+     * snapshot naming the one it was taken in and keeping its rows as it took them where a column change has
+     * rewritten its rows since.
      *
+     * @param table   the table
      * @param storage the table's storage
      * @param current the rows stored now, in the order they are saved
      * @param ids     their identities
      * @return the history
      */
-    static TableHistorySnapshot buildHistory(final TableStorage storage, final List<Row> current,
+    static TableHistorySnapshot buildHistory(final Table table, final TableStorage storage, final List<Row> current,
                                              final List<Long> ids) {
         final TableHistorySnapshot history = new TableHistorySnapshot();
         history.startMillis = storage.historyStartMillis();
         history.startSequence = storage.historyStartSequence();
         history.evicted = storage.isHistoryEvicted();
         history.currentRowIds.addAll(ids);
+        // A shape, like a row, is found by the object it is: every snapshot taken while it stood shares it.
+        final Map<TableStructure, Integer> shapes = new IdentityHashMap<>();
+        history.structures = new ArrayList<>();
+        for (final TableStructure shape : table.structureHistory()) {
+            shapes.put(shape, history.structures.size());
+            history.structures.add(structureSnapshot(shape));
+        }
+        history.takenRows = new ArrayList<>();
+        final Map<Row, Integer> taken = new IdentityHashMap<>();
         // A row is found by the object it is: snapshots share row objects with the stored rows and one another.
         final Map<Row, Integer> places = new IdentityHashMap<>();
         for (int i = 0; i < current.size(); i++) {
@@ -995,6 +1039,19 @@ final class CatalogSnapshotWriter {
             final TableHistoryPoint point = new TableHistoryPoint();
             point.epochMillis = snapshot.epochMillis;
             point.sequence = snapshot.sequence;
+            point.layout = snapshot.layout == null ? null : shapes.get(snapshot.layout);
+            if (point.layout != null && snapshot.asTakenRows != snapshot.rows) {
+                point.takenRows = new ArrayList<>(snapshot.asTakenRows.size());
+                for (final Row row : snapshot.asTakenRows) {
+                    Integer index = taken.get(row);
+                    if (index == null) {
+                        index = history.takenRows.size();
+                        history.takenRows.add(new ArrayList<>(row.getValues()));
+                        taken.put(row, index);
+                    }
+                    point.takenRows.add(index);
+                }
+            }
             for (int r = 0; r < snapshot.rows.size(); r++) {
                 final Row row = snapshot.rows.get(r);
                 final Long id = snapshot.rowIds.get(r);
@@ -1010,5 +1067,17 @@ final class CatalogSnapshotWriter {
             history.points.add(point);
         }
         return history;
+    }
+
+    /** One of a table's shapes as a snapshot value. */
+    private static TableStructureSnapshot structureSnapshot(final TableStructure shape) {
+        final TableStructureSnapshot saved = new TableStructureSnapshot();
+        saved.fromMillis = shape.getFromMillis();
+        saved.fromSequence = shape.getFromSequence();
+        saved.highestOrdinal = shape.getHighestOrdinal();
+        for (final TableColumn column : shape.getColumns()) {
+            saved.columns.add(columnSnapshot(null, column));
+        }
+        return saved;
     }
 }

@@ -75,14 +75,13 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.VariantJsonNulls;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -110,6 +109,9 @@ final class WindowFunctionEvaluator {
 
     private static final Logger logger = LoggerFactory.getLogger(WindowFunctionEvaluator.class);
 
+    /** The most rows a ROWS frame of two offsets may hold (live-verified). */
+    private static final BigInteger FRAME_ROW_LIMIT = BigInteger.valueOf(1000);
+
     /** CURRENT ROW's place among a frame's bounds (see boundRank). */
     private static final int CURRENT_ROW_RANK = 2;
 
@@ -118,38 +120,25 @@ final class WindowFunctionEvaluator {
 
     private final QueryExecutor executor;
 
-    // SELECT-list alias -> its defining expression text, for the window computation currently running. A
     /** The window functions that take no arguments — a call with any refuses (live-verified). */
     private static final java.util.Set<String> ZERO_ARGUMENT_WINDOW_FUNCTIONS = java.util.Set.of(
         "ROW_NUMBER", "RANK", "DENSE_RANK", "CUME_DIST", "PERCENT_RANK");
 
-    // window PARTITION BY / ORDER BY may reference a SELECT alias (e.g. QUALIFY ROW_NUMBER() OVER
-    // (PARTITION BY <alias> ...)); when such a key isn't a base column it resolves to this expression.
-    // Set/restored around computeWindowFunctions so a nested subquery's window functions don't clobber it;
-    // empty outside a window computation, so evaluateOrderKey behaves exactly as before there.
-    private Map<String, String> windowSelectAliases = new HashMap<>();
+    /**
+     * The state of the window computation this thread is running (see {@link WindowComputationState}): the sessions
+     * of an engine share this evaluator and run read-only statements at once, so each thread keeps its own.
+     */
+    private final ThreadLocal<WindowComputationState> computation = new ThreadLocal<WindowComputationState>() {
+        @Override
+        protected WindowComputationState initialValue() {
+            return new WindowComputationState();
+        }
+    };
 
-    // The keys of the window computation currently running, each with the SELECT aliases it reads written out
-    // as their defining expressions; per relation, since a relation's own column outranks an alias.
-    private Map<Table, Map<String, String>> windowKeysReadThroughAliases = new IdentityHashMap<>();
-
-    // The rows the window computation currently running was handed, each by its place among them: what a
-    // SEQ call in a window's argument or key reads for the row, so it agrees with the same call in the select
-    // list. Empty outside a window computation and over grouped rows, whose group stage numbers them.
-    private Map<Row, Long> windowRowOrdinals = new IdentityHashMap<>();
-
-    // Canonical AST print of each SELECT item -> projected column index, for the window computation
-    // currently running over ALREADY-PROJECTED (grouped) rows; empty otherwise. Lets a PARTITION BY /
-    // ORDER BY key that IS a select item — OVER (ORDER BY SUM(amount) DESC) — read the computed value.
-    private Map<String, Integer> windowSelectItemCanonicalIndex = new HashMap<>();
-    private final Deque<Map<String, Integer>> savedCanonicalScopes = new ArrayDeque<>();
-
-    // How to compute an expression over a grouped output row's SOURCE GROUP, for the window computation
-    // currently running over already-projected rows; null otherwise. A key or an argument that is a raw
-    // aggregate — OVER (ORDER BY SUM(b)), LAG(SUM(b)) — has no value on the projected row unless the
-    // SELECT list happens to carry it, and the group is the only place left to compute it. Saved and
-    // restored around the computation so a nested subquery cannot clobber it.
-    private GroupedExpressionValues groupedValues;
+    /** The window computation this thread is running. */
+    private WindowComputationState state() {
+        return computation.get();
+    }
 
     WindowFunctionEvaluator(final QueryExecutor executor) {
         this.executor = executor;
@@ -691,10 +680,63 @@ final class WindowFunctionEvaluator {
                     over.getStart().getCharPositionInLine(),
                     "Window frame requires an ORDER BY clause."));
             }
+            if (over.windowFrame() != null) {
+                rejectOversizedFrame(over);
+            }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             rejectFrameWithoutOrderBy(node.getChild(i));
         }
+    }
+
+    /**
+     * Refuses a ROWS frame of more than a thousand rows while the statement compiles, whatever rows it reads: the
+     * size counts both bounds and the rows between, {@code 999 PRECEDING AND CURRENT ROW} being a thousand and
+     * {@code 500 PRECEDING AND 500 FOLLOWING} a thousand and one, and an UNBOUNDED bound has none. It is
+     * {@code Unsupported window frame: window frame size of 1001 rows exceeds limit (1000 rows)}, at the frame's
+     * first word, or at the OVER where the frame ends FOLLOWING. ARRAY_AGG takes such a frame (live-verified).
+     *
+     * @param over the window as written
+     */
+    private static void rejectOversizedFrame(final FrostlakeParser.OverClauseContext over) {
+        final FrostlakeParser.WindowFrameContext frame = over.windowFrame();
+        if (frame.ROWS() == null || isArrayAggregate(over.getParent())) {
+            return;
+        }
+        final List<FrostlakeParser.FrameBoundContext> bounds = frame.frameBound();
+        final BigInteger start = frameRow(bounds.get(0));
+        final FrostlakeParser.FrameBoundContext endBound = bounds.size() > 1 ? bounds.get(1) : null;
+        final BigInteger end = endBound == null ? BigInteger.ZERO : frameRow(endBound);
+        if (start == null || end == null) {
+            return;
+        }
+        final BigInteger size = end.subtract(start).add(BigInteger.ONE);
+        if (size.compareTo(FRAME_ROW_LIMIT) <= 0) {
+            return;
+        }
+        final Token at = endBound != null && endBound.FOLLOWING() != null ? over.getStart() : frame.getStart();
+        throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+            "Unsupported window frame: window frame size of " + size + " rows exceeds limit (" + FRAME_ROW_LIMIT
+                + " rows)"));
+    }
+
+    /** A bound's row counted from the current one, PRECEDING below and FOLLOWING above; null for an unbounded one. */
+    private static BigInteger frameRow(final FrostlakeParser.FrameBoundContext bound) {
+        if (bound.CURRENT() != null) {
+            return BigInteger.ZERO;
+        }
+        if (bound.UNBOUNDED() != null || bound.frameOffset() == null || bound.frameOffset().INTEGER_LITERAL() == null) {
+            return null;
+        }
+        final BigInteger offset = new BigInteger(bound.frameOffset().INTEGER_LITERAL().getText());
+        return bound.PRECEDING() != null ? offset.negate() : offset;
+    }
+
+    /** Whether a window's call is ARRAY_AGG, which takes a frame of any size. */
+    private static boolean isArrayAggregate(final ParseTree call) {
+        return call instanceof FrostlakeParser.FunctionCallExprContext
+            && ((FrostlakeParser.FunctionCallExprContext) call).functionName() != null
+            && "ARRAY_AGG".equalsIgnoreCase(((FrostlakeParser.FunctionCallExprContext) call).functionName().getText());
     }
 
     /**
@@ -846,6 +888,38 @@ final class WindowFunctionEvaluator {
         return false;
     }
 
+    /**
+     * Whether a select item calls an aggregate anywhere outside its nested queries, a window's arguments and keys
+     * included: {@code RANK() OVER (ORDER BY COUNT(*))} does, {@code SUM(1) OVER ()} does not.
+     *
+     * @param node the tree to walk
+     * @return whether it calls one
+     */
+    boolean holdsAggregateAnywhere(final ParseTree node) {
+        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) node;
+            if (funcCtx.overClause() == null && executor.getFunctionRegistry().hasAggregateFunction(
+                    aggregateLookupKey(funcCtx.functionName().getText()))) {
+                return true;
+            }
+        }
+        if (node instanceof FrostlakeParser.FunctionCallStarExprContext
+                && ((FrostlakeParser.FunctionCallStarExprContext) node).functionName() != null
+                && executor.getFunctionRegistry().hasAggregateFunction(aggregateLookupKey(
+                    ((FrostlakeParser.FunctionCallStarExprContext) node).functionName().getText()))) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsAggregateAnywhere(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     boolean hasWindowFunction(final FrostlakeParser.SelectClauseContext ctx) {
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (!SelectItemAccessors.isExprItem(item)) continue;
@@ -885,11 +959,11 @@ final class WindowFunctionEvaluator {
         // Expose this query's SELECT aliases so a PARTITION BY / window ORDER BY can reference one; saved and
         // restored so a nested subquery's window computation doesn't leak its aliases back out.
         final Map<String, String> savedAliases = beginWindowAliasScope(ctx, rowsAreProjected);
-        final Map<Row, Long> savedOrdinals = windowRowOrdinals;
-        windowRowOrdinals = new IdentityHashMap<>();
+        final Map<Row, Long> savedOrdinals = state().windowRowOrdinals;
+        state().windowRowOrdinals = new IdentityHashMap<>();
         if (!rowsAreProjected) {
             for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
-                windowRowOrdinals.put(rows.get(rowIdx), Long.valueOf(rowIdx));
+                state().windowRowOrdinals.put(rows.get(rowIdx), Long.valueOf(rowIdx));
             }
         }
         try {
@@ -961,7 +1035,7 @@ final class WindowFunctionEvaluator {
 
         return results;
         } finally {
-            windowRowOrdinals = savedOrdinals;
+            state().windowRowOrdinals = savedOrdinals;
             endWindowAliasScope(savedAliases);
         }
     }
@@ -971,7 +1045,7 @@ final class WindowFunctionEvaluator {
      * reads the row's place among them, as the projection's does (live-verified).
      */
     private Object evaluateAsItsRow(final String text, final Row row, final Table table) {
-        final Long ordinal = row == null ? null : windowRowOrdinals.get(row);
+        final Long ordinal = row == null ? null : state().windowRowOrdinals.get(row);
         if (ordinal == null) {
             return executor.evaluateExpression(text, row, table);
         }
@@ -986,9 +1060,6 @@ final class WindowFunctionEvaluator {
     /** Make this SELECT's aliases resolvable in PARTITION BY / window ORDER BY keys for the duration of a
      *  window computation. Returns the previous scope to pass to {@link #endWindowAliasScope}. Used by both
      *  the SELECT-list window computation and the QUALIFY inline-window computation. */
-    /** Each RATIO_TO_REPORT call's declared scale, so the width is inferred once and not once per row. */
-    private final Map<FrostlakeParser.FunctionCallExprContext, Integer> ratioDeclaredScales =
-        new IdentityHashMap<>();
 
     Map<String, String> beginWindowAliasScope(final FrostlakeParser.SelectClauseContext ctx) {
         return beginWindowAliasScope(ctx, false);
@@ -1003,11 +1074,11 @@ final class WindowFunctionEvaluator {
      */
     Map<String, String> beginWindowAliasScope(final FrostlakeParser.SelectClauseContext ctx,
                                               final boolean rowsAreProjected) {
-        final Map<String, String> saved = windowSelectAliases;
-        savedCanonicalScopes.push(windowSelectItemCanonicalIndex);
-        windowSelectAliases = buildSelectAliasMap(ctx);
-        windowKeysReadThroughAliases = new IdentityHashMap<>();
-        windowSelectItemCanonicalIndex =
+        final Map<String, String> saved = state().windowSelectAliases;
+        state().savedCanonicalScopes.push(state().windowSelectItemCanonicalIndex);
+        state().windowSelectAliases = buildSelectAliasMap(ctx);
+        state().windowKeysReadThroughAliases = new IdentityHashMap<>();
+        state().windowSelectItemCanonicalIndex =
             rowsAreProjected ? buildSelectItemCanonicalIndex(ctx) : new HashMap<>();
         return saved;
     }
@@ -1034,17 +1105,17 @@ final class WindowFunctionEvaluator {
     private ExpressionEvaluator evaluatorOver(final Table table) {
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(table,
             executor.getFunctionRegistry(), executor.getCatalog(), executor);
-        if (groupedValues != null && groupedValues.baseTable() != null
-                && groupedValues.baseTable() != table) {
-            evaluator.setDeclaredTypeBase(groupedValues.baseTable(), groupedValues.aliasToTable(),
-                groupedValues.allTables());
+        if (state().groupedValues != null && state().groupedValues.baseTable() != null
+                && state().groupedValues.baseTable() != table) {
+            evaluator.setDeclaredTypeBase(state().groupedValues.baseTable(), state().groupedValues.aliasToTable(),
+                state().groupedValues.allTables());
         }
         return evaluator;
     }
 
     GroupedExpressionValues beginGroupedValues(final GroupedExpressionValues values) {
-        final GroupedExpressionValues saved = groupedValues;
-        groupedValues = values;
+        final GroupedExpressionValues saved = state().groupedValues;
+        state().groupedValues = values;
         return saved;
     }
 
@@ -1054,7 +1125,7 @@ final class WindowFunctionEvaluator {
      * @param saved the resolver to put back
      */
     void endGroupedValues(final GroupedExpressionValues saved) {
-        groupedValues = saved;
+        state().groupedValues = saved;
     }
 
     /**
@@ -1066,10 +1137,10 @@ final class WindowFunctionEvaluator {
      * @return the value, or {@link GroupedExpressionValues#UNRESOLVED}
      */
     private Object groupedValueOf(final String exprText, final Row row) {
-        if (groupedValues == null || exprText == null || row == null) {
+        if (state().groupedValues == null || exprText == null || row == null) {
             return GroupedExpressionValues.UNRESOLVED;
         }
-        return groupedValues.valueOf(row, exprText);
+        return state().groupedValues.valueOf(row, exprText);
     }
 
     /**
@@ -1154,10 +1225,10 @@ final class WindowFunctionEvaluator {
 
     /** Restore the alias scope saved by {@link #beginWindowAliasScope}. */
     void endWindowAliasScope(final Map<String, String> saved) {
-        windowSelectAliases = saved;
-        windowKeysReadThroughAliases = new IdentityHashMap<>();
-        windowSelectItemCanonicalIndex =
-            savedCanonicalScopes.isEmpty() ? new HashMap<>() : savedCanonicalScopes.pop();
+        state().windowSelectAliases = saved;
+        state().windowKeysReadThroughAliases = new IdentityHashMap<>();
+        state().windowSelectItemCanonicalIndex =
+            state().savedCanonicalScopes.isEmpty() ? new HashMap<>() : state().savedCanonicalScopes.pop();
     }
 
     /**
@@ -2656,10 +2727,10 @@ final class WindowFunctionEvaluator {
         if (!(ratio instanceof Number)) {
             return ratio;
         }
-        Integer scale = ratioDeclaredScales.get(funcCtx);
+        Integer scale = state().ratioDeclaredScales.get(funcCtx);
         if (scale == null) {
             scale = Integer.valueOf(declaredRatioScale(funcCtx, table));
-            ratioDeclaredScales.put(funcCtx, scale);
+            state().ratioDeclaredScales.put(funcCtx, scale);
         }
         if (scale.intValue() < 0) {
             return ratio;
@@ -3764,8 +3835,8 @@ final class WindowFunctionEvaluator {
      * @return the column texts the star stands for
      */
     private List<String> expandWindowStar(final StarArgument star, final Table table) {
-        final Map<String, Table> aliases = groupedValues == null ? null : groupedValues.aliasToTable();
-        final List<Table> relations = groupedValues == null ? null : groupedValues.allTables();
+        final Map<String, Table> aliases = state().groupedValues == null ? null : state().groupedValues.aliasToTable();
+        final List<Table> relations = state().groupedValues == null ? null : state().groupedValues.allTables();
         return star.expand(table, aliases, relations, relations != null && !relations.isEmpty());
     }
 
@@ -3907,9 +3978,9 @@ final class WindowFunctionEvaluator {
         // aggregate, OVER (ORDER BY SUM(amount) DESC) — reads that item's already-computed value
         // positionally. Evaluating the aggregate text as a scalar threw, and the catch below turned
         // the key into NULL, so ROW_NUMBER/RANK ordered every partition by input order instead.
-        if (!windowSelectItemCanonicalIndex.isEmpty()) {
+        if (!state().windowSelectItemCanonicalIndex.isEmpty()) {
             try {
-                final Integer itemIdx = windowSelectItemCanonicalIndex.get(
+                final Integer itemIdx = state().windowSelectItemCanonicalIndex.get(
                     AstPrinterVisitor.print(ExpressionEvaluator.parse(trimmed)));
                 if (itemIdx != null && itemIdx < row.getValues().size()) {
                     return DeferredFault.read(row.getValue(itemIdx));
@@ -3935,12 +4006,12 @@ final class WindowFunctionEvaluator {
         // evaluating it raw threw "Column not found" per row, which the catch below silently turned
         // into a NULL order key, so RANK/ROW_NUMBER saw every row as equal and QUALIFY filtered nothing.
         String toEvaluate = trimmed;
-        if (!windowSelectAliases.isEmpty() && isSimpleIdentifier(trimmed)) {
+        if (!state().windowSelectAliases.isEmpty() && isSimpleIdentifier(trimmed)) {
             final String canon = canonicalName(trimmed);
-            if (!table.hasColumn(canon) && windowSelectAliases.containsKey(canon)) {
-                toEvaluate = expandAliasExpression(windowSelectAliases.get(canon), table);
+            if (!table.hasColumn(canon) && state().windowSelectAliases.containsKey(canon)) {
+                toEvaluate = expandAliasExpression(state().windowSelectAliases.get(canon), table);
             }
-        } else if (!windowSelectAliases.isEmpty()) {
+        } else if (!state().windowSelectAliases.isEmpty()) {
             toEvaluate = readThroughAliases(trimmed, table);
         }
         try {
@@ -3965,10 +4036,10 @@ final class WindowFunctionEvaluator {
      * parse on its own is evaluated as written.
      */
     private String readThroughAliases(final String key, final Table table) {
-        Map<String, String> read = windowKeysReadThroughAliases.get(table);
+        Map<String, String> read = state().windowKeysReadThroughAliases.get(table);
         if (read == null) {
             read = new HashMap<>();
-            windowKeysReadThroughAliases.put(table, read);
+            state().windowKeysReadThroughAliases.put(table, read);
         }
         String written = read.get(key);
         if (written == null) {
@@ -3993,10 +4064,10 @@ final class WindowFunctionEvaluator {
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
             final FrostlakeParser.QualifiedNameExprContext name = (FrostlakeParser.QualifiedNameExprContext) node;
             final String[] parts = ParseTreeText.qualifiedNameParts(name.qualifiedName());
-            if (parts.length == 1 && windowSelectAliases.containsKey(parts[0])
+            if (parts.length == 1 && state().windowSelectAliases.containsKey(parts[0])
                     && (table == null || !table.hasColumn(parts[0]))) {
                 out.add(new TextReplacement(name,
-                    "(" + expandAliasExpression(windowSelectAliases.get(parts[0]), table) + ")"));
+                    "(" + expandAliasExpression(state().windowSelectAliases.get(parts[0]), table) + ")"));
             }
             return;
         }
@@ -4015,7 +4086,7 @@ final class WindowFunctionEvaluator {
         String text = defining;
         for (int pass = 0; pass < 5; pass++) {
             String next = text;
-            for (final Map.Entry<String, String> alias : windowSelectAliases.entrySet()) {
+            for (final Map.Entry<String, String> alias : state().windowSelectAliases.entrySet()) {
                 if (table != null && table.hasColumn(alias.getKey())) {
                     continue;
                 }

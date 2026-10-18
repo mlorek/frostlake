@@ -135,6 +135,12 @@ final class CorrelatedAggregatePlace {
                 if (!executor.holdsAggregateAnywhere(subquery)) {
                     continue;
                 }
+                if (subquery.selectOperand().size() > 1
+                        && subquery.getParent() instanceof FrostlakeParser.InSubqueryExprContext) {
+                    // A set operation an IN reads is no subquery the account evaluates at all: it is refused as an
+                    // unsupported subquery type (CorrelatedSubqueryRule), ahead of the place (live-verified).
+                    continue;
+                }
                 if (rule == null) {
                     rule = new CorrelatedSubqueryRule(executor, offeredNames(table, aliasToTable, allTables));
                 }

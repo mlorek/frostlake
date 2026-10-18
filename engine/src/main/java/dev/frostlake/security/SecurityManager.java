@@ -18,17 +18,21 @@ package dev.frostlake.security;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -111,23 +115,137 @@ public class SecurityManager {
     }
 
     /**
-     * Authorize GRANT / REVOKE of a privilege on an object: the current session must be the SYSTEM
-     * user, an administrative role (ACCOUNTADMIN / SECURITYADMIN / SYSADMIN), or the object's owner.
-     * This closes the self-escalation hole where any role could grant itself privileges.
+     * Authorize GRANT / REVOKE of a privilege on an object: the current session must be the SYSTEM user, hold an
+     * administrative role (ACCOUNTADMIN / SECURITYADMIN / SYSADMIN) or MANAGE GRANTS, or own the object. This closes
+     * the self-escalation hole where any role could grant itself privileges.
      */
     public void checkGrantAuthority(final String objectType, final String objectName) {
-        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+        checkGrantAuthority(objectType, objectName, catalog.getObjectOwnerRole(objectType, objectName),
+            Collections.<String>emptyList());
+    }
+
+    /**
+     * Authorize GRANT / REVOKE of privileges on one object. Beside the roles that decide every grant (see
+     * {@link #checkManageGrants}) the object's owner decides, and a GRANT may pass on the privileges the session
+     * holds WITH GRANT OPTION. In a schema WITH MANAGED ACCESS neither of those decides: the schema's owner does.
+     *
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name, as privileges record it or as the statement wrote it
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @param privileges the privileges a GRANT passes on, each of which a grant option may allow; empty for none
+     */
+    public void checkGrantAuthority(final String objectType, final String objectName, final String owner,
+                                    final List<String> privileges) {
+        if (decidesGrants()) {
             return;
         }
-        // SECURITYADMIN manages grants; otherwise require OWNERSHIP — hasPermission(OWNERSHIP) already
-        // covers the ACCOUNTADMIN/SYSADMIN bypass, the owner field, and an explicit OWNERSHIP grant.
-        if (getEffectiveRoles().contains("SECURITYADMIN")
-                || hasPermission(Privilege.OWNERSHIP, objectType, objectName)) {
+        final Schema managed = GrantNames.managedSchema(catalog, objectType, objectName);
+        if (managed != null) {
+            final String schemaName = QualifiedName.join(managed.getDatabaseName(), managed.getName());
+            if (owns(managed.getOwner(), "SCHEMA", schemaName)) {
+                return;
+            }
+            throw new SecurityException(String.format(
+                "Cannot grant privileges on %s '%s': schema '%s' has managed access, where only the schema's owner"
+                + " or a role with MANAGE GRANTS decides grants", objectType, objectName, schemaName));
+        }
+        if (owns(owner, objectType, objectName) || holdsGrantOptions(objectType, objectName, privileges)) {
             return;
         }
         throw new SecurityException(String.format(
             "Cannot grant privileges on %s '%s': requires OWNERSHIP of the object or an administrative"
             + " role (ACCOUNTADMIN / SECURITYADMIN / SYSADMIN)", objectType, objectName));
+    }
+
+    /**
+     * Authorize a grant or a revoke that no object's owner decides, a privilege on the account or a future grant,
+     * or that the owner of one object decides beside the roles that decide every grant: a role's owner grants the
+     * role, a managed schema's owner its future grants. The roles that decide every grant are the SYSTEM user's,
+     * an administrative role (ACCOUNTADMIN / SECURITYADMIN / SYSADMIN) and a role holding MANAGE GRANTS.
+     *
+     * @param what      the grant's object as the refusal names it
+     * @param ownedType the kind of the object whose owner decides too, or null for none
+     * @param ownedName that object's name
+     * @param owner     the role that owns that object, or null when none is recorded
+     */
+    public void checkManageGrants(final String what, final String ownedType, final String ownedName,
+                                  final String owner) {
+        if (decidesGrants() || ownedType != null && owns(owner, ownedType, ownedName)) {
+            return;
+        }
+        throw new SecurityException(String.format(
+            "Cannot grant or revoke %s: requires %sMANAGE GRANTS or an administrative role"
+            + " (ACCOUNTADMIN / SECURITYADMIN / SYSADMIN)", what,
+            ownedType == null ? "" : "OWNERSHIP of the " + ownedType.toLowerCase(Locale.ROOT) + ", "));
+    }
+
+    /**
+     * Whether a REVOKE takes back one grant on an object. A REVOKE takes back the grants the session made, whose
+     * grantor is one of its roles or a role beneath them, and leaves the rest: it succeeds even where it takes back
+     * nothing. The roles that decide every grant take back any grant; in a schema WITH MANAGED ACCESS the schema's
+     * owner does, and no other role.
+     *
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name as privileges record it
+     * @param grantor    the role recorded as having made the grant, or null when none is recorded
+     * @return whether the grant is taken back
+     */
+    public boolean revokesGrant(final String objectType, final String objectName, final String grantor) {
+        if (decidesGrants()) {
+            return true;
+        }
+        final Schema managed = GrantNames.managedSchema(catalog, objectType, objectName);
+        if (managed != null) {
+            return owns(managed.getOwner(), "SCHEMA", QualifiedName.join(managed.getDatabaseName(), managed.getName()));
+        }
+        final Set<String> roles = getEffectiveRoles();
+        return grantor != null
+            && (roles.contains(catalog.resolveRoleName(grantor)) || holdsOwningDatabaseRole(roles, grantor));
+    }
+
+    /** Whether the session decides every grant: the SYSTEM user, an administrative role, or MANAGE GRANTS. */
+    private boolean decidesGrants() {
+        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+            return true;
+        }
+        final Set<String> roles = getEffectiveRoles();
+        return roles.contains("SYSADMIN") || managesGrants(roles);
+    }
+
+    /** Whether the session's roles own an object: its recorded owner, or the holder of an OWNERSHIP grant on it. */
+    private boolean owns(final String owner, final String objectType, final String objectName) {
+        final Set<String> roles = getEffectiveRoles();
+        if (owner != null
+                && (roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner))) {
+            return true;
+        }
+        return holdsExactly(holdersUnder(roles), objectType, GrantNames.of(catalog, objectType, objectName),
+            Privilege.OWNERSHIP);
+    }
+
+    /** Whether the session holds each of the privileges on an object WITH GRANT OPTION; false when none is named. */
+    private boolean holdsGrantOptions(final String objectType, final String objectName, final List<String> privileges) {
+        if (privileges.isEmpty()) {
+            return false;
+        }
+        final String recorded = GrantNames.of(catalog, objectType, objectName);
+        final List<Role> holders = holdersUnder(getEffectiveRoles());
+        for (final String privilege : privileges) {
+            final Privilege named;
+            try {
+                named = Privilege.valueOf(privilege);
+            } catch (final IllegalArgumentException unknown) {
+                return false;
+            }
+            boolean held = false;
+            for (final Role holder : holders) {
+                held = held || holder.hasGrantOption(objectType, recorded, named);
+            }
+            if (!held) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -473,6 +591,7 @@ public class SecurityManager {
         if (ownerRole != null && catalog.roleExists(catalog.resolveRoleName(ownerRole))) {
             ownerRights.set(catalog.resolveRoleName(ownerRole));
         }
+        sessionContext.enterBodyOwner(ownerRole);
         return previous;
     }
 
@@ -482,6 +601,7 @@ public class SecurityManager {
      * @param previous what {@link #enterOwnerRights} answered
      */
     public void leaveOwnerRights(final String previous) {
+        sessionContext.leaveBodyOwner();
         if (previous == null) {
             ownerRights.remove();
         } else {

@@ -20,9 +20,10 @@ import dev.frostlake.query.MeasuredCellsTestSupport;
 import org.junit.jupiter.api.Test;
 
 /**
- * How many statements the text of an EXECUTE IMMEDIATE may hold: one, whatever the request around it counts,
- * a block being one statement; a text of none — blank, comments or semicolons alone — is the empty statement
- * to a request and a statement that may not run to a block (live-verified).
+ * How many statements the text of an EXECUTE IMMEDIATE may hold: as many as the count in force asks — one by default,
+ * one inside a script of several, the session's inside a block (ExecuteImmediateSessionCountTest) — a block being one
+ * statement; a text of none — blank, comments or semicolons alone — is the empty statement to a request and a
+ * statement that may not run to a block (live-verified).
  */
 public class ExecuteImmediateTextCountTest extends MeasuredCellsTestSupport {
 

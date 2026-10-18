@@ -18,7 +18,7 @@ package dev.frostlake.metastore;
 
 /**
  * Told when the catalog forgets a dropped version for good, its retention run out, so that what the version kept
- * outside the catalog goes with it: the stage files its DROP set aside.
+ * outside the catalog goes with it: the stage files its DROP set aside, and its tables' storage.
  */
 public interface DroppedVersionPurge {
 

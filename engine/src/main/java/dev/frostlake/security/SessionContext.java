@@ -18,10 +18,12 @@ package dev.frostlake.security;
 
 import dev.frostlake.metastore.StatementSession;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -77,6 +79,9 @@ public class SessionContext {
     private final ThreadLocal<SessionSettings> boundSettings = new ThreadLocal<SessionSettings>();
     /** The owner of the owner's-rights procedure running on this thread (see {@link #getExecutableOwner}). */
     private final ThreadLocal<String> executableOwner = new ThreadLocal<String>();
+
+    /** The owners of the views and functions whose bodies run on this thread, innermost last; "" for none. */
+    private final ThreadLocal<List<String>> bodyOwners = new ThreadLocal<List<String>>();
     /** Where the session's user and account keep their parameters; null when nothing is wired. */
     private InheritedParameters inheritedParameters;
 
@@ -183,6 +188,51 @@ public class SessionContext {
         } else {
             executableOwner.set(owner);
         }
+    }
+
+    /**
+     * Enter the body of a view or a function on this thread, which runs as its owner's: {@link #getInvokerOwner}
+     * answers that owner until the matching {@link #leaveBodyOwner}.
+     *
+     * @param owner the role that owns the view or the function, or null when none is recorded
+     */
+    public void enterBodyOwner(final String owner) {
+        List<String> owners = bodyOwners.get();
+        if (owners == null) {
+            owners = new ArrayList<>();
+            bodyOwners.set(owners);
+        }
+        owners.add(owner == null ? "" : owner);
+    }
+
+    /** Leave the body {@link #enterBodyOwner} entered last on this thread. */
+    public void leaveBodyOwner() {
+        final List<String> owners = bodyOwners.get();
+        if (owners == null || owners.isEmpty()) {
+            return;
+        }
+        owners.remove(owners.size() - 1);
+        if (owners.isEmpty()) {
+            bodyOwners.remove();
+        }
+    }
+
+    /**
+     * The owner of the innermost object executing on this thread, which INVOKER_ROLE() names: the view or the
+     * function whose body runs, else the owner's-rights procedure that runs; null outside them all.
+     *
+     * @return the owning role's name as the object records it, or null
+     */
+    public String getInvokerOwner() {
+        final List<String> owners = bodyOwners.get();
+        if (owners != null) {
+            for (int i = owners.size() - 1; i >= 0; i--) {
+                if (!owners.get(i).isEmpty()) {
+                    return owners.get(i);
+                }
+            }
+        }
+        return executableOwner.get();
     }
 
     /** The role a statement creates as: an owner's-rights procedure's owner while one runs, else the primary role. */

@@ -938,6 +938,12 @@ final class SubqueryPlanPrint {
             return null;
         }
         final String[] parts = ParseTreeText.qualifiedNameParts(source.tableQualifiedName());
+        if (parts.length == 1 && "DUAL".equalsIgnoreCase(parts[0]) && isPlainName(parts[0])
+                && aliasOf(reference) == null) {
+            // DUAL is the one row of a VALUES list (live-verified: (SELECT 12 FROM DUAL) prints FROM
+            // (VALUES (null)) "VALUES").
+            return "(VALUES (" + (mode == StrictPrintMode.CONVERSION ? "NULL" : "null") + ")) \"VALUES\"";
+        }
         if (parts.length == 1 && ctes.containsKey(parts[0])) {
             final String alias = aliasOf(reference);
             return derived(ctes.get(parts[0]), alias != null ? alias : parts[0], catalog);

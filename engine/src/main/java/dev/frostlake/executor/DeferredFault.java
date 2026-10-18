@@ -44,28 +44,53 @@ public final class DeferredFault {
         Collections.synchronizedMap(new WeakHashMap<Throwable, Boolean>());
 
     private final RuntimeException fault;
+    /** The answer a CALL handed out, which a plain star over its scan hands out too; null for any other cell. */
+    private final Object answered;
+    /** Whether the cell holds such an answer. */
+    private final boolean holdsAnswer;
 
     public DeferredFault(final RuntimeException fault) {
+        this(fault, null, false);
+    }
+
+    private DeferredFault(final RuntimeException fault, final Object answered, final boolean holdsAnswer) {
         this.fault = fault;
+        this.answered = answered;
+        this.holdsAnswer = holdsAnswer;
         HELD.put(fault, Boolean.TRUE);
     }
 
     /**
-     * A cell holding a fault that a write raises as it is: a CALL's answer wider than its RETURNS column, read from
-     * the CALL's scan, is refused bare by an INSERT or a CREATE TABLE … AS SELECT over it (live-verified), where a
-     * view's too-long value is worded as the write's.
+     * A cell of a CALL's scan holding the answer the CALL handed out and the fault reading it raises: a statement
+     * that reads the cell is refused, a plain {@code SELECT * FROM TABLE(RESULT_SCAN(…))} hands the answer out as
+     * the CALL did (see {@code ScanStar}), and a write over the scan of an answer wider than its RETURNS column raises
+     * the fault as it is, where a view's too-long value is worded as the write's (live-verified).
      *
-     * @param fault the fault
+     * @param fault    the fault
+     * @param answered the answer
+     * @param bare     whether a write raises the fault with no DML sentence around it
      * @return the cell
      */
-    public static DeferredFault bare(final RuntimeException fault) {
-        final DeferredFault cell = new DeferredFault(fault);
-        BARE.put(fault, Boolean.TRUE);
+    public static DeferredFault heldAnswer(final RuntimeException fault, final Object answered, final boolean bare) {
+        final DeferredFault cell = new DeferredFault(fault, answered, true);
+        if (bare) {
+            BARE.put(fault, Boolean.TRUE);
+        }
         return cell;
     }
 
+    /** Whether the cell holds an answer a CALL handed out (see {@link #heldAnswer}). */
+    public boolean holdsAnswer() {
+        return holdsAnswer;
+    }
+
+    /** The answer the cell holds, or null. */
+    public Object getAnswered() {
+        return answered;
+    }
+
     /**
-     * Whether a failure is a held fault a write raises bare ({@link #bare}).
+     * Whether a failure is a held fault a write raises bare (see {@link #heldAnswer}).
      *
      * @param failure the failure caught
      * @return whether it is such a fault

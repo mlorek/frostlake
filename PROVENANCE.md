@@ -18,7 +18,8 @@ of a Snowflake-compatible SQL engine.
   names, semantics) for compatibility. Reimplementing a functional interface is not copying of
   protected expression — cf. *Google LLC v. Oracle America, Inc.*, 593 U.S. 1 (2021), and, in
   the EU, *SAS Institute Inc. v. World Programming Ltd.* (CJEU C-406/10).
-- The `com.snowflake.snowpark_java` package contains **independently written stub classes**
+- The `com.snowflake.snowpark_java` package, and the few classes of `com.snowflake.snowpark`
+  whose names its exceptions and casts report, contain **independently written stub classes**
   that match the public Snowpark API signatures for source-level compatibility. They do **not**
   contain copied Snowpark implementation code.
 

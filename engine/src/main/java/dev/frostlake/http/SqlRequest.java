@@ -39,6 +39,9 @@ public class SqlRequest {
     // nothing run, unless every statement of it is a query, a SHOW, a DESCRIBE or an EXPLAIN that reaches no
     // write; a session opened read-only answers for a request that omits it.
     private Boolean readOnly;
+    // The client's query timeout in seconds, or null when it sets none. A statement still running when it is up is
+    // canceled, as a cancel through POST /api/sessions/{id}/cancel cancels it: "SQL execution canceled".
+    private Integer queryTimeout;
 
     public SqlRequest() {
     }
@@ -122,5 +125,18 @@ public class SqlRequest {
 
     public void setReadOnly(final Boolean readOnly) {
         this.readOnly = readOnly;
+    }
+
+    /**
+     * The query timeout this request sets in seconds, or null when it sets none; zero sets none either. A null is
+     * left out of the JSON, so a client that never sets one sends no field at all.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Integer getQueryTimeout() {
+        return queryTimeout;
+    }
+
+    public void setQueryTimeout(final Integer queryTimeout) {
+        this.queryTimeout = queryTimeout;
     }
 }

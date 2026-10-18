@@ -30,6 +30,7 @@ import dev.frostlake.executor.SqlArgumentText;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.commands.DeferredHandlerCheck;
 import dev.frostlake.executor.commands.ExternalFunctions;
 import dev.frostlake.executor.commands.ServiceFunctions;
 import dev.frostlake.executor.udf.GuestResults;
@@ -55,6 +56,8 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.metastore.model.Volatility;
+import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.ArrayType;
@@ -208,8 +211,8 @@ final class UdfInvoker {
                 continue;
             }
             if (handlerTakesSqlTypes(function.getUdfLanguage()) && paramType != null) {
-                // A JavaScript, a Java or a Scala handler's argument becomes its parameter's SQL type as it
-                // arrives, before the handler's own mapping, as a procedure's does (live-verified): a NUMBER
+                // A JavaScript, a Java, a Scala or a Python handler's argument becomes its parameter's SQL type as
+                // it arrives, before the handler's own mapping, as a procedure's does (live-verified): a NUMBER
                 // parameter rounds a fraction away (1.5 is 2 for an int handler) and reads a text ('42'), a
                 // NUMBER(10,2) one holds two decimals. For a JavaScript handler: a NUMBER or a text for a FLOAT
                 // parameter is a FLOAT - the handler computes with a number, where a host decimal concatenated
@@ -540,7 +543,7 @@ final class UdfInvoker {
      * neither a NUMBER nor a VARIANT one takes a DATE at all (live-verified). Which of several accepting
      * overloads is CHOSEN is a separate question, answered by {@link UdfOverloadPreference}.
      */
-    private boolean isCompatibleArgument(final Object argValue, final DataType expectedType) {
+    static boolean isCompatibleArgument(final Object argValue, final DataType expectedType) {
         if (argValue == null || expectedType == null) {
             return true; // NULL is compatible with all types
         }
@@ -640,6 +643,12 @@ final class UdfInvoker {
             throw new RuntimeException(ExternalFunctions.cannotCall(function));
         }
         final UdfLanguage language = function.getUdfLanguage();
+        // A temporary handler function's handler is judged as a row first reaches it.
+        DeferredHandlerCheck.require(function);
+        // A handler that is not declared IMMUTABLE may answer otherwise when called again (see CheckpointDebt).
+        if (language != UdfLanguage.SQL && !Volatility.IMMUTABLE.name().equals(function.getVolatility())) {
+            CheckpointDebt.owe();
+        }
 
         if (language == UdfLanguage.JAVA) {
             return evaluateJavaFunction(function, args);
@@ -679,7 +688,8 @@ final class UdfInvoker {
 
     /** Whether a language's handler is given its arguments as its parameters' SQL types. */
     private static boolean handlerTakesSqlTypes(final UdfLanguage language) {
-        return language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.JAVA || language == UdfLanguage.SCALA;
+        return language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.JAVA || language == UdfLanguage.SCALA
+            || language == UdfLanguage.PYTHON;
     }
 
 

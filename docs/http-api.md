@@ -22,6 +22,7 @@ Request:
 | `requireSession` | optional, default `true`: a `sessionId` naming no live session is refused (404) and nothing runs. `false` starts a fresh session under that id instead (see *Sessions*) |
 | `multiStatementCount` | optional: how many statements this request holds. The account's driver sends the count with the statement, and the server refuses a request whose statement count differs. `0` means any number. A request that omits the field inherits the session's `MULTI_STATEMENT_COUNT`, which starts at 1. |
 | `readOnly` | optional: `true` asks for the request to run only if it changes nothing. Every statement of it must then be a query, a `SHOW`, a `DESCRIBE` or an `EXPLAIN`, and none may reach a write another way; otherwise the request is refused and nothing runs (see *Read-only requests*). A session opened read-only answers for a request that omits the field |
+| `queryTimeout` | optional: the client's query timeout in seconds. A statement still running when it is up is canceled, `SQL execution canceled`, as a cancel cancels it (see *Canceling a statement*). `0`, or a field left out, sets none; the session's `STATEMENT_TIMEOUT_IN_SECONDS` bounds every statement either way. |
 | `autoCommit` | optional: the client's autocommit mode. The session's `AUTOCOMMIT` setting follows it whenever it changes — the first value a session receives, and each later value that differs from the one before it — and the statement then runs under it, as it would after `ALTER SESSION SET AUTOCOMMIT`. A request that omits the field, or repeats the value it last sent, leaves the setting as it stands, so an `ALTER SESSION SET AUTOCOMMIT` run in between stays in force. |
 
 Response:
@@ -40,6 +41,11 @@ Response:
 | 500 | the server could not handle the request at all (an unreadable body, an internal fault such as a class it cannot load). A fault is always answered, never left to the client's timeout. |
 
 Decide success from the body's `success`: a SQL error is an answer, not a transport failure.
+
+A failed statement's answer carries `sqlState` and `errorCode` where the account's are known, and leaves them out
+otherwise. Today that is a canceled statement: `57014` with `604` for a cancel or a query timeout, and with `630`
+for the session's `STATEMENT_TIMEOUT_IN_SECONDS` (`Statement reached its statement or warehouse timeout of 1
+second(s) and was canceled.`).
 
 A `sql` that holds no statement — empty, blank, a lone `;` or only comments — is a statement like any other and
 fails as the account fails it: 200 with `success: false` and `SQL compilation error:` / `Empty SQL statement.`, in a session.
@@ -263,6 +269,20 @@ Releases a session, rolling back a transaction it left open: 200 `{"success": tr
 
 Marks the session as in use, which puts off its idle timeout; nothing runs. It answers 200
 `{"success": true, "sessionId": "…", …}`, or 404 `{"success": false, …}` when the id names no live session.
+
+### `POST /api/sessions/{id}/cancel`
+
+Cancels the statement the session is running: it ends with `SQL execution canceled` (`sqlState` `57014`,
+`errorCode` `604`), and the session runs its next statement as usual. The cancel never waits for the statement it
+cancels. It answers 200 `{"success": true, "sessionId": "…", …}` whether or not a statement was running, or 404
+`{"success": false, …}` when the id names no live session.
+
+### Canceling a statement
+
+Frostlake's JDBC driver ends a statement the way the account's driver does: `Statement.setQueryTimeout(n)` sends
+`queryTimeout` with each statement, and `Statement.cancel()` from another thread sends the cancel above. Either way
+the driver raises `SQL execution canceled` with SQLSTATE `57014` and code `604`, and a statement the session's
+`STATEMENT_TIMEOUT_IN_SECONDS` ended with `57014` and `630`.
 
 ### Keeping a session alive
 

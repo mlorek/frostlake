@@ -59,6 +59,12 @@ public class DatabaseStatement implements Statement {
     /** Per-statement MULTI_STATEMENT_COUNT set via {@link #setParameter}, overriding the session's. */
     private Integer statementMultiCount;
 
+    /** The query timeout in seconds, 0 for none (see {@link #setQueryTimeout}). */
+    private volatile int queryTimeoutSeconds;
+
+    /** Whether one of this object's statements is running now, which {@link #cancel()} cancels. */
+    private volatile boolean running;
+
     /**
      * The real driver's per-statement parameter surface ({@code unwrap(...).setParameter(...)});
      * MULTI_STATEMENT_COUNT is the one parameter this driver understands.
@@ -114,7 +120,13 @@ public class DatabaseStatement implements Statement {
             currentResultSet.close();
             currentResultSet = null;
         }
-        final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
+        final SqlResponse response;
+        running = true;
+        try {
+            response = httpClient.execute(sql, desiredMultiCount(), queryTimeoutSeconds);
+        } finally {
+            running = false;
+        }
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         return response;
     }
@@ -299,17 +311,26 @@ public class DatabaseStatement implements Statement {
 
     @Override
     public int getQueryTimeout() throws SQLException {
-        return 0;
+        return queryTimeoutSeconds;
     }
 
     @Override
     public void setQueryTimeout(final int seconds) throws SQLException {
-        // No-op
+        if (seconds < 0) {
+            throw new SQLException("Query timeout must be zero or more seconds, not " + seconds);
+        }
+        // The statements this object runs are canceled once they run this long: "SQL execution canceled".
+        queryTimeoutSeconds = seconds;
     }
 
     @Override
     public void cancel() throws SQLException {
-        throw new SQLFeatureNotSupportedException("Cancel not supported");
+        // From any thread: the running statement ends with "SQL execution canceled", and this object runs the next
+        // one as usual (live-verified). The server cancels what its session runs, so only a statement of this
+        // object's own is canceled.
+        if (running) {
+            httpClient.cancelRunning();
+        }
     }
 
     @Override

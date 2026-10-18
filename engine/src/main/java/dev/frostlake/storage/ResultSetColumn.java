@@ -40,6 +40,10 @@ public class ResultSetColumn {
     // accepts NULL (live-verified). A boolean alone cannot tell "nullable because we looked" from
     // "nullable because we did not".
     private final boolean nullabilityKnown;
+    // Whether the projection's expression can answer NULL, worked out from the expression itself, or null where
+    // nothing worked it out. Only a JavaScript procedure's result set tells it (isColumnNullable); the JDBC and
+    // INFORMATION_SCHEMA answers keep the two fields above.
+    private final Boolean derivedNullable;
     // The interval the column's values lie in, propagated from the projection the way the account
     // propagates statistics, or null when none is known. Read only by the storage tag SYSTEM$TYPEOF
     // prints through a derived relation; never by a value path.
@@ -119,6 +123,18 @@ public class ResultSetColumn {
                             final boolean uncheckedConstant, final boolean foldedDouble,
                             final boolean collationExplicit, final String projectionPolicyName,
                             final boolean nullText) {
+        this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, collation,
+            uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName, nullText, null);
+    }
+
+    private ResultSetColumn(final String name, final DataType dataType, final String tableName,
+                            final DataType staticType, final boolean nullable,
+                            final boolean nullabilityKnown, final ValueRange valueRange,
+                            final DataType spelledNumber, final String collation,
+                            final boolean uncheckedConstant, final boolean foldedDouble,
+                            final boolean collationExplicit, final String projectionPolicyName,
+                            final boolean nullText, final Boolean derivedNullable) {
+        this.derivedNullable = derivedNullable;
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -157,7 +173,29 @@ public class ResultSetColumn {
     public ResultSetColumn withCollation(final String spec, final boolean explicit) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, spec != null && explicit,
-            projectionPolicyName, nullText);
+            projectionPolicyName, nullText, derivedNullable);
+    }
+
+    /**
+     * This column carrying whether its expression can answer NULL (see {@link #getDerivedNullable}).
+     *
+     * @param derived whether it can
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withDerivedNullable(final boolean derived) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, Boolean.valueOf(derived));
+    }
+
+    /**
+     * Whether the projection's expression can answer NULL, worked out from the expression itself — what a
+     * JavaScript procedure's result set tells as {@code isColumnNullable} — or null where nothing worked it out.
+     *
+     * @return whether it can, or null
+     */
+    public Boolean getDerivedNullable() {
+        return derivedNullable;
     }
 
     /**
@@ -178,7 +216,7 @@ public class ResultSetColumn {
     public ResultSetColumn withUncheckedConstant() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, true, foldedDouble, collationExplicit, projectionPolicyName,
-            nullText);
+            nullText, derivedNullable);
     }
 
     /**
@@ -190,7 +228,7 @@ public class ResultSetColumn {
     public ResultSetColumn withFoldedDouble() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, true, collationExplicit, projectionPolicyName,
-            nullText);
+            nullText, derivedNullable);
     }
 
     /**
@@ -202,7 +240,7 @@ public class ResultSetColumn {
     public ResultSetColumn withNullText() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
-            projectionPolicyName, true);
+            projectionPolicyName, true, derivedNullable);
     }
 
     /**
@@ -223,7 +261,7 @@ public class ResultSetColumn {
     public ResultSetColumn withProjectionPolicy(final String policyName) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, policyName,
-            nullText);
+            nullText, derivedNullable);
     }
 
     /**

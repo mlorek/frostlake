@@ -167,7 +167,7 @@ final class JavaScriptHandler {
      */
     private static final String API = """
         var defineOwn = Object.defineProperty, captureStack = Error.captureStackTrace;
-        var hasOwn = Object.prototype.hasOwnProperty, text = String;
+        var text = String;
         var placed = function (api, method, below) {
         var saved = Error.prepareStackTrace, limit = Error.stackTraceLimit, holder = {}, frame = null;
         Error.stackTraceLimit = 1;
@@ -191,10 +191,12 @@ final class JavaScriptHandler {
         var unread = function (api, options, method, below) {
         if (options === undefined || options === null) { raise(api, {statement: false, code: 100183, state: 'P0000',
         message: "TypeError: Cannot read properties of " + options + " (reading 'sqlText')"}, method, below); } };
-        var column = function (self, host, index) { var name = host.columnName(index);
-        if (name === null || hasOwn.call(self, name)) { return; }
-        defineOwn(self, name, {enumerable: true, configurable: true, get: function () {
-        var led = host.columnValue(index, text(index)); return failed(led) ? undefined : arrive(led); }}); };
+        var column = function (self, host, index, values) { var name = host.columnName(index);
+        if (name === null) { return; }
+        defineOwn(self, name, {enumerable: true, configurable: true, get: function () { return values[index]; }}); };
+        var rowValues = function (host, values) { var count = host.getColumnCount();
+        for (var i = 1; i <= count; i++) { var led = host.columnValue(i, text(i));
+        values[i] = failed(led) ? undefined : arrive(led); } return count; };
         var asked = function (which) { return typeof which === 'number' || typeof which === 'string' ? which : null; };
         var kinds = ['Array', 'Binary', 'Boolean', 'Date', 'Number', 'Object', 'Text', 'Time', 'Timestamp',
         'Variant'];
@@ -204,12 +206,12 @@ final class JavaScriptHandler {
         told('getColumnType', 'type'); told('getColumnSqlType', 'sqlType'); told('getColumnScale', 'scale');
         told('isColumnNullable', 'nullable');
         for (var k = 0; k < kinds.length; k++) { told('isColumn' + kinds[k], kinds[k].toLowerCase()); } };
-        var ResultSet = function ResultSet(api, host) { var self = this, named = false;
+        var ResultSet = function ResultSet(api, host) { var self = this, named = false, values = [];
         var about = function (which, what, method, below) {
         return answered(api, host.column(asked(which), text(which), what), method, below); };
         this.next = function () { var more = host.next();
-        if (more && !named) { named = true; var count = host.getColumnCount();
-        for (var i = 1; i <= count; i++) { column(self, host, i); } }
+        if (more) { var count = rowValues(host, values);
+        if (!named) { named = true; for (var i = 1; i <= count; i++) { column(self, host, i, values); } } }
         return more; };
         this.getColumnValue = function (which) {
         return arrive(answered(api, host.columnValue(asked(which), text(which)), 'ResultSet.getColumnValue',

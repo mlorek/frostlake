@@ -62,6 +62,8 @@ public class QueryCommandHandler implements CommandHandler {
             if (ctx.forUpdateClause() != null) {
                 throw refusedLock(ctx.selectStatement());
             }
+            // A dynamic table the query reads that never refreshed is refused before anything runs.
+            queryExecutor.requireInitializedDynamicTables(ctx.selectStatement());
             return handleSelectStatement(ctx.selectStatement());
         }
         throw new RuntimeException("Unsupported query statement");

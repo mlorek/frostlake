@@ -16,6 +16,7 @@
 
 package dev.frostlake.http;
 
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.executor.StatementCount;
 import dev.frostlake.security.SessionSettings;
 
@@ -48,6 +49,9 @@ public class SessionContext {
     // Whether the session was opened read-only: its requests may only read, whatever each one says.
     private volatile boolean readOnly;
     private volatile Long transactionId;
+    // The token of the request running in the session now, which a cancel reaches without waiting for the request;
+    // null between requests.
+    private volatile StatementCancellation running;
 
     // Session-specific variables (for stored procedures)
     private final Map<String, Object> sessionVariables;
@@ -212,5 +216,14 @@ public class SessionContext {
 
     public void setReadOnly(final boolean readOnly) {
         this.readOnly = readOnly;
+    }
+
+    /** The token of the request running in the session now, or null between requests. */
+    public StatementCancellation getRunning() {
+        return running;
+    }
+
+    public void setRunning(final StatementCancellation running) {
+        this.running = running;
     }
 }

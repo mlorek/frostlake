@@ -167,7 +167,8 @@ public class DroppedVersionsSurviveSnapshotsTest {
         original.execute("USE SCHEMA d.PUBLIC");
         original.execute("CREATE TABLE t (a INT)");
         original.execute("DROP TABLE t");
-        final List<DroppedObjectSnapshot> saved = DroppedObjectSnapshots.save(original.getCatalog());
+        final List<DroppedObjectSnapshot> saved =
+            DroppedObjectSnapshots.save(original.getCatalog(), original.getStorageEngine());
         assertEquals(3, saved.size());
         for (final DroppedObjectSnapshot version : saved) {
             // As a snapshot written while the catalog upper-cased its keys holds them.
@@ -175,7 +176,8 @@ public class DroppedVersionsSurviveSnapshotsTest {
         }
         final DatabaseEngine restored = track(new DatabaseEngine());
         restored.execute("CREATE DATABASE d");
-        DroppedObjectSnapshots.restore(saved, restored.getCatalog(), restored.getS3PathResolver());
+        DroppedObjectSnapshots.restore(saved, restored.getCatalog(), restored.getS3PathResolver(),
+            restored.getStorageEngine());
         restored.execute("UNDROP SCHEMA d.\"lower\"");
         restored.execute("UNDROP DATABASE \"ld\"");
         restored.execute("UNDROP TABLE d.PUBLIC.t");

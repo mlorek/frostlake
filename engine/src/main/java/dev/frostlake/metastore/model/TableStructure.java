@@ -52,6 +52,20 @@ public final class TableStructure {
         this.columns = Collections.unmodifiableList(copies);
     }
 
+    /**
+     * A shape a snapshot of the engine's state kept, put back as it stood.
+     *
+     * @param fromMillis     when it took effect, in epoch milliseconds
+     * @param fromSequence   where it took effect in the order snapshots are taken in
+     * @param columns        its columns, which the shape copies
+     * @param highestOrdinal the highest position the table had handed out by then
+     * @return the shape
+     */
+    public static TableStructure restored(final long fromMillis, final long fromSequence,
+                                          final List<TableColumn> columns, final int highestOrdinal) {
+        return new TableStructure(fromMillis, fromSequence, columns, highestOrdinal);
+    }
+
     public long getFromMillis() {
         return fromMillis;
     }

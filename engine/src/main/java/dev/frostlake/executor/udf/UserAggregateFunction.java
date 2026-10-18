@@ -17,9 +17,13 @@
 package dev.frostlake.executor.udf;
 
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.ProceduralExecutor;
+import dev.frostlake.executor.commands.DeferredHandlerCheck;
+import dev.frostlake.executor.expressions.ValueOverloads;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DeclaredTypeFold;
@@ -47,18 +51,21 @@ public final class UserAggregateFunction extends AggregateFunction {
     private final List<Function> overloads;
     private final Catalog catalog;
     private final S3PathResolver s3Resolver;
+    private final ProceduralExecutor procedural;
 
     /**
      * @param overloads  the aggregate overloads the call's name finds, at least one
      * @param catalog    the catalog a handler's IMPORTS are resolved in, or null
      * @param s3Resolver resolves a handler's IMPORTS in external storage, or null
+     * @param procedural converts a guest-language handler's arguments to their parameters' types, or null
      */
     public UserAggregateFunction(final List<Function> overloads, final Catalog catalog,
-                                 final S3PathResolver s3Resolver) {
+                                 final S3PathResolver s3Resolver, final ProceduralExecutor procedural) {
         super(overloads.get(0).getName(), overloads.get(0).getReturnType());
         this.overloads = new ArrayList<>(overloads);
         this.catalog = catalog;
         this.s3Resolver = s3Resolver;
+        this.procedural = procedural;
     }
 
     /**
@@ -91,6 +98,20 @@ public final class UserAggregateFunction extends AggregateFunction {
         return null;
     }
 
+    /**
+     * The values that choose a group's overload: in each argument's place, the first value a row gives that is not
+     * NULL, or NULL where every row gives NULL.
+     */
+    private static List<Object> decidingValues(final List<List<Object>> rows) {
+        final List<Object> values = new ArrayList<>(rows.get(0));
+        for (int i = 0; i < values.size(); i++) {
+            for (int r = 1; values.get(i) == null && r < rows.size(); r++) {
+                values.set(i, i < rows.get(r).size() ? rows.get(r).get(i) : null);
+            }
+        }
+        return values;
+    }
+
     @Override
     public Accumulator createAccumulator() {
         return new UserAggregateAccumulator(this);
@@ -121,6 +142,28 @@ public final class UserAggregateFunction extends AggregateFunction {
     }
 
     /**
+     * A guest-language handler's rows, each argument converted to its parameter's SQL type as a scalar handler's is
+     * (live-verified): an INT parameter rounds 1.5 to 2, a NUMBER(10,2) one holds 1.255 as 1.26, a VARCHAR one
+     * reads a number as its text and a BOOLEAN one reads 'off' as FALSE.
+     */
+    private List<List<Object>> declaredArguments(final Function function, final List<List<Object>> rows) {
+        if (procedural == null) {
+            return rows;
+        }
+        final List<Parameter> parameters = function.getParameters();
+        final List<List<Object>> declared = new ArrayList<>(rows.size());
+        for (final List<Object> row : rows) {
+            final List<Object> values = new ArrayList<>(row.size());
+            for (int i = 0; i < row.size(); i++) {
+                values.add(i < parameters.size()
+                    ? procedural.coerceArgument(row.get(i), parameters.get(i).getDataType(), false) : row.get(i));
+            }
+            declared.add(values);
+        }
+        return declared;
+    }
+
+    /**
      * The value of one group: NULL for no rows, else what the handler answers over them.
      *
      * @param rows the group's rows, each the call's arguments
@@ -130,15 +173,17 @@ public final class UserAggregateFunction extends AggregateFunction {
         if (rows.isEmpty()) {
             return null;
         }
-        final Function function = overloadFor(rows.get(0).size());
+        final Function function = ValueOverloads.choose(overloads, decidingValues(rows));
         if (function == null) {
             throw new RuntimeException("Function " + getName() + " takes no " + rows.get(0).size() + " arguments");
         }
+        // A temporary aggregate's handler is judged as rows first reach it.
+        DeferredHandlerCheck.require(function);
         if (function.getUdfLanguage() == UdfLanguage.JAVA) {
             return JavaAggregateFunctions.run(function, rows, catalog, s3Resolver);
         }
-        final Object answered = GuestResults.declared(function,
-            UdfRuntimes.require(function.getUdfLanguage()).executeAggregate(function, rows));
+        final Object answered = GuestResults.declared(function, UdfRuntimes.require(function.getUdfLanguage())
+            .executeAggregate(function, declaredArguments(function, rows)));
         // A whole number a FLOAT function answers is a FLOAT's: 15.0, not 15.
         return answered instanceof Number && NumericType.isApproximate(function.getReturnType())
             ? Double.valueOf(((Number) answered).doubleValue()) : answered;

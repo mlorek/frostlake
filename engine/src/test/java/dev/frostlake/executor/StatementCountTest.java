@@ -62,6 +62,9 @@ public class StatementCountTest {
         assertEquals(2, StatementCount.countTokens("SELECT 1 // c\r; DELETE FROM t"));
         assertEquals(1, StatementCount.countTokens("SELECT 'a;b' -- c; DELETE FROM t"));
         assertEquals(1, StatementCount.countTokens("SELECT $$a;b$$;"));
+        assertEquals(2, StatementCount.countTokens("SELECT 1 AS begin, 2 AS b; DELETE FROM t"));
+        assertEquals(2, StatementCount.countTokens("SELECT begin FROM t; DELETE FROM t"));
+        assertEquals(2, StatementCount.countTokens("SELECT t.begin + 1 FROM t; DELETE FROM t"));
         assertEquals(1, StatementCount.countTokens("CREATE PROCEDURE p() RETURNS INT LANGUAGE SQL AS BEGIN LET x := 1; "
             + "IF (x = 1) THEN RETURN CASE WHEN x = 1 THEN 1 ELSE 2 END; END IF; RETURN x; END;"));
         assertEquals(2, StatementCount.countTokens("BEGIN TRANSACTION; SELECT 1"));

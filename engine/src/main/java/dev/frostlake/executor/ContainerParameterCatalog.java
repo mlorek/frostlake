@@ -30,13 +30,15 @@ import java.util.List;
  * parameter a real account lists for a database or a schema, with its account default, type and description
  * (resource {@code dev/frostlake/parameters/container.tsv}). A database lists the ones marked for databases, a
  * schema the ones marked for schemas, and a table the schema's that its own list names (resource
- * {@code dev/frostlake/parameters/table.txt}).
+ * {@code dev/frostlake/parameters/table.txt}); a dynamic table likewise (resource
+ * {@code dev/frostlake/parameters/dynamic_table.txt}).
  */
 public final class ContainerParameterCatalog {
 
     private static final List<SessionParameterRow> DATABASE = new ArrayList<>();
     private static final List<SessionParameterRow> SCHEMA = new ArrayList<>();
     private static final List<SessionParameterRow> TABLE = new ArrayList<>();
+    private static final List<SessionParameterRow> DYNAMIC_TABLE = new ArrayList<>();
 
     static {
         try (InputStream in = ContainerParameterCatalog.class.getResourceAsStream(
@@ -63,11 +65,18 @@ public final class ContainerParameterCatalog {
         } catch (final IOException e) {
             throw new IllegalStateException("cannot load parameter list: container", e);
         }
-        // A table lists the container parameters named in its own list, with the same defaults and descriptions.
+        // A table lists the container parameters named in its own list, with the same defaults and descriptions, and
+        // so does a dynamic table.
+        loadNamed("table", TABLE);
+        loadNamed("dynamic_table", DYNAMIC_TABLE);
+    }
+
+    /** The schema's parameters a list resource names, in the list's order. */
+    private static void loadNamed(final String list, final List<SessionParameterRow> into) {
         try (InputStream in = ContainerParameterCatalog.class.getResourceAsStream(
-                "/dev/frostlake/parameters/table.txt")) {
+                "/dev/frostlake/parameters/" + list + ".txt")) {
             if (in == null) {
-                throw new IllegalStateException("missing parameter list: table");
+                throw new IllegalStateException("missing parameter list: " + list);
             }
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
                 String line = reader.readLine();
@@ -75,7 +84,7 @@ public final class ContainerParameterCatalog {
                     if (!line.isEmpty() && !line.startsWith("#")) {
                         for (final SessionParameterRow row : SCHEMA) {
                             if (row.getName().equals(line.trim())) {
-                                TABLE.add(row);
+                                into.add(row);
                             }
                         }
                     }
@@ -83,7 +92,7 @@ public final class ContainerParameterCatalog {
                 }
             }
         } catch (final IOException e) {
-            throw new IllegalStateException("cannot load parameter list: table", e);
+            throw new IllegalStateException("cannot load parameter list: " + list, e);
         }
     }
 
@@ -104,6 +113,11 @@ public final class ContainerParameterCatalog {
     /** The parameters a table lists, in name order. */
     public static List<SessionParameterRow> tableRows() {
         return Collections.unmodifiableList(TABLE);
+    }
+
+    /** The parameters a dynamic table lists, in name order. */
+    public static List<SessionParameterRow> dynamicTableRows() {
+        return Collections.unmodifiableList(DYNAMIC_TABLE);
     }
 
     /** Whether a database lists the parameter (an upper-case name). */

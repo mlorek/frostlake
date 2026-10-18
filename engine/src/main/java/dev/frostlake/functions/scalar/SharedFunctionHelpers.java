@@ -1208,6 +1208,15 @@ public final class SharedFunctionHelpers {
         if (digits.matches("-?\\d+")) {
             return epochToLocalDateTime(Long.parseLong(digits)).toLocalDate();
         }
+        if (format != null && value instanceof String) {
+            // A text no AUTO form reads is refused naming the format written for it (live-verified):
+            // TO_DATE('05/03/2024 10:00', 'AUTO') is "Can't parse '05/03/2024 10:00' as date with format 'AUTO'".
+            try {
+                return toLocalDate(value);
+            } catch (final RuntimeException unread) {
+                throw new RuntimeException("Can't parse '" + value + "' as date with format '" + format + "'");
+            }
+        }
         return toLocalDate(value);
     }
 

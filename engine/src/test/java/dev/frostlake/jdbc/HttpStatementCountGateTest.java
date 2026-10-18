@@ -45,8 +45,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * The one-statement gate over the HTTP transport. The server counts what it parses, so a request of one
  * statement cannot carry a second behind a name that holds two dollars, a comment a carriage return ends or a
- * block's word used as a name; the remote driver counts the lexer's tokens before it sends, and where its count
- * and the server's differ the server's refusal is what the caller gets.
+ * block's word used as a name; the remote driver counts the lexer's tokens before it sends — a block's word followed by
+ * a ',' is a name to it too — and refuses such a request itself, with state 0A000.
  */
 public class HttpStatementCountGateTest {
 
@@ -146,7 +146,8 @@ public class HttpStatementCountGateTest {
 
     @Test
     public void theRemoteDriverRefusesBeforeItSends() throws SQLException {
-        for (final String text : new String[] {"SELECT 1 AS a$$b; DELETE FROM sc", "SELECT 1 -- x\r; DELETE FROM sc"}) {
+        for (final String text : new String[] {"SELECT 1 AS a$$b; DELETE FROM sc", "SELECT 1 -- x\r; DELETE FROM sc",
+            "SELECT 1 AS begin, 2 AS b; DELETE FROM sc"}) {
             final SQLException refused = assertThrows(SQLException.class, new Executable() {
                 @Override
                 public void execute() throws SQLException {
@@ -157,19 +158,5 @@ public class HttpStatementCountGateTest {
             assertEquals("0A000", refused.getSQLState(), text);
             assertEquals(3, rowsLeft(), text);
         }
-    }
-
-    /** The driver's tokens take the block word for a block, one statement; the server parses two and says so. */
-    @Test
-    public void theServerHasTheLastWord() throws SQLException {
-        final String text = "SELECT 1 AS begin, 2 AS b; DELETE FROM sc";
-        final SQLException refused = assertThrows(SQLException.class, new Executable() {
-            @Override
-            public void execute() throws SQLException {
-                statement.execute(text);
-            }
-        }, text);
-        assertEquals(TWO_FOR_ONE, refused.getMessage(), text);
-        assertEquals(3, rowsLeft(), text);
     }
 }

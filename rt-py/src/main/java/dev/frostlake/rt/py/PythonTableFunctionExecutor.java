@@ -24,7 +24,6 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.StringType;
-import dev.frostlake.values.BinaryValue;
 import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,6 +46,9 @@ public final class PythonTableFunctionExecutor {
     }
 
     private static final Logger logger = LoggerFactory.getLogger(PythonTableFunctionExecutor.class);
+
+    /** The global a row's argument is bound to for its {@code process} call, numbered from 0. */
+    private static final String TABLE_ARGUMENT = "__fl_table_argument";
 
     /**
      * Execute a Python UDTF with a single set of arguments (no partition).
@@ -91,10 +93,15 @@ public final class PythonTableFunctionExecutor {
         }
 
         final List<ResultSetColumn> outputColumns = buildOutputColumns(function);
+        // The declared columns convert what the handler writes; the one column a function declaring none answers
+        // takes it as the runtime holds it.
+        final boolean declared = function.getReturnColumns() != null && !function.getReturnColumns().isEmpty();
         final List<List<Row>> writtenPerRow = new ArrayList<>();
         final List<Row> atEnd = new ArrayList<>();
 
+        PythonModuleFrame frame = null;
         try {
+            frame = PythonRuntime.enterModule();
             PythonRuntime.eval(dedent(function.getBody()));
 
             // Instantiate the handler class; a dotted one is a module's attribute, imported as CREATE resolved it.
@@ -105,13 +112,19 @@ public final class PythonTableFunctionExecutor {
                 PythonRuntime.eval("__handler_instance = " + handlerClassName + "()");
             }
 
-            // Call process() for each input row
+            // Call process() for each input row, each argument bound as the Python value its parameter's type maps
+            // to (see PythonRuntime.bindArgument).
             final List<Parameter> params = function.getParameters();
             for (final List<Object> rowArgs : rows) {
-                final String callCode = buildProcessCall(params, rowArgs);
-                PythonRuntime.eval("__process_result = __handler_instance.process(" + callCode + ")");
+                final StringBuilder call = new StringBuilder("__process_result = __handler_instance.process(");
+                final int count = Math.min(params.size(), rowArgs.size());
+                for (int i = 0; i < count; i++) {
+                    PythonRuntime.bindArgument(TABLE_ARGUMENT + i, rowArgs.get(i), params.get(i).getDataType());
+                    call.append(i == 0 ? "" : ", ").append(TABLE_ARGUMENT).append(i);
+                }
+                PythonRuntime.eval(call.append(')').toString());
                 final List<Row> written = new ArrayList<>();
-                collectRows(PythonRuntime.global("__process_result"), outputColumns.size(), written);
+                collectRows(PythonRuntime.global("__process_result"), function, outputColumns, declared, written);
                 writtenPerRow.add(written);
             }
 
@@ -120,9 +133,12 @@ public final class PythonTableFunctionExecutor {
             final Value hasEnd = PythonRuntime.global("__has_end_partition");
             if (hasEnd != null && hasEnd.isBoolean() && hasEnd.asBoolean()) {
                 PythonRuntime.eval("__end_result = __handler_instance.end_partition()");
-                collectRows(PythonRuntime.global("__end_result"), outputColumns.size(), atEnd);
+                collectRows(PythonRuntime.global("__end_result"), function, outputColumns, declared, atEnd);
             }
 
+        } catch (final PythonReturnRefusal refused) {
+            // What the handler wrote does not fit its column's type; the refusal is worded already.
+            throw refused;
         } catch (final Exception e) {
             // Worded before the context is settled (see PythonRuntime.settleAfter).
             final String refusal = "Error executing Python table function " + function.getName() + ": "
@@ -132,28 +148,11 @@ public final class PythonTableFunctionExecutor {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
+        } finally {
+            PythonRuntime.leaveModule(frame);
         }
 
         return new TablePartitionRows(writtenPerRow, atEnd);
-    }
-
-    private static String buildProcessCall(final List<Parameter> params, final List<Object> args) {
-        final StringBuilder sb = new StringBuilder();
-        final int count = Math.min(params.size(), args.size());
-        for (int i = 0; i < count; i++) {
-            if (i > 0) sb.append(", ");
-            final Object v = args.get(i);
-            if (v == null) {
-                sb.append("None");
-            } else if (v instanceof String) {
-                sb.append("'").append(v.toString().replace("'", "\\'")).append("'");
-            } else if (v instanceof BinaryValue) {
-                sb.append("bytes.fromhex('").append(((BinaryValue) v).toHex()).append("')");
-            } else {
-                sb.append(v);
-            }
-        }
-        return sb.toString();
     }
 
     /**
@@ -161,7 +160,9 @@ public final class PythonTableFunctionExecutor {
      * anything else is a single row. A row is a tuple/list of column values, or a bare scalar for a
      * single-column output.
      */
-    private static void collectRows(final Value result, final int expectedCols, final List<Row> outputRows) {
+    private static void collectRows(final Value result, final Function function,
+                                    final List<ResultSetColumn> columns, final boolean declared,
+                                    final List<Row> outputRows) {
         if (result == null || result.isNull()) {
             return;
         }
@@ -170,35 +171,51 @@ public final class PythonTableFunctionExecutor {
             final Value iterator = result.hasIterator() ? result.getIterator() : result;
             if (result.hasIterator()) {
                 while (iterator.hasIteratorNextElement()) {
-                    outputRows.add(tupleToRow(iterator.getIteratorNextElement(), expectedCols));
+                    outputRows.add(tupleToRow(iterator.getIteratorNextElement(), function, columns, declared));
                 }
                 return;
             }
             for (long i = 0; i < result.getArraySize(); i++) {
-                outputRows.add(tupleToRow(result.getArrayElement(i), expectedCols));
+                outputRows.add(tupleToRow(result.getArrayElement(i), function, columns, declared));
             }
             return;
         }
-        outputRows.add(tupleToRow(result, expectedCols));
+        outputRows.add(tupleToRow(result, function, columns, declared));
     }
 
-    /** One yielded item as a Row, padded or trimmed to the declared column count. */
-    private static Row tupleToRow(final Value item, final int expectedCols) {
-        List<Object> values = new ArrayList<>();
+    /**
+     * One yielded item as a Row, padded or trimmed to the declared column count. A declared column holds its value
+     * as its type does, converted as Python converts and judged as the account judges it (live-verified, see
+     * {@link PythonReturn}): a NUMBER(10,2) column holds {@code Decimal('1.255')} as 1.26 and a VARCHAR one
+     * {@code str()} of what it is given.
+     */
+    private static Row tupleToRow(final Value item, final Function function, final List<ResultSetColumn> columns,
+                                  final boolean declared) {
+        final List<Value> cells = new ArrayList<>();
         if (item != null && !item.isNull() && !item.isString() && item.hasArrayElements()) {
             for (long i = 0; i < item.getArraySize(); i++) {
-                values.add(PythonRuntime.toJava(item.getArrayElement(i)));
+                cells.add(item.getArrayElement(i));
             }
         } else {
-            values.add(PythonRuntime.toJava(item));
+            cells.add(item);
         }
-        while (values.size() < expectedCols) {
-            values.add(null);
-        }
-        if (values.size() > expectedCols) {
-            values = values.subList(0, expectedCols);
+        final List<Object> values = new ArrayList<>(columns.size());
+        for (int i = 0; i < columns.size(); i++) {
+            values.add(i < cells.size() ? cellValue(cells.get(i), function, declared ? columns.get(i) : null) : null);
         }
         return new Row(values);
+    }
+
+    /** One value a handler wrote, as its declared column holds it, or as the runtime holds it for no column. */
+    private static Object cellValue(final Value cell, final Function function, final ResultSetColumn column) {
+        if (column != null) {
+            final Object held = PythonReturn.declared(cell, column.getDataType(), function.getName(),
+                function.getHandler());
+            if (held != PythonReturn.AS_IS) {
+                return held;
+            }
+        }
+        return PythonRuntime.toJava(cell);
     }
 
     private static List<ResultSetColumn> buildOutputColumns(final Function function) {

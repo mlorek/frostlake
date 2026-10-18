@@ -26,6 +26,7 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.security.SecurityManager;
+import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
@@ -123,6 +125,8 @@ final class MaskingPolicyApplier {
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(relation, executor.getFunctionRegistry(),
             executor.getCatalog(), executor);
         MASKING.get().add(owner);
+        // The bodies read the objects they name, never a CTE of the statement reading the table (live-verified).
+        final Map<String, ResultSet> outerCtes = executor.suspendCteScope();
         try {
             final List<Row> masked = new ArrayList<>(rows.size());
             for (final Row row : rows) {
@@ -138,6 +142,7 @@ final class MaskingPolicyApplier {
             }
             return masked;
         } finally {
+            executor.setCurrentCteContext(outerCtes);
             MASKING.get().remove(owner);
         }
     }
@@ -316,6 +321,12 @@ final class MaskingPolicyApplier {
         final String body = rewriteTagFn(
             SqlIdentifierSubstitution.substituteParameters(policy.getBody(), names, bound),
             "GET_TAG_ON_CURRENT_TABLE", table.getName(), "TABLE");
-        return executor.filterRows(rows, shape, body);
+        // The body reads the objects it names, never a CTE of the statement reading the table (live-verified).
+        final Map<String, ResultSet> outerCtes = executor.suspendCteScope();
+        try {
+            return executor.filterRows(rows, shape, body);
+        } finally {
+            executor.setCurrentCteContext(outerCtes);
+        }
     }
 }

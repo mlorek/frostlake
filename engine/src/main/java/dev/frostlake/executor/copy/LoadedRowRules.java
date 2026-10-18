@@ -39,6 +39,7 @@ final class LoadedRowRules {
     private final String storageName;
     private final String fieldDelimiter;
     private final String recordDelimiter;
+    private final String matchByColumnName;
 
     /**
      * @param charset                  the character set a delimited file is read in
@@ -52,10 +53,12 @@ final class LoadedRowRules {
      * @param storageName              the table's storage key, for its IDENTITY counter
      * @param fieldDelimiter           the format's FIELD_DELIMITER as written, or null
      * @param recordDelimiter          the format's RECORD_DELIMITER as written, null for a line break
+     * @param matchByColumnName        MATCH_BY_COLUMN_NAME as written, or null
      */
     LoadedRowRules(final Charset charset, final boolean replaceInvalidCharacters, final boolean stripNullValues,
                    final boolean stripOuterArray, final boolean truncateToColumns, final boolean[] omittedColumns,
-                   final String storageName, final String fieldDelimiter, final String recordDelimiter) {
+                   final String storageName, final String fieldDelimiter, final String recordDelimiter,
+                   final String matchByColumnName) {
         this.charset = charset;
         this.replaceInvalidCharacters = replaceInvalidCharacters;
         this.stripNullValues = stripNullValues;
@@ -65,6 +68,7 @@ final class LoadedRowRules {
         this.storageName = storageName;
         this.fieldDelimiter = fieldDelimiter;
         this.recordDelimiter = recordDelimiter;
+        this.matchByColumnName = matchByColumnName;
     }
 
     Charset charset() {
@@ -104,5 +108,10 @@ final class LoadedRowRules {
     /** The format's RECORD_DELIMITER as written, null for a line break. */
     String recordDelimiter() {
         return recordDelimiter;
+    }
+
+    /** MATCH_BY_COLUMN_NAME as written: CASE_SENSITIVE, CASE_INSENSITIVE, NONE, or null when not given. */
+    String matchByColumnName() {
+        return matchByColumnName;
     }
 }

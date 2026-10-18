@@ -181,10 +181,14 @@ public final class TypeParameterLines {
         return lines;
     }
 
-    /** Whether a list belongs to a definition of a list of them: a column, a parameter, an OBJECT's field. */
+    /**
+     * Whether a list belongs to a definition of a list of them: a column, a RETURNS TABLE column, a parameter, an
+     * OBJECT's field.
+     */
     private static boolean inDefinitionList(final FrostlakeParser.TypeParametersContext list) {
         final ParserRuleContext parent = list.getParent();
         return parent instanceof FrostlakeParser.ColumnDefContext
+            || parent instanceof FrostlakeParser.ReturnColumnContext
             || parent instanceof FrostlakeParser.ParameterDefContext
             || parent instanceof FrostlakeParser.StructuredFieldContext
             || parent instanceof FrostlakeParser.AlterColumnItemActionContext;

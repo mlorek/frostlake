@@ -63,6 +63,10 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Closing releases a session this transport started: one DELETE, bounded, and never an error.
  *
+ * <p>A statement may carry a query timeout, and {@link #cancelRunning()} cancels the one running from another thread
+ * through {@code POST /api/sessions/{id}/cancel}; either ends it with "SQL execution canceled", which is raised with
+ * the SQLSTATE and vendor code the server's answer carries, as the account's driver raises it.
+ *
  * <p>With CLIENT_SESSION_KEEP_ALIVE on, as the connection's properties or the session's own ALTER SESSION set it,
  * the transport sends {@code POST /api/sessions/{id}/heartbeat} every CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY
  * seconds, kept within the 900 to 3600 Snowflake documents, so the session outlives the server's idle timeout as
@@ -80,6 +84,9 @@ class HttpClient {
 
     /** How long a heartbeat waits for the server's answer. */
     private static final Duration HEARTBEAT_TIMEOUT = Duration.ofSeconds(10);
+
+    /** How long a cancel waits for the server's answer. */
+    private static final Duration CANCEL_TIMEOUT = Duration.ofSeconds(10);
 
     /** CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY's range, in seconds, and its default: the most. */
     private static final int MIN_HEARTBEAT_SECONDS = 900;
@@ -158,14 +165,65 @@ class HttpClient {
      * @throws SQLException when the request fails or the server refuses it; a
      *     {@link FrostlakeSessionLostException} when the session went and took state with it
      */
-    public synchronized SqlResponse execute(final String sql, final Integer multiStatementCount)
-            throws SQLException {
-        final SqlResponse response = run(sql, multiStatementCount);
+    public SqlResponse execute(final String sql, final Integer multiStatementCount) throws SQLException {
+        return execute(sql, multiStatementCount, 0);
+    }
+
+    /**
+     * Execute SQL as {@link #execute(String, Integer)} does, canceled once it runs {@code queryTimeout} seconds.
+     *
+     * @param sql the statement, or a pack of them
+     * @param multiStatementCount the count this statement declares, or null
+     * @param queryTimeout the query timeout in seconds, 0 for none
+     * @return the server's answer
+     * @throws SQLException when the request fails or the server refuses it, with the SQLSTATE and vendor code the
+     *     answer carries
+     */
+    public synchronized SqlResponse execute(final String sql, final Integer multiStatementCount,
+                                            final int queryTimeout) throws SQLException {
+        final SqlResponse response = run(sql, multiStatementCount, queryTimeout);
         if (!response.isSuccess()) {
-            throw new SQLException(response.getErrorMessage());
+            throw refusal(response);
         }
         follow(sql);
         return response;
+    }
+
+    /** A refused statement's exception: its message, with the SQLSTATE and vendor code when the answer carries them. */
+    private static SQLException refusal(final SqlResponse response) {
+        if (response.getSqlState() == null) {
+            return new SQLException(response.getErrorMessage());
+        }
+        return new SQLException(response.getErrorMessage(), response.getSqlState(),
+            response.getErrorCode() == null ? 0 : response.getErrorCode().intValue());
+    }
+
+    /**
+     * Cancel the statement running in this connection's session, from any thread: it ends with "SQL execution
+     * canceled", and the session runs the next statement as usual. Nothing runs when no session is held yet, and a
+     * session the server no longer holds has nothing to cancel.
+     *
+     * @throws SQLException when the server cannot be reached
+     */
+    public void cancelRunning() throws SQLException {
+        final String held = sessionId;
+        if (held == null) {
+            return;
+        }
+        final HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + "/api/sessions/"
+                + URLEncoder.encode(held, StandardCharsets.UTF_8).replace("+", "%20") + "/cancel"))
+            .timeout(CANCEL_TIMEOUT)
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .build();
+        try {
+            client.send(request, HttpResponse.BodyHandlers.discarding());
+        } catch (final IOException e) {
+            throw new SQLException("Failed to send the cancel: " + e.getMessage(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new SQLException("The cancel was interrupted", e);
+        }
     }
 
     /**
@@ -174,7 +232,7 @@ class HttpClient {
      */
     synchronized void setAutoCommit(final boolean autoCommit) throws SQLException {
         final SqlResponse response = run("ALTER SESSION SET AUTOCOMMIT = " + (autoCommit ? "TRUE" : "FALSE"),
-            null);
+            null, 0);
         if (!response.isSuccess()) {
             throw new SQLException(response.getErrorMessage());
         }
@@ -197,19 +255,21 @@ class HttpClient {
     }
 
     /** One statement in this connection's session, a lost session replaced at most once. */
-    private SqlResponse run(final String sql, final Integer multiStatementCount) throws SQLException {
+    private SqlResponse run(final String sql, final Integer multiStatementCount, final int queryTimeout)
+            throws SQLException {
         if (scopePending) {
             applyScope();
         }
-        final SqlResponse answer = post(sql, multiStatementCount);
-        return answer != null ? answer : recover(sql, multiStatementCount);
+        final SqlResponse answer = post(sql, multiStatementCount, queryTimeout);
+        return answer != null ? answer : recover(sql, multiStatementCount, queryTimeout);
     }
 
     /**
      * The server no longer holds the session: drop it, then either say what went with it or put the
      * connection's scope onto a new session and send the statement once more.
      */
-    private SqlResponse recover(final String sql, final Integer multiStatementCount) throws SQLException {
+    private SqlResponse recover(final String sql, final Integer multiStatementCount, final int queryTimeout)
+            throws SQLException {
         final String lost = sessionId;
         final boolean hadTransaction = inTransaction;
         final boolean hadContext = holdsContext || callerNamedSession;
@@ -227,7 +287,7 @@ class HttpClient {
         }
         logger.debug("Session {} is gone; replacing it on the connection's scope", lost);
         applyScope();
-        final SqlResponse again = post(sql, multiStatementCount);
+        final SqlResponse again = post(sql, multiStatementCount, queryTimeout);
         if (again == null) {
             final String replacement = sessionId;
             dropSession();
@@ -268,7 +328,7 @@ class HttpClient {
             scope.add(MANUAL_COMMIT);
         }
         for (final String statement : scope) {
-            final SqlResponse answer = post(statement, null);
+            final SqlResponse answer = post(statement, null, 0);
             if (answer == null) {
                 final String gone = sessionId;
                 dropSession();
@@ -291,12 +351,16 @@ class HttpClient {
      * Sends one statement in the session held, or in a new one when none is, and answers the server's
      * reply — or null when the server refused because it no longer holds the session named.
      */
-    private SqlResponse post(final String sql, final Integer multiStatementCount) throws SQLException {
+    private SqlResponse post(final String sql, final Integer multiStatementCount, final int queryTimeout)
+            throws SQLException {
         final String sentId = sessionId;
         final SqlRequest request = new SqlRequest();
         request.setSql(sql);
         request.setSessionId(sentId);
         request.setMultiStatementCount(multiStatementCount);
+        if (queryTimeout > 0) {
+            request.setQueryTimeout(Integer.valueOf(queryTimeout));
+        }
         if (sentId != null && Boolean.TRUE.equals(tracksSessions)) {
             request.setRequireSession(Boolean.TRUE);
         }

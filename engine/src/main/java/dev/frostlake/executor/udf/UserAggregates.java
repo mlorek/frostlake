@@ -69,7 +69,8 @@ public final class UserAggregates implements UserAggregateLookup {
                 }
             }
             return aggregates.isEmpty() ? null
-                : new UserAggregateFunction(aggregates, catalog, queryExecutor.getS3PathResolver());
+                : new UserAggregateFunction(aggregates, catalog, queryExecutor.getS3PathResolver(),
+                    queryExecutor.getProceduralExecutor());
         } catch (final RuntimeException unresolvable) {
             return null;
         }

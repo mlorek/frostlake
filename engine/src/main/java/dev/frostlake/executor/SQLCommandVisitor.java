@@ -99,6 +99,7 @@ import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.parser.ValueFunctionSyntax;
+import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -264,6 +265,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         if (proceduralExecutor.isExecutingBlock() && isBlockControl(ctx.proceduralStatement())) {
             return;
+        }
+        if (ctx.queryStatement() != null) {
+            // What a query fails to compile for is refused before the aborted transaction is (live-verified).
+            ExplainPlan.compileOnly(queryExecutor,
+                ParseTreeText.getOriginalText(ctx.queryStatement().selectStatement()));
         }
         throw new RuntimeException(TransactionAbortedMessages.IGNORED);
     }
@@ -1466,17 +1472,22 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             }
         }
         // A cursor's query binds none of the block's variables (see ProceduralExecutor.cursorQuery).
-        String selectSql = proceduralExecutor.cursorQuery(cursor, binds.size());
-        if (!binds.isEmpty()) {
-            selectSql = JdbcMarshaling.bindUsing(selectSql, binds, new HashSet<Integer>());
-        }
+        final String declared = proceduralExecutor.cursorQuery(cursor, binds.size());
+        final String selectSql = binds.isEmpty() ? declared
+            : JdbcMarshaling.bindUsing(declared, binds, new HashSet<Integer>());
         // Execute the SELECT query to populate the cursor; one written with FOR UPDATE is refused as the query
         // statement is, when the cursor opens (live-verified).
-        final FrostlakeParser.QueryStatementContext query = parseCursorQuery(selectSql);
-        if (query.forUpdateClause() != null) {
-            queryHandler.handleQueryStatement(query);
+        final ResultSet resultSet;
+        try {
+            final FrostlakeParser.QueryStatementContext query = parseCursorQuery(selectSql);
+            if (query.forUpdateClause() != null) {
+                queryHandler.handleQueryStatement(query);
+            }
+            resultSet = queryExecutor.executeSelectFromContext(query.selectStatement());
+        } catch (final RuntimeException refused) {
+            // A bound value echoed as a predicate is named by its placeholder (see UsingBindEcho).
+            throw binds.isEmpty() ? refused : UsingBindEcho.named(refused, declared, binds, new HashSet<Integer>());
         }
-        final ResultSet resultSet = queryExecutor.executeSelectFromContext(query.selectStatement());
         cursor.open(resultSet);
 
         logger.trace("Opened cursor: {}", cursorName);
@@ -2006,6 +2017,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final String name = ctx.systemFunctionName().getText();
         // A name written twice is refused at its second writing before the arguments are counted (live-verified).
         CallNamedShape.require(ctx);
+        if (SendEmailProcedure.calls(ctx)) {
+            // A procedure of the account's own, no function (see SendEmailProcedure).
+            return SendEmailProcedure.call(queryExecutor, ctx);
+        }
         rejectSystemCallArity(ctx, name.toUpperCase(Locale.ROOT));
         return callAsSelect(ctx, name);
     }
@@ -2390,6 +2405,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             try {
                 enterHome(homeDb, homeSchema);
                 final DatabaseEngine host = queryExecutor.getDatabaseEngine();
+                // A handler may answer otherwise when called again (see CheckpointDebt).
+                CheckpointDebt.owe();
                 returnValue = language == UdfLanguage.JAVA
                     ? JavaProcedureExecutor.executeJavaProcedure(procedure, arguments, host)
                     : UdfRuntimes.require(language).executeProcedure(procedure, arguments, host);
@@ -3022,6 +3039,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             throw new RuntimeException(missing != null ? missing : "EXECUTE IMMEDIATE FROM: script file not found: "
                 + (path == null ? null : StagePathSegments.namedPath(path)));
         }
+        // The script is read as the file holds it now (see CheckpointDebt).
+        CheckpointDebt.owe();
         try {
             return Files.readString(path);
         } catch (final IOException e) {

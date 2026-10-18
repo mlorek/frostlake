@@ -49,7 +49,7 @@ enum ShowListing {
         ShowScopeAnswer.OBJECT_DOES_NOT_EXIST, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
     INTEGRATIONS("INTEGRATION", "INTEGRATIONS", ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW,
         ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, false),
-    EXTERNAL_VOLUMES("EXTERNAL VOLUME", "EXTERNAL_VOLUMES", ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW,
+    EXTERNAL_VOLUMES("EXTERNAL VOLUME", "EXTERNAL_VOLUMES", ShowTailGrammar.FULL, false, ShowScopeAnswer.CANNOT_SHOW,
         ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, false),
     VIEWS("VIEW", "VIEWS", ShowTailGrammar.FULL, false, ShowScopeAnswer.OBJECT_DOES_NOT_EXIST,
         ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),

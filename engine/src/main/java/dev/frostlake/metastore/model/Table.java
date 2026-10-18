@@ -29,6 +29,7 @@ import dev.frostlake.values.RelationStatistics;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -90,6 +91,8 @@ public class Table extends SqlObject {
     // another case; the fold keeps the FIRST column of each folded spelling.
     private final Map<String, Integer> columnIndex;
     private final Map<String, Integer> exactColumnIndex;
+    /** How many times the columns have changed (see {@link #getShapeVersion()}). */
+    private int shapeVersion;
     private final boolean isTemporary;
     private boolean isTransient;
     // Declared with CREATE HYBRID TABLE. Frostlake stores hybrid tables as ordinary tables (row storage,
@@ -155,7 +158,8 @@ public class Table extends SqlObject {
     private final Set<String> ownUniqueColumns = new LinkedHashSet<>();
     // When a constraint an ALTER TABLE added was created, and when an ALTER last changed one, by upper-cased
     // constraint name. A constraint with no entry was made with the table and never altered since.
-    private final Map<String, Instant> constraintCreated = new HashMap<>();
+    // In the order the constraints were created, the latest last (see constraintCreationOrder).
+    private final Map<String, Instant> constraintCreated = new LinkedHashMap<>();
     private final Map<String, Instant> constraintAltered = new HashMap<>();
     // Whether this instance is the CATALOG's own object for its name — see isCatalogResident().
     private boolean catalogResident;
@@ -696,6 +700,7 @@ public class Table extends SqlObject {
 
     /** Rebuild both column indexes from the column list. */
     private void reindexColumns() {
+        shapeVersion++;
         columnIndex.clear();
         exactColumnIndex.clear();
         for (int i = 0; i < columns.size(); i++) {
@@ -724,6 +729,16 @@ public class Table extends SqlObject {
      */
     public boolean hasColumnExactly(final String name) {
         return exactColumnIndex.containsKey(name);
+    }
+
+    /**
+     * How many times the table's columns have changed: added, dropped, replaced or reordered. A fact cached about
+     * the columns of this one instance — which column a name reads — holds while this does not change.
+     *
+     * @return the count
+     */
+    public int getShapeVersion() {
+        return shapeVersion;
     }
 
     public List<TableColumn> getColumns() {
@@ -1384,8 +1399,19 @@ public class Table extends SqlObject {
      */
     public void markConstraintCreated(final String constraintName) {
         final String key = constraintName.toUpperCase(Locale.ROOT);
+        constraintCreated.remove(key);
         constraintCreated.put(key, StatementClock.instant());
         constraintAltered.remove(key);
+    }
+
+    /**
+     * The constraints an ALTER TABLE added, by upper-cased name, in the order they were created, the latest last:
+     * the order GET_DDL lists them in, after the ones the CREATE TABLE declared.
+     *
+     * @return the names
+     */
+    public List<String> constraintCreationOrder() {
+        return new ArrayList<>(constraintCreated.keySet());
     }
 
     /**
@@ -1475,7 +1501,17 @@ public class Table extends SqlObject {
         constraintCreated.clear();
         constraintAltered.clear();
         if (created != null) {
-            constraintCreated.putAll(created);
+            // Put back in the order they were created, which their instants tell.
+            final List<Map.Entry<String, Instant>> byTime = new ArrayList<>(created.entrySet());
+            byTime.sort(new Comparator<Map.Entry<String, Instant>>() {
+                @Override
+                public int compare(final Map.Entry<String, Instant> a, final Map.Entry<String, Instant> b) {
+                    return a.getValue().compareTo(b.getValue());
+                }
+            });
+            for (final Map.Entry<String, Instant> entry : byTime) {
+                constraintCreated.put(entry.getKey(), entry.getValue());
+            }
         }
         if (altered != null) {
             constraintAltered.putAll(altered);
@@ -1570,6 +1606,33 @@ public class Table extends SqlObject {
                 }
             }
             return found;
+        }
+    }
+
+    /**
+     * The table's shapes over its history, oldest first: what a snapshot of the engine's state keeps.
+     *
+     * @return a copy of the list
+     */
+    public List<TableStructure> structureHistory() {
+        synchronized (structureHistory) {
+            return new ArrayList<>(structureHistory);
+        }
+    }
+
+    /**
+     * Puts back the shapes a snapshot of the engine's state kept, in place of the one the restore seeded: a clone as
+     * of a point before a column change takes the shape of the point, as on the engine the snapshot copies.
+     *
+     * @param shapes the shapes, oldest first; none leaves the table's own
+     */
+    public void restoreStructureHistory(final List<TableStructure> shapes) {
+        if (shapes.isEmpty()) {
+            return;
+        }
+        synchronized (structureHistory) {
+            structureHistory.clear();
+            structureHistory.addAll(shapes);
         }
     }
 

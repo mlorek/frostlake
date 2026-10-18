@@ -22,12 +22,12 @@ import java.util.Set;
 /**
  * Whether SYSTEM$ABORT_TRANSACTION's argument is the constant the call needs (live-verified): a column, a
  * subquery, and a function that answers from the session or by chance — CURRENT_TRANSACTION(), LAST_TRANSACTION(),
- * CURRENT_SESSION(), RANDOM(), GETVARIABLE() — are none, wherever in the argument they stand.
+ * CURRENT_SESSION(), RANDOM(), GETVARIABLE(), CURRENT_DATE() — are none, wherever in the argument they stand.
  */
 final class TransactionAbortConstantWalk extends AstPrinterVisitor {
 
     private static final Set<String> NOT_CONSTANT = Set.of("CURRENT_TRANSACTION", "LAST_TRANSACTION",
-        "CURRENT_SESSION", "RANDOM", "GETVARIABLE");
+        "CURRENT_SESSION", "RANDOM", "GETVARIABLE", "CURRENT_DATE");
 
     private boolean found;
 

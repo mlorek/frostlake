@@ -578,6 +578,13 @@ final class InsertExecutor {
         if (semiStructured) {
             throw new RuntimeException(SqlCompilationError.of("Invalid expression [" + exprText + "] in VALUES clause"));
         }
+        // A function a handler answers is refused wherever it sits in the item, the item echoed as the plan
+        // prints it: INSERT INTO t VALUES (jcnt(1) + 1) is "Invalid expression [(EXTENSION_FUNC_V(1)) + 1] in
+        // VALUES clause" (live-verified, for Java and JavaScript handlers).
+        final String handled = new HandlerCallEcho(evaluator.scopeVisitor()).echoedIfHandled(ast);
+        if (handled != null) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid expression [" + handled + "] in VALUES clause"));
+        }
         // A division or a math function live does not fold is refused too, echoed as live rewrites it.
         final RuntimeException unfolded = ValuesFoldRule.refusalOf(ast, exprText, evaluator);
         if (unfolded != null) {

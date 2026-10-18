@@ -37,7 +37,7 @@ import org.antlr.v4.runtime.Token;
  * Each word is replaced by a known type of its own length, so every other character keeps its place, and the
  * text is read again until it parses or faults at something that is no such word.
  */
-final class UnknownTypeWords {
+public final class UnknownTypeWords {
 
     /** More words than any statement of the kind carries; the reading gives up past it. */
     private static final int MOST_WORDS = 32;
@@ -62,6 +62,54 @@ final class UnknownTypeWords {
     /** The lines the statement is refused in for the syntax left once its words are types; null when it has none. */
     List<String> syntaxLines() {
         return lines;
+    }
+
+    /**
+     * Reads a CREATE TASK whose body is a block, each word in it that stands where a type does — a LET's variable's
+     * among them — replaced by a known type of its own length: the block's parse faults past such a word, at the
+     * block's END, so the words are found by their places rather than by a fault.
+     *
+     * @param sql the statement's text
+     * @return the reading, or null when the statement is no CREATE TASK or no such word makes it parse
+     */
+    public static UnknownTypeReading readTaskBlock(final String sql) {
+        final List<Token> all = tokensOf(sql);
+        if (!createsATask(all)) {
+            return null;
+        }
+        for (int i = 0; i < all.size(); i++) {
+            final Token token = all.get(i);
+            if (token.getChannel() == Token.DEFAULT_CHANNEL && SyntaxErrorListener.isIdentifierToken(token)
+                    && standsWhereATypeDoes(all, i)) {
+                final UnknownTypeWords read = read(sql, token.getStartIndex());
+                if (read != null && read.reading() != null) {
+                    return read.reading();
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Whether the tokens open a CREATE [OR REPLACE] TASK. */
+    private static boolean createsATask(final List<Token> all) {
+        int word = 0;
+        for (final Token token : all) {
+            if (token.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            final int type = token.getType();
+            if (word == 0 && type != FrostlakeLexer.CREATE) {
+                return false;
+            }
+            if (word > 0 && type == FrostlakeLexer.TASK) {
+                return true;
+            }
+            if (word > 0 && type != FrostlakeLexer.OR && type != FrostlakeLexer.REPLACE) {
+                return false;
+            }
+            word++;
+        }
+        return false;
     }
 
     /**
@@ -205,8 +253,9 @@ final class UnknownTypeWords {
             return false;
         }
         final int opener = all.get(earlier).getType();
+        // A LET names its variable's type after the variable, in a block a CREATE holds.
         return opener == FrostlakeLexer.LPAREN || opener == FrostlakeLexer.COMMA || opener == FrostlakeLexer.COLUMN
-            || opener == FrostlakeLexer.ADD;
+            || opener == FrostlakeLexer.ADD || opener == FrostlakeLexer.LET;
     }
 
     /** Whether the AS at {@code index} stands after the value of a CAST or a TRY_CAST, at its own depth. */

@@ -19,15 +19,16 @@ package dev.frostlake.executor;
 /**
  * How deep dynamic texts run inside one another, and what a statement reports past that depth or past what the
  * engine's stack holds. A text EXECUTE IMMEDIATE runs may itself be an EXECUTE IMMEDIATE, and so on: an account
- * runs sixteen such statements inside one another (live-verified; its own bound was not measured, since only a
- * text that never ends would find it). Here the texts nest to {@link #LIMIT}, and the statement past it fails
- * with the engine's own sentence, in the words of the failure an account reports for work it had to abandon. It
- * fails as any statement does: a handler may catch it, the history holds its row, and the session goes on.
+ * runs a thousand and one such texts inside one another and reports no bound (live-verified; a block among them
+ * counts as a call, and calls nest sixteen deep). Here the texts nest to {@link #LIMIT}, well inside what the
+ * engine's stack holds, and the statement past it fails with the engine's own sentence, in the words of the
+ * failure an account reports for work it had to abandon. It fails as any statement does: a handler may catch it,
+ * the history holds its row, and the session goes on.
  */
 public final class StatementNesting {
 
     /** How many dynamic texts run inside one another. */
-    public static final int LIMIT = 100;
+    public static final int LIMIT = 300;
 
     /** The failure's sentence. */
     public static final String REFUSAL = "SQL execution internal error:\nProcessing aborted: the statement nests "

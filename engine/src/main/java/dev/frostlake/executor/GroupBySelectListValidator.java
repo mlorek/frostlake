@@ -25,6 +25,7 @@ import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -255,10 +256,62 @@ final class GroupBySelectListValidator {
                     earlierAliases.add(alias.toUpperCase(Locale.ROOT));
                 }
             }
+            // A name a window call there reads that nothing answers is refused first, where it stands
+            // (live-verified): ORDER BY SUM(id) OVER (PARTITION BY nosuch) is the invalid identifier.
+            if (!nestedQuery(ctx)) {
+                requireWindowNames(orderBy);
+            }
             checkWindowsWithin(orderBy);
             if (rejection != null) {
                 throw new RuntimeException(rejection);
             }
+        }
+    }
+
+    /** Whether a select stands inside another query, whose names its own may read. */
+    private static boolean nestedQuery(final FrostlakeParser.SelectClauseContext ctx) {
+        int queries = 0;
+        for (ParserRuleContext up = ctx; up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.SelectStatementContext) {
+                queries++;
+            }
+        }
+        return queries > 1;
+    }
+
+    /** Refuses the first bare name of a window call under {@code node} that no column or alias answers. */
+    private void requireWindowNames(final ParseTree node) {
+        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
+        if (isWindowCall(node)) {
+            requireNames(node);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            requireWindowNames(node.getChild(i));
+        }
+    }
+
+    private void requireNames(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext
+                || node instanceof FrostlakeParser.LambdaFunctionContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final FrostlakeParser.QualifiedNameExprContext ref = (FrostlakeParser.QualifiedNameExprContext) node;
+            final String[] parts = ParseTreeText.qualifiedNameParts(ref.qualifiedName());
+            final String last = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            if (parts.length == 1 && !inUnitSlot(ref) && !namesAColumn(last) && !earlierAliases.contains(last)) {
+                final Token at = ref.getStart();
+                final List<String> rawParts = rawNameParts(ref);
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    "invalid identifier '" + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)) + "'"));
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            requireNames(node.getChild(i));
         }
     }
 

@@ -16,10 +16,12 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.udf.JavaPackages;
 import dev.frostlake.executor.udf.JavaScriptIdentifiers;
 import dev.frostlake.executor.udf.RoutineImports;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
@@ -264,6 +266,9 @@ public class CreateRoutineHandler implements CommandHandler {
 
         validateRoutineProperties(functionLanguage(ctx).name(), functionRuntimeVersion(ctx), functionHandler(ctx),
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
+        if (functionLanguage(ctx) == UdfLanguage.JAVA) {
+            JavaPackages.requireSupported(writtenPackages(ctx));
+        }
         final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
         final RoutineEnvironment environment = environments.read(ctx.functionOption(), functionLanguage(ctx), false,
             ctx.bodyDefinition() != null, orReplace ? replacedFunctionPath(schema, functionName, argumentTypes) : null);
@@ -272,8 +277,11 @@ public class CreateRoutineHandler implements CommandHandler {
         }
         // A handler body is compiled, and its handler checked against the signature, before the signature's own
         // names are: a Python or Java handler taking the wrong number of arguments is refused for that even when
-        // an argument name repeats (live-verified).
-        if (!namesService(ctx)) {
+        // an argument name repeats (live-verified). A TEMPORARY Python or Java function leaves the check to its
+        // first call (DeferredHandlerCheck).
+        final boolean deferred = TemporaryObjectStatements.isTemporary(ctx)
+            && (functionLanguage(ctx) == UdfLanguage.PYTHON || functionLanguage(ctx) == UdfLanguage.JAVA);
+        if (!namesService(ctx) && !deferred) {
             compileHandlerBody(ctx, functionName, environment);
         }
         rejectRepeatedSignatureNames(ctx);
@@ -309,16 +317,8 @@ public class CreateRoutineHandler implements CommandHandler {
             } else if (ctx.returnType().TABLE() != null) {
                 isTableFunction = true;
                 returnType = StringType.VARCHAR;
-                if (ctx.returnType().columnList() != null) {
-                    for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
-                        if (colCtx.columnDef() != null) {
-                            // A quoted name as written, as a table procedure's is.
-                            final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName());
-                            final DataType colType = columnParser.parseReturnColumnType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
-                            returnColumns.add(new Parameter(colName, colType));
-                        }
-                    }
-                }
+                // A quoted name as written, as a table procedure's is.
+                returnColumns.addAll(declaredReturnColumns(ctx));
             } else if (ctx.returnType().dataTypeName() != null) {
                 returnType = columnParser.parseRoutineDataType(ctx.returnType().dataTypeName(),
                     ctx.returnType().typeParameters());
@@ -396,10 +396,15 @@ public class CreateRoutineHandler implements CommandHandler {
             function.setReturnSized(Boolean.valueOf(ctx.returnType().typeParameters() != null));
             function.setReturnNotNull(ctx.returnType().NOT() != null);
             function.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
+            function.setUnvalidated(deferred && ctx.bodyDefinition() != null);
             function.setAggregate(ctx.AGGREGATE() != null);
             function.setNullHandling(nullHandling);
             function.setVolatility(volatility);
             if (!imports.isEmpty()) function.setImports(RoutineImports.canonical(imports, catalog));
+            if (function.getUdfLanguage() == UdfLanguage.JAVA) {
+                RoutineBodyCompiler.requireImportedHandler(handler, isTableFunction || ctx.AGGREGATE() != null,
+                    imports, body, runtimeVersion, functionName, queryExecutor);
+            }
             // A handler its imports hold compiled for a newer Java than the runtime reads is refused here.
             RoutineBodyCompiler.requireReadableHandlerClass(function, queryExecutor);
             if (comment != null) function.setComment(comment);
@@ -443,6 +448,9 @@ public class CreateRoutineHandler implements CommandHandler {
                 GrantNames.takeBack(catalog, "FUNCTION", grantsKept, true);
                 GrantNames.renamed(catalog, "FUNCTION", grantsKept,
                     GrantNames.routine(schema, function.getName(), function.getParameters()));
+            }
+            if (function.isUnvalidated()) {
+                ConditionalDdlOutcome.createdUnvalidated();
             }
             logger.trace("Created function: {}", qualifiedName);
         } catch (final RuntimeException e) {
@@ -590,6 +598,9 @@ public class CreateRoutineHandler implements CommandHandler {
 
         validateRoutineProperties(procedureLanguage.name(), functionRuntimeVersion(ctx), functionHandler(ctx),
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
+        if (procedureLanguage == UdfLanguage.JAVA) {
+            JavaPackages.requireSupported(writtenPackages(ctx));
+        }
         final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
         final RoutineEnvironment environment = environments.read(ctx.functionOption(), procedureLanguage, true,
             ctx.bodyDefinition() != null, orReplace ? replacedProcedurePath(schema, procedureName, argumentTypes) : null);
@@ -614,15 +625,7 @@ public class CreateRoutineHandler implements CommandHandler {
                 // RETURNS TABLE(col TYPE, ...): keep the declared columns — they name the result of a
                 // CALL and of a TABLE(proc(...)) FROM source, exactly as Snowflake names them, a quoted
                 // name as written.
-                if (ctx.returnType().columnList() != null) {
-                    for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
-                        if (colCtx.columnDef() != null) {
-                            final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName());
-                            final DataType colType = columnParser.parseReturnColumnType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
-                            procReturnColumns.add(new Parameter(colName, colType));
-                        }
-                    }
-                }
+                procReturnColumns.addAll(declaredReturnColumns(ctx));
             } else if (ctx.returnType().dataTypeName() != null) {
                 returnType = columnParser.parseRoutineDataType(ctx.returnType().dataTypeName(),
                     ctx.returnType().typeParameters());
@@ -677,6 +680,10 @@ public class CreateRoutineHandler implements CommandHandler {
 
             if (hasImportsOption(ctx)) {
                 procedure.setImports(RoutineImports.canonical(functionImports(ctx), catalog));
+                if (procedureLanguage == UdfLanguage.JAVA) {
+                    RoutineBodyCompiler.requireImportedHandler(handler, false, functionImports(ctx), body,
+                        runtimeVersion, procedureName, queryExecutor);
+                }
             }
 
             if (comment != null) {
@@ -858,11 +865,10 @@ public class CreateRoutineHandler implements CommandHandler {
         if (returns.dataTypeName() != null && returns.dataTypeName().VECTOR() != null) {
             return columnParser.parseDataType(returns.dataTypeName(), returns.typeParameters());
         }
-        if (returns.columnList() != null) {
-            for (final FrostlakeParser.ColumnOrConstraintContext column : returns.columnList().columnOrConstraint()) {
-                if (column.columnDef() != null && column.columnDef().dataTypeName().VECTOR() != null) {
-                    return columnParser.parseDataType(column.columnDef().dataTypeName(),
-                        column.columnDef().typeParameters());
+        if (returns.returnColumnList() != null) {
+            for (final FrostlakeParser.ReturnColumnContext column : returns.returnColumnList().returnColumn()) {
+                if (column.dataTypeName() != null && column.dataTypeName().VECTOR() != null) {
+                    return columnParser.parseDataType(column.dataTypeName(), column.typeParameters());
                 }
             }
         }
@@ -872,12 +878,10 @@ public class CreateRoutineHandler implements CommandHandler {
     /** The names a {@code RETURNS TABLE (...)} declares, as they resolve: unquoted upper-cased, quoted as written. */
     private static List<String> declaredColumnNames(final FrostlakeParser.CreateStatementContext ctx) {
         final List<String> names = new ArrayList<>();
-        if (ctx.returnType() != null && ctx.returnType().columnList() != null) {
-            for (final FrostlakeParser.ColumnOrConstraintContext column
-                    : ctx.returnType().columnList().columnOrConstraint()) {
-                if (column.columnDef() != null) {
-                    names.add(ParseTreeText.namePartText(column.columnDef().columnDefName()));
-                }
+        if (ctx.returnType() != null && ctx.returnType().returnColumnList() != null) {
+            for (final FrostlakeParser.ReturnColumnContext column
+                    : ctx.returnType().returnColumnList().returnColumn()) {
+                names.add(ParseTreeText.namePartText(column.returnColumnName()));
             }
         }
         return names;
@@ -987,17 +991,7 @@ public class CreateRoutineHandler implements CommandHandler {
                 }
             }
             if (tableFunction) {
-                if (ctx.returnType().columnList() != null) {
-                    for (final FrostlakeParser.ColumnOrConstraintContext column
-                            : ctx.returnType().columnList().columnOrConstraint()) {
-                        if (column.columnDef() != null) {
-                            returnColumns.add(new Parameter(
-                                ParseTreeText.namePartText(column.columnDef().columnDefName()),
-                                columnParser.parseReturnColumnType(column.columnDef().dataTypeName(),
-                                    column.columnDef().typeParameters())));
-                        }
-                    }
-                }
+                returnColumns.addAll(declaredReturnColumns(ctx));
             } else if (ctx.returnType().dataTypeName() != null) {
                 returnType = columnParser.parseRoutineDataType(ctx.returnType().dataTypeName(),
                     ctx.returnType().typeParameters());
@@ -1166,6 +1160,26 @@ public class CreateRoutineHandler implements CommandHandler {
         return runtimeVersion;
     }
 
+    /**
+     * The packages a routine's PACKAGES clause names, as written — the last clause's, a repeated one replacing the
+     * earlier — or null when it names none.
+     */
+    private List<String> writtenPackages(final FrostlakeParser.CreateStatementContext ctx) {
+        List<String> packages = null;
+        for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
+            if (opt.packagesClause() != null) {
+                packages = new ArrayList<>();
+                final FrostlakeParser.StringLiteralListContext named = opt.packagesClause().stringLiteralList();
+                if (named != null) {
+                    for (final TerminalNode stringLiteral : named.STRING_LITERAL()) {
+                        packages.add(ddl.extractStringLiteral(stringLiteral));
+                    }
+                }
+            }
+        }
+        return packages;
+    }
+
     /** A function's HANDLER, or null when its options name none. */
     private String functionHandler(final FrostlakeParser.CreateStatementContext ctx) {
         String handler = null;
@@ -1254,7 +1268,7 @@ public class CreateRoutineHandler implements CommandHandler {
     private void rejectColumnlessSqlTableFunction(final FrostlakeParser.CreateStatementContext ctx,
                                                   final String database, final String schema) {
         if (functionLanguage(ctx) != UdfLanguage.SQL || ctx.returnType() == null || ctx.returnType().TABLE() == null
-                || ctx.returnType().columnList() != null || ctx.bodyDefinition() == null) {
+                || ctx.returnType().returnColumnList() != null || ctx.bodyDefinition() == null) {
             return;
         }
         final String body = ddl.extractBodyDefinition(ctx.bodyDefinition()).trim();
@@ -1360,19 +1374,49 @@ public class CreateRoutineHandler implements CommandHandler {
             }
         }
         final Set<String> columns = new LinkedHashSet<>();
-        if (ctx.returnType() != null && ctx.returnType().columnList() != null) {
-            for (final FrostlakeParser.ColumnOrConstraintContext column
-                    : ctx.returnType().columnList().columnOrConstraint()) {
-                if (column.columnDef() == null) {
-                    continue;
+        if (ctx.returnType() != null && ctx.returnType().returnColumnList() != null) {
+            // The last column written with a DEFAULT: a column after it without one is refused at its name, in the
+            // words a routine's arguments are (live-verified).
+            String optional = null;
+            for (final FrostlakeParser.ReturnColumnContext column
+                    : ctx.returnType().returnColumnList().returnColumn()) {
+                final String name = ParseTreeText.namePartText(column.returnColumnName()).toUpperCase(Locale.ROOT);
+                if (column.dataTypeName() == null) {
+                    // A column written without its type is refused in its own words (live-verified).
+                    throw new RuntimeException("Return signature missing data type for column '" + name + "'.");
                 }
-                final String name = ParseTreeText.namePartText(column.columnDef().columnDefName()).toUpperCase(Locale.ROOT);
+                if (column.DEFAULT() != null) {
+                    optional = ParseTreeText.namePartText(column.returnColumnName());
+                } else if (optional != null) {
+                    final Token at = column.getStart();
+                    throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                        "required argument " + ParseTreeText.namePartText(column.returnColumnName())
+                            + " cannot follow optional argument " + optional));
+                }
                 if (!columns.add(name)) {
                     throw new RuntimeException(
                         "Return signature contains a duplicate column name '" + name + "'.");
                 }
             }
         }
+    }
+
+    /**
+     * The columns a {@code RETURNS TABLE (...)} declares, each its name as it resolves and its type; a column written
+     * without a type, which {@link #rejectRepeatedSignatureNames} refuses, is left out.
+     */
+    private List<Parameter> declaredReturnColumns(final FrostlakeParser.CreateStatementContext ctx) {
+        final List<Parameter> columns = new ArrayList<>();
+        if (ctx.returnType() == null || ctx.returnType().returnColumnList() == null) {
+            return columns;
+        }
+        for (final FrostlakeParser.ReturnColumnContext column : ctx.returnType().returnColumnList().returnColumn()) {
+            if (column.dataTypeName() != null) {
+                columns.add(new Parameter(ParseTreeText.namePartText(column.returnColumnName()),
+                    columnParser.parseReturnColumnType(column.dataTypeName(), column.typeParameters())));
+            }
+        }
+        return columns;
     }
 
 

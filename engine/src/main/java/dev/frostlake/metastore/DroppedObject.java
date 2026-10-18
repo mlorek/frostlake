@@ -21,6 +21,7 @@ import dev.frostlake.storage.Row;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,6 +35,10 @@ import java.util.Map;
  * <p>A version is kept for the DATA_RETENTION_TIME_IN_DAYS the object had when it was dropped, and is purged once that
  * has passed ({@link #isPurgedAt}): UNDROP no longer finds it and SHOW ... HISTORY no longer lists it. With a
  * retention of 0 the object cannot be undropped at all.
+ *
+ * <p>The dropped tables' storage itself waits with the version ({@link #keptStorage}), so an UNDROP brings each table
+ * back with its time-travel history: a point before the drop, or while the table was dropped, reads the rows it held
+ * then (live-verified). The rows are kept beside it for what reads a version without restoring it.
  */
 public class DroppedObject {
 
@@ -58,6 +63,13 @@ public class DroppedObject {
      * never saved with a snapshot: a restart reads the rows instead.
      */
     private volatile String storageSetAside;
+
+    /**
+     * Where each dropped table's storage waits for the UNDROP, by the table's fully-qualified name: the key the
+     * storage engine keeps it under ({@code StorageEngine.keepDropped}). Empty for a table dropped outright and for a
+     * version a snapshot restored without its storage. The engine's own, as {@link #storageSetAside} is.
+     */
+    private final Map<String, String> keptStorage = new LinkedHashMap<>();
 
     /**
      * A dropped table (or another object that holds no rows of its own, with null rows).
@@ -218,5 +230,36 @@ public class DroppedObject {
      */
     public void setStorageSetAside(final String key) {
         this.storageSetAside = key;
+    }
+
+    /**
+     * Notes where a dropped table's storage waits for the UNDROP.
+     *
+     * @param qualifiedName the table's fully-qualified name
+     * @param key           the key the storage engine keeps it under
+     */
+    public void keepStorage(final String qualifiedName, final String key) {
+        synchronized (keptStorage) {
+            keptStorage.put(qualifiedName, key);
+        }
+    }
+
+    /**
+     * Where a dropped table's storage waits, or null when the version keeps only its rows.
+     *
+     * @param qualifiedName the table's fully-qualified name
+     * @return the storage engine's key for it, or null
+     */
+    public String keptStorageOf(final String qualifiedName) {
+        synchronized (keptStorage) {
+            return keptStorage.get(qualifiedName);
+        }
+    }
+
+    /** Where every dropped table's storage waits, by the table's fully-qualified name: a copy. */
+    public Map<String, String> keptStorages() {
+        synchronized (keptStorage) {
+            return new LinkedHashMap<>(keptStorage);
+        }
     }
 }

@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.FlowChainRefusal;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.List;
@@ -48,7 +49,7 @@ final class TaskBodySyntax {
         final List<FrostlakeParser.StatementContext> chained =
             ((FrostlakeParser.FlowChainContext) statement.getParent()).statement();
         if (chained.get(chained.size() - 1) != statement) {
-            throw new RuntimeException(
+            throw new FlowChainRefusal(
                 "Invalid statement for task definition. Expecting one of the following: STATEMENT");
         }
     }

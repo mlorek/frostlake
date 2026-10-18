@@ -144,6 +144,13 @@ public final class SignatureTailLine {
                     if (semicolon >= 0) {
                         lines.addAll(BlockReadOn.linesAfter(spoken, semicolon));
                     }
+                } else if (reading.nameDueAtItsEnd()) {
+                    // A name due at the ';' reads the next statement's first word as that name.
+                    final List<Token> spoken = BlockReadOn.spoken(sql);
+                    final int semicolon = BlockReadOn.indexAt(spoken, reading.last().getStartIndex());
+                    if (semicolon >= 0) {
+                        lines.addAll(SignatureRecovery.namedPastItsEnd(spoken, semicolon));
+                    }
                 }
                 // A block is refused for its first faulty statement.
                 throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);

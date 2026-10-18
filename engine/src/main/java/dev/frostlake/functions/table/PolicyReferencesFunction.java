@@ -61,7 +61,16 @@ public class PolicyReferencesFunction extends TableFunction {
         "MATERIALIZED VIEW", "EXTERNAL TABLE"));
 
     /** The domains whose object POLICY_REFERENCES finds as TAG_REFERENCES does, listing no attachment of it. */
-    private static final Set<String> OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("TAG", "USER", "ACCOUNT"));
+    private static final Set<String> OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("TAG", "USER", "ACCOUNT",
+        "INTEGRATION"));
+
+    /**
+     * The words another reference function knows as a domain that TAG_REFERENCES does not, which POLICY_REFERENCES
+     * refuses as an invalid value, and APPLICATION, whose object it looks for (live-verified).
+     */
+    private static final Set<String> OTHER_DOMAINS = new HashSet<String>(Arrays.asList("SEQUENCE", "NETWORK RULE",
+        "SECRET", "NOTEBOOK", "MODEL", "DATASET", "STREAMLIT", "FILE FORMAT", "AUTHENTICATION POLICY",
+        "PACKAGES POLICY", "ORGANIZATION", "APPLICATION"));
 
     /** Live's column order. */
     private static final String[] COLUMN_NAMES = {
@@ -120,19 +129,38 @@ public class PolicyReferencesFunction extends TableFunction {
     }
 
     /**
-     * The attachments on one entity. The domain is one TAG_REFERENCES knows, matched as written but for case, or it
-     * is {@code Unknown domain: <as written>.}; TABLE and VIEW list their kind's attachments, EXTERNAL TABLE none
-     * here, TAG, USER and ACCOUNT find their object as TAG_REFERENCES finds it and list none, and any other domain is
-     * an invalid value, named with underscores (live-verified).
+     * The attachments on one entity. The domain is one a reference function knows, matched as written but for case,
+     * or it is {@code Unknown domain: <as written>.}; TABLE and VIEW list their kind's attachments, EXTERNAL TABLE
+     * none here but refuses a name no table holds, TAG, USER, INTEGRATION and ACCOUNT find their object as
+     * TAG_REFERENCES finds it and list none — the current account by its locator, in any case — an APPLICATION is
+     * looked for, and any other domain is an invalid value, named with underscores (live-verified).
      */
     private void appendByEntity(final String entityName, final String entityDomain,
                                 final List<Row> rows) {
         final String domain = entityDomain.toUpperCase(Locale.ROOT);
         final String words = domain.replace('_', ' ');
-        if (!TagReferencesFunction.isDomain(words) && !TABLE_LIKE_DOMAINS.contains(words)) {
+        if (!TagReferencesFunction.isDomain(words) && !TABLE_LIKE_DOMAINS.contains(words)
+                && !OTHER_DOMAINS.contains(words)) {
             throw new RuntimeException("Unknown domain: " + entityDomain + ".");
         }
         if ("EXTERNAL TABLE".equals(words)) {
+            final String[] written = SqlIdentifiers.canonicalTextParts(entityName);
+            requireContainers(written);
+            final Schema schema = owningSchema(written);
+            if (schema == null || schema.tableExact(written[written.length - 1]) == null) {
+                final String[] full = completed(written);
+                throw new RuntimeException(SqlCompilationError.doesNotExist("External table",
+                    full.length == 3 && full[0] != null && full[1] != null ? QualifiedName.join(full)
+                        : QualifiedName.join(written)));
+            }
+            return;
+        }
+        if ("APPLICATION".equals(words)) {
+            // No application is modelled here: every name is missing.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Application",
+                QualifiedName.join(SqlIdentifiers.canonicalTextParts(entityName))));
+        }
+        if ("ACCOUNT".equals(words) && entityName.equalsIgnoreCase(catalog.getAccountLocator())) {
             return;
         }
         if (OBJECT_DOMAINS.contains(words)) {

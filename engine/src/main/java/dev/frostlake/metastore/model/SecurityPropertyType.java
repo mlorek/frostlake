@@ -15,7 +15,7 @@
  */
 package dev.frostlake.metastore.model;
 
-/** The shape of value a network rule, network policy, password policy or secret property takes. */
+/** The shape of value a security object's property takes: a network rule's, a policy's or a secret's. */
 public enum SecurityPropertyType {
 
     /** A string literal. */
@@ -29,5 +29,12 @@ public enum SecurityPropertyType {
     /** One word of a fixed set, written bare or as a string. */
     CHOICE,
     /** TRUE or FALSE. */
-    BOOLEAN
+    BOOLEAN,
+    /** A parenthesised list of words of a fixed set, written as strings. */
+    CHOICE_LIST,
+    /**
+     * A Restricted Session Scope: one of the predefined names or a fully qualified name, written as a word or a
+     * string, or NULL.
+     */
+    SESSION_SCOPE
 }

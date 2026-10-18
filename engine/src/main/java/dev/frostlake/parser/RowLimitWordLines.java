@@ -21,6 +21,7 @@ import java.util.List;
 import org.antlr.v4.runtime.BailErrorStrategy;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.TokenStream;
 import org.antlr.v4.runtime.misc.IntervalSet;
 import org.antlr.v4.runtime.misc.ParseCancellationException;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -40,6 +41,8 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  *   SELECT a FROM t LIMIT ((1))               the second '(', then the first
  *   SELECT a FROM t t2 LIMIT -1               '-' once: the table has its alias
  *   SELECT a FROM t ORDER BY a LIMIT -1       '-' once: no alias stands after an ORDER BY
+ *   SELECT a FROM t LIMIT (SELECT 1)          the SELECT, then the '(', whatever is written inside the bracket
+ *   SELECT a FROM t LIMIT -1; SELECT 1 x y    '-' twice, then the y: the clause's reading reads on
  * </pre>
  *
  * <p>Whether the word may be an alias is asked of the grammar: the statement cut after the word, its open brackets
@@ -75,8 +78,17 @@ final class RowLimitWordLines {
                 break;
             }
         }
+        if (at < 0 && faultIndex < 0) {
+            // A fault at the end of the input: a bracket after such a word before it is the account's first fault.
+            final int bracketedAtEnd = bracketedWord(sql, spoken, spoken.size() - 1);
+            return bracketedAtEnd >= 0 ? bracketLines(sql, spoken, bracketedAtEnd) : lines;
+        }
         if (at < 1) {
             return lines;
+        }
+        final int bracketed = bracketedWord(sql, spoken, at);
+        if (bracketed >= 0) {
+            return bracketLines(sql, spoken, bracketed);
         }
         final int end = spoken.size() - 1;
         if (isRowLimitWord(spoken.get(at)) && at + 1 == end) {
@@ -124,14 +136,124 @@ final class RowLimitWordLines {
             }
             final List<String> both = told(first);
             both.add(second);
+            both.addAll(readOn(sql, spoken, word));
             return both;
         }
         if (told + 1 < lines.size() && lines.get(told + 1).equals(second) || lines.lastIndexOf(second) > told) {
             return lines;
         }
-        final List<String> both = new ArrayList<>(lines);
-        both.add(told + 1, second);
+        final List<String> both = new ArrayList<>(lines.subList(0, told + 1));
+        both.add(second);
+        both.addAll(readOn(sql, spoken, word));
         return both;
+    }
+
+    /**
+     * The lines of a script whose missing separator is the bracket after such a word, the word read as the alias of
+     * what stands before it and the bracket as the next statement's start: the bracket's lines (see
+     * {@link #bracketLines}), or null when the bracket is no such word's.
+     *
+     * @param sql       the script's text
+     * @param tokens    the parse's tokens
+     * @param firstLine the line the missing separator is refused in
+     * @return the lines, or null
+     */
+    static List<String> bracketedValueLines(final String sql, final TokenStream tokens, final String firstLine) {
+        final List<Token> spoken = new ArrayList<>();
+        for (int i = 0; i < tokens.size(); i++) {
+            if (tokens.get(i).getChannel() == Token.DEFAULT_CHANNEL) {
+                spoken.add(tokens.get(i));
+            }
+        }
+        for (int i = 1; i + 1 < spoken.size(); i++) {
+            if (spoken.get(i).getType() == FrostlakeLexer.LPAREN
+                    && SyntaxErrorListener.sentence(spoken.get(i)).equals(firstLine)) {
+                return bracketedWord(sql, spoken, i) == i - 1 ? bracketLines(sql, spoken, i - 1) : null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The word, standing before {@code at} in its statement, that may be an alias and whose value opens with a bracket
+     * that holds no name, or -1: the account refuses the token inside the bracket for the alias's reading and the
+     * bracket for the clause's, wherever the parse first faulted after it (all live-verified).
+     */
+    private static int bracketedWord(final String sql, final List<Token> spoken, final int at) {
+        for (int word = at - 1; word >= 0 && spoken.get(word).getType() != FrostlakeLexer.SEMI; word--) {
+            if (isRowLimitWord(spoken.get(word)) && word + 2 < spoken.size()
+                    && spoken.get(word + 1).getType() == FrostlakeLexer.LPAREN) {
+                final Token inside = spoken.get(word + 2);
+                if (WORDS.contains(inside.getType()) || inside.getType() == FrostlakeLexer.QUOTED_IDENTIFIER
+                        || inside.getType() == Token.EOF || !mayBeAlias(sql, spoken, word)) {
+                    return -1;
+                }
+                return word;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The lines of a bracket after such a word that holds no name — {@code SELECT a FROM t LIMIT (SELECT 1)} is the
+     * SELECT, then the '(' — and then what live reads on to.
+     */
+    private static List<String> bracketLines(final String sql, final List<Token> spoken, final int word) {
+        final List<String> lines = told(spoken.get(word + 2));
+        lines.add(SyntaxErrorListener.sentence(spoken.get(word + 1)));
+        lines.addAll(readOn(sql, spoken, word));
+        return lines;
+    }
+
+    /**
+     * The lines live reads on to after the value's two readings: the clause's reading skips the value to the
+     * statement's next OFFSET, FETCH or ';' and reads on from there, so a later clause's value and a later
+     * statement are refused too — {@code LIMIT -1 OFFSET -1} adds the second '-', {@code LIMIT -1; SELECT 1 x y}
+     * the y — and the rest of the value is passed over: {@code LIMIT -1 x y} names nothing more (all live-verified).
+     * They are the lines of the text with the skipped tokens read as a count, or with an OFFSET's clause passed over.
+     */
+    private static List<String> readOn(final String sql, final List<Token> spoken, final int word) {
+        // A word inside a bracket of its statement is skipped to that bracket's close; at the top a stray ')' is
+        // skipped with the rest (LIMIT (2) ) names nothing after the group).
+        int open = 0;
+        for (int i = word - 1; i >= 0 && spoken.get(i).getType() != FrostlakeLexer.SEMI; i--) {
+            if (spoken.get(i).getType() == FrostlakeLexer.LPAREN) {
+                open++;
+            } else if (spoken.get(i).getType() == FrostlakeLexer.RPAREN) {
+                open--;
+            }
+        }
+        int depth = 0;
+        int stop = word + 1;
+        while (stop < spoken.size()) {
+            final int type = spoken.get(stop).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth--;
+            }
+            if (depth < 0 && open > 0 || depth <= 0 && (type == FrostlakeLexer.OFFSET || type == FrostlakeLexer.FETCH
+                    || type == FrostlakeLexer.SEMI || type == Token.EOF)) {
+                break;
+            }
+            stop++;
+        }
+        // An OFFSET with no FETCH after it is no clause, so it is passed over whole; a count stands for the rest.
+        final boolean offset = spoken.get(word).getType() == FrostlakeLexer.OFFSET;
+        final int from = spoken.get(offset ? word : word + 1).getStartIndex();
+        final int to = stop < spoken.size() && spoken.get(stop).getType() != Token.EOF
+            ? spoken.get(stop).getStartIndex() : sql.length();
+        if (from < 0 || to <= from) {
+            return new ArrayList<>();
+        }
+        final StringBuilder repaired = new StringBuilder(sql);
+        repaired.setCharAt(from, offset ? ' ' : '1');
+        for (int i = from + 1; i < to; i++) {
+            if (repaired.charAt(i) != '\n' && repaired.charAt(i) != '\r') {
+                repaired.setCharAt(i, ' ');
+            }
+        }
+        return new ArrayList<>(SyntaxErrorListener.linesReportedFor(repaired.toString(), true));
     }
 
     private static List<String> told(final String line) {

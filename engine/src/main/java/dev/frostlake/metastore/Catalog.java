@@ -205,6 +205,11 @@ public class Catalog {
 
         final Database sourceDb = databaseExact(sourceName);
         final Database targetDb = sourceDb.clone(targetName);
+        for (final Schema schema : sourceDb.getAllSchemas()) {
+            if (targetDb.hasSchema(schema.getName())) {
+                StreamSources.carryClonedStates(this, schema, targetDb.getSchema(schema.getName()));
+            }
+        }
         // The cloning role owns the clone, as it would a database it created; the clone's children keep their owners,
         // except that the role that clones a pipe owns the clone (documented).
         targetDb.setOwner(currentRoleForOwner());
@@ -352,6 +357,20 @@ public class Catalog {
         GrantNames.containerRenamed(this, from, new String[] {target.getName(), schema.getName()});
         // The policies it holds go with it, and so do the attachments that name them, wherever those are.
         PolicyReferences.repoint(allSchemas(), null, from, new String[] {target.getName(), schema.getName()});
+    }
+
+    /**
+     * Leave the session with no current schema when its current schema's name no longer names one. The session holds
+     * its schema by name: a rename away leaves it a current database and no current schema, so CURRENT_SCHEMA() is
+     * NULL, while a SWAP hands the name to the other schema, which the session then is in (live-verified).
+     */
+    public void releaseVanishedCurrentSchema() {
+        final String database = getCurrentDatabase();
+        final String schema = getCurrentSchema();
+        if (database != null && schema != null && databases.containsKey(database)
+                && !databaseExact(database).hasSchemaExact(schema)) {
+            setCurrentSchemaName(null);
+        }
     }
 
     /** Every schema of every database: the places an attachment to a policy anywhere can be. */
@@ -681,8 +700,11 @@ public class Catalog {
         final QualifiedName qn = withoutAccount(written, 3);
         if (qn.size() == 1) {
             // table name only
-            if (getCurrentDatabase() == null || getCurrentSchema() == null) {
+            if (getCurrentDatabase() == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
+            }
+            if (getCurrentSchema() == null) {
+                throw NoCurrentDatabaseRefusal.withoutSchema("Table", qn.part(0));
             }
             final Schema owner = databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema());
             return tableForReference(owner, qn.part(0), owner.qualifiedName(qn.part(0)), "Table");
@@ -788,8 +810,11 @@ public class Catalog {
         final QualifiedName qn = withoutAccount(written, 3);
         if (qn.size() == 1) {
             // view name only
-            if (getCurrentDatabase() == null || getCurrentSchema() == null) {
+            if (getCurrentDatabase() == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
+            }
+            if (getCurrentSchema() == null) {
+                throw NoCurrentDatabaseRefusal.withoutSchema("View", qn.part(0));
             }
             return databaseExact(getCurrentDatabase())
                     .schemaExact(getCurrentSchema())
@@ -864,8 +889,11 @@ public class Catalog {
     private Schema schemaOwning(final QualifiedName written) {
         final QualifiedName qn = withoutAccount(written, 3);
         if (qn.size() == 1) {
-            if (getCurrentDatabase() == null || getCurrentSchema() == null) {
+            if (getCurrentDatabase() == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
+            }
+            if (getCurrentSchema() == null) {
+                throw NoCurrentDatabaseRefusal.withoutSchema("Table", qn.part(0));
             }
             return databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema());
         } else if (qn.size() == 2) {
@@ -1447,6 +1475,16 @@ public class Catalog {
         return resolveSchemaForObject(name).getStage(objectName(name));
     }
 
+    /**
+     * The stage a statement names, by exactly its canonical name: a quoted name is that name alone (live-verified).
+     *
+     * @param name the name as written, qualified or not
+     * @return the stage
+     */
+    public Stage getStageExact(final String name) {
+        return resolveSchemaForObject(name).getStageExact(objectName(name));
+    }
+
     /** The schema a stage or table reference resolves in, as {@link #getStage} resolves it. */
     public Schema resolveOwningSchema(final String name) {
         return resolveSchemaForObject(name);
@@ -1475,6 +1513,17 @@ public class Catalog {
 
     public boolean hasFileFormat(final String name) {
         return resolveSchemaForObject(name).hasFileFormat(objectName(name));
+    }
+
+    /**
+     * The file format a statement names, by exactly its canonical name, or null: one differing only in case is another
+     * (live-verified).
+     *
+     * @param name the name as written, qualified or not
+     * @return the format, or null
+     */
+    public FileFormat getFileFormatExact(final String name) {
+        return resolveSchemaForObject(name).getFileFormatExact(objectName(name));
     }
 
     public void dropFileFormat(final String name) {
@@ -1621,7 +1670,8 @@ public class Catalog {
         to.requireCreatable(Privilege.CREATE_MASKING_POLICY);
         final MaskingPolicy policy = from.getMaskingPolicy(objectName(oldName));
         final String was = policy != null ? policy.getName() : null;
-        if (to.hasMaskingPolicy(objectName(newName))) {
+        // Taken only by exactly that name: one that differs in case is another policy's (live-verified).
+        if (to.getMaskingPolicyExact(objectName(newName)) != null) {
             throw renamedOntoTaken(newName);
         }
         from.renameMaskingPolicy(objectName(oldName), objectName(newName));
@@ -1688,7 +1738,8 @@ public class Catalog {
         to.requireCreatable(Privilege.CREATE_ROW_ACCESS_POLICY);
         final RowAccessPolicy policy = from.getRowAccessPolicy(objectName(oldName));
         final String was = policy != null ? policy.getName() : null;
-        if (to.hasRowAccessPolicy(objectName(newName))) {
+        // Taken only by exactly that name: one that differs in case is another policy's (live-verified).
+        if (to.getRowAccessPolicyExact(objectName(newName)) != null) {
             throw renamedOntoTaken(newName);
         }
         from.renameRowAccessPolicy(objectName(oldName), objectName(newName));
@@ -1710,6 +1761,17 @@ public class Catalog {
      */
     public RowAccessPolicy findRowAccessPolicy(final String qualifiedName) {
         return resolveSchemaForObject(qualifiedName).getRowAccessPolicy(objectName(qualifiedName));
+    }
+
+    /**
+     * The row access policy a statement names, by exactly its canonical name, or null: one differing only in case is
+     * another (live-verified).
+     *
+     * @param qualifiedName the policy name as written
+     * @return the policy, or null
+     */
+    public RowAccessPolicy findRowAccessPolicyExact(final String qualifiedName) {
+        return resolveSchemaForObject(qualifiedName).getRowAccessPolicyExact(objectName(qualifiedName));
     }
 
     /**
@@ -1747,6 +1809,17 @@ public class Catalog {
         return resolveSchemaForObject(qualifiedName).getAggregationPolicy(objectName(qualifiedName));
     }
 
+    /**
+     * The aggregation policy a statement names, by exactly its canonical name, or null: one differing only in case is
+     * another (live-verified).
+     *
+     * @param qualifiedName the policy name as written
+     * @return the policy, or null
+     */
+    public AggregationPolicy findAggregationPolicyExact(final String qualifiedName) {
+        return resolveSchemaForObject(qualifiedName).getAggregationPolicyExact(objectName(qualifiedName));
+    }
+
     /** True when an aggregation policy is attached to any table — live refuses to drop or replace one. */
     public boolean isAggregationPolicyInUse(final String policyName) {
         final String bare = policyName.toUpperCase(Locale.ROOT);
@@ -1770,6 +1843,17 @@ public class Catalog {
      */
     public ProjectionPolicy findProjectionPolicy(final String qualifiedName) {
         return resolveSchemaForObject(qualifiedName).getProjectionPolicy(objectName(qualifiedName));
+    }
+
+    /**
+     * The projection policy a statement names, by exactly its canonical name, or null: one differing only in case is
+     * another (live-verified).
+     *
+     * @param qualifiedName the policy name as written
+     * @return the policy, or null
+     */
+    public ProjectionPolicy findProjectionPolicyExact(final String qualifiedName) {
+        return resolveSchemaForObject(qualifiedName).getProjectionPolicyExact(objectName(qualifiedName));
     }
 
     /** True when a projection policy is attached to any column — live refuses to drop or replace one. */
@@ -1812,6 +1896,17 @@ public class Catalog {
     }
 
     /**
+     * The masking policy a statement names, by exactly its canonical name, or null: one differing only in case is
+     * another (live-verified).
+     *
+     * @param qualifiedName the policy name as written
+     * @return the policy, or null
+     */
+    public MaskingPolicy findMaskingPolicyExact(final String qualifiedName) {
+        return resolveSchemaForObject(qualifiedName).getMaskingPolicyExact(objectName(qualifiedName));
+    }
+
+    /**
      * A schema-level object's name spelled in full — {@code database.schema.OBJECT} — resolving
      * however much of the path was written against the session, the way a reference to it resolves.
      * Live reports an attached policy this way whatever the attaching statement wrote, so a name
@@ -1823,6 +1918,18 @@ public class Catalog {
     public String qualifiedObjectName(final String qualifiedName) {
         return resolveSchemaForObject(qualifiedName)
             .qualifiedName(objectName(qualifiedName).toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * A schema-level object's name spelled in full as a statement names it: the path resolved against the session as
+     * {@link #qualifiedObjectName} resolves it, the last part kept as written, which is how a refusal names an object
+     * that is not there (live-verified).
+     *
+     * @param qualifiedName the name as written: bare, schema-qualified or already fully qualified
+     * @return the fully qualified canonical name
+     */
+    public String qualifiedExactName(final String qualifiedName) {
+        return resolveSchemaForObject(qualifiedName).qualifiedName(objectName(qualifiedName));
     }
 
     // User and Role Management

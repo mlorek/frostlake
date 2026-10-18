@@ -67,7 +67,7 @@ public final class DmlWriteTarget {
      * @param column the column the failure is attributed to
      * @param failure the inner failure, whose sentence is kept verbatim
      * @return the wrapped refusal; a fault a source cell holds bare - a CALL's over-wide answer read from its scan -
-     *         is that cell's refusal as it is (see DeferredFault#bare)
+     *         is that cell's refusal as it is (see DeferredFault#heldAnswer)
      */
     public static RuntimeException failedOnColumn(final String table, final String column,
                                                   final RuntimeException failure) {

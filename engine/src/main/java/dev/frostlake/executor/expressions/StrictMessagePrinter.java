@@ -91,10 +91,20 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     private final ExpressionEvaluatorVisitor context;
     /** Which spelling this printer gives: as written, the resolved plan, or an invalid-type sentence's. */
     private final StrictPrintMode mode;
+    /** Whether a routine parameter's default is told back — see {@link #tellingDefault()}. */
+    private boolean tellingDefault;
+    /** Whether a column prints as written, unresolved — see {@link #columnsAsWritten()}. */
+    private boolean columnsAsWritten;
+    /** Whether what the plan folds early prints as its value — see {@link #foldingConstants()}. */
+    private boolean foldingConstants;
+    /** Whether DATE_PART and EXTRACT print as EXTRACT(part from …) — see {@link #extractingParts()}. */
+    private boolean extractingParts;
 
     /** A division's scale grows by this much over the dividend's, to a cap of {@link #DIVISION_SCALE_CAP}. */
     private static final int DIVISION_EXTRA_SCALE = 6;
     private static final int DIVISION_SCALE_CAP = 12;
+    /** The precision a NUMBER declared without one carries. */
+    private static final int WIDEST_NUMBER = 38;
 
     StrictMessagePrinter(final ExpressionEvaluatorVisitor context) {
         this(context, StrictPrintMode.WRITTEN);
@@ -103,6 +113,86 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     StrictMessagePrinter(final ExpressionEvaluatorVisitor context, final StrictPrintMode mode) {
         this.context = context;
         this.mode = mode;
+    }
+
+    /**
+     * Prints as a routine parameter's default is told back, on top of the plan's spelling: an arithmetic operation
+     * written in parentheses as an operand of another is the cast to its type, {@code 1 * (CAST(2 + 3 AS
+     * NUMBER(2,0)))}, a cast or a conversion to a text written without a width is to the bare {@code VARCHAR}, and
+     * TO_VARCHAR given a format is TO_CHAR (live-verified).
+     *
+     * @return this printer
+     */
+    StrictMessagePrinter tellingDefault() {
+        this.tellingDefault = true;
+        return this;
+    }
+
+    /**
+     * A block's variable bound into one of the block's own SQL expressions — the query of an assignment, a LET or a
+     * RETURN — prints as the plan converts it to the variable's declared type: an exact number through TO_NUMBER, a
+     * FLOAT and a DATE through a CAST, a text as written — {@code ABS(TO_NUMBER(:s), 1)}, {@code ABS(TO_NUMBER(:s,
+     * 10, 2), 1)}, {@code ABS(CAST(:s AS FLOAT), 1)}, {@code YEAR(CAST(:s AS DATE), 1)}, an operand in parentheses,
+     * {@code (TO_NUMBER(:s)) + 1}. A statement the block runs keeps the bind as written (all live-verified).
+     */
+    @Override
+    public String visitBindVariable(final BindVariableExpression expr) {
+        final String conversion = blockExpressionConversion(expr);
+        return conversion != null ? conversion : super.visitBindVariable(expr);
+    }
+
+    /** The conversion a bind prints as in a block's own SQL expression, or null where it prints as written. */
+    private String blockExpressionConversion(final BindVariableExpression expr) {
+        final DataType declared = context.blockExpressionBindType(expr);
+        final String written = ":" + expr.getVarName();
+        if (declared instanceof NumericType && !NumericType.isApproximate(declared)) {
+            final NumericType number = (NumericType) declared;
+            return number.getPrecision() == WIDEST_NUMBER && number.getScale() == 0
+                ? "TO_NUMBER(" + written + ")"
+                : "TO_NUMBER(" + written + ", " + number.getPrecision() + ", " + number.getScale() + ")";
+        }
+        if (declared instanceof NumericType) {
+            return "CAST(" + written + " AS FLOAT)";
+        }
+        if (declared instanceof DateTimeType && "DATE".equals(declared.getName())) {
+            return "CAST(" + written + " AS DATE)";
+        }
+        return null;
+    }
+
+    /**
+     * Prints each column as written, before its name is resolved: {@code N}, {@code T.N} — as a call that reads
+     * its arguments before their names are resolved echoes them (see SystemConstantArguments).
+     *
+     * @return this printer
+     */
+    StrictMessagePrinter columnsAsWritten() {
+        this.columnsAsWritten = true;
+        return this;
+    }
+
+    /**
+     * Prints what the plan folds before a constant argument is judged as the value it folds to — a context function,
+     * UPPER or LOWER over a literal: {@code 'TEST_SCHEMA'}, {@code 'E1'}, a date as {@code '2024-01-02'} — and a
+     * text joined to the empty string as the text alone (see SystemConstantArguments).
+     *
+     * @return this printer
+     */
+    StrictMessagePrinter foldingConstants() {
+        this.foldingConstants = true;
+        return this;
+    }
+
+    /**
+     * Prints a DATE_PART call and an EXTRACT as the plan of a constant argument holds them, {@code EXTRACT(year from
+     * x)}, as a call of YEAR is printed (live-verified: SYSTEM$ABORT_TRANSACTION's refusal of {@code DATE_PART(year,
+     * NULL::DATE)} finds {@code EXTRACT(year from SYSTEM$NULL_TO_DATE(null))}).
+     *
+     * @return this printer
+     */
+    StrictMessagePrinter extractingParts() {
+        this.extractingParts = true;
+        return this;
     }
 
     /** Whether the plan's resolved spellings are printed — the arity, conversion and nesting sentences. */
@@ -467,6 +557,12 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             }
         }
         if (operator == BinaryOperator.CONCAT) {
+            if (foldingConstants && isEmptyText(right)) {
+                return left.accept(this);
+            }
+            if (foldingConstants && isEmptyText(left)) {
+                return right.accept(this);
+            }
             return asText(left, leftType) + " || " + asText(right, rightType);
         }
         if (planShaped() && (isArithmetic(operator) || isComparison(operator))) {
@@ -633,6 +729,18 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      * variable, bracketed otherwise — {@code COUNT(*) + 1} beside {@code (MAX(RT.G)) > 'a'}.
      */
     private String operand(final Expression expression) {
+        if (expression instanceof BindVariableExpression
+                && blockExpressionConversion((BindVariableExpression) expression) != null) {
+            return "(" + expression.accept(this) + ")";
+        }
+        if (tellingDefault && expression instanceof BinaryOperationExpression
+                && ((BinaryOperationExpression) expression).isWrittenInParentheses()
+                && isArithmetic(((BinaryOperationExpression) expression).getOperator())) {
+            final String type = typeText(expression);
+            if (type != null) {
+                return "(CAST(" + expression.accept(this) + " AS " + type + "))";
+            }
+        }
         final String printed = expression.accept(this);
         if (typesNulls() && isUntypedNull(expression)) {
             return printed.startsWith("SYSTEM$NULL_TO_") ? "(" + printed + ")" : printed;
@@ -1398,6 +1506,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
 
     @Override
     public String visitColumnReference(final ColumnReferenceExpression expr) {
+        if (columnsAsWritten && expr.getStarArgument() == null) {
+            return SystemConstantArguments.writtenName(expr);
+        }
         if (expr.getStarArgument() != null && planShaped() && context != null) {
             // A star among a call's arguments is the columns it stands for: HASH(FZ.ID, FZ.B, 1) (live-verified).
             return String.join(", ", context.strictStarColumns(expr.getStarArgument()));
@@ -1657,7 +1768,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         final Expression source = expr.getExpression();
         final DataType targetType = argumentType(expr);
         final String target = typeText(expr);
-        final String targetText = target != null ? target : expr.getTargetType();
+        final String targetText = tellingDefault && targetType instanceof StringType && expr.getTargetType() != null
+            && expr.getTargetType().indexOf('(') < 0 ? "VARCHAR" : target != null ? target : expr.getTargetType();
         if (conversionShaped()) {
             if (isUntypedNull(source)) {
                 final String family = targetType instanceof VectorType ? "VECTOR"
@@ -2003,6 +2115,20 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (mode == StrictPrintMode.WRITTEN) {
             return super.visitFunctionCall(expr);
         }
+        if (foldingConstants && expr.getNameExpression() == null && SystemConstantArguments.foldsEarly(expr, context)) {
+            final String folded = foldedValue(expr);
+            if (folded != null) {
+                return folded;
+            }
+        }
+        if (tellingDefault && "TO_VARCHAR".equalsIgnoreCase(expr.getFunctionName()) && expr.getArguments().size() > 1
+                && expr.getNameExpression() == null) {
+            final StringBuilder told = new StringBuilder("TO_CHAR(");
+            for (int i = 0; i < expr.getArguments().size(); i++) {
+                told.append(i > 0 ? ", " : "").append(expr.getArguments().get(i).accept(this));
+            }
+            return told.append(')').toString();
+        }
         if (expr instanceof NullableConstantExpression) {
             return "ENSURE_NULLABLE(" + ((NullableConstantExpression) expr).getValue().accept(this) + ")";
         }
@@ -2134,6 +2260,17 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     /** The calls whose arguments all meet in one type, an untyped NULL among them typed by the others. */
     private static final Set<String> MEETING_ARGUMENTS = new HashSet<>(Arrays.asList("GREATEST", "LEAST", "NVL", "IFNULL"));
     /** The date part a one-argument extraction call is planned as, {@code EXTRACT(day from …)}, or null. */
+    /** A date part written as a word or a string, upper-cased, or null for anything else. */
+    private static String unitWord(final Expression unit) {
+        if (unit instanceof ColumnReferenceExpression && !((ColumnReferenceExpression) unit).isQualified()) {
+            return ((ColumnReferenceExpression) unit).getColumnName().toUpperCase(Locale.ROOT);
+        }
+        if (unit instanceof LiteralExpression && ((LiteralExpression) unit).getType() == LiteralType.STRING) {
+            return String.valueOf(((LiteralExpression) unit).getValue()).toUpperCase(Locale.ROOT);
+        }
+        return null;
+    }
+
     private static String extractedPart(final String name) {
         switch (name) {
             case "YEAR":
@@ -2229,6 +2366,13 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         if (args.size() == 1 && extractedPart(name) != null && !firstNull) {
             return "EXTRACT(" + extractedPart(name) + " from " + args.get(0).accept(this) + ")";
+        }
+        if (extractingParts && args.size() == 2 && (name.equals("DATE_PART") || name.equals("EXTRACT"))) {
+            final String word = unitWord(args.get(0));
+            final String part = word == null ? null : extractedPart(word);
+            if (part != null && !isUntypedNull(args.get(1))) {
+                return "EXTRACT(" + part + " from " + args.get(1).accept(this) + ")";
+            }
         }
         if (name.equals("DECODE") && args.size() >= 3) {
             return plannedDecode(args);
@@ -3642,7 +3786,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (!convertsFrom(conversion, tryForm, sourceType)) {
             return null;
         }
-        return (tryForm ? "TRY_CAST(" : "CAST(") + source.accept(this) + " AS " + target + ")";
+        final String told = tellingDefault && target.startsWith("VARCHAR(") ? "VARCHAR" : target;
+        return (tryForm ? "TRY_CAST(" : "CAST(") + source.accept(this) + " AS " + told + ")";
     }
 
     /** The cast target a one-argument conversion stands for, or null when it is not one of them. */
@@ -4302,6 +4447,24 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         } catch (final RuntimeException notTypeable) {
             return null;
         }
+    }
+
+    /** A call the plan folds early, printed as the text literal of its value; null where it cannot be valued. */
+    private String foldedValue(final FunctionCallExpression call) {
+        final Object value;
+        try {
+            value = call.accept(context);
+        } catch (final RuntimeException unvalued) {
+            return null;
+        }
+        return value == null ? null : "'" + value.toString().replace("'", "''") + "'";
+    }
+
+    /** Whether an expression is the empty text literal. */
+    private static boolean isEmptyText(final Expression expression) {
+        return expression instanceof LiteralExpression
+            && ((LiteralExpression) expression).getType() == LiteralType.STRING
+            && "".equals(((LiteralExpression) expression).getValue());
     }
 
     private String typeText(final Expression expression) {

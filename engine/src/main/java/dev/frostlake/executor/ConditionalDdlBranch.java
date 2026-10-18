@@ -28,5 +28,7 @@ public enum ConditionalDdlBranch {
     /** CREATE OR ALTER TABLE found the table and altered it where it stands. */
     ALTERED_IN_PLACE,
     /** ALTER CORTEX SEARCH SERVICE IF EXISTS found no service and altered nothing. */
-    ALTER_SKIPPED
+    ALTER_SKIPPED,
+    /** CREATE TEMPORARY FUNCTION in a handler language created the function without judging its handler. */
+    CREATED_UNVALIDATED
 }

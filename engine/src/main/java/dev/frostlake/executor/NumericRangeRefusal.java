@@ -143,12 +143,14 @@ public final class NumericRangeRefusal {
     }
 
     /**
-     * The sentence a STRING earns when its value needs more digits than ANY number holds, which live
-     * treats as a failure to READ the text rather than a complaint about where it was going:
+     * The sentence a STRING earns when its value is past what ANY number holds — the signed 128-bit carrier
+     * every NUMBER is read into — which live treats as a failure to READ the text rather than a complaint
+     * about where it was going:
      *
      * <pre>
      *   '123456789012'::NUMBER(10,0)   is out of range      fits a NUMBER, not THIS one
-     *   '999…9'(39)::NUMBER(10,0)      is not recognized    fits no NUMBER at all
+     *   '1e38'::NUMBER                 is out of range      thirty-nine digits, still inside the carrier
+     *   '999…9'(39)::NUMBER(10,0)      is not recognized    past the carrier
      *   '999…9'(39)::NUMBER(38,0)      is not recognized    …the target makes no difference
      * </pre>
      *
@@ -163,8 +165,9 @@ public final class NumericRangeRefusal {
     }
 
     /**
-     * Whether a value is past what EVERY exact number can hold, taken at {@code scale} the way
-     * {@link #exceeds} takes it — so a string of decimals that merely rounds away stays readable
+     * Whether a value is past what EVERY exact number can hold — its whole part outside the signed 128-bit
+     * carrier, 2^127 - 1 being the last value read (live-verified) — taken at {@code scale} the way
+     * {@link #exceeds} takes it, so a string of decimals that merely rounds away stays readable
      * ({@code '0.999…9'} with thirty-nine decimals is 1, not an overflow).
      *
      * @param value the parsed value
@@ -172,7 +175,33 @@ public final class NumericRangeRefusal {
      * @return whether no NUMBER could hold it
      */
     public static boolean pastEveryNumber(final BigDecimal value, final int scale) {
-        return exceeds(value, MAX_PRECISION, scale);
+        final BigDecimal atScale = value.scale() == scale ? value : value.setScale(scale, RoundingMode.HALF_UP);
+        return atScale.abs().toBigInteger().compareTo(RAW_MAX) > 0;
+    }
+
+    /** The first value no NUMBER holds: ten to the thirty-eighth. */
+    private static final BigDecimal NUMBER_LIMIT = BigDecimal.TEN.pow(MAX_PRECISION);
+
+    /**
+     * The refusal a text earns where it converts to a NUMBER beside one — in a comparison or an arithmetic
+     * operation — or null where it converts. Past the 128-bit carrier the text is not recognized, and from
+     * 10^38 on it is out of range, whether it is written with an exponent or not (all live-verified):
+     *
+     * <pre>
+     *   id &lt; '1.7e38', id + '1e38'          Numeric value '1.7e38' is out of range
+     *   id &lt; '1.8e38', '999…9'(39), '1e+308' Numeric value '1.8e38' is not recognized
+     *   '999…9'(38), '9.9e37'               converts
+     * </pre>
+     *
+     * @param text  the text as the sentence echoes it, trimmed
+     * @param value the value it spells
+     * @return the sentence, or null
+     */
+    public static String fixedTextRefusal(final String text, final BigDecimal value) {
+        if (pastEveryNumber(value, 0)) {
+            return unreadableText(text);
+        }
+        return value.abs().compareTo(NUMBER_LIMIT) >= 0 ? unconvertibleText(text) : null;
     }
 
     /**

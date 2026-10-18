@@ -42,6 +42,13 @@ import org.antlr.v4.runtime.misc.Interval;
  *   an option given again with another value   conflicting values for copy option 'PURGE'
  * </pre>
  *
+ * <p>A stage's own COPY_OPTIONS list reads more values than another option list (see {@code stageCopyOptionList}),
+ * each judged (live-verified): NULL leaves SIZE_LIMIT unset and is an invalid value of any other option, as a number
+ * with a fraction or an exponent is ({@code invalid value [1.5] for parameter 'SIZE_LIMIT'}); a parenthesized
+ * property list is {@code invalid value [TOK_PROPERTY_LIST] for parameter 'INCLUDE_METADATA'}, and a parenthesized
+ * list of values, words or strings, {@code Invalid value specified for property 'ON_ERROR'}. A size's NULL after a
+ * size conflicts with it. A list of names alone is taken, and ignored.
+ *
  * <p>The options and their values: ON_ERROR takes ABORT_STATEMENT, CONTINUE, SKIP_FILE, SKIP_FILE_n and a string
  * 'SKIP_FILE_p%' whose p is a number from 0 to 100; SIZE_LIMIT a whole number of 64 bits; PURGE, RETURN_FAILED_ONLY,
  * ENFORCE_LENGTH, TRUNCATECOLUMNS and FORCE TRUE or FALSE, never a string; MATCH_BY_COLUMN_NAME CASE_SENSITIVE,
@@ -93,6 +100,50 @@ final class StageCopyOptions {
                 throw new RuntimeException(SqlCompilationError.invalidCopyOption(writtenName));
             }
             final String value = UNJUDGED.contains(name) ? writtenValue(option) : judged(name, option);
+            final String earlier = options.get(name);
+            if (earlier != null && !earlier.equals(value)) {
+                throw new RuntimeException(SqlCompilationError.conflictingCopyOption(name));
+            }
+            options.put(name, value);
+        }
+        return options;
+    }
+
+    /**
+     * The options of a stage's own COPY_OPTIONS list, judged, by name in upper case and each value as the listing
+     * spells it; SIZE_LIMIT = NULL is no value, and a list of names alone none at all.
+     *
+     * @param list the list
+     * @return the options in the order written
+     */
+    static Map<String, String> read(final FrostlakeParser.StageCopyOptionListContext list) {
+        final Map<String, String> options = new LinkedHashMap<>();
+        for (final FrostlakeParser.StageCopyOptionContext option : list.stageCopyOption()) {
+            final String writtenName = option.optionKey().getText();
+            final String name = writtenName.toUpperCase(Locale.ROOT);
+            if (writtenName.startsWith("\"") || !isOption(name)) {
+                throw new RuntimeException(SqlCompilationError.invalidCopyOption(writtenName));
+            }
+            if (option.stageCopyPropertyList() != null) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter("TOK_PROPERTY_LIST", name));
+            }
+            if (option.stageCopyValueList() != null || option.LPAREN() != null) {
+                throw new RuntimeException("Invalid value specified for property '" + name + "'");
+            }
+            final String written = option.start.getInputStream().getText(Interval.of(
+                option.EQ().getSymbol().getStopIndex() + 1, option.stop.getStopIndex())).trim();
+            if (option.NULL() != null && "SIZE_LIMIT".equals(name)) {
+                // No size: given after a size, it is another value of the option (live-verified).
+                if (options.containsKey(name)) {
+                    throw new RuntimeException(SqlCompilationError.conflictingCopyOption(name));
+                }
+                continue;
+            }
+            final String value = UNJUDGED.contains(name) ? written
+                : option.copyOptionValue() == null ? null : spelled(name, option.copyOptionValue());
+            if (value == null) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(written, name));
+            }
             final String earlier = options.get(name);
             if (earlier != null && !earlier.equals(value)) {
                 throw new RuntimeException(SqlCompilationError.conflictingCopyOption(name));

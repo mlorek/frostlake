@@ -20,6 +20,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
@@ -42,6 +43,10 @@ import java.util.List;
  *       {@code 5} into {@code ARRAY(VARCHAR)} is {@code '5'}, and a text that reads as no number is refused as the
  *       cast refuses it ({@code Numeric value 'zz' is not recognized}).</li>
  *   <li>A NULL is added as it is added to any array, as {@code undefined}.</li>
+ *   <li>An element type that is itself structured, an {@code ARRAY(ARRAY(INT))}'s or an {@code ARRAY(OBJECT(a INT))}'s,
+ *       takes only a structured value of its own kind, converted as a cast converts it: {@code [2.6]::ARRAY(DOUBLE)}
+ *       is added as {@code [3]}. A semi-structured {@code ['zz']} or {@code {'a':'zz'}}, a VARIANT or a scalar is
+ *       refused while the statement compiles, in the same sentence.</li>
  * </ul>
  */
 final class StructuredElementRule {
@@ -81,7 +86,9 @@ final class StructuredElementRule {
             return;
         }
         final DataType element = context.inferStaticType(args.get(position));
-        if (element == null || !UdfArgumentTypes.refuses(((StructuredArrayType) array).getElementType(), element)) {
+        final DataType elementType = ((StructuredArrayType) array).getElementType();
+        if (element == null || !(StructuredTypes.isStructured(elementType) ? !sameStructuredKind(elementType, element)
+                : UdfArgumentTypes.refuses(elementType, element))) {
             return;
         }
         final StringBuilder types = new StringBuilder();
@@ -112,6 +119,23 @@ final class StructuredElementRule {
             return element.getName();
         }
         return null;
+    }
+
+    /**
+     * Whether a value's static type is a structured type of the element type's own kind: an ARRAY(…) for an
+     * ARRAY(…) element, an OBJECT(…) for an OBJECT(…) one, a MAP for a MAP.
+     */
+    private static boolean sameStructuredKind(final DataType elementType, final DataType given) {
+        if (!StructuredTypes.isStructured(given)) {
+            return false;
+        }
+        if (elementType instanceof StructuredArrayType) {
+            return given instanceof StructuredArrayType;
+        }
+        if (elementType instanceof MapType) {
+            return given instanceof MapType;
+        }
+        return !(given instanceof StructuredArrayType) && !(given instanceof MapType);
     }
 
     /** Whether an argument is the bare word NULL. */

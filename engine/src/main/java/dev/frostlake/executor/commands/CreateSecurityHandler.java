@@ -233,7 +233,13 @@ public class CreateSecurityHandler implements CommandHandler {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written: a quoted name keeps its case and is another policy than its upper-case namesake
+            // (live-verified).
+            final String policyName = parts[parts.length - 1];
+            if (ctx.or_alter() != null && schema.getMaskingPolicyExact(policyName) != null) {
+                alterMaskingPolicyInPlace(ctx, schema, schema.getMaskingPolicyExact(policyName), parts, properties);
+                return null;
+            }
             requirePolicyCreatable(schema, policyName, "MASKING_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_MASKING_POLICY);
             if (orReplace) {
@@ -242,8 +248,10 @@ public class CreateSecurityHandler implements CommandHandler {
                     throw new RuntimeException("Policy " + policyName.toUpperCase(Locale.ROOT)
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
-                try { schema.dropMaskingPolicy(policyName); } catch (final RuntimeException ignored) {}
-            } else if (schema.hasMaskingPolicy(policyName)) {
+                if (schema.getMaskingPolicyExact(policyName) != null) {
+                    schema.dropMaskingPolicy(policyName);
+                }
+            } else if (schema.getMaskingPolicyExact(policyName) != null) {
                 // The name is judged before the signature and the body are (live-verified).
                 throw policyNameTaken(parts);
             }
@@ -292,23 +300,115 @@ public class CreateSecurityHandler implements CommandHandler {
         return null;
     }
 
+    /**
+     * CREATE OR ALTER over a masking policy that exists: the policy becomes what the statement writes — its body, its
+     * COMMENT and its EXEMPT_OTHER_POLICIES, a property left out unset — and keeps its attachments, so a masked column
+     * reads the new body. Its signature stays: another return type is {@code Property 'FUNCTION_RETURN_TYPE' cannot be
+     * changed in CREATE OR ALTER.}, then another argument list {@code Property 'FUNCTION_SIGNATURE' …}; the body is
+     * then judged as a CREATE judges it (live-verified).
+     */
+    private void alterMaskingPolicyInPlace(final FrostlakeParser.CreateStatementContext ctx, final Schema schema,
+                                           final MaskingPolicy policy, final String[] parts,
+                                           final PolicyProperties properties) {
+        queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
+        // The return type is compared as declared: STRING is VARCHAR, and VARCHAR(10) is another type.
+        final DataType declaredReturn = columnParser.parseRoutineDataType(ctx.dataTypeName(), ctx.typeParameters());
+        final String heldReturn = policy.getReturnDataType() != null
+            ? SqlTypeNames.canonical(policy.getReturnDataType()) : policy.getReturnType();
+        if (!SqlTypeNames.canonical(declaredReturn).equals(heldReturn)) {
+            throw new RuntimeException(SqlCompilationError.inline(
+                "Property 'FUNCTION_RETURN_TYPE' cannot be changed in CREATE OR ALTER."));
+        }
+        final List<Parameter> params = new ArrayList<>();
+        for (final FrostlakeParser.ParameterDefContext p : ctx.parameterList().parameterDef()) {
+            params.add(columnParser.parseParameterDef(p));
+        }
+        requireSameSignature(policy.getParameters(), params);
+        final String body = ctx.bodyDefinition() != null
+            ? ddl.getOriginalText(ctx.bodyDefinition()) : ddl.getOriginalText(ctx.booleanExpr());
+        PolicyBodyCheck.requireNumericLimits(body);
+        if (!params.isEmpty() && !SqlTypeNames.sameFamily(params.get(0).getDataType(), declaredReturn)) {
+            throw new RuntimeException(SqlCompilationError.PREFIX
+                + " Masking policy function argument and return type mismatch.");
+        }
+        PolicyObjectTagCalls.requireTagsIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
+            catalog);
+        PolicyBodyCheck.compile(queryExecutor, catalog, policy.getName(), declaredReturn, params, body, schema);
+        policy.setBody(body);
+        policy.setComment(properties.comment());
+        policy.setExemptOtherPolicies(properties.exempt());
+        ConditionalDdlOutcome.alteredInPlace();
+        logger.trace("Altered masking policy in place: {}", policy.getName());
+    }
+
+    /**
+     * CREATE OR ALTER over a row access policy that exists, as {@link #alterMaskingPolicyInPlace} does for a masking
+     * policy: the body, the COMMENT and EXEMPT_OTHER_POLICIES become the statement's, and the signature stays.
+     */
+    private void alterRowAccessPolicyInPlace(final FrostlakeParser.CreateStatementContext ctx, final Schema schema,
+                                             final RowAccessPolicy policy, final String[] parts,
+                                             final PolicyProperties properties) {
+        queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
+        final List<Parameter> params = new ArrayList<>();
+        for (final FrostlakeParser.ParameterDefContext p : ctx.parameterList().parameterDef()) {
+            params.add(columnParser.parsePolicyParameterDef(p));
+        }
+        requireSameSignature(policy.getParameters(), params);
+        final String body = ctx.bodyDefinition() != null
+            ? ddl.getOriginalText(ctx.bodyDefinition()) : ddl.getOriginalText(ctx.booleanExpr());
+        PolicyObjectTagCalls.refuseIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
+            PolicyObjectTagCalls.ON_CURRENT_COLUMN);
+        PolicyBodyCheck.compile(queryExecutor, catalog, policy.getName(), BooleanType.BOOLEAN, params, body, schema);
+        policy.setBody(body);
+        policy.setComment(properties.comment());
+        policy.setExemptOtherPolicies(properties.exempt());
+        ConditionalDdlOutcome.alteredInPlace();
+        logger.trace("Altered row access policy in place: {}", policy.getName());
+    }
+
+    /**
+     * Refuse a CREATE OR ALTER whose arguments are not the policy's own: as many, of the same names and the same types
+     * (live-verified).
+     */
+    private static void requireSameSignature(final List<Parameter> existing, final List<Parameter> written) {
+        boolean same = existing.size() == written.size();
+        for (int i = 0; same && i < existing.size(); i++) {
+            same = existing.get(i).getName().equalsIgnoreCase(written.get(i).getName())
+                && SqlTypeNames.canonical(existing.get(i).getDataType())
+                    .equals(SqlTypeNames.canonical(written.get(i).getDataType()));
+        }
+        if (!same) {
+            throw new RuntimeException(SqlCompilationError.inline(
+                "Property 'FUNCTION_SIGNATURE' cannot be changed in CREATE OR ALTER."));
+        }
+    }
+
     public Object handleCreateRowAccessPolicy(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String qn = getText(ctx.qualifiedName(0));
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
+        // CREATE OR ALTER takes no EXEMPT_OTHER_POLICIES for a row access policy (live-verified).
         final PolicyProperties properties =
-            PolicyProperties.read(ddl, ctx.policyCreateProperty(), "ROW_ACCESS_POLICY", true);
+            PolicyProperties.read(ddl, ctx.policyCreateProperty(), "ROW_ACCESS_POLICY", ctx.or_alter() == null);
         try {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written, as a masking policy's is (live-verified).
+            final String policyName = parts[parts.length - 1];
+            if (ctx.or_alter() != null && schema.getRowAccessPolicyExact(policyName) != null) {
+                alterRowAccessPolicyInPlace(ctx, schema, schema.getRowAccessPolicyExact(policyName), parts,
+                    properties);
+                return null;
+            }
             requirePolicyCreatable(schema, policyName, "ROW_ACCESS_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_ROW_ACCESS_POLICY);
             if (orReplace) {
                 queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
-                try { schema.dropRowAccessPolicy(policyName); } catch (final RuntimeException ignored) {}
-            } else if (schema.hasRowAccessPolicy(policyName)) {
+                if (schema.getRowAccessPolicyExact(policyName) != null) {
+                    schema.dropRowAccessPolicy(policyName);
+                }
+            } else if (schema.getRowAccessPolicyExact(policyName) != null) {
                 throw policyNameTaken(parts);
             }
             final List<Parameter> params = new ArrayList<>();
@@ -416,16 +516,20 @@ public class CreateSecurityHandler implements CommandHandler {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written, as a masking policy's is (live-verified).
+            final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "AGGREGATION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_AGGREGATION_POLICY);
             if (orReplace) {
                 if (catalog.isAggregationPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
+                        + policyName.toUpperCase(Locale.ROOT)
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
-                schema.dropAggregationPolicy(policyName);
-            } else if (schema.hasAggregationPolicy(policyName)) {
+                if (schema.getAggregationPolicyExact(policyName) != null) {
+                    schema.dropAggregationPolicy(policyName);
+                }
+            } else if (schema.getAggregationPolicyExact(policyName) != null) {
                 throw policyNameTaken(parts);
             }
             final String body = ctx.bodyDefinition() != null
@@ -474,16 +578,20 @@ public class CreateSecurityHandler implements CommandHandler {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written, as a masking policy's is (live-verified).
+            final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "PROJECTION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_PROJECTION_POLICY);
             if (orReplace) {
                 if (catalog.isProjectionPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
+                        + policyName.toUpperCase(Locale.ROOT)
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
-                schema.dropProjectionPolicy(policyName);
-            } else if (schema.hasProjectionPolicy(policyName)) {
+                if (schema.getProjectionPolicyExact(policyName) != null) {
+                    schema.dropProjectionPolicy(policyName);
+                }
+            } else if (schema.getProjectionPolicyExact(policyName) != null) {
                 throw policyNameTaken(parts);
             }
             final String body = ctx.bodyDefinition() != null

@@ -740,7 +740,8 @@ final class ShowRoutineExecutor {
 
     public ResultSet describeMaskingPolicy(final String name) {
         final Schema home = describedSchema(name);
-        final MaskingPolicy policy = home.getMaskingPolicy(lastSegment(name));
+        // Named exactly: a quoted name in another case is another policy, which is not there (live-verified).
+        final MaskingPolicy policy = home.getMaskingPolicyExact(lastSegment(name));
         if (policy == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", fullPath(home, name)));
         }
@@ -755,7 +756,7 @@ final class ShowRoutineExecutor {
 
     public ResultSet describeRowAccessPolicy(final String name) {
         final Schema home = describedSchema(name);
-        final RowAccessPolicy policy = home.getRowAccessPolicy(lastSegment(name));
+        final RowAccessPolicy policy = home.getRowAccessPolicyExact(lastSegment(name));
         if (policy == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", fullPath(home, name)));
         }
@@ -799,7 +800,8 @@ final class ShowRoutineExecutor {
      */
     public ResultSet describeFileFormat(final String name) {
         final Schema home = describedSchema(name);
-        final FileFormat ff = home.getFileFormat(lastSegment(name));
+        // Named exactly, as a policy is (live-verified).
+        final FileFormat ff = home.getFileFormatExact(lastSegment(name));
         if (ff == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("File format", fullPath(home, name)));
         }
@@ -1181,10 +1183,10 @@ final class ShowRoutineExecutor {
 
     /** DESCRIBE AGGREGATION POLICY — name, empty signature, return type and body. */
     public ResultSet describeAggregationPolicy(final String policyName) {
-        final AggregationPolicy policy = catalog.findAggregationPolicy(policyName);
+        final AggregationPolicy policy = catalog.findAggregationPolicyExact(policyName);
         if (policy == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
-                catalog.qualifiedObjectName(policyName)));
+                catalog.qualifiedExactName(policyName)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -1262,10 +1264,10 @@ final class ShowRoutineExecutor {
 
     /** DESCRIBE PROJECTION POLICY — one row: the name, its empty signature, return type and body. */
     public ResultSet describeProjectionPolicy(final String policyName) {
-        final ProjectionPolicy policy = catalog.findProjectionPolicy(policyName);
+        final ProjectionPolicy policy = catalog.findProjectionPolicyExact(policyName);
         if (policy == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
-                catalog.qualifiedObjectName(policyName)));
+                catalog.qualifiedExactName(policyName)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -1391,8 +1393,7 @@ final class ShowRoutineExecutor {
 
     /** The simple object name (last segment) of a possibly-qualified name. */
     private String lastSegment(final String name) {
-        final int dot = name.lastIndexOf('.');
-        return dot >= 0 ? name.substring(dot + 1) : name;
+        return QualifiedName.parse(name).last();
     }
 
     /**

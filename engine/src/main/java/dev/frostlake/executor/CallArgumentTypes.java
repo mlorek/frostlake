@@ -235,9 +235,13 @@ final class CallArgumentTypes {
      * @param typer    the evaluator whose static typing reads each argument
      */
     static void checkTableSource(final String procName, final List<Parameter> params,
-                                 final List<FrostlakeParser.ExpressionContext> values,
+                                 final List<? extends ParserRuleContext> values,
                                  final List<FrostlakeParser.NamedArgumentContext> named, final Token at,
                                  final ExpressionEvaluator typer) {
+        if (values != null && values.size() > params.size() && declaresADefault(params)) {
+            // Beside a parameter with a default, too many arguments are the CALL's to refuse (live-verified).
+            return;
+        }
         final List<String> spelled = new ArrayList<String>();
         final List<DataType> positionalTypes = new ArrayList<DataType>();
         final List<String> names = new ArrayList<String>();
@@ -245,7 +249,7 @@ final class CallArgumentTypes {
         final List<DataType> namedTypes = new ArrayList<DataType>();
         final List<Boolean> untypedNull = new ArrayList<Boolean>();
         if (values != null) {
-            for (final FrostlakeParser.ExpressionContext value : values) {
+            for (final ParserRuleContext value : values) {
                 final boolean bare = isUntypedNull(value, typer);
                 final DataType type = bare ? null : compiledType(value, typer);
                 if (!bare && type == null) {
@@ -275,8 +279,18 @@ final class CallArgumentTypes {
                     + "] do not match any signature for function " + procName));
     }
 
+    /** Whether a procedure declares a parameter with a default. */
+    private static boolean declaresADefault(final List<Parameter> params) {
+        for (final Parameter param : params) {
+            if (param.hasDefault()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** A number literal's type at the scale its value needs, {@code 1.250} as a NUMBER of scale 2; any other as is. */
-    private static DataType atValueScale(final FrostlakeParser.ExpressionContext value, final DataType type) {
+    private static DataType atValueScale(final ParserRuleContext value, final DataType type) {
         if (!(type instanceof NumericType) || NumericType.isApproximate(type)
                 || !(value instanceof FrostlakeParser.LiteralExprContext)) {
             return type;
@@ -383,7 +397,10 @@ final class CallArgumentTypes {
             + NamedArguments.listed(params, written) + "] do not match any signature for function " + procName));
     }
 
-    /** An all-named CALL: each named parameter's argument against its type, every name the CALL writes listed. */
+    /**
+     * An all-named CALL: each named parameter's argument against its type, every name the CALL writes listed. A
+     * TIME given for a timestamp parameter has its own sentence when nothing else is refused, as by position.
+     */
     private static void checkNamed(final String procName, final List<Parameter> params,
                                    final List<FrostlakeParser.CallArgumentContext> arguments,
                                    final ExpressionEvaluator typer) {
@@ -394,6 +411,7 @@ final class CallArgumentTypes {
             }
         }
         boolean refused = false;
+        String timeForTimestamp = null;
         for (final Parameter param : params) {
             final FrostlakeParser.ExpressionContext value = namedValue(arguments, param.getName());
             if (value == null) {
@@ -406,11 +424,18 @@ final class CallArgumentTypes {
             if (type == null) {
                 return;
             }
+            if (timeForTimestamp == null && isTimeForTimestamp(param.getDataType(), type)) {
+                timeForTimestamp = SqlCompilationError.of("incompatible types: [" + SqlTypeNames.refusalSpelling(type)
+                    + "] and [" + SqlTypeNames.refusalSpelling(param.getDataType()) + "]");
+            }
             refused |= refuses(param.getDataType(), type) || refusesPredicate(param.getDataType(), value);
         }
         if (refused) {
             throw new RuntimeException(SqlCompilationError.at(0, -1, "named arguments ["
                 + NamedArguments.listed(params, written) + "] do not match any signature for function " + procName));
+        }
+        if (timeForTimestamp != null) {
+            throw new RuntimeException(timeForTimestamp);
         }
     }
 

@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.Locale;
@@ -34,9 +35,11 @@ import java.util.Locale;
  *   BEGIN; INSERT INTO tx VALUES (1); DROP TABLE nosuch;                       refused, the transaction open
  *   BEGIN; INSERT INTO tx VALUES (1); CREATE VIEW t AS SELECT 1 AS a;          refused, the transaction open
  *   BEGIN; INSERT INTO tx VALUES (1); ALTER TABLE t ADD COLUMN a INT;          refused, the row committed
+ *   BEGIN; INSERT INTO tx VALUES (1); ALTER TABLE t ALTER COLUMN nosuch SET NOT NULL;   refused, open
  * </pre>
- * What a statement is refused for once its names read — a column to add that is there, a column to drop that is
- * not, a row its query cannot compute — comes after the commit, as the statement's own run does.
+ * What a statement is refused for once its names read — a column to add that is there, a column to drop or rename
+ * that is not, a row its query cannot compute — comes after the commit, as the statement's own run does; a column
+ * an ALTER COLUMN names that is not there is refused as the statement compiles, before it.
  *
  * <p>The judgement only says that the statement's handler will refuse it before it changes anything; the handler
  * then raises the refusal itself. A statement this class cannot read is not judged, and commits as it did.
@@ -105,7 +108,30 @@ final class NamesJudgedFirst {
         if (alter.if_exists() != null || !plainTable && !plainView || !isPlain(alter.objectName())) {
             return false;
         }
-        return isMissing(alter.objectName(), plainTable, queryExecutor, catalog);
+        if (isMissing(alter.objectName(), plainTable, queryExecutor, catalog)) {
+            return true;
+        }
+        return plainTable && altersAMissingColumn(alter, queryExecutor, catalog);
+    }
+
+    /**
+     * An ALTER | MODIFY COLUMN that names a column the table lacks — its type, its NOT NULL, its default or its
+     * comment — which the account refuses as the statement compiles, at the name (live-verified): a column to drop
+     * or to rename that is not there is refused after the commit instead.
+     */
+    private static boolean altersAMissingColumn(final FrostlakeParser.AlterStatementContext alter,
+                                                final QueryExecutor queryExecutor, final Catalog catalog) {
+        final FrostlakeParser.TableActionContext action = alter.tableAction();
+        if (action == null || action.alterColumnItem().isEmpty()) {
+            return false;
+        }
+        final Table table = catalog.resolveTable(queryExecutor.resolveObjectName(alter.objectName()));
+        for (final FrostlakeParser.AlterColumnItemContext item : action.alterColumnItem()) {
+            if (!table.hasColumn(ParseTreeText.getIdentifier(item.identifier()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean commentsOnNothing(final FrostlakeParser.CommentStatementContext comment,

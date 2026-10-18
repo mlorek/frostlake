@@ -96,7 +96,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitParenExpr(final FrostlakeParser.ParenExprContext ctx) {
-        return visit(ctx.booleanExpr());
+        final Expression inner = visit(ctx.booleanExpr());
+        if (inner instanceof BinaryOperationExpression) {
+            ((BinaryOperationExpression) inner).markWrittenInParentheses();
+        }
+        return inner;
     }
 
     /** A parenthesized list of two or more values: one ROW value, placed at its opening parenthesis. */

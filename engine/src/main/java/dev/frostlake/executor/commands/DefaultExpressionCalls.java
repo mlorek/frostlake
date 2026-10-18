@@ -189,7 +189,15 @@ final class DefaultExpressionCalls {
      * @return the default as told
      */
     String toldParameterDefault(final ParserRuleContext written) {
-        return planText(ParseTreeText.getOriginalText(written));
+        final String expression = ParseTreeText.getOriginalText(written);
+        try {
+            final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(
+                new Table("$DEFAULT", new ArrayList<TableColumn>(), true), null, queryExecutor.getFunctionRegistry(),
+                queryExecutor.getCatalog());
+            return printer.strictToldDefaultText(AntlrExpressionParser.parse(expression));
+        } catch (final RuntimeException unprintable) {
+            return expression;
+        }
     }
 
     /**

@@ -539,7 +539,8 @@ final class ShowInfraExecutor {
             new ResultSetColumn("property_type", StringType.VARCHAR),
             new ResultSetColumn("property_value", StringType.VARCHAR),
             new ResultSetColumn("property_default", StringType.VARCHAR));
-        final Stage stage = catalog.getStage(stageName);
+        // Named exactly: a quoted name in another case is another stage, which is not there (live-verified).
+        final Stage stage = catalog.getStageExact(stageName);
         final List<Row> rows = new ArrayList<>();
         // The tree is the one of the stage's own format TYPE, as a table's stage answers its written format
         // (live-verified): a JSON stage lists STRIP_OUTER_ARRAY and no FIELD_DELIMITER.

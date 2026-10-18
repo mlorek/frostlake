@@ -33,8 +33,6 @@ public class Cursor {
     private boolean isOpen;
     /** Whether OPEN ever ran (a FOR loop opens implicitly). */
     private boolean everOpened;
-    /** Whether the FOR loop that iterated the cursor closed it: a CLOSE written after such a loop runs clean. */
-    private boolean closedByLoop;
 
     public Cursor(final String name, final String selectQuery) {
         this(name, selectQuery, null);
@@ -70,23 +68,16 @@ public class Cursor {
         this.currentPosition = -1;
         this.isOpen = true;
         this.everOpened = true;
-        this.closedByLoop = false;
-    }
-
-    /** True when a FOR loop ran this cursor to its end and nothing has opened or closed it since. */
-    public boolean wasEndedByLoop() {
-        return isOpen && closedByLoop;
     }
 
     /**
      * Leaves the cursor as the FOR loop that iterated it does when it ends: open, past its last row, so that a FETCH
-     * finds no row and a CLOSE closes it (live-verified). A FOR that names it again opens it afresh.
+     * finds no row, a FOR that names it again runs no iteration and a CLOSE closes it (live-verified).
      */
     public void endLoop() {
         if (resultSet != null) {
             this.currentPosition = resultSet.getRowCount();
         }
-        this.closedByLoop = true;
     }
 
     /** True once this cursor has been opened at least once, however it was later closed. */
@@ -118,7 +109,6 @@ public class Cursor {
             throw new RuntimeException("CURSOR " + name + " is not open");
         }
         this.isOpen = false;
-        this.closedByLoop = false;
         this.resultSet = null;
         this.currentPosition = -1;
     }

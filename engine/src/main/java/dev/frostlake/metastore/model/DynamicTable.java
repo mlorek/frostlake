@@ -21,7 +21,9 @@ import dev.frostlake.storage.SnapshotSequence;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents a Snowflake DYNAMIC TABLE — a table whose contents are automatically
@@ -40,6 +42,12 @@ public class DynamicTable extends SqlObject {
     private int dataRetentionDays;
     private boolean dataRetentionSet;
     private int maxDataExtensionDays;
+    private boolean maxDataExtensionSet;
+    /**
+     * The parameters the table set for itself beside its retention, by name, each as SHOW PARAMETERS lists it:
+     * LOG_LEVEL, TRACE_LEVEL, LOG_EVENT_LEVEL, DATA_METRIC_SCHEDULE, DEFAULT_DDL_COLLATION and the like.
+     */
+    private final Map<String, String> parameters = new LinkedHashMap<>();
     private State state;
     private Instant lastRefreshedTime;
     /** The first refresh, the start of the table's data history; see {@link #getFirstRefreshedSequence()}. */
@@ -105,7 +113,60 @@ public class DynamicTable extends SqlObject {
     /** Whether the table set its own DATA_RETENTION_TIME_IN_DAYS, rather than inheriting its schema's. */
     public boolean isDataRetentionSet() { return dataRetentionSet; }
     public int getMaxDataExtensionDays() { return maxDataExtensionDays; }
-    public void setMaxDataExtensionDays(final int days) { this.maxDataExtensionDays = days; }
+
+    /**
+     * Sets the table's own MAX_DATA_EXTENSION_TIME_IN_DAYS, which it then reports in place of what it inherits.
+     *
+     * @param days the extension
+     */
+    public void setMaxDataExtensionDays(final int days) {
+        this.maxDataExtensionDays = days;
+        this.maxDataExtensionSet = true;
+    }
+
+    /** Whether the table set its own MAX_DATA_EXTENSION_TIME_IN_DAYS. */
+    public boolean isMaxDataExtensionSet() { return maxDataExtensionSet; }
+
+    /** Takes the table's own DATA_RETENTION_TIME_IN_DAYS away: it inherits its schema's again. */
+    public void unsetDataRetentionDays() {
+        this.dataRetentionDays = 1;
+        this.dataRetentionSet = false;
+    }
+
+    /** Takes the table's own MAX_DATA_EXTENSION_TIME_IN_DAYS away: it inherits its schema's again. */
+    public void unsetMaxDataExtensionDays() {
+        this.maxDataExtensionDays = 14;
+        this.maxDataExtensionSet = false;
+    }
+
+    /**
+     * The table's own value of a parameter, or null when it inherits it.
+     *
+     * @param key the parameter's name
+     * @return the value as SHOW PARAMETERS lists it, or null
+     */
+    public String getParameter(final String key) {
+        return parameters.get(key);
+    }
+
+    /**
+     * Sets, or with null takes away, the table's own value of a parameter.
+     *
+     * @param key   the parameter's name
+     * @param value the value as SHOW PARAMETERS lists it, or null
+     */
+    public void setParameter(final String key, final String value) {
+        if (value == null) {
+            parameters.remove(key);
+        } else {
+            parameters.put(key, value);
+        }
+    }
+
+    /** The parameters the table set for itself, by name: a copy. */
+    public Map<String, String> getParameters() {
+        return new LinkedHashMap<>(parameters);
+    }
     public State getState() { return state; }
     public void setState(final State state) { this.state = state; }
     /** When the table last refreshed, which SHOW DYNAMIC TABLES reports as its data_timestamp; null before any. */
@@ -287,7 +348,8 @@ public class DynamicTable extends SqlObject {
 
     /**
      * A new dynamic table of another name with this one's definition and settings: its query, lag, warehouse,
-     * refresh and initialization modes, retention, clustering key, comment and the text it was created with.
+     * refresh and initialization modes, retention, parameters, clustering key, comment and the text it was created
+     * with.
      */
     public DynamicTable copyAs(final String newName) {
         final DynamicTable copy = new DynamicTable(newName, query, targetLag, warehouse);
@@ -296,6 +358,8 @@ public class DynamicTable extends SqlObject {
         copy.dataRetentionDays = dataRetentionDays;
         copy.dataRetentionSet = dataRetentionSet;
         copy.maxDataExtensionDays = maxDataExtensionDays;
+        copy.maxDataExtensionSet = maxDataExtensionSet;
+        copy.parameters.putAll(parameters);
         copy.clusterKeys.addAll(clusterKeys);
         copy.declaredColumns.addAll(declaredColumns);
         copy.resolvedColumns = resolvedColumns;

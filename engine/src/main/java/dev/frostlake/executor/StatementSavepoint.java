@@ -50,11 +50,11 @@ final class StatementSavepoint {
      */
     static StatementSavepoint begin(final QueryExecutor queryExecutor) {
         final TransactionManager transactions = queryExecutor.getTransactionManager();
-        if (!queryExecutor.isDeferredApply() || !transactions.isExplicitTransaction()) {
+        if (!queryExecutor.isDeferredApply() || !transactions.isLastingTransaction()) {
             return NONE;
         }
         final Transaction transaction = transactions.getCurrentTransaction();
-        return new StatementSavepoint(transactions, transaction, transaction.getWriteSet().beginStatementSavepoint());
+        return new StatementSavepoint(transactions, transaction, transaction.beginStatementSavepoint());
     }
 
     /**
@@ -70,7 +70,7 @@ final class StatementSavepoint {
         if (completed) {
             transaction.getWriteSet().endStatementSavepoint(savepoint);
         } else {
-            transaction.getWriteSet().rollbackToSavepoint(savepoint);
+            transaction.rollbackToSavepoint(savepoint);
         }
     }
 }

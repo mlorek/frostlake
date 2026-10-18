@@ -23,8 +23,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The documented properties of network rules, network policies, password policies, session policies and secrets,
- * and which secret types take which of them.
+ * The documented properties of network rules, network policies, password, session, authentication and packages
+ * policies and secrets, and which secret types take which of them.
  */
 public final class SecurityPropertySpecs {
 
@@ -48,6 +48,19 @@ public final class SecurityPropertySpecs {
     /** What DESCRIBE SESSION POLICY says of {@link #AGENT_RESTRICTED_SESSION_SCOPE}. */
     public static final String AGENT_RESTRICTED_SESSION_SCOPE_DESCRIPTION =
         "Name of a Restricted Session Scope applied to sessions attributed to an agent identity.";
+
+    /** The Restricted Session Scopes the account defines, which an agent scope may name. */
+    public static final List<String> PREDEFINED_SESSION_SCOPES = Collections.unmodifiableList(Arrays.asList(
+        "SNOWFLAKE$DATA_READ", "SNOWFLAKE$DATA_READ_PROGRAM_USAGE", "SNOWFLAKE$DATA_READ_WITH_AI"));
+
+    /** The authentication policy property naming the security integrations users may authenticate through. */
+    public static final String SECURITY_INTEGRATIONS = "SECURITY_INTEGRATIONS";
+
+    /** The packages policy property naming the packages a handler may use. */
+    public static final String ALLOWLIST = "ALLOWLIST";
+
+    /** The packages policy property naming the packages a handler may not use. */
+    public static final String BLOCKLIST = "BLOCKLIST";
 
     private static final Map<SecurityObjectKind, List<SecurityPropertySpec>> SPECS =
         new EnumMap<>(SecurityObjectKind.class);
@@ -120,7 +133,38 @@ public final class SecurityPropertySpecs {
             .describedAs("List of secondary roles blocked from activation in a user session.").alterable()
             .unsettable());
         add(sessionPolicy, comment());
+        add(sessionPolicy, new SecurityPropertySpec(AGENT_RESTRICTED_SESSION_SCOPE, SecurityPropertyType.SESSION_SCOPE)
+            .describedAs(AGENT_RESTRICTED_SESSION_SCOPE_DESCRIPTION).alterable().unsettable());
         SPECS.put(SecurityObjectKind.SESSION_POLICY, sessionPolicy);
+
+        final List<SecurityPropertySpec> authenticationPolicy = new ArrayList<>();
+        add(authenticationPolicy, new SecurityPropertySpec("AUTHENTICATION_METHODS", SecurityPropertyType.CHOICE_LIST)
+            .choices("ALL", "SAML", "OIDC", "PASSWORD", "OAUTH", "KEYPAIR", "PROGRAMMATIC_ACCESS_TOKEN",
+                "WORKLOAD_IDENTITY").defaults("[ALL]")
+            .describedAs("Authentication methods that are allowed for usage.").alterable().unsettable());
+        add(authenticationPolicy, new SecurityPropertySpec("CLIENT_TYPES", SecurityPropertyType.CHOICE_LIST)
+            .choices("ALL", "SNOWFLAKE_UI", "DRIVERS", "SNOWFLAKE_CLI", "SNOWSQL").defaults("[ALL]")
+            .describedAs("Client types that are allowed for access.").alterable().unsettable());
+        add(authenticationPolicy, new SecurityPropertySpec(SECURITY_INTEGRATIONS, SecurityPropertyType.TEXT_LIST)
+            .defaults("[ALL]").describedAs("Security integrations that are allowed for authentication.").alterable()
+            .unsettable());
+        add(authenticationPolicy, new SecurityPropertySpec("MFA_ENROLLMENT", SecurityPropertyType.CHOICE)
+            .choices("REQUIRED", "REQUIRED_PASSWORD_ONLY", "OPTIONAL").defaults("OPTIONAL").describedAs("""
+                When set to REQUIRED, force a user to enroll in MFA according to the MFA_AUTHENTICATION_METHODS. \
+                Allowed values are REQUIRED | OPTIONAL""").alterable().unsettable());
+        add(authenticationPolicy, new SecurityPropertySpec("COMMENT", SecurityPropertyType.TEXT)
+            .describedAs("Comment associated with authentication policy.").alterable().unsettable());
+        SPECS.put(SecurityObjectKind.AUTHENTICATION_POLICY, authenticationPolicy);
+
+        final List<SecurityPropertySpec> packagesPolicy = new ArrayList<>();
+        add(packagesPolicy, new SecurityPropertySpec(ALLOWLIST, SecurityPropertyType.TEXT_LIST).alterable()
+            .unsettable());
+        add(packagesPolicy, new SecurityPropertySpec(BLOCKLIST, SecurityPropertyType.TEXT_LIST).alterable()
+            .unsettable());
+        add(packagesPolicy, new SecurityPropertySpec("ADDITIONAL_CREATION_BLOCKLIST", SecurityPropertyType.TEXT_LIST)
+            .alterable().unsettable());
+        add(packagesPolicy, new SecurityPropertySpec("COMMENT", SecurityPropertyType.TEXT).alterable().unsettable());
+        SPECS.put(SecurityObjectKind.PACKAGES_POLICY, packagesPolicy);
 
         final List<SecurityPropertySpec> secret = new ArrayList<>();
         add(secret, new SecurityPropertySpec("TYPE", SecurityPropertyType.CHOICE)
@@ -172,19 +216,24 @@ public final class SecurityPropertySpecs {
     }
 
     /**
-     * The value a property holds when a CREATE leaves it out or an ALTER unsets it: a network rule's value list and
-     * a session policy's blocked roles are empty, its allowed roles are {@code ('ALL')}, and any other property holds
-     * none.
+     * The value a property holds when a CREATE leaves it out or an ALTER unsets it: a network rule's value list, a
+     * session policy's blocked roles and a packages policy's blocklist are empty, a session policy's allowed roles
+     * and an authentication policy's methods, client types and security integrations are {@code ('ALL')}, a
+     * packages policy's allowlist is {@code ('*')}, and any other property holds none.
      *
      * @param name the property's name
      * @return the value, a fresh list for a list property
      */
     public static Object unsetValue(final String name) {
-        if ("VALUE_LIST".equals(name) || BLOCKED_SECONDARY_ROLES.equals(name)) {
+        if ("VALUE_LIST".equals(name) || BLOCKED_SECONDARY_ROLES.equals(name) || BLOCKLIST.equals(name)) {
             return new ArrayList<String>();
         }
-        if (ALLOWED_SECONDARY_ROLES.equals(name)) {
+        if (ALLOWED_SECONDARY_ROLES.equals(name) || "AUTHENTICATION_METHODS".equals(name)
+                || "CLIENT_TYPES".equals(name) || SECURITY_INTEGRATIONS.equals(name)) {
             return new ArrayList<String>(Collections.singletonList("ALL"));
+        }
+        if (ALLOWLIST.equals(name)) {
+            return new ArrayList<String>(Collections.singletonList("*"));
         }
         return null;
     }

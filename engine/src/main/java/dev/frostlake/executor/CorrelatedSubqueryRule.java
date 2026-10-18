@@ -3220,6 +3220,11 @@ public final class CorrelatedSubqueryRule {
         for (final String column : named) {
             scope.addColumn(column);
         }
+        if (cte != null && judging) {
+            // A CTE's column computed from the outer row reads the outer row wherever it is named, as a derived
+            // table's does, its column list naming it or its query (live-verified).
+            markOperandColumns(scope, alias != null ? alias : lastPart, named, cte.selectStatement());
+        }
     }
 
     /**
@@ -3306,8 +3311,9 @@ public final class CorrelatedSubqueryRule {
 
     /**
      * A derived table's column names: its column list when it has one, else each item's alias or, for a bare
-     * column, the column's own name. False when the names cannot be read: a star, or a set operation. While a
-     * shape is judged, a column whose item reads the outer row is recorded with the outer columns it reads.
+     * column, the column's own name, a set operation's as its first operand names them. False when the names cannot
+     * be read: a star. While a shape is judged, a column whose item reads the outer row — in any operand of a set
+     * operation — is recorded with the outer columns it reads.
      */
     private boolean addDerivedColumns(final CorrelationScope scope, final FrostlakeParser.TableReferenceContext relation,
                                       final FrostlakeParser.SelectStatementContext derived) {
@@ -3317,17 +3323,22 @@ public final class CorrelatedSubqueryRule {
         final String alias = aliasOf(relation);
         if (relation.identifierList() != null) {
             final List<FrostlakeParser.IdentifierContext> names = relation.identifierList().identifier();
+            final List<String> named = new ArrayList<>();
             for (int i = 0; i < names.size(); i++) {
                 final String name = ParseTreeText.getIdentifier(names.get(i)).toUpperCase(Locale.ROOT);
+                named.add(name);
                 scope.addColumn(name);
                 if (bodyScopes != null && i < clause.selectList().selectItem().size()) {
                     markOuterDerived(scope, alias, name, clause.selectList().selectItem(i), bodyScopes);
                 }
             }
+            if (clause == null && judging && relation.LATERAL() == null) {
+                markOperandColumns(scope, alias, named, derived);
+            }
             return true;
         }
         if (clause == null) {
-            return false;
+            return addSetOperationColumns(scope, alias, derived, judging && relation.LATERAL() == null);
         }
         for (final FrostlakeParser.SelectItemContext item : clause.selectList().selectItem()) {
             if (!(item instanceof FrostlakeParser.ExprItemContext)) {
@@ -3357,6 +3368,64 @@ public final class CorrelatedSubqueryRule {
             }
         }
         return true;
+    }
+
+    /**
+     * A derived set operation's columns, as its first operand names them, each recorded as reading the outer row where
+     * the item at its place in any operand does: under MIN, MAX or COUNT of such a column the subquery is refused,
+     * under COUNT(*) answered (live-verified). False when the names cannot be read.
+     *
+     * @param marks whether a shape is being judged, so the columns reading the outer row are recorded
+     */
+    private boolean addSetOperationColumns(final CorrelationScope scope, final String alias,
+                                           final FrostlakeParser.SelectStatementContext derived, final boolean marks) {
+        final List<String> names = namesOfQuery(derived);
+        if (names == null) {
+            return false;
+        }
+        for (final String name : names) {
+            scope.addColumn(name);
+        }
+        if (marks) {
+            markOperandColumns(scope, alias, names, derived);
+        }
+        return true;
+    }
+
+    /**
+     * Record each of a query's columns, named by {@code names} in order, as reading the outer row where the item at its
+     * place in any operand of the query does.
+     */
+    private void markOperandColumns(final CorrelationScope scope, final String qualifier, final List<String> names,
+                                    final FrostlakeParser.SelectStatementContext query) {
+        final List<FrostlakeParser.SelectClauseContext> operands = new ArrayList<>();
+        final List<FrostlakeParser.SelectStatementContext> chain = statementChain(query);
+        collectOperandClauses(SetOperationTree.of(chain.get(chain.size() - 1)), operands);
+        for (final FrostlakeParser.SelectClauseContext operand : operands) {
+            for (int i = 0; i < names.size() && i < operand.selectList().selectItem().size(); i++) {
+                markOuterDerived(scope, qualifier, names.get(i), operand.selectList().selectItem(i),
+                    scopeOfAlone(operand));
+            }
+        }
+    }
+
+    /** Every select clause a set operation's operands are, nested operations opened. */
+    private static void collectOperandClauses(final SetOperationTree node,
+                                              final List<FrostlakeParser.SelectClauseContext> into) {
+        if (!node.isLeaf()) {
+            collectOperandClauses(node.left(), into);
+            collectOperandClauses(node.right(), into);
+            return;
+        }
+        final FrostlakeParser.SelectOperandContext operand = node.operand();
+        if (operand.selectClause() != null) {
+            into.add(operand.selectClause());
+            return;
+        }
+        if (operand.selectStatement() != null) {
+            final List<FrostlakeParser.SelectStatementContext> chain = statementChain(operand.selectStatement());
+            collectOperandClauses(SetOperationTree.of(chain.get(chain.size() - 1)), into);
+        }
     }
 
     /** Record a derived column whose item reads the outer row, with the outer columns it reads. */

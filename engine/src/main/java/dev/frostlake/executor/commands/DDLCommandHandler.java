@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ClonePoint;
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.DynamicTableRefreshOutcome;
 import dev.frostlake.executor.ExpressionColumns;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
@@ -372,11 +373,15 @@ public class DDLCommandHandler implements CommandHandler {
             refuseTakenName(ctx.or_replace() == null && !ifNotExists, schema.hasStreamExact(streamName),
                 qualifiedNameParts(ctx.qualifiedName(0)));
             checkCreatePrivilege(Privilege.CREATE_STREAM, schema);
-            final Stream clone = new Stream(streamName, source.getSourceTableName(), source.getSourceType(),
-                source.getStreamType(), source.isShowInitialRows());
-            // The clone reads the same table as its source, recorded as read from where the clone lives.
+            // The clone reads the same table as its source, recorded as read from where the clone lives; a table
+            // stream whose table is gone, or that a clone made lost, has none to give it (live-verified).
             final Schema sourceHome = StreamSources.homeOf(catalog, source);
             final Table sourceTable = StreamSources.sourceOf(catalog, sourceHome, source);
+            if (source.getSourceType() == StreamSourceType.TABLE && sourceTable == null) {
+                throw new RuntimeException("SQL compilation error: \n Table must be present to create/clone stream");
+            }
+            final Stream clone = new Stream(streamName, source.getSourceTableName(), source.getSourceType(),
+                source.getStreamType(), source.isShowInitialRows());
             if (sourceTable != null) {
                 clone.setSourceTableName(StreamSources.spelled(schema, StreamSources.holderOf(catalog, sourceTable),
                     sourceTable.getName()));
@@ -1001,10 +1006,9 @@ public class DDLCommandHandler implements CommandHandler {
             mv.setSecure(action.SET() != null);
         } else if (!action.viewSetItem().isEmpty()) {
             // Judged before the view was looked for; of a COMMENT written twice the last one stands (live-verified).
-            final String comment = AlteredViewProperties.judgeSet(action.viewSetItem(), true, mv.getName(),
-                getOriginalText(ctx));
-            if (comment != null) {
-                mv.setComment(comment);
+            AlteredViewProperties.judgeSet(action.viewSetItem(), true, mv.getName(), getOriginalText(ctx));
+            if (AlteredViewProperties.setsComment(action.viewSetItem())) {
+                mv.setComment(AlteredViewProperties.commentOf(action.viewSetItem()));
                 logger.trace("Set comment on materialized view: {}", qualifiedName);
             }
         } else if (!action.optionKey().isEmpty()) {
@@ -1281,9 +1285,10 @@ public class DDLCommandHandler implements CommandHandler {
             logger.trace("Resumed dynamic table: {}", qn);
         } else if (action.REFRESH() != null) {
             // What the refresh holds is what a listing counts from now on, and what the next refresh compares.
-            final long[] changed = queryExecutor.refreshDynamicTableNow(schema, dt);
+            final DynamicTableRefreshOutcome outcome = queryExecutor.refreshDynamicTableManually(schema, dt);
+            final long[] changed = outcome.getChanged();
             logger.trace("Refreshed dynamic table: {}", qn);
-            return refreshResult(schema.qualifiedName(dt.getName()), changed);
+            return refreshResult(schema.qualifiedName(dt.getName()), changed, outcome.getRefreshedCount());
         } else if (action.SET() != null) {
             for (final FrostlakeParser.DynamicTableSettingContext setting : action.dynamicTableSetting()) {
                 applyDynamicTableSetting(dt, setting);
@@ -1298,9 +1303,10 @@ public class DDLCommandHandler implements CommandHandler {
 
     /**
      * What ALTER DYNAMIC TABLE … REFRESH answers: the table, what the refresh changed — {@code No new data}, or
-     * the rows it inserted, copied and deleted — whether it changed anything, and the moment its data is as of.
+     * the rows it inserted, copied and deleted — how many dynamic tables it refreshed, and the moment its data is as
+     * of.
      */
-    private static ResultSet refreshResult(final String name, final long[] changed) {
+    private static ResultSet refreshResult(final String name, final long[] changed, final int refreshedCount) {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("dt_name", StringType.VARCHAR),
             new ResultSetColumn("statistics", StringType.VARCHAR),
@@ -1309,7 +1315,7 @@ public class DDLCommandHandler implements CommandHandler {
         final String statistics = changed == null ? "No new data" : "{\"insertedRows\":" + changed[0]
             + ",\"copiedRows\":" + changed[1] + ",\"deletedRows\":" + changed[2] + "}";
         final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.<Object>asList(name, statistics, changed == null ? 0L : 1L,
+        rows.add(new Row(Arrays.<Object>asList(name, statistics, Long.valueOf(refreshedCount),
             ShowResultHelpers.createdOn(StatementClock.instant()))));
         return new ResultSet(columns, rows);
     }
@@ -1355,9 +1361,8 @@ public class DDLCommandHandler implements CommandHandler {
         } else if ("DATA_RETENTION_TIME_IN_DAYS".equals(name) && setting.INTEGER_LITERAL() != null
                 && setting.MINUS() == null) {
             dt.setDataRetentionDays(Integer.parseInt(setting.INTEGER_LITERAL().getText()));
-        } else if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equals(name) && setting.INTEGER_LITERAL() != null
-                && setting.MINUS() == null) {
-            dt.setMaxDataExtensionDays(Integer.parseInt(setting.INTEGER_LITERAL().getText()));
+        } else if (DynamicTableParameters.takes(name)) {
+            DynamicTableParameters.set(dt, name, setting);
         } else {
             final String written = setting.getText().substring(setting.dynamicTableProperty().getText().length() + 1);
             throw new RuntimeException(SqlCompilationError.of(
@@ -1366,7 +1371,7 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     /**
-     * UNSET on a dynamic table: the comment and the two retention settings go back to their defaults, a
+     * UNSET on a dynamic table: the comment, the retention and the parameters it set go back to what it inherits, a
      * target lag cannot be left without a value, and the warehouse cannot be unset at all (live-verified).
      */
     private void unsetDynamicTableProperty(final DynamicTable dt, final String dtName,
@@ -1381,6 +1386,10 @@ public class DDLCommandHandler implements CommandHandler {
         }
         if ("COMMENT".equals(name)) {
             dt.setComment(null);
+        } else if ("DATA_RETENTION_TIME_IN_DAYS".equals(name)) {
+            dt.unsetDataRetentionDays();
+        } else if (DynamicTableParameters.takes(name)) {
+            DynamicTableParameters.unset(dt, name);
         }
     }
 
@@ -1615,17 +1624,18 @@ public class DDLCommandHandler implements CommandHandler {
         // Every name is matched EXACTLY, as SQL matches a live object: a schema created as "s1" and one created as S1
         // are two (live-verified), and an object dropped from one comes back into that one or nowhere. The container is
         // resolved before the dropped version is taken, and a version the UNDROP cannot put back stays for a later one.
-        if (ctx.SESSION() != null) {
-            // No dropped session policy is kept: a name a policy holds is taken, and any other is refused as the kind
-            // no UNDROP restores (live-verified).
+        if (ctx.SESSION() != null || ctx.AUTHENTICATION() != null || ctx.PACKAGES() != null) {
+            // No dropped session, authentication or packages policy is kept: a name a policy holds is taken, and any
+            // other is refused as the kind no UNDROP restores (live-verified).
             final String[] parts = qualifiedNameParts(ctx.qualifiedName());
             final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
             if (owner.policyKindHolding(parts[parts.length - 1]) != null) {
                 throw new RuntimeException(SqlCompilationError.of("Object '"
                     + SqlIdentifiers.spellAlreadyCanonicalPath(String.join(".", parts)) + "' already exists."));
             }
-            throw new RuntimeException(
-                "Unsupported feature 'UNDROP not supported for objects of type SESSION_POLICY'.");
+            throw new RuntimeException("Unsupported feature 'UNDROP not supported for objects of type "
+                + (ctx.SESSION() != null ? "SESSION" : ctx.AUTHENTICATION() != null ? "AUTHENTICATION" : "PACKAGES")
+                + "_POLICY'.");
         }
         if (ctx.DYNAMIC() != null) {
             final String name = getText(ctx.qualifiedName());
@@ -1678,9 +1688,12 @@ public class DDLCommandHandler implements CommandHandler {
             }
             // A version another session's transaction wrote after the drop comes back with what it committed there.
             final String setAside = dropped.getStorageSetAside();
+            final String kept = dropped.keptStorageOf(fqName);
             if (setAside != null && queryExecutor.getStorageEngine().restoreRetired(setAside, fqName)) {
                 queryExecutor.getTransactionManager().tablesMoved(Collections.singletonMap(setAside, fqName));
-            } else {
+            } else if (kept == null || !queryExecutor.getStorageEngine().restoreRetired(kept, fqName)) {
+                // The storage that waited with the version comes back, its time-travel history with it; a version
+                // that kept only its rows is filled with them.
                 queryExecutor.getStorageEngine().createTable(fqName, table);
                 refill(queryExecutor.getStorageEngine().getTableStorage(fqName), table, dropped.getRows());
             }
@@ -1787,9 +1800,10 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     /**
-     * Re-create the storage of every table in an UNDROPped schema/database and refill it from the rows
-     * snapshotted at drop time (the drop releases storage so the names can be reused). A table whose storage
-     * already exists is left alone — the name was re-created after the drop and owns it now.
+     * Bring back the storage of every table in an UNDROPped schema/database that waited with the version, its
+     * time-travel history with it, or re-create it and refill it from the rows snapshotted at drop time (the drop
+     * releases storage from the names so they can be reused). A table whose storage already exists is left alone —
+     * the name was re-created after the drop and owns it now.
      */
     private void restoreTableStorage(final String databaseName, final List<Schema> schemas,
                                      final DroppedObject dropped) {
@@ -1802,6 +1816,11 @@ public class DDLCommandHandler implements CommandHandler {
             for (final Table table : schema.getTables()) {
                 final String fqn = QualifiedName.key(databaseName, schema.getName(), table.getName());
                 if (storage.hasTable(fqn)) {
+                    continue;
+                }
+                // Each table's storage that waited with the version comes back, its time-travel history with it.
+                final String kept = dropped.keptStorageOf(fqn);
+                if (kept != null && storage.restoreRetired(kept, fqn)) {
                     continue;
                 }
                 storage.createTable(fqn, table);
@@ -1920,8 +1939,11 @@ public class DDLCommandHandler implements CommandHandler {
         final String dbName = catalog.getCurrentDatabase();
         final String schemaName = catalog.getCurrentSchema();
 
-        if (dbName == null || schemaName == null) {
+        if (dbName == null) {
             throw NoCurrentDatabaseRefusal.forStatement();
+        }
+        if (schemaName == null) {
+            throw NoCurrentDatabaseRefusal.schemaForStatement();
         }
 
         return catalog.getDatabase(dbName).getSchema(schemaName);
@@ -1936,8 +1958,11 @@ public class DDLCommandHandler implements CommandHandler {
         if (parts.length == 1) {
             final String dbName = catalog.getCurrentDatabase();
             final String schemaName = catalog.getCurrentSchema();
-            if (dbName == null || schemaName == null) {
+            if (dbName == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
+            }
+            if (schemaName == null) {
+                throw NoCurrentDatabaseRefusal.withoutSchema("Table", parts[0]);
             }
             return QualifiedName.key(dbName, schemaName, parts[0]);
         } else if (parts.length == 2) {
@@ -2000,17 +2025,19 @@ public class DDLCommandHandler implements CommandHandler {
         for (final Table table : tgt.getTables()) {
             final String srcKey = QualifiedName.key(sourceDb, sourceSchema, table.getName());
             final String tgtKey = QualifiedName.key(targetDb, targetSchema, table.getName());
-            // The clone copies the permanent table a temporary one hides, not the temporary table.
+            // The clone copies the permanent table a temporary one hides, not the temporary table: neither one the
+            // engine set beneath its own temporary table nor one the cloning session's temporary table hides, whose
+            // rows the session's own lookups would reach first.
             final Table hidden = src.shadowedTable(table.getName());
             final boolean readsHidden = hidden != null && storage.hasShadowedTable(srcKey);
             final TableStorage source = readsHidden ? storage.getShadowedTableStorage(srcKey)
-                : storage.hasTable(srcKey) ? storage.getTableStorage(srcKey) : null;
+                : storage.getSharedTableStorage(srcKey);
             if (point != null && source != null && QueryExecutor.createdAfter(source, point)) {
                 tgt.dropTable(table.getName());
                 continue;
             }
             final Table sourceTable = point == null || source == null ? null
-                : readsHidden ? hidden : src.getTable(table.getName());
+                : readsHidden ? hidden : src.heldTable(table.getName());
             final TableVersion version = sourceTable == null ? null
                 : queryExecutor.versionAtClonePoint(sourceTable, source, point);
             if (version != null && version.reshapes(sourceTable)) {

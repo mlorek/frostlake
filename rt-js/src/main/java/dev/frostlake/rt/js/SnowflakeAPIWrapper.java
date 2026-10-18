@@ -33,6 +33,8 @@ import java.util.Map;
 public class SnowflakeAPIWrapper {
 
     private static final String EMPTY_ARGUMENT = "empty argument passed";
+    /** The sentence a {@code binds} that is no array is refused with (live-verified). */
+    private static final String INVALID_BINDS = "Invalid binds argument";
 
     private final DatabaseEngine engine;
     private final String body;
@@ -55,6 +57,10 @@ public class SnowflakeAPIWrapper {
      */
     @HostAccess.Export
     public Object execute(final Object options) {
+        final String misused = misusedTextType(options);
+        if (misused != null) {
+            return failures.misuse(invalidType(misused));
+        }
         final String sqlText = sqlTextOf(options);
         if (sqlText == null) {
             return failures.misuse(EMPTY_ARGUMENT);
@@ -76,6 +82,10 @@ public class SnowflakeAPIWrapper {
      */
     @HostAccess.Export
     public Object createStatement(final Object options) {
+        final String misused = misusedTextType(options);
+        if (misused != null) {
+            return failures.misuse(invalidType(misused));
+        }
         final String sqlText = sqlTextOf(options);
         if (sqlText == null) {
             return failures.misuse(EMPTY_ARGUMENT);
@@ -84,6 +94,8 @@ public class SnowflakeAPIWrapper {
         final Object bindsObj = ((Map<?, ?>) options).get("binds");
         if (bindsObj instanceof List) {
             binds.addAll((List<?>) bindsObj);
+        } else if (bindsObj != null) {
+            return failures.misuse(INVALID_BINDS);
         }
         return new SnowflakeStatement(engine, sqlText, binds, failures);
     }
@@ -123,6 +135,29 @@ public class SnowflakeAPIWrapper {
     /** What the statement that failed with a sentence failed with, the last such; null when none did. */
     Throwable causeOf(final String message) {
         return failures.causeOf(message);
+    }
+
+    /**
+     * The JavaScript type of a {@code sqlText} that is no text, which the account names in its refusal
+     * ({@code Argument with invalid type number passed}, for a boolean, an object and an array alike;
+     * live-verified), or null for a text or none.
+     */
+    private static String misusedTextType(final Object options) {
+        if (!(options instanceof Map)) {
+            return null;
+        }
+        final Object text = ((Map<?, ?>) options).get("sqlText");
+        if (text == null || text instanceof String) {
+            return null;
+        }
+        if (text instanceof Number) {
+            return "number";
+        }
+        return text instanceof Boolean ? "boolean" : "object";
+    }
+
+    private static String invalidType(final String type) {
+        return "Argument with invalid type " + type + " passed";
     }
 
     private static String sqlTextOf(final Object options) {

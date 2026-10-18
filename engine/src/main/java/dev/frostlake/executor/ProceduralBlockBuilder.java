@@ -292,7 +292,8 @@ public class ProceduralBlockBuilder {
         // All other procedural statements: execute as raw SQL via the visitor
         final String rawSql = visitor.getOriginalText(ctx);
         if (rawSql != null && !rawSql.isBlank()) {
-            return new SqlStatement(rawSql, ctx.selectIntoStatement() != null);
+            return ctx.beginEndBlock() != null ? SqlStatement.ofNestedBlock(rawSql)
+                : new SqlStatement(rawSql, ctx.selectIntoStatement() != null);
         }
 
         return null;
@@ -384,15 +385,25 @@ public class ProceduralBlockBuilder {
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final ForStatement stmt;
         if (ctx.TO() != null) {
-            // FOR i IN [REVERSE] start TO end DO … — integer range.
-            final BaseExpression start = visitor.buildExpression(ctx.expression(0));
-            final BaseExpression end = visitor.buildExpression(ctx.expression(1));
+            // FOR i IN [REVERSE] start TO end DO … — integer range. Each bound is judged as it is reached, and its
+            // fault placed where the bound is written, at its first parenthesis when it has one (live-verified).
+            final BaseExpression start = bound(ctx.expression(0));
+            final BaseExpression end = bound(ctx.expression(1));
             stmt = new ForStatement(varName, start, end, ctx.REVERSE() != null, block);
         } else {
             stmt = new ForStatement(varName, visitor.buildExpression(ctx.expression(0)), block);
         }
         applyTrailingLabel(stmt, ctx.loopLabel());
         return stmt;
+    }
+
+    /** A range FOR's bound: judged when it is reached, and placed at its first token. */
+    private BaseExpression bound(final FrostlakeParser.ExpressionContext written) {
+        final BaseExpression built = judged(visitor.buildExpression(written), written);
+        if (built != null) {
+            built.setSourcePosition(written.getStart().getLine(), written.getStart().getCharPositionInLine());
+        }
+        return built;
     }
 
     Statement buildRepeatStatement(final FrostlakeParser.RepeatStatementContext ctx) {

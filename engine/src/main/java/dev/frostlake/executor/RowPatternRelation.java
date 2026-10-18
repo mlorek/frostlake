@@ -192,8 +192,13 @@ final class RowPatternRelation {
                 withMatched(cteResults, new ResultSet(matchedColumns, new ArrayList<Row>())), clause).shape.getColumns();
             for (int i = 0; i < measures.size(); i++) {
                 final ResultSetColumn column = typed.get(i + 1);
-                measureColumns.add(new ResultSetColumn(ParseTreeText.getIdentifier(measures.get(i).aliasName()),
-                    column.getDataType(), null, column.getStaticType(), true));
+                final ResultSetColumn measure = new ResultSetColumn(
+                    ParseTreeText.getIdentifier(measures.get(i).aliasName()), column.getDataType(), null,
+                    column.getStaticType(), true);
+                // A measure hands out what it reads, under the projection policy that comes with it (live-verified:
+                // FIRST(ssn) is refused by its alias, COUNT(*) is not).
+                measureColumns.add(column.getProjectionPolicyName() == null ? measure
+                    : measure.withProjectionPolicy(column.getProjectionPolicyName()));
             }
         }
 
@@ -225,8 +230,10 @@ final class RowPatternRelation {
             final List<FrostlakeParser.IdentifierContext> renamed = reference.pivotAlias().identifierList().identifier();
             for (int i = 0; i < renamed.size() && i < columns.size(); i++) {
                 final ResultSetColumn column = columns.get(i);
-                columns.set(i, new ResultSetColumn(ParseTreeText.getIdentifier(renamed.get(i)), column.getDataType(),
-                    null, column.getStaticType(), true));
+                final ResultSetColumn named = new ResultSetColumn(ParseTreeText.getIdentifier(renamed.get(i)),
+                    column.getDataType(), null, column.getStaticType(), true);
+                columns.set(i, column.getProjectionPolicyName() == null ? named
+                    : named.withProjectionPolicy(column.getProjectionPolicyName()));
             }
         }
         final Table relation = executor.resultSetToTable(new ResultSet(columns, new ArrayList<Row>()),

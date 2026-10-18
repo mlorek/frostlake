@@ -207,15 +207,29 @@ public class DataFrame {
 
     /**
      * The rows, as Snowpark's {@link Row} rather than the engine's own — a handler calls
-     * {@code rows[0].getString(0)}, which the engine's row has no method for.
+     * {@code rows[0].getString(0)}, which the engine's row has no method for. A column that is a NUMBER of no
+     * scale is read as Longs, as the driver under Snowpark reads it.
      */
     public Row[] collect() {
-        final List<dev.frostlake.storage.Row> source = run().getRows();
+        final ResultSet result = run();
+        final List<ResultSetColumn> columns = result.getColumns();
+        final boolean[] whole = new boolean[columns == null ? 0 : columns.size()];
+        for (int i = 0; i < whole.length; i++) {
+            whole[i] = isWholeNumber(columns.get(i));
+        }
+        final List<dev.frostlake.storage.Row> source = result.getRows();
         final Row[] out = new Row[source.size()];
         for (int i = 0; i < source.size(); i++) {
-            out[i] = Row.ofEngineCells(source.get(i).getValues());
+            out[i] = Row.ofEngineCells(source.get(i).getValues(), whole);
         }
         return out;
+    }
+
+    /** Whether a column is a NUMBER of no scale, which Snowpark reads as a Long. */
+    private static boolean isWholeNumber(final ResultSetColumn column) {
+        final dev.frostlake.types.DataType type =
+            column.getStaticType() != null ? column.getStaticType() : column.getDataType();
+        return type instanceof NumericType && !NumericType.isApproximate(type) && ((NumericType) type).getScale() == 0;
     }
 
     /** The column names and types, as Snowpark describes them. */

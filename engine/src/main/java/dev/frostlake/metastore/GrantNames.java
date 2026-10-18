@@ -115,6 +115,29 @@ public final class GrantNames {
     }
 
     /**
+     * The schema WITH MANAGED ACCESS an object lives in, whose owner alone among object owners decides the grants on
+     * it: null for a kind no schema holds, an object in a schema without managed access, or a name that resolves to
+     * nothing.
+     *
+     * @param catalog    the catalog, for the session's context
+     * @param objectType the object's kind, as grants record it
+     * @param name       the object's name as written or recorded, a routine's with its argument types or without
+     * @return the managed schema, or null
+     */
+    public static Schema managedSchema(final Catalog catalog, final String objectType, final String name) {
+        if (objectType == null || name == null || !SCHEMA_LEVEL.contains(kindOf(objectType))) {
+            return null;
+        }
+        final int signature = signatureStart(name);
+        try {
+            final Schema schema = catalog.resolveOwningSchema(signature < 0 ? name : name.substring(0, signature));
+            return schema != null && schema.isManagedAccess() ? schema : null;
+        } catch (final RuntimeException unresolvable) {
+            return null;
+        }
+    }
+
+    /**
      * A recorded name as SHOW GRANTS spells it: each part quoted where it has to be, {@code DB.S."t"} for a table
      * created as {@code "t"}, and a routine's signature kept as it is after its name, {@code DB.S."a"()}
      * (live-verified).

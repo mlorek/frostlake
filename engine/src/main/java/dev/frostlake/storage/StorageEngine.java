@@ -36,8 +36,13 @@ public class StorageEngine {
      */
     private final Map<String, TableStorage> shadowed;
 
-    /** Dropped or replaced tables' storage set aside for the open transactions that wrote them (see retireTable). */
+    /**
+     * Dropped or replaced tables' storage set aside for the open transactions that wrote them (see retireTable), and
+     * dropped tables' storage waiting for an UNDROP (see keepDropped).
+     */
     private final Map<String, TableStorage> retired = new ConcurrentHashMap<>();
+    /** Numbers the keys a dropped table's storage waits under (see keepDropped). */
+    private final AtomicLong droppedKeys = new AtomicLong();
 
     /**
      * The rows of each session's own temporary tables, by session and then by key (see Table.isSessionTemporary):
@@ -259,6 +264,57 @@ public class StorageEngine {
     }
 
     /**
+     * Keeps a dropped table's storage, and the time-travel history it holds, under a key no live table has, for the
+     * UNDROP that brings it back ({@link #restoreRetired}); the dropped version's purge lets it go
+     * ({@link #discardRetired}). A session's own temporary table is dropped outright.
+     *
+     * @param qualifiedName the table's storage name
+     * @return the key it is kept under, or null when it was dropped outright
+     */
+    public String keepDropped(final String qualifiedName) {
+        if (isOwnSessionTable(qualifiedName) || !tables.containsKey(qualifiedName)) {
+            dropTable(qualifiedName);
+            return null;
+        }
+        final String key = qualifiedName + "#DROPPED_" + droppedKeys.incrementAndGet();
+        retireTable(qualifiedName, key);
+        return key;
+    }
+
+    /**
+     * Storage for a dropped table a snapshot of the engine's state restored, kept as {@link #keepDropped} keeps a
+     * dropped table's, to be filled with the rows and the history the snapshot saved.
+     *
+     * @param qualifiedName the table's storage name
+     * @param tableMetadata the dropped table
+     * @return the key it is kept under, which {@link #retiredStorage} reads
+     */
+    public String keepRestored(final String qualifiedName, final Table tableMetadata) {
+        final String key = qualifiedName + "#DROPPED_" + droppedKeys.incrementAndGet();
+        retired.put(key, new TableStorage(this, tableMetadata));
+        return key;
+    }
+
+    /**
+     * A dropped or set-aside table's storage by the key it waits under.
+     *
+     * @param key the key
+     * @return the storage, or null when none waits under it
+     */
+    public TableStorage retiredStorage(final String key) {
+        return retired.get(key);
+    }
+
+    /**
+     * Lets a dropped table's kept storage go: its version was purged, so no UNDROP brings it back.
+     *
+     * @param key the key it was kept under
+     */
+    public void discardRetired(final String key) {
+        retired.remove(key);
+    }
+
+    /**
      * Brings a set-aside table's storage back under its name, as an UNDROP does, with what the transactions that
      * wrote it committed meanwhile.
      *
@@ -427,6 +483,17 @@ public class StorageEngine {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Table storage", qualifiedName));
         }
         return storage;
+    }
+
+    /**
+     * A table's rows as every session shares them: the permanent or transient table under the key, never a session's
+     * own temporary table of its name, which {@link #getTableStorage} reaches first. What a clone copies.
+     *
+     * @param qualifiedName the table's key
+     * @return the rows, or null when no shared table holds the key
+     */
+    public TableStorage getSharedTableStorage(final String qualifiedName) {
+        return tables.get(qualifiedName);
     }
 
     public void truncateTable(final String qualifiedName) {

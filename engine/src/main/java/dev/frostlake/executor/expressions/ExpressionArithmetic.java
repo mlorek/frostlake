@@ -145,6 +145,13 @@ public final class ExpressionArithmetic {
         if (left instanceof CharSequence && right instanceof CharSequence) {
             return new Number[] {Double.valueOf(leftNumber.doubleValue()), Double.valueOf(rightNumber.doubleValue())};
         }
+        final Object text = left instanceof CharSequence ? left : right;
+        final Number number = text == left ? rightNumber : leftNumber;
+        final Number spelled = text == left ? leftNumber : rightNumber;
+        if (!ApproximateValues.isApproximate(number) && spelled instanceof BigDecimal) {
+            // Beside an exact number the text converts to one (see NumericRangeRefusal.fixedTextRefusal).
+            requireFixedText(text, (BigDecimal) spelled);
+        }
         return new Number[] {leftNumber, rightNumber};
     }
 
@@ -1281,8 +1288,11 @@ public final class ExpressionArithmetic {
         if (text == null) {
             return null;
         }
+        final BigDecimal leftValue;
+        final BigDecimal rightValue;
         try {
-            return new BigDecimal(left.toString().trim()).compareTo(new BigDecimal(right.toString().trim()));
+            leftValue = new BigDecimal(left.toString().trim());
+            rightValue = new BigDecimal(right.toString().trim());
         } catch (final NumberFormatException notANumericString) {
             // Against a FLOAT the text converts to FLOAT, where a hexadecimal number reads too.
             final Object number = text == right ? left : right;
@@ -1297,6 +1307,24 @@ public final class ExpressionArithmetic {
                     : ApproximateValues.compare(asFloat.doubleValue(), ((Number) right).doubleValue());
             }
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
+        }
+        if (!ApproximateValues.isApproximate(text == right ? left : right)) {
+            // Beside an exact number the text converts to one (see NumericRangeRefusal.fixedTextRefusal).
+            requireFixedText(text, text == right ? rightValue : leftValue);
+        }
+        return leftValue.compareTo(rightValue);
+    }
+
+    /**
+     * Refuse a text that converts to no NUMBER where it stands beside one.
+     *
+     * @param text  the text as written
+     * @param value the value it spells
+     */
+    private static void requireFixedText(final Object text, final BigDecimal value) {
+        final String refusal = NumericRangeRefusal.fixedTextRefusal(text.toString().trim(), value);
+        if (refusal != null) {
+            throw new RuntimeException(refusal);
         }
     }
 

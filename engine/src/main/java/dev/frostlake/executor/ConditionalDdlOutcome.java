@@ -47,6 +47,11 @@ public final class ConditionalDdlOutcome {
         TAKEN.set(ConditionalDdlBranch.ALTER_SKIPPED);
     }
 
+    /** Record that CREATE TEMPORARY FUNCTION created a handler function without judging its handler. */
+    public static void createdUnvalidated() {
+        TAKEN.set(ConditionalDdlBranch.CREATED_UNVALIDATED);
+    }
+
     /** Record that DROP … IF EXISTS found nothing to drop. */
     public static void dropSkipped() {
         TAKEN.set(ConditionalDdlBranch.DROP_SKIPPED);

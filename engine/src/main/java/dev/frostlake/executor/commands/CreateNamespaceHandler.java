@@ -29,6 +29,7 @@ import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.ContainerType;
@@ -399,6 +400,8 @@ public class CreateNamespaceHandler implements CommandHandler {
                     catalog.databaseExact(targetDbName).dropSchema(schema.getName(), true);
                     throw refused;
                 }
+                StreamSources.carryClonedStates(catalog,
+                    catalog.databaseExact(sourceDbName).schemaExact(sourceSchema), schema);
                 // The clone's members are granted what the source's are; the clone itself nothing (GrantNames).
                 GrantNames.created(catalog, "SCHEMA", QualifiedName.join(schema.getDatabaseName(), schema.getName()));
                 GrantNames.containerCloned(catalog, new String[] {sourceDbName, sourceSchema},

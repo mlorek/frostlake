@@ -21,6 +21,7 @@ import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.parser.UnknownTypeReading;
 import dev.frostlake.parser.UnknownTypeWord;
+import dev.frostlake.parser.UnknownTypeWords;
 
 import java.util.Collections;
 import java.util.Map;
@@ -32,8 +33,9 @@ import org.antlr.v4.runtime.tree.ParseTree;
 /**
  * A task's body is stored as written and judged when the task runs, so a word in it that names no type refuses nothing
  * at CREATE TASK (live-verified: {@code CREATE TASK tk … AS CREATE TABLE t9 (x NOSUCHTYPE)} is created, and GET_DDL
- * tells the body as written). Such a statement is read with each word replaced by a known type of the word's own
- * length, and the body is then cut from the statement as written.
+ * tells the body as written; so is a block, {@code AS BEGIN LET v NOSUCHTYPE := 1; END}). Such a statement is read
+ * with each word replaced by a known type of the word's own length, and the body is then cut from the statement as
+ * written.
  */
 public final class TaskBodyTypeWords {
 
@@ -55,7 +57,11 @@ public final class TaskBodyTypeWords {
         if (!(refused instanceof SqlSyntaxException)) {
             return null;
         }
-        final UnknownTypeReading reading = ((SqlSyntaxException) refused).getUnknownTypes();
+        UnknownTypeReading reading = ((SqlSyntaxException) refused).getUnknownTypes();
+        if ((reading == null || reading.getWords().isEmpty()) && sql != null) {
+            // A body that is a block faults at its END, past the word: the words are found by their places.
+            reading = UnknownTypeWords.readTaskBlock(sql);
+        }
         if (reading == null || reading.getWords().isEmpty() || sql == null
                 || reading.getSubstituted().length() != sql.length()) {
             return null;

@@ -557,6 +557,12 @@ public class GetDdl extends BuiltInFunction {
                 return ObjectDdl.sessionPolicy(policy, names.object(owner, name));
             }
         }
+        for (final SecurityObject policy
+                : owner.getSecurityObjects().list(SecurityObjectKind.AUTHENTICATION_POLICY)) {
+            if (named(policy.getName(), name)) {
+                return ObjectDdl.authenticationPolicy(policy, names.object(owner, name));
+            }
+        }
         throw missing(parts, owner, "Policy", true);
     }
 
@@ -605,32 +611,40 @@ public class GetDdl extends BuiltInFunction {
         }
         // Every key and check follows the columns as a TABLE-level line, however it was written: the unique keys
         // — a column's own first, then the table-level ones as declared — the checks, the primary key, and the
-        // foreign keys, a column's own first. A name of the constraint's own is spelled and a generated one is
-        // not, and RELY ends the line with a space after it (live-verified).
+        // foreign keys, a column's own first. A key an ALTER TABLE added comes after those the CREATE TABLE
+        // declared, in the order the keys were created. A name of the constraint's own is spelled and a generated
+        // one is not, and RELY ends the line with a space after it (live-verified).
+        final List<String> keyNames = new ArrayList<String>();
+        final List<String> keyLines = new ArrayList<String>();
         final List<UniqueConstraint> declared = table.getDeclaredUniqueConstraints();
         for (final UniqueConstraint unique : table.getUniqueConstraints()) {
             if (!declaredAs(declared, unique)) {
-                lines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames()) + ")",
-                    Boolean.TRUE.equals(unique.getRely())));
+                keyNames.add(unique.getConstraintName());
+                keyLines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames())
+                    + ")", Boolean.TRUE.equals(unique.getRely())));
             }
         }
         for (final UniqueConstraint unique : table.getUniqueConstraints()) {
             if (declaredAs(declared, unique)) {
-                lines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames()) + ")",
-                    Boolean.TRUE.equals(unique.getRely())));
+                keyNames.add(unique.getConstraintName());
+                keyLines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames())
+                    + ")", Boolean.TRUE.equals(unique.getRely())));
             }
         }
         for (final CheckConstraint check : table.getCheckConstraints()) {
-            lines.add((check.isAutoNamed() ? "" : "constraint " + check.getName() + " ")
+            keyNames.add(null);
+            keyLines.add((check.isAutoNamed() ? "" : "constraint " + check.getName() + " ")
                 + "check (" + check.getExpression() + ")");
         }
         if (!table.getPrimaryKeys().isEmpty()) {
-            lines.add(keyLine(table.primaryKeyConstraintName(), "primary key (" + spelledNames(table.getPrimaryKeys())
-                + ")", Boolean.TRUE.equals(table.getPrimaryKeyRely())));
+            keyNames.add(table.primaryKeyConstraintName());
+            keyLines.add(keyLine(table.primaryKeyConstraintName(), "primary key ("
+                + spelledNames(table.getPrimaryKeys()) + ")", Boolean.TRUE.equals(table.getPrimaryKeyRely())));
         }
         for (final TableColumn col : table.getColumns()) {
             if (col.getReferencedTable() != null) {
-                lines.add(keyLine(table.columnForeignKeyConstraintName(col.getName()), "foreign key ("
+                keyNames.add(table.columnForeignKeyConstraintName(col.getName()));
+                keyLines.add(keyLine(table.columnForeignKeyConstraintName(col.getName()), "foreign key ("
                     + SqlIdentifiers.spellCanonicalEscaped(col.getName()) + ") references "
                     + parentName(schema, col.getReferencedTable())
                     + (col.getReferencedColumn() == null ? ""
@@ -643,10 +657,12 @@ public class GetDdl extends BuiltInFunction {
             for (final String column : fk.getReferencedColumns()) {
                 referenced.append(referenced.length() > 0 ? "," : "").append(SqlIdentifiers.spellCanonicalEscaped(column));
             }
-            lines.add(keyLine(fk.getConstraintName(), "foreign key (" + spelledNames(fk.getColumnNames())
+            keyNames.add(fk.getConstraintName());
+            keyLines.add(keyLine(fk.getConstraintName(), "foreign key (" + spelledNames(fk.getColumnNames())
                 + ") references " + parentName(schema, fk.getReferencedTable()) + "(" + referenced + ")",
                 Boolean.TRUE.equals(fk.getRely())));
         }
+        lines.addAll(keysInCreationOrder(keyNames, keyLines, table.constraintCreationOrder()));
         for (int i = 0; i < lines.size(); i++) {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(lines.get(i));
         }
@@ -656,6 +672,35 @@ public class GetDdl extends BuiltInFunction {
             return sb.append(tail).toString();
         }
         return sb.append(tail, 0, tail.length() - 1).append(icebergTail(iceberg)).toString();
+    }
+
+    /**
+     * The key lines in GET_DDL's order: those the CREATE TABLE declared, and the checks, where they stand, then the
+     * keys an ALTER TABLE added, in the order they were created.
+     *
+     * @param names   each line's constraint name, null for a check
+     * @param lines   the lines, in the CREATE TABLE's order
+     * @param created the names of the keys an ALTER TABLE added, upper-cased, in the order they were created
+     * @return the lines in order
+     */
+    private static List<String> keysInCreationOrder(final List<String> names, final List<String> lines,
+                                                    final List<String> created) {
+        final List<String> ordered = new ArrayList<String>();
+        final String[] added = new String[created.size()];
+        for (int i = 0; i < lines.size(); i++) {
+            final int place = names.get(i) == null ? -1 : created.indexOf(names.get(i).toUpperCase(Locale.ROOT));
+            if (place < 0) {
+                ordered.add(lines.get(i));
+            } else {
+                added[place] = lines.get(i);
+            }
+        }
+        for (final String line : added) {
+            if (line != null) {
+                ordered.add(line);
+            }
+        }
+        return ordered;
     }
 
     /**

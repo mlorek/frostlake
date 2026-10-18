@@ -466,14 +466,38 @@ public class ProceduralExecutor {
      */
     public void executeStatement(final Statement stmt) {
         final String queryIdBefore = lastQueryIdOfSession();
+        final boolean unrecorded = failureLine < 0;
         try {
             dispatchStatement(stmt);
         } catch (final RuntimeException failure) {
+            if (unrecorded && failureLine > 0 && stmt instanceof SqlStatement
+                    && ((SqlStatement) stmt).isNestedBlock()) {
+                placeInWritingText(stmt.getSourceLine(), stmt.getSourcePosition());
+            }
             recordStatementFailure(stmt.getSourceLine(), stmt.getSourcePosition());
             throw failure;
         }
         clearStatementFailure();
         noteStatementQueryId(queryIdBefore);
+    }
+
+    /**
+     * Move a failure recorded inside a nested block that runs from its own text to where it stands in the text that
+     * wrote the block: on the block's first line its position counts from the block's own, and a later line keeps its
+     * position. A cursor's query that fails in a FOR loop's nested block is placed at the FOR or the OPEN that opens
+     * it, at 105 where the block itself starts at 56 (live-verified).
+     *
+     * @param line     the block's line in the writing text
+     * @param position the block's position on that line
+     */
+    private void placeInWritingText(final int line, final int position) {
+        if (line <= 0 || position < 0) {
+            return;
+        }
+        if (failureLine == 1) {
+            failurePosition += position;
+        }
+        failureLine += line - 1;
     }
 
     private void dispatchStatement(final Statement stmt) {
@@ -790,11 +814,8 @@ public class ProceduralExecutor {
         final Cursor cursor = iterableName != null ? readCursor(iterableName) : null;
 
         if (cursor != null) {
-            // FOR rec IN cursorName DO — implicit open and iterate; a cursor an earlier FOR ran to its end is opened
-            // afresh.
-            if (cursor.wasEndedByLoop()) {
-                cursor.close();
-            }
+            // FOR rec IN cursorName DO — implicit open and iterate; a cursor an earlier FOR ran to its end stays open
+            // past its last row, so the loop finds none (live-verified).
             if (!cursor.isOpen()) {
                 openCursorWithQuery(cursor);
             }
@@ -1030,11 +1051,19 @@ public class ProceduralExecutor {
         }
         if (queryExecutor == null) throw new RuntimeException("QueryExecutor not available to open cursor");
         String sql = cursorQuery(cursor, positionalBinds.size());
+        final String declared = sql;
         // OPEN … USING (…) binds the values positionally to the cursor query's `?` placeholders.
         if (!positionalBinds.isEmpty()) {
             sql = JdbcMarshaling.bindUsing(sql, positionalBinds, new HashSet<Integer>());
         }
-        final List<ResultSet> result = issue(sql);
+        final List<ResultSet> result;
+        try {
+            result = issue(sql);
+        } catch (final RuntimeException refused) {
+            // A bound value echoed as a predicate is named by its placeholder (see UsingBindEcho).
+            throw positionalBinds.isEmpty() ? refused
+                : UsingBindEcho.named(refused, declared, positionalBinds, new HashSet<Integer>());
+        }
         final ResultSet rs = (result != null && !result.isEmpty()) ? result.get(0) : new ResultSet(new ArrayList<>());
         cursor.open(rs);
     }
@@ -1376,6 +1405,47 @@ public class ProceduralExecutor {
         final String text = held instanceof BigDecimal ? ((BigDecimal) held).toPlainString()
             : String.valueOf(held).toLowerCase(Locale.ROOT);
         return "CAST(" + SqlStringLiterals.encode(text) + " AS " + SqlTypeNames.canonical(declared) + ")";
+    }
+
+    /**
+     * A refusal of a rebuilt call naming each NUMBER variable it bound as the conversion the block wrote: the plan
+     * prints a text cast to a NUMBER through TO_NUMBER, where the account's echo keeps a bound variable's CAST —
+     * {@code invalid use of 'all' for function 'ABS(ALL CAST('5' AS NUMBER(38,0)))'} (live-verified).
+     *
+     * @param refused  the rebuilt call's refusal
+     * @param funcExpr the call as the block wrote it
+     * @return the refusal as the account words it
+     */
+    private RuntimeException namingBoundCasts(final RuntimeException refused, final FunctionCallExpression funcExpr) {
+        // A unit's place keeps the plan's TO_NUMBER spelling (live-verified: DATEADD(day, …) over a NUMBER variable
+        // is "Date/time component [TO_NUMBER('5') ]…").
+        if (refused.getClass() != RuntimeException.class || refused.getMessage() == null
+                || refused.getMessage().contains("Date/time component [")) {
+            return refused;
+        }
+        String message = refused.getMessage();
+        for (final BaseExpression argument : funcExpr.getArguments()) {
+            if (!(argument instanceof VariableExpression)
+                    || !hasVariable(((VariableExpression) argument).getName())) {
+                continue;
+            }
+            final DataType declared = variableTypes.get(
+                ((VariableExpression) argument).getName().toUpperCase(Locale.ROOT));
+            if (!(declared instanceof NumericType) || NumericType.isApproximate(declared)) {
+                continue;
+            }
+            final String cast = boundConversion(argument, evaluateExpression(argument));
+            if (cast == null) {
+                continue;
+            }
+            final NumericType number = (NumericType) declared;
+            final String text = cast.substring("CAST(".length(), cast.lastIndexOf(" AS "));
+            final String printed = number.getPrecision() == NumericType.NUMBER.getPrecision() && number.getScale() == 0
+                ? "TO_NUMBER(" + text + ")"
+                : "TO_NUMBER(" + text + ", " + number.getPrecision() + ", " + number.getScale() + ")";
+            message = message.replace(printed, cast);
+        }
+        return message.equals(refused.getMessage()) ? refused : new RuntimeException(message, refused.getCause());
     }
 
     private String declaredNullOf(final BaseExpression argument) {
@@ -2273,7 +2343,14 @@ public class ProceduralExecutor {
     private Object evaluateExpression(final BaseExpression expr, final DataType target) {
         try {
             if (expr != null && expr.getJudgedFrom() != null && queryExecutor != null) {
-                judge(expr.getJudgedFrom(), target);
+                try {
+                    judge(expr.getJudgedFrom(), target);
+                } catch (final BlockExpressionTypeError refused) {
+                    // The whole expression compiles first: a name one of its subqueries cannot resolve is refused
+                    // ahead of its types, 12 + (1 IN (SELECT missing …)) naming MISSING (live-verified).
+                    compileSubqueriesOf(expr);
+                    throw refused;
+                }
             }
             return evaluateBuiltExpression(expr);
         } catch (final RuntimeException failed) {
@@ -2346,6 +2423,7 @@ public class ProceduralExecutor {
                 }
             }
             final List<int[]> written = new ArrayList<>();
+            final String writtenText = sqlText;
             try {
                 sqlText = DynamicStatementBinds.bind(sqlText, bindValues, unbound, written);
             } catch (final RuntimeException unset) {
@@ -2377,7 +2455,8 @@ public class ProceduralExecutor {
                 return result.isEmpty() ? result : result.get(0);
             } catch (final RuntimeException failed) {
                 recordStatementFailure(execExpr.getStatementLine(), execExpr.getStatementPosition());
-                throw failed;
+                // A bound value echoed as a predicate is named by its placeholder (see UsingBindEcho).
+                throw UsingBindEcho.named(failed, writtenText, bindValues, unbound);
             }
         } else if (expr instanceof UnaryExpression) {
             final UnaryExpression unaryExpr = (UnaryExpression) expr;
@@ -2415,7 +2494,7 @@ public class ProceduralExecutor {
                     // The fault's own sentence travels bare — live's uncaught wrapper says
                     // "Numeric value 'a' is not recognized", never a Frostlake-invented
                     // "Error evaluating function TO_NUMBER:" preamble around it.
-                    throw e instanceof RuntimeException ? (RuntimeException) e
+                    throw e instanceof RuntimeException ? namingBoundCasts((RuntimeException) e, funcExpr)
                         : new RuntimeException(e.getMessage(), e);
                 }
             }
@@ -2686,6 +2765,15 @@ public class ProceduralExecutor {
         // A function the side calls must exist: IF (FALSE AND missing_fn() = 1) is Unknown function.
         BlockExpressionSubqueries.requireKnownFunctions(ev, side);
         for (final SqlScalarExpression part : BlockExpressionSubqueries.sqlPartsOf(side)) {
+            BlockExpressionSubqueries.compile(ev, part.getExpression());
+        }
+    }
+
+    /** Compile the subqueries of a block expression, letting the first refusal out (see BlockExpressionSubqueries). */
+    private void compileSubqueriesOf(final BaseExpression expr) {
+        final ExpressionEvaluator ev = new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(),
+            queryExecutor.getCatalog(), queryExecutor);
+        for (final SqlScalarExpression part : BlockExpressionSubqueries.sqlPartsOf(expr)) {
             BlockExpressionSubqueries.compile(ev, part.getExpression());
         }
     }
@@ -3763,7 +3851,8 @@ public class ProceduralExecutor {
             return toNumericValue(value, (NumericType) type, false);
         }
         if (type instanceof BinaryType && value instanceof String) {
-            // A text into a BINARY is read as hex, and a text that is none is the cast's own refusal:
+            // A text into a BINARY is read as the cast reads it, hex unless the session says otherwise, and a text
+            // that is none is the cast's own refusal:
             // "The following string is not a legal hex-encoded value: 'abc'" (live-verified).
             return ValueCaster.castValue(value, "BINARY");
         }

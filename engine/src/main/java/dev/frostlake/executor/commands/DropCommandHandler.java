@@ -149,15 +149,16 @@ public class DropCommandHandler implements CommandHandler {
 
     /**
      * Detach one schema's tables from storage as part of a DROP SCHEMA / DROP DATABASE: snapshot each
-     * table's rows into {@code out} (keyed by fully-qualified name) and release its storage, exactly as
-     * DROP TABLE does. Without this the storage entries outlive the drop, so re-creating the same
-     * database/schema fails with "Table storage already exists" and a CLONE into the reused name appends to
-     * the stale rows instead of replacing them. Buffered writes are discarded so an uncommitted change from
-     * this transaction isn't flushed to now-missing storage at commit.
+     * table's rows into {@code out} (keyed by fully-qualified name) and release its storage from the name, exactly as
+     * DROP TABLE does, keeping it for the UNDROP under the key {@code keptOut} notes. Without this the storage entries
+     * outlive the drop, so re-creating the same database/schema fails with "Table storage already exists" and a CLONE
+     * into the reused name appends to the stale rows instead of replacing them. Buffered writes are discarded so an
+     * uncommitted change from this transaction isn't flushed to now-missing storage at commit.
      */
     private void snapshotAndReleaseStorage(final String databaseName, final Schema schema,
                                            final Map<String, List<Row>> out,
-                                           final Map<String, List<Row>> hiddenOut) {
+                                           final Map<String, List<Row>> hiddenOut,
+                                           final Map<String, String> keptOut) {
         final StorageEngine storage = queryExecutor.getStorageEngine();
         TemporaryObjects.releaseSessionTables(schema, storage, databaseName);
         for (final Table table : schema.getTables()) {
@@ -166,7 +167,11 @@ public class DropCommandHandler implements CommandHandler {
                 continue;
             }
             out.put(fqn, new ArrayList<>(storage.getTableStorage(fqn).scan()));
-            storage.dropTable(fqn);
+            // The storage waits with the dropped version, the table's time-travel history in it (live-verified).
+            final String kept = storage.keepDropped(fqn);
+            if (kept != null) {
+                keptOut.put(fqn, kept);
+            }
             queryExecutor.resetCopyLoadHistory(fqn, table.isTemporary());
             queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
         }
@@ -178,6 +183,13 @@ public class DropCommandHandler implements CommandHandler {
                 hiddenOut.put(fqn, new ArrayList<>(storage.getShadowedTableStorage(fqn).scan()));
                 storage.dropShadowedTable(fqn);
             }
+        }
+    }
+
+    /** Notes on a dropped schema's or database's version where each of its tables' storage waits. */
+    private static void keepStorages(final DroppedObject dropped, final Map<String, String> kept) {
+        for (final Map.Entry<String, String> table : kept.entrySet()) {
+            dropped.keepStorage(table.getKey(), table.getValue());
         }
     }
 
@@ -319,10 +331,17 @@ public class DropCommandHandler implements CommandHandler {
         if (kind.isSchemaObject()) {
             final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
             final boolean purged = DropPurge.written(ctx.dropBehavior());
-            if (kind == UnmodelledDropKind.SESSION_POLICY && new SecurityObjectCommandHandler(catalog, queryExecutor)
-                    .dropFound(SecurityObjectKind.SESSION_POLICY, owner, parts, purged)) {
-                // The one kind read here that is modelled: a session policy that is there is dropped.
+            final SecurityObjectKind modelled = SecurityObjectCommandHandler.modelledKind(kind);
+            if (modelled != null && new SecurityObjectCommandHandler(catalog, queryExecutor)
+                    .dropFound(modelled, owner, parts, purged)) {
+                // The kinds read here that are modelled: a session, an authentication or a packages policy that is
+                // there is dropped.
                 return null;
+            }
+            final String otherPolicy = modelled == null ? null : owner.policyKindHolding(parts[parts.length - 1]);
+            if (otherPolicy != null) {
+                // A policy of another kind holds the name, which IF EXISTS does not forgive (live-verified).
+                throw new RuntimeException(SqlCompilationError.objectOfOtherType(otherPolicy, modelled.name()));
             }
             final boolean relationKind = kind == UnmodelledDropKind.EXTERNAL_TABLE
                 || kind == UnmodelledDropKind.SEMANTIC_VIEW;
@@ -416,13 +435,15 @@ public class DropCommandHandler implements CommandHandler {
                         // dropped tables' storage. UNDROP DATABASE restores both metadata and rows.
                         final Map<String, List<Row>> tableRows = new LinkedHashMap<>();
                         final Map<String, List<Row>> hiddenTableRows = new LinkedHashMap<>();
+                        final Map<String, String> kept = new LinkedHashMap<>();
                         for (final Schema droppedSchema : droppedDb.getAllSchemas()) {
-                            snapshotAndReleaseStorage(dbName, droppedSchema, tableRows, hiddenTableRows);
+                            snapshotAndReleaseStorage(dbName, droppedSchema, tableRows, hiddenTableRows, kept);
                         }
                         // Its tables' and stages' files wait for an UNDROP under a token of the version's own.
                         dropped = new DroppedObject(droppedDb, tableRows, hiddenTableRows,
                             RetentionChain.effectiveDays(droppedDb, null, null),
                             StatementTokens.draw(STAGE_TOKEN_ALPHABET, STAGE_TOKEN_LENGTH));
+                        keepStorages(dropped, kept);
                         catalog.recordDropped("DATABASE:" + dbName, dropped);
                     }
                     catalog.dropDatabase(dbName, false);
@@ -469,11 +490,13 @@ public class DropCommandHandler implements CommandHandler {
                     if (snapSchema != null) {
                         final Map<String, List<Row>> tableRows = new LinkedHashMap<>();
                         final Map<String, List<Row>> hiddenTableRows = new LinkedHashMap<>();
-                        snapshotAndReleaseStorage(snapDbName, snapSchema, tableRows, hiddenTableRows);
+                        final Map<String, String> kept = new LinkedHashMap<>();
+                        snapshotAndReleaseStorage(snapDbName, snapSchema, tableRows, hiddenTableRows, kept);
                         // Its tables' and stages' files wait for an UNDROP under a token of the version's own.
                         dropped = new DroppedObject(snapSchema, tableRows, hiddenTableRows,
                             RetentionChain.effectiveDays(snapDb, snapSchema, null),
                             StatementTokens.draw(STAGE_TOKEN_ALPHABET, STAGE_TOKEN_LENGTH));
+                        keepStorages(dropped, kept);
                         catalog.recordDropped(droppedKey, dropped);
                     }
                     // DROP SCHEMA … CASCADE also drops the objects the schema still contains; without it
@@ -603,7 +626,12 @@ public class DropCommandHandler implements CommandHandler {
                     final String setAside =
                         queryExecutor.getTransactionManager().setAsideIfWritten(fullyQualifiedName);
                     if (setAside == null) {
-                        queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                        // Otherwise it waits with the version, the table's time-travel history in it, which an
+                        // UNDROP brings back too (live-verified).
+                        final String kept = queryExecutor.getStorageEngine().keepDropped(fullyQualifiedName);
+                        if (kept != null) {
+                            dropped.keepStorage(fullyQualifiedName, kept);
+                        }
                     } else {
                         dropped.setStorageSetAside(setAside);
                     }
@@ -720,7 +748,8 @@ public class DropCommandHandler implements CommandHandler {
                     rejectWrongKind(schema, streamName, RelationKind.STREAM);
                     checkDrop(SecurableObjectType.STREAM, streamQn);
                     queryExecutor.requireOwnership("STREAM", dropNameParts(ctx), null);
-                    schema.dropStream(streamName);
+                    // A quoted name in another case is another stream, which is not there (live-verified).
+                    schema.dropStreamExact(streamName);
                     logger.trace("Dropped stream: {}", streamName);
                 } catch (final RuntimeException e) {
                     // IF EXISTS forgives absence, never a name another kind holds.
@@ -738,7 +767,8 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQn);
                     checkDrop(SecurableObjectType.TASK, taskQn);
                     queryExecutor.requireOwnership("TASK", dropNameParts(ctx), null);
-                    schema.dropTask(taskName);
+                    // A quoted name in another case is another task, which is not there (live-verified).
+                    schema.dropTaskExact(taskName);
                     // A finalizer task of the dropped root finalizes nothing any more: it stands alone.
                     for (final Task remaining : schema.getTasks()) {
                         if (remaining.isFinalizer() && remaining.getFinalizedRootTask().equalsIgnoreCase(taskName)) {
@@ -972,17 +1002,17 @@ public class DropCommandHandler implements CommandHandler {
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.MASKING_POLICY, dropNameText(ctx));
                     queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
-                    if (!schema.hasMaskingPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT))) {
-                        // The "<Kind> '<QUALIFIED>' does not exist or not authorized." family — the
-                        // same sentence the sibling policies already give, live-verified for this one.
+                    // Named exactly: a quoted name in another case is another policy, which is not there, in
+                    // the "<Kind> '<QUALIFIED>' does not exist or not authorized." family (live-verified).
+                    if (schema.getMaskingPolicyExact(parts[parts.length - 1]) == null) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
-                            schema.qualifiedName(parts[parts.length - 1].toUpperCase(Locale.ROOT))));
+                            schema.qualifiedName(parts[parts.length - 1])));
                     }
                     if (catalog.isPolicyInUse(parts[parts.length - 1], true)) {
                         throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase(Locale.ROOT)
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
-                    schema.dropMaskingPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT));
+                    schema.dropMaskingPolicy(parts[parts.length - 1]);
                     logger.trace("Dropped masking policy: {}", dropNameText(ctx));
                 } catch (final RuntimeException e) { if (!forgiven(ifExists, e)) throw e;
                     ConditionalDdlOutcome.dropSkipped(); }
@@ -994,15 +1024,16 @@ public class DropCommandHandler implements CommandHandler {
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.ROW_ACCESS_POLICY, dropNameText(ctx));
                     queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
-                    if (!schema.hasRowAccessPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT))) {
+                    // Named exactly, as a masking policy is (live-verified).
+                    if (schema.getRowAccessPolicyExact(parts[parts.length - 1]) == null) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
-                            schema.qualifiedName(parts[parts.length - 1].toUpperCase(Locale.ROOT))));
+                            schema.qualifiedName(parts[parts.length - 1])));
                     }
                     if (catalog.isPolicyInUse(parts[parts.length - 1], false)) {
                         throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase(Locale.ROOT)
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
-                    schema.dropRowAccessPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT));
+                    schema.dropRowAccessPolicy(parts[parts.length - 1]);
                     logger.trace("Dropped row access policy: {}", dropNameText(ctx));
                 } catch (final RuntimeException e) { if (!forgiven(ifExists, e)) throw e;
                     ConditionalDdlOutcome.dropSkipped(); }
@@ -1031,13 +1062,15 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
-                    if (!schema.hasAggregationPolicy(policyName)) {
+                    // Named exactly, as a masking policy is (live-verified).
+                    final String policyName = parts[parts.length - 1];
+                    if (schema.getAggregationPolicyExact(policyName) == null) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
                             schema.qualifiedName(policyName)));
                     }
                     if (catalog.isAggregationPolicyInUse(policyName)) {
-                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
+                            + policyName.toUpperCase(Locale.ROOT)
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
                     schema.dropAggregationPolicy(policyName);
@@ -1050,14 +1083,16 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
-                    if (!schema.hasProjectionPolicy(policyName)) {
+                    // Named exactly, as a masking policy is (live-verified).
+                    final String policyName = parts[parts.length - 1];
+                    if (schema.getProjectionPolicyExact(policyName) == null) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
                             schema.qualifiedName(policyName)));
                     }
                     if (catalog.isProjectionPolicyInUse(policyName)) {
                         // Attached to a column: live refuses the drop rather than detaching it.
-                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
+                            + policyName.toUpperCase(Locale.ROOT)
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
                     schema.dropProjectionPolicy(policyName);
