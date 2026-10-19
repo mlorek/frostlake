@@ -41,7 +41,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class Table extends SqlObject {
+public class Table extends SqlObject implements SessionScoped {
 
     /**
      * The DATA_RETENTION_TIME_IN_DAYS this object declares, or null when it declares none and
@@ -1196,6 +1196,7 @@ public class Table extends SqlObject {
         return columns;
     }
 
+    @Override
     public boolean isTemporary() {
         return isTemporary;
     }

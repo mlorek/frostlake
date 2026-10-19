@@ -22,7 +22,7 @@ import dev.frostlake.types.DataType;
 import java.util.ArrayList;
 import java.util.List;
 
-public class Procedure extends SqlObject {
+public class Procedure extends SqlObject implements Routine {
 
     private final List<Parameter> parameters;
     private final DataType returnType;
@@ -49,6 +49,7 @@ public class Procedure extends SqlObject {
      * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
      * it models the lifetime and not the isolation.
      */
+    @Override
     public boolean isTemporary() { return temporary; }
 
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }
@@ -63,6 +64,7 @@ public class Procedure extends SqlObject {
      */
     private Boolean returnSized;
 
+    @Override
     public Boolean getReturnSized() { return returnSized; }
     public void setReturnSized(final Boolean returnSized) { this.returnSized = returnSized; }
 
@@ -102,6 +104,7 @@ public class Procedure extends SqlObject {
         this.packages = packages != null ? new ArrayList<>(packages) : new ArrayList<>();
     }
 
+    @Override
     public List<Parameter> getReturnColumns() {
         return new ArrayList<>(returnColumns);
     }
@@ -111,6 +114,7 @@ public class Procedure extends SqlObject {
     }
 
     /** Whether the procedure declares RETURNS TABLE — with columns, or none at all. */
+    @Override
     public boolean returnsTable() {
         return returnsTable;
     }
@@ -119,10 +123,12 @@ public class Procedure extends SqlObject {
         this.returnsTable = returnsTable;
     }
 
+    @Override
     public List<Parameter> getParameters() {
         return new ArrayList<>(parameters);
     }
 
+    @Override
     public DataType getReturnType() {
         return returnType;
     }

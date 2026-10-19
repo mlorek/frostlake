@@ -38,7 +38,7 @@ import java.util.stream.Stream;
  * Supports local filesystem staging for data loading and unloading operations.
  * S3 stages are simulated using local filesystem paths.
  */
-public class Stage extends SqlObject {
+public class Stage extends SqlObject implements SessionScoped {
 
     private final StageType type;
     private String url;                 // file:///path/to/dir or s3://bucket/path
@@ -229,6 +229,7 @@ public class Stage extends SqlObject {
     private boolean encryptionKey;
 
     /** Whether the stage was created TEMPORARY. */
+    @Override
     public boolean isTemporary() {
         return temporary;
     }

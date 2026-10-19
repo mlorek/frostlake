@@ -27,7 +27,7 @@ import java.util.Map;
  * Abstract base class for SQL database objects
  * Provides common properties and behavior for objects like databases, schemas, tables, views, etc.
  */
-public abstract class SqlObject implements Taggable {
+public abstract class SqlObject implements Named, Taggable {
 
     protected String name;
     protected Instant createdTime;
@@ -69,6 +69,7 @@ public abstract class SqlObject implements Taggable {
      * Get the name of this SQL object
      * @return The object name
      */
+    @Override
     public String getName() {
         return name;
     }

@@ -26,24 +26,12 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StatementSession;
 import dev.frostlake.metastore.Taggable;
-import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
-import dev.frostlake.types.DateTimeType;
-import dev.frostlake.types.MapType;
-import dev.frostlake.types.NumericType;
-import dev.frostlake.types.SqlTypeNames;
-import dev.frostlake.types.StringType;
-import dev.frostlake.types.StructuredArrayType;
-import dev.frostlake.types.StructuredField;
-import dev.frostlake.types.StructuredObjectType;
-import dev.frostlake.types.StructuredTypes;
-import dev.frostlake.types.WrittenSignatureType;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Schema extends SqlObject {
@@ -81,26 +69,28 @@ public class Schema extends SqlObject {
     /** Each session's own temporary views, by session and then by name, as {@link #sessionTables} holds tables. */
     private final Map<Long, Map<String, View>> sessionViews = new ConcurrentHashMap<>();
     private final Map<String, View> views;
-    private final Map<String, MaterializedView> materializedViews;
-    private final Map<String, DynamicTable> dynamicTables;
-    private final Map<String, List<Procedure>> procedures;
-    private final Map<String, List<Function>> functions;
-    private final Map<String, Stream> streams;
-    private final Map<String, Task> tasks;
-    private final Map<String, Alert> alerts = new ConcurrentHashMap<>();
-    private final Map<String, Pipe> pipes;
-    private final Map<String, Sequence> sequences;
-    private final Map<String, Contact> contacts;
-    private final Map<String, MaskingPolicy> maskingPolicies;
-    private final Map<String, ProjectionPolicy> projectionPolicies;
-    private final Map<String, AggregationPolicy> aggregationPolicies;
-    private final Map<String, JoinPolicy> joinPolicies;
-    private final Map<String, RowAccessPolicy> rowAccessPolicies;
-    private final Map<String, Tag> tags;
-    private final Map<String, Stage> stages;
-    private final Map<String, CortexSearchService> cortexSearchServices;
+    private final NamedObjects<MaterializedView> materializedViews = new NamedObjects<>(this, "Materialized view");
+    private final NamedObjects<DynamicTable> dynamicTables = new NamedObjects<>(this, "Dynamic table");
+    private final OverloadStore<Procedure> procedures = new OverloadStore<>(this, "Procedure");
+    private final OverloadStore<Function> functions = new OverloadStore<>(this, "Function");
+    private final NamedObjects<Stream> streams = new NamedObjects<>(this, "Stream");
+    private final NamedObjects<Task> tasks = new NamedObjects<>(this, "Task");
+    private final NamedObjects<Alert> alerts = new NamedObjects<>(this, "Alert");
+    private final NamedObjects<Pipe> pipes = new NamedObjects<>(this, "Pipe");
+    private final NamedObjects<Sequence> sequences = new NamedObjects<>(this, "Sequence");
+    private final NamedObjects<Contact> contacts = new NamedObjects<>(this, "Contact");
+    private final NamedObjects<MaskingPolicy> maskingPolicies = new NamedObjects<>(this, "Masking policy");
+    private final NamedObjects<ProjectionPolicy> projectionPolicies = new NamedObjects<>(this, "Projection policy");
+    private final NamedObjects<AggregationPolicy> aggregationPolicies =
+        new NamedObjects<>(this, "Aggregation policy");
+    private final NamedObjects<JoinPolicy> joinPolicies = new NamedObjects<>(this, "Join policy");
+    private final NamedObjects<RowAccessPolicy> rowAccessPolicies = new NamedObjects<>(this, "Row access policy");
+    private final NamedObjects<Tag> tags = new NamedObjects<>(this, "Tag");
+    private final NamedObjects<Stage> stages = new NamedObjects<>(this, "Stage");
+    private final NamedObjects<CortexSearchService> cortexSearchServices =
+        new NamedObjects<>(this, "Cortex Search Service");
     private final AppObjectStore appObjects = new AppObjectStore();
-    private final Map<String, FileFormat> fileFormats;
+    private final NamedObjects<FileFormat> fileFormats = new NamedObjects<>(this, "File format");
     private final ContainerObjects containerObjects = new ContainerObjects();
 
     /**
@@ -176,24 +166,6 @@ public class Schema extends SqlObject {
         this.tables = new ConcurrentHashMap<>();
         this.shadowedTables = new ConcurrentHashMap<>();
         this.views = new ConcurrentHashMap<>();
-        this.materializedViews = new ConcurrentHashMap<>();
-        this.dynamicTables = new ConcurrentHashMap<>();
-        this.procedures = new ConcurrentHashMap<>();
-        this.functions = new ConcurrentHashMap<>();
-        this.streams = new ConcurrentHashMap<>();
-        this.tasks = new ConcurrentHashMap<>();
-        this.pipes = new ConcurrentHashMap<>();
-        this.sequences = new ConcurrentHashMap<>();
-        this.contacts = new ConcurrentHashMap<>();
-        this.maskingPolicies = new ConcurrentHashMap<>();
-        this.projectionPolicies = new ConcurrentHashMap<>();
-        this.aggregationPolicies = new ConcurrentHashMap<>();
-        this.joinPolicies = new ConcurrentHashMap<>();
-        this.rowAccessPolicies = new ConcurrentHashMap<>();
-        this.tags = new ConcurrentHashMap<>();
-        this.stages = new ConcurrentHashMap<>();
-        this.cortexSearchServices = new ConcurrentHashMap<>();
-        this.fileFormats = new ConcurrentHashMap<>();
     }
 
     /**
@@ -309,17 +281,7 @@ public class Schema extends SqlObject {
      * holding the hidden rows aside.
      */
     private boolean hiddenHere(final Table table) {
-        return othersTemporary(table, table.isTemporary()) && !shadowedTables.containsKey(table.getName());
-    }
-
-    /**
-     * Whether an object is another session's temporary one: one a session created, read in another session. The
-     * engine's own session, which serves no bound session, reaches every one.
-     */
-    private static boolean othersTemporary(final SqlObject object, final boolean temporary) {
-        final Long current = StatementSession.current();
-        return temporary && current != null && object.getCreatedInSession() != null
-            && !current.equals(object.getCreatedInSession());
+        return SessionScoped.othersTemporary(table) && !shadowedTables.containsKey(table.getName());
     }
 
     /**
@@ -583,7 +545,7 @@ public class Schema extends SqlObject {
             return own;
         }
         final View view = views.get(keyFor(views, name));
-        if (view == null || othersTemporary(view, view.isTemporary())) {
+        if (view == null || SessionScoped.othersTemporary(view)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
         }
         return view;
@@ -595,7 +557,7 @@ public class Schema extends SqlObject {
             return true;
         }
         final View view = views.get(keyFor(views, name));
-        return view != null && !othersTemporary(view, view.isTemporary());
+        return view != null && !SessionScoped.othersTemporary(view);
     }
 
     /**
@@ -608,7 +570,7 @@ public class Schema extends SqlObject {
             return true;
         }
         final View view = views.get(name);
-        return view != null && !othersTemporary(view, view.isTemporary());
+        return view != null && !SessionScoped.othersTemporary(view);
     }
 
     /**
@@ -641,7 +603,7 @@ public class Schema extends SqlObject {
     public List<View> getViews() {
         final List<View> reached = new ArrayList<>();
         for (final View view : views.values()) {
-            if (!othersTemporary(view, view.isTemporary())) {
+            if (!SessionScoped.othersTemporary(view)) {
                 reached.add(view);
             }
         }
@@ -695,83 +657,59 @@ public class Schema extends SqlObject {
     // Materialized Views
     public void addMaterializedView(final MaterializedView materializedView) {
         rejectNameHeldByOtherKind(materializedView.getName(), RelationKind.MATERIALIZED_VIEW, false);
-        final String upperName = materializedView.getName();
-        if (materializedViews.containsKey(upperName)) {
-            throw new NameTakenException(SqlCompilationError.of(
-                "Object '" + SqlIdentifiers.spellCanonical(materializedView.getName()) + "' already exists."));
-        }
-        materializedViews.put(upperName, materializedView);
+        materializedViews.add(materializedView);
     }
 
     public void dropMaterializedView(final String name) {
-        final String upperName = keyFor(materializedViews, name);
-        if (!materializedViews.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Materialized view", qualified(name)));
-        }
-        materializedViews.remove(upperName);
+        materializedViews.drop(name);
     }
 
     public MaterializedView getMaterializedView(final String name) {
-        final MaterializedView mv = materializedViews.get(keyFor(materializedViews, name));
-        if (mv == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Materialized view", qualified(name)));
-        }
-        return mv;
+        return materializedViews.get(name);
     }
 
     public boolean hasMaterializedView(final String name) {
-        return materializedViews.containsKey(keyFor(materializedViews, name));
+        return materializedViews.has(name);
     }
 
     public List<MaterializedView> getMaterializedViews() {
-        return new ArrayList<>(materializedViews.values());
+        return materializedViews.values();
     }
 
     // Dynamic Tables
     public void addDynamicTable(final DynamicTable dt) {
         rejectNameHeldByOtherKind(dt.getName(), RelationKind.DYNAMIC_TABLE, false);
-        final String upperName = dt.getName();
-        if (dynamicTables.containsKey(upperName)) {
-            throw new NameTakenException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(dt.getName())
-                + "' already exists."));
-        }
-        dynamicTables.put(upperName, dt);
+        dynamicTables.add(dt);
     }
 
     /*
      * A dynamic table is found by its canonical name EXACTLY, as a SQL reference finds a table (tableExact): one
-     * created as "dt" and one created as DT are two dynamic tables. Its name was upper-cased at CREATE and matched
-     * ignoring case, so "dt" was stored as DT and the two were one object.
+     * created as "dt" and one created as DT are two dynamic tables.
      */
     public void dropDynamicTable(final String name) {
-        if (!hasDynamicTable(name)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
-        }
-        dynamicTables.remove(name);
+        dynamicTables.dropExact(name);
     }
 
     public DynamicTable getDynamicTable(final String name) {
-        final DynamicTable dt = name == null ? null : dynamicTables.get(name);
-        if (dt == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
-        return dt;
+        return dynamicTables.getExact(name);
     }
 
     public boolean hasDynamicTable(final String name) {
-        return name != null && dynamicTables.containsKey(name);
+        return dynamicTables.hasExact(name);
     }
 
     public List<DynamicTable> getDynamicTables() {
-        return new ArrayList<>(dynamicTables.values());
+        return dynamicTables.values();
     }
 
     // Contacts
     public void addContact(final Contact contact) {
-        contacts.put(contact.getName(), contact);
+        contacts.put(contact);
     }
-    public void dropContact(final String name) { contacts.remove(keyFor(contacts, name)); }
-    public Contact getContact(final String name) { return contacts.get(keyFor(contacts, name)); }
-    public boolean hasContact(final String name) { return contacts.containsKey(keyFor(contacts, name)); }
-    public List<Contact> getContacts() { return new ArrayList<>(contacts.values()); }
+    public void dropContact(final String name) { contacts.remove(name); }
+    public Contact getContact(final String name) { return contacts.find(name); }
+    public boolean hasContact(final String name) { return contacts.has(name); }
+    public List<Contact> getContacts() { return contacts.values(); }
 
     private final SecurityObjectStore securityObjects = new SecurityObjectStore();
 
@@ -782,137 +720,84 @@ public class Schema extends SqlObject {
 
     // Join Policies
     public void addJoinPolicy(final JoinPolicy policy) {
-        joinPolicies.put(policy.getName(), policy);
+        joinPolicies.put(policy);
     }
-    public void dropJoinPolicy(final String name) { joinPolicies.remove(keyFor(joinPolicies, name)); }
-    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.get(keyFor(joinPolicies, name)); }
-    public boolean hasJoinPolicy(final String name) { return joinPolicies.containsKey(keyFor(joinPolicies, name)); }
-    public List<JoinPolicy> getJoinPolicies() { return new ArrayList<>(joinPolicies.values()); }
+    public void dropJoinPolicy(final String name) { joinPolicies.remove(name); }
+    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.find(name); }
+    public boolean hasJoinPolicy(final String name) { return joinPolicies.has(name); }
+    public List<JoinPolicy> getJoinPolicies() { return joinPolicies.values(); }
     public void renameJoinPolicy(final String oldName, final String newName) {
-        final JoinPolicy policy = joinPolicies.get(keyFor(joinPolicies, oldName));
-        if (policy == null) {
-            throw new RuntimeException("Join policy not found: " + oldName);
-        }
-        joinPolicies.remove(keyFor(joinPolicies, oldName));
-        policy.rename(newName.toUpperCase(Locale.ROOT));
-        joinPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
+        NamedObjects.rename(joinPolicies, oldName, newName.toUpperCase(Locale.ROOT));
     }
 
     // Aggregation Policies
     public void addAggregationPolicy(final AggregationPolicy policy) {
-        aggregationPolicies.put(policy.getName(), policy);
+        aggregationPolicies.put(policy);
     }
-    public void dropAggregationPolicy(final String name) { aggregationPolicies.remove(keyFor(aggregationPolicies, name)); }
-    public AggregationPolicy getAggregationPolicy(final String name) { return aggregationPolicies.get(keyFor(aggregationPolicies, name)); }
-    public boolean hasAggregationPolicy(final String name) { return aggregationPolicies.containsKey(keyFor(aggregationPolicies, name)); }
-    public List<AggregationPolicy> getAggregationPolicies() { return new ArrayList<>(aggregationPolicies.values()); }
+    public void dropAggregationPolicy(final String name) { aggregationPolicies.remove(name); }
+    public AggregationPolicy getAggregationPolicy(final String name) { return aggregationPolicies.find(name); }
+    public boolean hasAggregationPolicy(final String name) { return aggregationPolicies.has(name); }
+    public List<AggregationPolicy> getAggregationPolicies() { return aggregationPolicies.values(); }
     /** The aggregation policy of exactly this canonical name, or null: one differing only in case is another. */
-    public AggregationPolicy getAggregationPolicyExact(final String name) { return aggregationPolicies.get(name); }
+    public AggregationPolicy getAggregationPolicyExact(final String name) {
+        return aggregationPolicies.findExact(name);
+    }
     /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameAggregationPolicy(final String oldName, final String newName) {
-        final AggregationPolicy policy = aggregationPolicies.get(keyFor(aggregationPolicies, oldName));
-        if (policy == null) {
-            throw new RuntimeException("Aggregation policy not found: " + oldName);
-        }
-        aggregationPolicies.remove(keyFor(aggregationPolicies, oldName));
-        policy.rename(newName);
-        aggregationPolicies.put(newName, policy);
+        NamedObjects.rename(aggregationPolicies, oldName, newName);
     }
 
     // Projection Policies
     public void addProjectionPolicy(final ProjectionPolicy policy) {
-        projectionPolicies.put(policy.getName(), policy);
+        projectionPolicies.put(policy);
     }
-    public void dropProjectionPolicy(final String name) { projectionPolicies.remove(keyFor(projectionPolicies, name)); }
-    public ProjectionPolicy getProjectionPolicy(final String name) { return projectionPolicies.get(keyFor(projectionPolicies, name)); }
-    public boolean hasProjectionPolicy(final String name) { return projectionPolicies.containsKey(keyFor(projectionPolicies, name)); }
-    public List<ProjectionPolicy> getProjectionPolicies() { return new ArrayList<>(projectionPolicies.values()); }
+    public void dropProjectionPolicy(final String name) { projectionPolicies.remove(name); }
+    public ProjectionPolicy getProjectionPolicy(final String name) { return projectionPolicies.find(name); }
+    public boolean hasProjectionPolicy(final String name) { return projectionPolicies.has(name); }
+    public List<ProjectionPolicy> getProjectionPolicies() { return projectionPolicies.values(); }
     /** The projection policy of exactly this canonical name, or null: one differing only in case is another. */
-    public ProjectionPolicy getProjectionPolicyExact(final String name) { return projectionPolicies.get(name); }
+    public ProjectionPolicy getProjectionPolicyExact(final String name) { return projectionPolicies.findExact(name); }
     /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameProjectionPolicy(final String oldName, final String newName) {
-        final ProjectionPolicy policy = projectionPolicies.get(keyFor(projectionPolicies, oldName));
-        if (policy == null) {
-            throw new RuntimeException("Projection policy not found: " + oldName);
-        }
-        projectionPolicies.remove(keyFor(projectionPolicies, oldName));
-        policy.rename(newName);
-        projectionPolicies.put(newName, policy);
+        NamedObjects.rename(projectionPolicies, oldName, newName);
     }
 
     // Masking Policies
     public void addMaskingPolicy(final MaskingPolicy policy) {
-        maskingPolicies.put(policy.getName(), policy);
+        maskingPolicies.put(policy);
     }
-    public void dropMaskingPolicy(final String name) { maskingPolicies.remove(keyFor(maskingPolicies, name)); }
-    public MaskingPolicy getMaskingPolicy(final String name) { return maskingPolicies.get(keyFor(maskingPolicies, name)); }
-    public boolean hasMaskingPolicy(final String name) { return maskingPolicies.containsKey(keyFor(maskingPolicies, name)); }
-    public List<MaskingPolicy> getMaskingPolicies() { return new ArrayList<>(maskingPolicies.values()); }
+    public void dropMaskingPolicy(final String name) { maskingPolicies.remove(name); }
+    public MaskingPolicy getMaskingPolicy(final String name) { return maskingPolicies.find(name); }
+    public boolean hasMaskingPolicy(final String name) { return maskingPolicies.has(name); }
+    public List<MaskingPolicy> getMaskingPolicies() { return maskingPolicies.values(); }
     /** The masking policy of exactly this canonical name, or null: one differing only in case is another. */
-    public MaskingPolicy getMaskingPolicyExact(final String name) { return maskingPolicies.get(name); }
+    public MaskingPolicy getMaskingPolicyExact(final String name) { return maskingPolicies.findExact(name); }
     /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameMaskingPolicy(final String oldName, final String newName) {
-        final MaskingPolicy policy = maskingPolicies.get(keyFor(maskingPolicies, oldName));
-        if (policy == null) {
-            throw new RuntimeException("Masking policy not found: " + oldName);
-        }
-        maskingPolicies.remove(keyFor(maskingPolicies, oldName));
-        policy.rename(newName);
-        maskingPolicies.put(newName, policy);
+        NamedObjects.rename(maskingPolicies, oldName, newName);
     }
 
     // Row Access Policies
     public void addRowAccessPolicy(final RowAccessPolicy policy) {
-        rowAccessPolicies.put(policy.getName(), policy);
+        rowAccessPolicies.put(policy);
     }
-    public void dropRowAccessPolicy(final String name) { rowAccessPolicies.remove(keyFor(rowAccessPolicies, name)); }
-    public RowAccessPolicy getRowAccessPolicy(final String name) { return rowAccessPolicies.get(keyFor(rowAccessPolicies, name)); }
-    public boolean hasRowAccessPolicy(final String name) { return rowAccessPolicies.containsKey(keyFor(rowAccessPolicies, name)); }
-    public List<RowAccessPolicy> getRowAccessPolicies() { return new ArrayList<>(rowAccessPolicies.values()); }
+    public void dropRowAccessPolicy(final String name) { rowAccessPolicies.remove(name); }
+    public RowAccessPolicy getRowAccessPolicy(final String name) { return rowAccessPolicies.find(name); }
+    public boolean hasRowAccessPolicy(final String name) { return rowAccessPolicies.has(name); }
+    public List<RowAccessPolicy> getRowAccessPolicies() { return rowAccessPolicies.values(); }
     /** The row access policy of exactly this canonical name, or null: one differing only in case is another. */
-    public RowAccessPolicy getRowAccessPolicyExact(final String name) { return rowAccessPolicies.get(name); }
+    public RowAccessPolicy getRowAccessPolicyExact(final String name) { return rowAccessPolicies.findExact(name); }
     /** Renames the policy, the new name kept as written: a quoted name keeps its case (live-verified). */
     public void renameRowAccessPolicy(final String oldName, final String newName) {
-        final RowAccessPolicy policy = rowAccessPolicies.get(keyFor(rowAccessPolicies, oldName));
-        if (policy == null) {
-            throw new RuntimeException("Row access policy not found: " + oldName);
-        }
-        rowAccessPolicies.remove(keyFor(rowAccessPolicies, oldName));
-        policy.rename(newName);
-        rowAccessPolicies.put(newName, policy);
+        NamedObjects.rename(rowAccessPolicies, oldName, newName);
     }
 
-    // Procedures and functions. A routine is stored under its canonical name - an unquoted name
-    // upper-cased, a quoted one as written - and resolved by that name EXACTLY, so "a" and A are two
-    // routines, each reached only by its own spelling (live-verified). getProcedure and getFunction alone
-    // also answer a differently-cased name, for the engine's Java callers (see keyFor).
+    // Procedures and functions, each kind an OverloadStore. A routine is stored under its canonical name - an
+    // unquoted name upper-cased, a quoted one as written - and resolved by that name EXACTLY, so "a" and A are two
+    // routines, each reached only by its own spelling (live-verified). getProcedure and getFunction alone also answer
+    // a differently-cased name, for the engine's Java callers.
     public void addProcedure(final Procedure procedure) {
-        final String name = procedure.getName();
-        // putIfAbsent rather than get/put: the map is concurrent, and losing a race here would
-        // drop an overload registered by another thread.
-        List<Procedure> overloads = procedures.get(name);
-        if (overloads == null) {
-            overloads = new ArrayList<>();
-            final List<Procedure> raced = procedures.putIfAbsent(name, overloads);
-            if (raced != null) {
-                overloads = raced;
-            }
-        }
-
-        for (final Procedure existing : overloads) {
-            if (!hasSameSignature(existing.getParameters(), procedure.getParameters())) {
-                continue;
-            }
-            if (hasExactSignature(existing.getParameters(), procedure.getParameters())) {
-                refuseSignatureHeld(name, procedure.isTemporary(), procedure, existing.isTemporary(), existing,
-                    existing.getParameters(), existing.getReturnType(), existing.getReturnSized());
-            } else if (sameLifetime(procedure.isTemporary(), procedure, existing.isTemporary(), existing)) {
-                throw notNullOnlyTwin(name, procedure.getParameters(), procedure.returnsTable(),
-                    procedure.getReturnColumns(), procedure.getReturnType(), procedure.getReturnSized());
-            }
-        }
-
-        overloads.add(procedure);
+        procedures.add(procedure);
     }
 
     /**
@@ -927,34 +812,11 @@ public class Schema extends SqlObject {
 
     /** Removes this very overload, and its name with it when no other overload carries that name. */
     public void removeProcedure(final Procedure procedure) {
-        final List<Procedure> overloads = procedures.get(procedure.getName());
-        if (overloads == null) {
-            return;
-        }
-        // By identity: routines compare equal by name alone, so remove(Object) would take a sibling.
-        for (int i = 0; i < overloads.size(); i++) {
-            if (overloads.get(i) == procedure) {
-                overloads.remove(i);
-                break;
-            }
-        }
-        if (overloads.isEmpty()) {
-            procedures.remove(procedure.getName());
-        }
+        procedures.remove(procedure);
     }
 
     public Procedure getProcedure(final String name) {
-        final String upperName = keyFor(procedures, name);
-        final List<Procedure> overloads = getProcedureOverloads(upperName);
-        if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
-        }
-
-        if (overloads.size() > 1) {
-            throw new RuntimeException("Procedure " + name + " has multiple overloads. Use getProcedureBySignature() with parameter types.");
-        }
-
-        return overloads.get(0);
+        return procedures.get(name);
     }
 
     /**
@@ -966,30 +828,18 @@ public class Schema extends SqlObject {
      * @return the overload
      */
     public Procedure getProcedureBySignature(final String name, final List<DataType> argumentTypes) {
-        for (final Procedure proc : getProcedureOverloads(name)) {
-            if (matchesSignature(proc.getParameters(), argumentTypes)) {
-                return proc;
-            }
-        }
-        throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
+        return procedures.getBySignature(name, argumentTypes);
     }
 
     /**
-     * The overload a statement names by the signature it writes: its parameters match by type family, and a type
-     * written with a length, a precision or a scale matches only a parameter declared with the same (see
-     * {@link #matchesWrittenSignature}).
+     * The overload a statement names by the signature it writes (see {@link OverloadStore#getByWrittenSignature}).
      *
      * @param name          the procedure's exact canonical name
      * @param argumentTypes the signature written after it, each type with the parameters written on it
      * @return the overload
      */
     public Procedure getProcedureByWrittenSignature(final String name, final List<DataType> argumentTypes) {
-        for (final Procedure proc : getProcedureOverloads(name)) {
-            if (matchesWrittenSignature(proc.getParameters(), argumentTypes)) {
-                return proc;
-            }
-        }
-        throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
+        return procedures.getByWrittenSignature(name, argumentTypes);
     }
 
     /**
@@ -1003,82 +853,24 @@ public class Schema extends SqlObject {
         removeProcedure(getProcedureByWrittenSignature(name, argumentTypes));
     }
 
-    /** Every procedure this session reaches (see {@link #reachedProcedures}). */
+    /** Every procedure this session reaches: the permanent ones and its own temporary ones. */
     public List<Procedure> getProcedures() {
-        final List<Procedure> allProcedures = new ArrayList<>();
-        for (final List<Procedure> overloads : procedures.values()) {
-            allProcedures.addAll(reachedProcedures(new ArrayList<>(overloads)));
-        }
-        return allProcedures;
+        return procedures.values();
     }
 
     /** Every procedure, each session's temporary ones included, for what outlives or owns them all. */
     public List<Procedure> allProcedures() {
-        final List<Procedure> allProcedures = new ArrayList<>();
-        for (final List<Procedure> overloads : procedures.values()) {
-            allProcedures.addAll(overloads);
-        }
-        return allProcedures;
+        return procedures.all();
     }
 
     /** Every overload carrying exactly this canonical name this session reaches, or none. */
     public List<Procedure> getProcedureOverloads(final String name) {
-        final List<Procedure> overloads = procedures.get(name);
-        return overloads != null ? reachedProcedures(new ArrayList<>(overloads)) : new ArrayList<>();
-    }
-
-    /**
-     * The overloads this session reaches of those carrying one name: the permanent ones and its own temporary ones
-     * (live-verified: another session's temporary procedure is no procedure here). A permanent overload hides a
-     * temporary one of its signature.
-     */
-    private List<Procedure> reachedProcedures(final List<Procedure> overloads) {
-        final List<Procedure> reached = new ArrayList<>();
-        for (final Procedure overload : overloads) {
-            if (!overload.isTemporary()) {
-                reached.add(overload);
-                continue;
-            }
-            boolean hidden = !ownedHere(overload);
-            for (final Procedure other : overloads) {
-                hidden = hidden || !other.isTemporary() && hasExactSignature(other.getParameters(),
-                    overload.getParameters());
-            }
-            if (!hidden) {
-                reached.add(overload);
-            }
-        }
-        return reached;
+        return procedures.overloads(name);
     }
 
     // Functions
     public void addFunction(final Function function) {
-        final String name = function.getName();
-        // putIfAbsent rather than get/put: the map is concurrent, and losing a race here would
-        // drop an overload registered by another thread.
-        List<Function> overloads = functions.get(name);
-        if (overloads == null) {
-            overloads = new ArrayList<>();
-            final List<Function> raced = functions.putIfAbsent(name, overloads);
-            if (raced != null) {
-                overloads = raced;
-            }
-        }
-
-        for (final Function existing : overloads) {
-            if (!hasSameSignature(existing.getParameters(), function.getParameters())) {
-                continue;
-            }
-            if (hasExactSignature(existing.getParameters(), function.getParameters())) {
-                refuseSignatureHeld(name, function.isTemporary(), function, existing.isTemporary(), existing,
-                    existing.getParameters(), existing.getReturnType(), existing.getReturnSized());
-            } else if (sameLifetime(function.isTemporary(), function, existing.isTemporary(), existing)) {
-                throw notNullOnlyTwin(name, function.getParameters(), function.isTableFunction(),
-                    function.getReturnColumns(), function.getReturnType(), function.getReturnSized());
-            }
-        }
-
-        overloads.add(function);
+        functions.add(function);
         function.setHome(this);
     }
 
@@ -1094,37 +886,13 @@ public class Schema extends SqlObject {
 
     /** Removes this very overload, and its name with it when no other overload carries that name. */
     public void removeFunction(final Function function) {
-        final List<Function> overloads = functions.get(function.getName());
-        if (overloads == null) {
-            return;
-        }
-        // By identity: routines compare equal by name alone, so remove(Object) would take a sibling.
-        for (int i = 0; i < overloads.size(); i++) {
-            if (overloads.get(i) == function) {
-                overloads.remove(i);
-                if (function.getHome() == this) {
-                    function.setHome(null);
-                }
-                break;
-            }
-        }
-        if (overloads.isEmpty()) {
-            functions.remove(function.getName());
+        if (functions.remove(function) && function.getHome() == this) {
+            function.setHome(null);
         }
     }
 
     public Function getFunction(final String name) {
-        final String upperName = keyFor(functions, name);
-        final List<Function> overloads = getFunctionOverloads(upperName);
-        if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
-        }
-
-        if (overloads.size() > 1) {
-            throw new RuntimeException("Function " + name + " has multiple overloads. Use getFunctionBySignature() with parameter types.");
-        }
-
-        return overloads.get(0);
+        return functions.get(name);
     }
 
     /**
@@ -1136,30 +904,18 @@ public class Schema extends SqlObject {
      * @return the overload
      */
     public Function getFunctionBySignature(final String name, final List<DataType> argumentTypes) {
-        for (final Function func : getFunctionOverloads(name)) {
-            if (matchesSignature(func.getParameters(), argumentTypes)) {
-                return func;
-            }
-        }
-        throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
+        return functions.getBySignature(name, argumentTypes);
     }
 
     /**
-     * The overload a statement names by the signature it writes: its parameters match by type family, and a type
-     * written with a length, a precision or a scale matches only a parameter declared with the same (see
-     * {@link #matchesWrittenSignature}).
+     * The overload a statement names by the signature it writes (see {@link OverloadStore#getByWrittenSignature}).
      *
      * @param name          the function's exact canonical name
      * @param argumentTypes the signature written after it, each type with the parameters written on it
      * @return the overload
      */
     public Function getFunctionByWrittenSignature(final String name, final List<DataType> argumentTypes) {
-        for (final Function func : getFunctionOverloads(name)) {
-            if (matchesWrittenSignature(func.getParameters(), argumentTypes)) {
-                return func;
-            }
-        }
-        throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
+        return functions.getByWrittenSignature(name, argumentTypes);
     }
 
     /**
@@ -1173,13 +929,9 @@ public class Schema extends SqlObject {
         removeFunction(getFunctionByWrittenSignature(name, argumentTypes));
     }
 
-    /** Every function this session reaches (see {@link #reachedFunctions}). */
+    /** Every function this session reaches: the permanent ones and its own temporary ones. */
     public List<Function> getFunctions() {
-        final List<Function> allFunctions = new ArrayList<>();
-        for (final List<Function> overloads : functions.values()) {
-            allFunctions.addAll(reachedFunctions(new ArrayList<>(overloads)));
-        }
-        return allFunctions;
+        return functions.values();
     }
 
     /**
@@ -1187,126 +939,17 @@ public class Schema extends SqlObject {
      * INFORMATION_SCHEMA.FUNCTIONS, which lists another session's temporary function (live-verified).
      */
     public List<Function> allFunctions() {
-        final List<Function> allFunctions = new ArrayList<>();
-        for (final List<Function> overloads : functions.values()) {
-            allFunctions.addAll(overloads);
-        }
-        return allFunctions;
+        return functions.all();
     }
 
     /** Every overload carrying exactly this canonical name this session reaches, or none. */
     public List<Function> getFunctionOverloads(final String name) {
-        final List<Function> overloads = functions.get(name);
-        return overloads != null ? reachedFunctions(new ArrayList<>(overloads)) : new ArrayList<>();
+        return functions.overloads(name);
     }
 
     /**
-     * The overloads this session reaches of those carrying one name: the permanent ones and its own temporary ones.
-     * Another session's temporary function is no function here, and a permanent function created after a temporary
-     * one of its signature is the one every session calls, its creator's included (live-verified).
-     */
-    private List<Function> reachedFunctions(final List<Function> overloads) {
-        final List<Function> reached = new ArrayList<>();
-        for (final Function overload : overloads) {
-            if (!overload.isTemporary()) {
-                reached.add(overload);
-                continue;
-            }
-            boolean hidden = !ownedHere(overload);
-            for (final Function other : overloads) {
-                hidden = hidden || !other.isTemporary() && hasExactSignature(other.getParameters(),
-                    overload.getParameters());
-            }
-            if (!hidden) {
-                reached.add(overload);
-            }
-        }
-        return reached;
-    }
-
-    /** Whether a temporary object is this session's own. */
-    private static boolean ownedHere(final SqlObject temporary) {
-        return Objects.equals(temporary.getCreatedInSession(), StatementSession.current());
-    }
-
-    /**
-     * Refuses a new routine an existing one of its signature holds the name for (live-verified): a temporary routine
-     * may not take a permanent one's signature, refused with that one's signature and return type spelled
-     * ({@code Object 'PERMF():NUMBER(38,0)' already exists.}); a permanent routine beside a temporary one, and a
-     * temporary one beside another session's, are each created; two of the same lifetime and session are refused
-     * for the name alone.
-     *
-     * @param name             the routine's canonical name
-     * @param temporary        whether the new routine is temporary
-     * @param created          the new routine
-     * @param existingTemporary whether the existing one is temporary
-     * @param existing         the existing routine of the signature
-     * @param parameters       the existing routine's parameters
-     * @param returnType       the existing routine's return type
-     * @param returnSized      whether that type was written with its width
-     */
-    private static void refuseSignatureHeld(final String name, final boolean temporary, final SqlObject created,
-                                            final boolean existingTemporary, final SqlObject existing,
-                                            final List<Parameter> parameters, final DataType returnType,
-                                            final Boolean returnSized) {
-        if (temporary && !existingTemporary) {
-            final StringBuilder signature = new StringBuilder(SqlIdentifiers.spellCanonical(name)).append('(');
-            for (int i = 0; i < parameters.size(); i++) {
-                signature.append(i == 0 ? "" : ", ").append(SqlTypeNames.routineType(parameters.get(i).getDataType()));
-            }
-            signature.append("):").append(returnType == null ? "TABLE" : SqlTypeNames.routineType(returnType,
-                returnSized));
-            throw new RuntimeException(SqlCompilationError.of("Object '" + signature + "' already exists."));
-        }
-        if (sameLifetime(temporary, created, existingTemporary, existing)) {
-            throw new RuntimeException(alreadyExists(name));
-        }
-    }
-
-    /** Whether two routines are both permanent, or both temporary to one session. */
-    private static boolean sameLifetime(final boolean temporary, final SqlObject created,
-                                        final boolean existingTemporary, final SqlObject existing) {
-        return temporary == existingTemporary
-            && (!temporary || Objects.equals(created.getCreatedInSession(), existing.getCreatedInSession()));
-    }
-
-    /**
-     * The refusal a routine gets whose signature an overload of the same lifetime holds but for a structured field's
-     * NOT NULL, the new routine spelled with its parameters' names and what it returns:
-     * {@code Object 'F1(X OBJECT(a NUMBER NOT NULL)):VARCHAR' already exists.}, and
-     * {@code Object 'H1(X OBJECT(a NUMBER)):TABLE: (C NUMBER)' already exists.} for one that returns a table
-     * (live-verified). It is judged when the routine is added, after everything else about it.
-     */
-    private static RuntimeException notNullOnlyTwin(final String name, final List<Parameter> parameters,
-                                                    final boolean table, final List<Parameter> columns,
-                                                    final DataType returnType, final Boolean returnSized) {
-        final StringBuilder signature = new StringBuilder(SqlIdentifiers.spellCanonical(name)).append('(')
-            .append(namedTypes(parameters)).append("):");
-        if (table) {
-            signature.append("TABLE: (").append(namedTypes(columns)).append(')');
-        } else {
-            signature.append(SqlTypeNames.routineType(returnType, returnSized));
-        }
-        return new RuntimeException(SqlCompilationError.of("Object '" + signature + "' already exists."));
-    }
-
-    /**
-     * Parameters or columns by name and bare type, as a routine's spelled signature lists them:
-     * {@code X OBJECT(a NUMBER NOT NULL), Z NUMBER}.
-     */
-    private static String namedTypes(final List<Parameter> items) {
-        final StringBuilder text = new StringBuilder();
-        for (int i = 0; i < items.size(); i++) {
-            text.append(i == 0 ? "" : ", ").append(SqlIdentifiers.spellCanonical(items.get(i).getName()))
-                .append(' ').append(StructuredTypes.signatureText(items.get(i).getDataType()));
-        }
-        return text.toString();
-    }
-
-    /**
-     * Whether a new function of that lifetime would find this signature taken (see {@link #addFunction}): a
-     * temporary function by this session's own temporary one, a permanent function by a permanent one. A temporary
-     * function over a permanent one is refused for its signature when it is added.
+     * Whether a new function of that lifetime would find this signature taken (see
+     * {@link OverloadStore#holdsSignature(String, List, boolean)}).
      *
      * @param name       the function's canonical name
      * @param parameters the new signature
@@ -1314,12 +957,7 @@ public class Schema extends SqlObject {
      * @return whether the signature is taken
      */
     public boolean hasFunctionSignature(final String name, final List<Parameter> parameters, final boolean temporary) {
-        for (final Function existing : getFunctionOverloads(name)) {
-            if (existing.isTemporary() == temporary && hasExactSignature(existing.getParameters(), parameters)) {
-                return true;
-            }
-        }
-        return false;
+        return functions.holdsSignature(name, parameters, temporary);
     }
 
     /**
@@ -1331,43 +969,17 @@ public class Schema extends SqlObject {
      * @return whether the signature is taken
      */
     public boolean hasProcedureSignature(final String name, final List<Parameter> parameters, final boolean temporary) {
-        for (final Procedure existing : getProcedureOverloads(name)) {
-            if (existing.isTemporary() == temporary && hasExactSignature(existing.getParameters(), parameters)) {
-                return true;
-            }
-        }
-        return false;
+        return procedures.holdsSignature(name, parameters, temporary);
     }
 
     /** Whether a function of that name already carries this signature (see {@link #addFunction}). */
     public boolean hasFunctionSignature(final String name, final List<Parameter> parameters) {
-        for (final Function existing : getFunctionOverloads(name)) {
-            if (hasSameSignature(existing.getParameters(), parameters)) {
-                return true;
-            }
-        }
-        return false;
+        return functions.holdsSignature(name, parameters);
     }
 
     /** Whether a procedure of that name already carries this signature (see {@link #addProcedure}). */
     public boolean hasProcedureSignature(final String name, final List<Parameter> parameters) {
-        for (final Procedure existing : getProcedureOverloads(name)) {
-            if (hasSameSignature(existing.getParameters(), parameters)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * The refusal a routine name already carrying the signature gets: the name quoted only when it needs
-     * quotes, {@code Object '"b"' already exists.} for a quoted {@code "b"} (live-verified).
-     *
-     * @param name the routine's canonical name
-     * @return the refusal's message
-     */
-    public static String alreadyExists(final String name) {
-        return SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(name) + "' already exists.");
+        return procedures.holdsSignature(name, parameters);
     }
 
     /**
@@ -1388,24 +1000,14 @@ public class Schema extends SqlObject {
     }
 
     /**
-     * Refuses a function signature that an overload the name already has would compete with for some call: the
-     * two take a common number of arguments and agree in the types of that many leading parameters, so only
-     * optional arguments tell them apart (live-verified). {@code f(a NUMBER)} beside {@code f(a NUMBER, b NUMBER
-     * DEFAULT 0)} is refused, in either order, as are {@code f()} beside {@code f(o NUMBER DEFAULT 0)} and two
-     * overloads whose optional arguments alone differ in type; {@code f(a NUMBER, b VARCHAR)} beside
-     * {@code f(a NUMBER, b NUMBER DEFAULT 0)} stands, a call of two arguments telling them apart by type. An
-     * overload of exactly this signature is not judged here: it is the one a CREATE OR REPLACE replaces, or the
-     * name already taken.
+     * Refuses a function signature that an overload the name already has would compete with for some call (see
+     * {@link OverloadStore#requireUnambiguous}).
      *
      * @param name       the function's canonical name
      * @param parameters the new signature
      */
     public void requireUnambiguousFunction(final String name, final List<Parameter> parameters) {
-        for (final Function existing : getFunctionOverloads(name)) {
-            if (competes(existing.getParameters(), parameters)) {
-                throw new RuntimeException(ambiguousOverload("FUNCTION", name));
-            }
-        }
+        functions.requireUnambiguous(name, parameters);
     }
 
     /**
@@ -1415,113 +1017,7 @@ public class Schema extends SqlObject {
      * @param parameters the new signature
      */
     public void requireUnambiguousProcedure(final String name, final List<Parameter> parameters) {
-        for (final Procedure existing : getProcedureOverloads(name)) {
-            if (competes(existing.getParameters(), parameters)) {
-                throw new RuntimeException(ambiguousOverload("PROCEDURE", name));
-            }
-        }
-    }
-
-    /**
-     * The refusal an overload that would compete with an existing one gets, on one line (live-verified).
-     *
-     * @param kind FUNCTION or PROCEDURE
-     * @param name the routine's canonical name
-     * @return the refusal's message
-     */
-    public static String ambiguousOverload(final String kind, final String name) {
-        return SqlCompilationError.inline("Cannot overload " + kind + " '" + SqlIdentifiers.spellCanonical(name)
-            + "' as it would cause ambiguous " + kind + " overloading.");
-    }
-
-    /** Whether two different signatures take a call of some argument count with the same leading types. */
-    private boolean competes(final List<Parameter> one, final List<Parameter> other) {
-        if (hasExactSignature(one, other)) {
-            return false;
-        }
-        // The fewest arguments both take: where the leading types differ there, they differ for every longer call.
-        final int fewest = Math.max(requiredCount(one), requiredCount(other));
-        if (fewest > Math.min(one.size(), other.size())) {
-            return false;
-        }
-        for (int i = 0; i < fewest; i++) {
-            if (!sameSignatureType(one.get(i).getDataType(), other.get(i).getDataType(), true)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** How many leading parameters a call must supply: the index after the last one with no default. */
-    private static int requiredCount(final List<Parameter> parameters) {
-        int required = 0;
-        for (int i = 0; i < parameters.size(); i++) {
-            if (!parameters.get(i).hasDefault()) {
-                required = i + 1;
-            }
-        }
-        return required;
-    }
-
-    // Helper methods for signature matching
-    /**
-     * Whether two parameter lists are one overload: each parameter of one type family, and a structured parameter of
-     * one shape besides — its fields by name and in order, each member's family — whatever the widths inside it and
-     * whether a field says NOT NULL. {@code f(OBJECT(b INT))} and {@code f(OBJECT(a VARCHAR))} are overloads of
-     * {@code f(OBJECT(a INT))}, and {@code f(OBJECT(a NUMBER(10,2)))} is the same signature (live-verified).
-     */
-    private boolean hasSameSignature(final List<Parameter> params1, final List<Parameter> params2) {
-        if (params1.size() != params2.size()) {
-            return false;
-        }
-
-        for (int i = 0; i < params1.size(); i++) {
-            if (!sameSignatureType(params1.get(i).getDataType(), params2.get(i).getDataType(), false)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Whether two parameter lists are one signature to the letter: {@link #hasSameSignature}, and a structured field
-     * that says NOT NULL in one says it in the other. A plain CREATE finds its name taken only by such an overload, an
-     * overload competes with another by such types, and a temporary routine steps aside only for a permanent one of
-     * such a signature; one that differs from an overload of its lifetime by a field's NOT NULL alone is refused
-     * when it is added (live-verified).
-     */
-    private static boolean hasExactSignature(final List<Parameter> params1, final List<Parameter> params2) {
-        if (params1.size() != params2.size()) {
-            return false;
-        }
-        for (int i = 0; i < params1.size(); i++) {
-            if (!sameSignatureType(params1.get(i).getDataType(), params2.get(i).getDataType(), true)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** Whether two parameter types are one in a signature: one type, and one shape when structured. */
-    private static boolean sameSignatureType(final DataType one, final DataType other, final boolean notNull) {
-        return one.equals(other) && shapeOf(one, notNull).equals(shapeOf(other, notNull));
-    }
-
-    private boolean matchesSignature(final List<Parameter> params, final List<DataType> argumentTypes) {
-        if (params.size() != argumentTypes.size()) {
-            return false;
-        }
-
-        for (int i = 0; i < params.size(); i++) {
-            final DataType declared = params.get(i).getDataType();
-            if (!signatureFamily(declared).equals(signatureFamily(argumentTypes.get(i)))
-                    || !shapeOf(declared, false).equals(shapeOf(argumentTypes.get(i), false))) {
-                return false;
-            }
-        }
-
-        return true;
+        procedures.requireUnambiguous(name, parameters);
     }
 
     /**
@@ -1539,7 +1035,7 @@ public class Schema extends SqlObject {
                     continue;
                 }
                 final Sequence bound = ((SequenceDefault) column.getDefaultValue()).getSequence();
-                final Sequence cloned = bound.getHome() == source ? clone.sequences.get(bound.getName()) : null;
+                final Sequence cloned = bound.getHome() == source ? clone.sequences.findExact(bound.getName()) : null;
                 if (cloned != null) {
                     column.setDefaultValue(new SequenceDefault(cloned));
                 }
@@ -1547,234 +1043,22 @@ public class Schema extends SqlObject {
         }
     }
 
-    /**
-     * Whether a signature a statement WRITES names these parameters. The family decides first (see
-     * {@link #signatureFamily}); then a type written with a length, a precision or a scale names only a parameter
-     * declared with the same, while one written bare names any of its family (live-verified):
-     *
-     * <pre>
-     *   f(code CHAR(2))      VARCHAR, STRING, TEXT, CHAR(2), VARCHAR(2)     not CHAR, CHARACTER, NCHAR, VARCHAR(3)
-     *   f(code VARCHAR(1))   CHAR — a bare CHAR is a text of length 1
-     *   f(code VARCHAR)      VARCHAR, VARCHAR(134217728)                    not CHAR, VARCHAR(5), VARCHAR(16777216)
-     *   f(code VARCHAR(16777216))   VARCHAR, VARCHAR(16777216)              not VARCHAR(134217728)
-     *   f(n NUMBER(5,2))     NUMBER, INT, NUMBER(38,0), NUMBER(5,2)         not NUMBER(10,0)
-     *   f(b BINARY(4))       BINARY, BINARY(4)                              not BINARY(5), BINARY(8388608)
-     *   f(b BINARY)          BINARY, BINARY(67108864)                       not BINARY(8388608)
-     *   f(t TIMESTAMP_NTZ(3)) TIMESTAMP_NTZ, TIMESTAMP_NTZ(3)               not TIMESTAMP_NTZ(6), TIMESTAMP_NTZ(9)
-     *   f(t TIME)            TIME, TIME(9)                                  not TIME(3)
-     * </pre>
-     *
-     * <p>A parameter declared without a length is as wide as a text or a binary gets, which is not the width a
-     * column of that spelling has: it is named by the written maximum and by no other length. A number is the one
-     * family whose default written out — NUMBER(38,0) — reads as written bare.
-     */
-    private boolean matchesWrittenSignature(final List<Parameter> params, final List<DataType> argumentTypes) {
-        if (!matchesSignature(params, argumentTypes)) {
-            return false;
-        }
-        for (int i = 0; i < params.size(); i++) {
-            if (!namesDeclaredWidth(params.get(i), argumentTypes.get(i))
-                    || !signatureShape(params.get(i).getDataType()).equals(signatureShape(argumentTypes.get(i)))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * What of a type a written signature has to repeat to name a parameter of it, beyond its family: a structured
-     * type's shape — its fields by name and in order, each field's and element's own family, and a field's NOT
-     * NULL — while the widths inside a shape count for nothing: {@code f(OBJECT(a NUMBER, b VARCHAR(5)))} names a
-     * parameter declared {@code OBJECT(a INT, b VARCHAR(10))}, and neither {@code OBJECT(b VARCHAR(10), a INT)},
-     * {@code OBJECT(a VARCHAR)} nor a shape without a field's NOT NULL does (live-verified). Empty for a type
-     * that has no shape.
-     */
-    private static String signatureShape(final DataType type) {
-        return shapeOf(type, true);
-    }
-
-    /** A type's shape (see {@link #signatureShape}), a field's NOT NULL in it or not. */
-    private static String shapeOf(final DataType type, final boolean notNull) {
-        if (type instanceof StructuredObjectType) {
-            final StringBuilder shape = new StringBuilder("OBJECT(");
-            for (final StructuredField field : ((StructuredObjectType) type).getFields()) {
-                shape.append(field.getName()).append(' ').append(shapeMember(field.getDataType(), notNull))
-                    .append(notNull && field.isNotNull() ? " NOT NULL" : "").append(',');
-            }
-            return shape.append(')').toString();
-        }
-        if (type instanceof MapType) {
-            return "MAP(" + shapeMember(((MapType) type).getKeyType(), notNull) + ","
-                + shapeMember(((MapType) type).getValueType(), notNull)
-                + (notNull ? StructuredTypes.notNullMark(type) : "") + ")";
-        }
-        if (type instanceof StructuredArrayType) {
-            return "ARRAY(" + shapeMember(((StructuredArrayType) type).getElementType(), notNull)
-                + (notNull ? StructuredTypes.notNullMark(type) : "") + ")";
-        }
-        return "";
-    }
-
-    /** A member of a shape: its own shape when it has one, else its family. */
-    private static String shapeMember(final DataType type, final boolean notNull) {
-        final String shape = shapeOf(type, notNull);
-        return shape.isEmpty() ? signatureFamily(type) : shape;
-    }
-
-    /** The length of a text parameter declared without one, as a written signature names it. */
-    private static final int UNSIZED_TEXT_LENGTH = 134217728;
-
-    /**
-     * Whether a written type's length, precision and scale are the parameter's own, or were not written at all
-     * (see {@link WrittenSignatureType}).
-     */
-    private static boolean namesDeclaredWidth(final Parameter parameter, final DataType written) {
-        final DataType declared = parameter.getDataType();
-        if (written instanceof StringType && declared instanceof StringType) {
-            return WrittenSignatureType.isBare(written) || ((StringType) written).getMaxLength()
-                == (parameter.isUnsized() ? UNSIZED_TEXT_LENGTH : ((StringType) declared).getMaxLength());
-        }
-        if (written instanceof BinaryType && declared instanceof BinaryType) {
-            return WrittenSignatureType.isBare(written) || ((BinaryType) written).getMaxLength()
-                == (parameter.isUnsized() ? BinaryType.NOMINAL_MAXIMUM : ((BinaryType) declared).getMaxLength());
-        }
-        if (written instanceof NumericType && declared instanceof NumericType
-                && "NUMBER".equals(signatureFamily(written))) {
-            final NumericType asWritten = (NumericType) written;
-            final NumericType asDeclared = (NumericType) declared;
-            return asWritten.getPrecision() == NumericType.NUMBER.getPrecision() && asWritten.getScale() == 0
-                || asWritten.getPrecision() == asDeclared.getPrecision()
-                    && asWritten.getScale() == asDeclared.getScale();
-        }
-        if (written instanceof DateTimeType && declared instanceof DateTimeType) {
-            return WrittenSignatureType.isBare(written)
-                || ((DateTimeType) written).getPrecision() == ((DateTimeType) declared).getPrecision();
-        }
-        return true;
-    }
-
-    /**
-     * The CANONICAL type family a routine's signature is stored under: Snowflake normalizes a
-     * parameter's declared alias away, so a DROP / DESCRIBE names the FAMILY. Live-verified on a real
-     * account, each spelling re-creating the routine between attempts: an
-     * {@code x INTEGER} parameter is dropped by INTEGER, INT, BIGINT and NUMBER alike; a
-     * {@code x DECIMAL(10,2)} parameter by DECIMAL and by NUMBER; a {@code x DOUBLE} parameter by
-     * DOUBLE; and a {@code x CHAR(5)} parameter by STRING and by VARCHAR. Two overloads are the same
-     * signature by family alone, whatever their lengths: {@code f(CHAR(3))} beside {@code f(CHAR(2))}
-     * already exists.
-     */
-    private static String signatureFamily(final DataType type) {
-        // A structured OBJECT or ARRAY is another signature than the plain type of its name, as CREATE already
-        // counts it (f(x OBJECT) and f(x OBJECT(a INT)) are two overloads), so DROP, DESCRIBE, GET_DDL and
-        // OR REPLACE must not take one for the other. A MAP has a name of its own.
-        if (type instanceof StructuredObjectType) {
-            return "STRUCTURED OBJECT";
-        }
-        if (type instanceof StructuredArrayType) {
-            return "STRUCTURED ARRAY";
-        }
-        return signatureFamily(type.getName());
-    }
-
-    /**
-     * {@link #signatureFamily(DataType)} for a type written by name, as a GRANT on a routine writes its argument
-     * types. A bare TIMESTAMP names the default TIMESTAMP_NTZ there, and an OBJECT or ARRAY written with a shape names
-     * the structured type, as the declared parameter's own family does.
-     *
-     * @param typeName the type's name; any parameters after it are ignored but for an OBJECT's or ARRAY's shape
-     * @return the family
-     */
-    public static String signatureFamily(final String typeName) {
-        final int open = typeName.indexOf('(');
-        final String name = (open >= 0 ? typeName.substring(0, open) : typeName).trim().toUpperCase(Locale.ROOT);
-        if (open >= 0 && ("OBJECT".equals(name) || "ARRAY".equals(name))
-                && !typeName.substring(open + 1).replace(")", "").trim().isEmpty()) {
-            return "STRUCTURED " + name;
-        }
-        if ("TIMESTAMP".equals(name)) {
-            return "TIMESTAMP_NTZ";
-        }
-        switch (name) {
-            case "CHAR": case "CHARACTER": case "NCHAR": case "NVARCHAR": case "NVARCHAR2":
-            case "VARCHAR2":
-            case "CHAR VARYING": case "STRING": case "TEXT":
-                return "VARCHAR";
-            case "DECIMAL": case "NUMERIC": case "INT": case "INTEGER": case "BIGINT":
-            case "SMALLINT": case "TINYINT": case "BYTEINT":
-                return "NUMBER";
-            case "DOUBLE": case "DOUBLE PRECISION": case "REAL": case "FLOAT4": case "FLOAT8":
-                return "FLOAT";
-            case "VARBINARY":
-                return "BINARY";
-            case "DATETIME":
-                return "TIMESTAMP_NTZ";
-            default:
-                return name;
-        }
-    }
-
-    /**
-     * A routine's signature as its argument types' families, {@code (NUMBER, VARCHAR)}: what tells its overloads
-     * apart, and what privileges on one overload are recorded under (GrantNames).
-     *
-     * @param parameters the routine's parameters
-     * @return the signature
-     */
-    public static String signatureText(final List<Parameter> parameters) {
-        final StringBuilder text = new StringBuilder("(");
-        for (int i = 0; i < parameters.size(); i++) {
-            // A parameter with a default is marked, as SHOW GRANTS names it: D(NUMBER, DEFAULT VARCHAR)
-            // (live-verified).
-            text.append(i > 0 ? ", " : "").append(parameters.get(i).hasDefault() ? "DEFAULT " : "")
-                .append(signatureFamily(parameters.get(i).getDataType()));
-        }
-        return text.append(')').toString();
-    }
-
-    private String formatParameters(final List<Parameter> params) {
-        if (params.isEmpty()) {
-            return "()";
-        }
-
-        final StringBuilder sb = new StringBuilder("(");
-        for (int i = 0; i < params.size(); i++) {
-            if (i > 0) {
-                sb.append(", ");
-            }
-            sb.append(params.get(i).getDataType());
-        }
-        sb.append(")");
-        return sb.toString();
-    }
-
     // Streams
     public void addStream(final Stream stream) {
         rejectNameHeldByOtherKind(stream.getName(), RelationKind.STREAM, false);
-        final String upperName = stream.getName();
-        if (streams.containsKey(upperName)) {
-            throw new NameTakenException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(stream.getName()) + "' already exists."));
-        }
-        streams.put(upperName, stream);
+        streams.add(stream);
     }
 
     public void dropStream(final String name) {
-        if (!streams.containsKey(keyFor(streams, name))) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
-        }
-        streams.remove(keyFor(streams, name));
+        streams.drop(name);
     }
 
     public Stream getStream(final String name) {
-        final Stream stream = streams.get(keyFor(streams, name));
-        if (stream == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
-        }
-        return stream;
+        return streams.get(name);
     }
 
     public List<Stream> getStreams() {
-        return new ArrayList<>(streams.values());
+        return streams.values();
     }
 
     /**
@@ -1782,7 +1066,7 @@ public class Schema extends SqlObject {
      * only in case is a different stream.
      */
     public boolean hasStreamExact(final String name) {
-        return streams.containsKey(name);
+        return streams.hasExact(name);
     }
 
     /**
@@ -1793,11 +1077,7 @@ public class Schema extends SqlObject {
      * @return the stream
      */
     public Stream getStreamExact(final String name) {
-        final Stream stream = streams.get(name);
-        if (stream == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
-        }
-        return stream;
+        return streams.getExact(name);
     }
 
     /**
@@ -1806,46 +1086,33 @@ public class Schema extends SqlObject {
      * @param name the canonical name
      */
     public void dropStreamExact(final String name) {
-        getStreamExact(name);
-        streams.remove(name);
+        streams.dropExact(name);
     }
 
     // Tasks
     public void addTask(final Task task) {
-        final String upperName = task.getName();
-        if (tasks.containsKey(upperName)) {
-            throw new NameTakenException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(task.getName()) + "' already exists."));
-        }
-        tasks.put(upperName, task);
+        tasks.add(task);
     }
 
     public void dropTask(final String name) {
-        if (!tasks.containsKey(keyFor(tasks, name))) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
-        }
-        tasks.remove(keyFor(tasks, name));
+        tasks.drop(name);
     }
 
     public boolean hasTask(final String name) {
-        return tasks.containsKey(keyFor(tasks, name));
+        return tasks.has(name);
     }
 
     public Task getTask(final String name) {
-        final Task task = tasks.get(keyFor(tasks, name));
-        if (task == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
-        }
-        return task;
+        return tasks.get(name);
     }
 
     public List<Task> getTasks() {
-        return new ArrayList<>(tasks.values());
+        return tasks.values();
     }
 
     /** Whether a task of EXACTLY this name is here: a name that differs only in case is another task. */
     public boolean hasTaskExact(final String name) {
-        return tasks.containsKey(name);
+        return tasks.hasExact(name);
     }
 
     /**
@@ -1856,11 +1123,7 @@ public class Schema extends SqlObject {
      * @return the task
      */
     public Task getTaskExact(final String name) {
-        final Task task = tasks.get(name);
-        if (task == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
-        }
-        return task;
+        return tasks.getExact(name);
     }
 
     /**
@@ -1869,79 +1132,55 @@ public class Schema extends SqlObject {
      * @param name the canonical name
      */
     public void dropTaskExact(final String name) {
-        getTaskExact(name);
-        tasks.remove(name);
+        tasks.dropExact(name);
     }
 
     // Alerts
     /** Adds an alert; a name already taken by an alert is refused. */
     public void addAlert(final Alert alert) {
-        if (alerts.containsKey(alert.getName())) {
-            throw new NameTakenException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(alert.getName()) + "' already exists."));
-        }
-        alerts.put(alert.getName(), alert);
+        alerts.add(alert);
     }
 
     /** Drops an alert, refused in the does-not-exist family when there is none of that name. */
     public void dropAlert(final String name) {
-        if (alerts.remove(keyFor(alerts, name)) == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Alert", qualified(name)));
-        }
+        alerts.drop(name);
     }
 
     /** Whether an alert of that name is here. */
     public boolean hasAlert(final String name) {
-        return alerts.containsKey(keyFor(alerts, name));
+        return alerts.has(name);
     }
 
     /** The alert of that name, refused in the does-not-exist family when there is none. */
     public Alert getAlert(final String name) {
-        final Alert alert = alerts.get(keyFor(alerts, name));
-        if (alert == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Alert", qualified(name)));
-        }
-        return alert;
+        return alerts.get(name);
     }
 
     /** Every alert of the schema. */
     public List<Alert> getAlerts() {
-        return new ArrayList<>(alerts.values());
+        return alerts.values();
     }
 
     // Pipes
     public void addPipe(final Pipe pipe) {
-        final String upperName = pipe.getName();
-        if (pipes.containsKey(upperName)) {
-            throw new NameTakenException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(pipe.getName()) + "' already exists."));
-        }
-        pipes.put(upperName, pipe);
+        pipes.add(pipe);
     }
 
     public void dropPipe(final String name) {
-        final String upperName = keyFor(pipes, name);
-        if (!pipes.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
-        }
-        pipes.remove(upperName);
+        pipes.drop(name);
     }
 
     public Pipe getPipe(final String name) {
-        final Pipe pipe = pipes.get(keyFor(pipes, name));
-        if (pipe == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
-        }
-        return pipe;
+        return pipes.get(name);
     }
 
     public List<Pipe> getPipes() {
-        return new ArrayList<>(pipes.values());
+        return pipes.values();
     }
 
     /** Whether a pipe of EXACTLY this name is here: a name that differs only in case is another pipe. */
     public boolean hasPipeExact(final String name) {
-        return pipes.containsKey(name);
+        return pipes.hasExact(name);
     }
 
     /**
@@ -1952,11 +1191,7 @@ public class Schema extends SqlObject {
      * @return the pipe
      */
     public Pipe getPipeExact(final String name) {
-        final Pipe pipe = pipes.get(name);
-        if (pipe == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
-        }
-        return pipe;
+        return pipes.getExact(name);
     }
 
     /**
@@ -1965,47 +1200,30 @@ public class Schema extends SqlObject {
      * @param name the canonical name
      */
     public void dropPipeExact(final String name) {
-        getPipeExact(name);
-        pipes.remove(name);
+        pipes.dropExact(name);
     }
 
     // Sequences
     public void addSequence(final Sequence sequence) {
-        final String upperName = sequence.getName();
-        if (sequences.containsKey(upperName)) {
-            throw new NameTakenException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(sequence.getName()) + "' already exists."));
-        }
-        sequences.put(upperName, sequence);
+        sequences.add(sequence);
         sequence.setHome(this);
     }
 
     public void dropSequence(final String name) {
-        final String upperName = keyFor(sequences, name);
-        if (!sequences.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
-        }
-        final Sequence dropped = sequences.remove(upperName);
-        if (dropped != null && dropped.getHome() == this) {
-            dropped.setHome(null);
-        }
+        released(sequences.drop(name));
     }
 
     public Sequence getSequence(final String name) {
-        final Sequence sequence = sequences.get(keyFor(sequences, name));
-        if (sequence == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
-        }
-        return sequence;
+        return sequences.get(name);
     }
 
     public List<Sequence> getSequences() {
-        return new ArrayList<>(sequences.values());
+        return sequences.values();
     }
 
     /** Whether a sequence carries exactly this canonical name. */
     public boolean hasSequenceExact(final String name) {
-        return sequences.containsKey(name);
+        return sequences.hasExact(name);
     }
 
     /**
@@ -2015,10 +1233,7 @@ public class Schema extends SqlObject {
      * @return the sequence
      */
     public Sequence getSequenceExact(final String name) {
-        if (!sequences.containsKey(name)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
-        }
-        return sequences.get(name);
+        return sequences.getExact(name);
     }
 
     /**
@@ -2027,45 +1242,35 @@ public class Schema extends SqlObject {
      * @param name the canonical name
      */
     public void dropSequenceExact(final String name) {
-        if (!sequences.containsKey(name)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
+        released(sequences.dropExact(name));
+    }
+
+    /** A dropped sequence no longer counts this schema its home. */
+    private void released(final Sequence dropped) {
+        if (dropped.getHome() == this) {
+            dropped.setHome(null);
         }
-        dropSequence(name);
     }
 
     // File formats
+    /**
+     * Adds a file format, replacing the one of its name; another session's temporary format keeps its name, as one
+     * session's format never replaces another's.
+     */
     public void addFileFormat(final FileFormat fileFormat) {
-        final FileFormat held = fileFormats.get(fileFormat.getName());
-        if (held != null && othersTemporary(held)) {
-            // Another session's temporary format holds the name; one session's never replaces another's.
-            throw new NameTakenException(SqlCompilationError.of(
-                "Object '" + SqlIdentifiers.spellCanonical(fileFormat.getName()) + "' already exists."));
-        }
-        fileFormats.put(fileFormat.getName(), fileFormat);
-    }
-
-    /** Whether a file format is another session's temporary one, which a statement neither reaches nor lists. */
-    private static boolean othersTemporary(final FileFormat format) {
-        final Long current = StatementSession.current();
-        return format.isTemporary() && current != null && format.getCreatedInSession() != null
-            && !current.equals(format.getCreatedInSession());
+        fileFormats.put(fileFormat);
     }
 
     public void dropFileFormat(final String name) {
-        final String upperName = keyFor(fileFormats, name);
-        if (!fileFormats.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", qualified(name)));
-        }
-        fileFormats.remove(upperName);
+        fileFormats.drop(name);
     }
 
     public FileFormat getFileFormat(final String name) {
-        final FileFormat format = fileFormats.get(keyFor(fileFormats, name));
-        return format == null || othersTemporary(format) ? null : format;
+        return fileFormats.find(name);
     }
 
     public boolean hasFileFormat(final String name) {
-        return getFileFormat(name) != null;
+        return fileFormats.has(name);
     }
 
     /**
@@ -2075,13 +1280,12 @@ public class Schema extends SqlObject {
      * @return the format, or null
      */
     public FileFormat getFileFormatExact(final String name) {
-        return hasFileFormatExact(name) ? fileFormats.get(name) : null;
+        return fileFormats.findExact(name);
     }
 
     /** Whether a file format carries exactly this canonical name; one differing only in case is another. */
     public boolean hasFileFormatExact(final String name) {
-        final FileFormat format = fileFormats.get(name);
-        return format != null && !othersTemporary(format);
+        return fileFormats.hasExact(name);
     }
 
     /**
@@ -2090,26 +1294,17 @@ public class Schema extends SqlObject {
      * @param name the canonical name
      */
     public void dropFileFormatExact(final String name) {
-        if (!hasFileFormatExact(name)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", qualified(name)));
-        }
-        dropFileFormat(name);
+        fileFormats.dropExact(name);
     }
 
     /** The file formats a statement here lists: every one but another session's temporary ones. */
     public List<FileFormat> getFileFormats() {
-        final List<FileFormat> reached = new ArrayList<>();
-        for (final FileFormat format : fileFormats.values()) {
-            if (!othersTemporary(format)) {
-                reached.add(format);
-            }
-        }
-        return reached;
+        return fileFormats.values();
     }
 
     /** Every file format held here, every session's temporary ones included: the engine's bookkeeping reads these. */
     public List<FileFormat> allFileFormats() {
-        return new ArrayList<>(fileFormats.values());
+        return fileFormats.all();
     }
 
     /**
@@ -2157,7 +1352,7 @@ public class Schema extends SqlObject {
 
         // Tags are cloned with their schema, and what is cloned with them is mapped to the clones afterwards
         // (TagAssignments.mapToClones), so an assignment in the clone reads the clone's tag (documented).
-        for (final Tag tag : tags.values()) {
+        for (final Tag tag : tags.all()) {
             final Tag clonedTag = new Tag(tag.getName(), tag.getAllowedValues(), tag.getComment());
             clonedTag.markAllowedValuesListed(tag.hasAllowedValues());
             clonedTag.setClonedFromId(tag.getId());
@@ -2165,13 +1360,13 @@ public class Schema extends SqlObject {
             clonedTag.setOnConflict(tag.getOnConflict());
             clonedTag.setOwner(tag.getOwner());
             copyTags(tag, clonedTag);
-            clonedSchema.tags.put(tag.getName(), clonedTag);
+            clonedSchema.tags.put(clonedTag);
         }
 
         // Dynamic tables, as CREATE DYNAMIC TABLE ... CLONE makes one: the definition and settings, the
         // clone suspended, its reclustering too. Their rows are their query's answer, so there is nothing
         // else to copy.
-        for (final DynamicTable dynamicTable : dynamicTables.values()) {
+        for (final DynamicTable dynamicTable : dynamicTables.all()) {
             final DynamicTable clonedDynamic = dynamicTable.copyAs(dynamicTable.getName());
             clonedDynamic.setClone(true);
             clonedDynamic.setState(State.SUSPENDED);
@@ -2180,15 +1375,15 @@ public class Schema extends SqlObject {
             clonedDynamic.setReclusterSuspended(true);
             clonedDynamic.setOwner(dynamicTable.getOwner());
             copyTags(dynamicTable, clonedDynamic);
-            clonedSchema.dynamicTables.put(dynamicTable.getName(), clonedDynamic);
+            clonedSchema.dynamicTables.put(clonedDynamic);
         }
 
         // Materialized views, which read what their definition names, as a cloned view does.
-        for (final MaterializedView view : materializedViews.values()) {
+        for (final MaterializedView view : materializedViews.all()) {
             final MaterializedView clonedView = view.copy();
             clonedView.setOwner(view.getOwner());
             copyTags(view, clonedView);
-            clonedSchema.materializedViews.put(view.getName(), clonedView);
+            clonedSchema.materializedViews.put(clonedView);
         }
 
         // Secrets, network rules and password policies live in the schema and are cloned with it.
@@ -2201,92 +1396,80 @@ public class Schema extends SqlObject {
         // Clone procedures — preserve LANGUAGE/handler/runtime/packages (and EXECUTE AS/imports). The short
         // constructor defaults the language to SQL, which turned a cloned JavaScript/Python/Java procedure
         // into a SQL one whose body then failed to parse at CALL time.
-        for (final Map.Entry<String, List<Procedure>> entry : procedures.entrySet()) {
-            final List<Procedure> clonedOverloads = new ArrayList<>();
-            for (final Procedure proc : entry.getValue()) {
-                if (proc.isTemporary()) {
-                    continue;   // a temporary procedure stays with its session (see the views above)
-                }
-                final Procedure clonedProc = new Procedure(
-                    proc.getName(),
-                    proc.getParameters(),
-                    proc.getReturnType(),
-                    proc.getBody(),
-                    proc.getLanguage(),
-                    proc.getHandler(),
-                    proc.getRuntimeVersion(),
-                    proc.getPackages()
-                );
-                clonedProc.setComment(proc.getComment());
-                clonedProc.setReturnSized(proc.getReturnSized());
-                clonedProc.setReturnNotNull(proc.isReturnNotNull());
-                clonedProc.setImports(proc.getImports());
-                clonedProc.setEnvironment(proc.getEnvironment().copy());
-                clonedProc.setReturnsTable(proc.returnsTable());
-                clonedProc.setReturnColumns(proc.getReturnColumns());
-                clonedProc.setExecuteAs(proc.getExecuteAs());
-                clonedProc.setNullHandling(proc.getNullHandling());
-                clonedProc.setVolatility(proc.getVolatility());
-                clonedProc.setOwner(proc.getOwner());
-                copyTags(proc, clonedProc);
-                clonedOverloads.add(clonedProc);
+        for (final Procedure proc : procedures.all()) {
+            if (proc.isTemporary()) {
+                continue;   // a temporary procedure stays with its session (see the views above)
             }
-            if (!clonedOverloads.isEmpty()) {
-                clonedSchema.procedures.put(entry.getKey(), clonedOverloads);
-            }
+            final Procedure clonedProc = new Procedure(
+                proc.getName(),
+                proc.getParameters(),
+                proc.getReturnType(),
+                proc.getBody(),
+                proc.getLanguage(),
+                proc.getHandler(),
+                proc.getRuntimeVersion(),
+                proc.getPackages()
+            );
+            clonedProc.setComment(proc.getComment());
+            clonedProc.setReturnSized(proc.getReturnSized());
+            clonedProc.setReturnNotNull(proc.isReturnNotNull());
+            clonedProc.setImports(proc.getImports());
+            clonedProc.setEnvironment(proc.getEnvironment().copy());
+            clonedProc.setReturnsTable(proc.returnsTable());
+            clonedProc.setReturnColumns(proc.getReturnColumns());
+            clonedProc.setExecuteAs(proc.getExecuteAs());
+            clonedProc.setNullHandling(proc.getNullHandling());
+            clonedProc.setVolatility(proc.getVolatility());
+            clonedProc.setOwner(proc.getOwner());
+            copyTags(proc, clonedProc);
+            clonedSchema.procedures.hold(clonedProc);
         }
 
         // Clone functions — same story: keep LANGUAGE/handler/runtime plus the RETURNS TABLE columns and the
         // null-handling / volatility / secure / imports attributes, else a cloned Java (or JS/Python) UDF is
         // treated as a SQL UDF and its body fails to evaluate when called.
-        for (final Map.Entry<String, List<Function>> entry : functions.entrySet()) {
-            final List<Function> clonedOverloads = new ArrayList<>();
-            for (final Function func : entry.getValue()) {
-                if (func.isTemporary()) {
-                    continue;   // a temporary function stays with its session (see the views above)
-                }
-                final Function clonedFunc = new Function(
-                    func.getName(),
-                    func.getParameters(),
-                    func.getReturnType(),
-                    func.getReturnColumns(),
-                    func.getBody(),
-                    func.isTableFunction(),
-                    func.getLanguage(),
-                    func.getHandler(),
-                    func.getRuntimeVersion()
-                );
-                clonedFunc.setComment(func.getComment());
-                clonedFunc.setReturnSized(func.getReturnSized());
-                clonedFunc.setReturnNotNull(func.isReturnNotNull());
-                clonedFunc.setNullHandling(func.getNullHandling());
-                clonedFunc.setVolatility(func.getVolatility());
-                clonedFunc.setSecure(func.isSecure());
-                clonedFunc.setImports(func.getImports());
-                clonedFunc.setEnvironment(func.getEnvironment().copy());
-                clonedFunc.setHome(clonedSchema);
-                clonedFunc.setMemoizable(func.isMemoizable());
-                if (func.isServiceFunction()) {
-                    clonedFunc.setService(func.getServiceName(), func.getServiceEndpoint(), func.getMaxBatchRows());
-                }
-                if (func.isExternalFunction()) {
-                    clonedFunc.setExternal(func.getApiIntegration(), func.getExternalUrl());
-                }
-                clonedFunc.setAggregate(func.isAggregate());
-                clonedFunc.setOwner(func.getOwner());
-                copyTags(func, clonedFunc);
-                clonedOverloads.add(clonedFunc);
+        for (final Function func : functions.all()) {
+            if (func.isTemporary()) {
+                continue;   // a temporary function stays with its session (see the views above)
             }
-            if (!clonedOverloads.isEmpty()) {
-                clonedSchema.functions.put(entry.getKey(), clonedOverloads);
+            final Function clonedFunc = new Function(
+                func.getName(),
+                func.getParameters(),
+                func.getReturnType(),
+                func.getReturnColumns(),
+                func.getBody(),
+                func.isTableFunction(),
+                func.getLanguage(),
+                func.getHandler(),
+                func.getRuntimeVersion()
+            );
+            clonedFunc.setComment(func.getComment());
+            clonedFunc.setReturnSized(func.getReturnSized());
+            clonedFunc.setReturnNotNull(func.isReturnNotNull());
+            clonedFunc.setNullHandling(func.getNullHandling());
+            clonedFunc.setVolatility(func.getVolatility());
+            clonedFunc.setSecure(func.isSecure());
+            clonedFunc.setImports(func.getImports());
+            clonedFunc.setEnvironment(func.getEnvironment().copy());
+            clonedFunc.setHome(clonedSchema);
+            clonedFunc.setMemoizable(func.isMemoizable());
+            if (func.isServiceFunction()) {
+                clonedFunc.setService(func.getServiceName(), func.getServiceEndpoint(), func.getMaxBatchRows());
             }
+            if (func.isExternalFunction()) {
+                clonedFunc.setExternal(func.getApiIntegration(), func.getExternalUrl());
+            }
+            clonedFunc.setAggregate(func.isAggregate());
+            clonedFunc.setOwner(func.getOwner());
+            copyTags(func, clonedFunc);
+            clonedSchema.functions.hold(clonedFunc);
         }
 
         // Clone streams — preserve the source TYPE (TABLE vs VIEW), showInitialRows, the resolved base
         // tables (for a stream ON VIEW), owner and comment. The old 3-arg constructor dropped all of these
         // and defaulted sourceType to TABLE, so a cloned stream ON a VIEW failed to read in the clone
         // ("Table does not exist: <view>") because the read path resolved its source as a table.
-        for (final Stream stream : streams.values()) {
+        for (final Stream stream : streams.all()) {
             final Stream clonedStream = new Stream(
                 stream.getName(),
                 stream.getSourceTableName(),
@@ -2298,22 +1481,22 @@ public class Schema extends SqlObject {
             clonedStream.setOwner(stream.getOwner());
             clonedStream.setComment(stream.getComment());
             copyTags(stream, clonedStream);
-            clonedSchema.streams.put(stream.getName(), clonedStream);
+            clonedSchema.streams.put(clonedStream);
         }
 
         // Clone tasks: the whole definition, AFTER and WHEN included, and suspended (documented). A task
         // graph lives in one schema and names its tasks bare, so the clone's graph links the clone's tasks.
-        for (final Task task : tasks.values()) {
-            clonedSchema.tasks.put(task.getName(), task.cloneDefinition());
+        for (final Task task : tasks.all()) {
+            clonedSchema.tasks.put(task.cloneDefinition());
         }
         // Clone alerts: a cloned alert keeps its definition and starts suspended.
-        for (final Alert alert : alerts.values()) {
-            clonedSchema.alerts.put(alert.getName(), alert.copy(alert.getName()));
+        for (final Alert alert : alerts.all()) {
+            clonedSchema.alerts.put(alert.copy(alert.getName()));
         }
 
         // Clone pipes. A pipe that loads from an internal stage is not cloned, and a cloned one does not run
         // until it is resumed: paused, or STOPPED_CLONED for an auto-ingest pipe (documented).
-        for (final Pipe pipe : pipes.values()) {
+        for (final Pipe pipe : pipes.all()) {
             if (readsInternalStage(pipe)) {
                 continue;
             }
@@ -2339,11 +1522,11 @@ public class Schema extends SqlObject {
             if (pipe.getLastLoadedTime() != null) {
                 clonedPipe.setLastLoadedTime(pipe.getLastLoadedTime());
             }
-            clonedSchema.pipes.put(pipe.getName(), clonedPipe);
+            clonedSchema.pipes.put(clonedPipe);
         }
 
         // Clone sequences
-        for (final Sequence sequence : sequences.values()) {
+        for (final Sequence sequence : sequences.all()) {
             final Sequence clonedSequence = new Sequence(
                 sequence.getName(),
                 sequence.getStartValue(),
@@ -2354,7 +1537,7 @@ public class Schema extends SqlObject {
             // Preserve current value (use raw to avoid CURRVAL check)
             clonedSequence.setCurrentValue(sequence.getCurrentValueRaw());
             clonedSequence.setOwner(sequence.getOwner());
-            clonedSchema.sequences.put(sequence.getName(), clonedSequence);
+            clonedSchema.sequences.put(clonedSequence);
             clonedSequence.setHome(clonedSchema);
         }
         // A cloned table that drew from one of this schema's sequences draws from that sequence's clone.
@@ -2362,52 +1545,51 @@ public class Schema extends SqlObject {
 
         // Clone the policy OBJECTS too — a policy attached to a cloned table/view must still resolve
         // inside the clone (fresh instances: a later rename of the original must not affect the clone).
-        for (final Contact contact : contacts.values()) {
+        for (final Contact contact : contacts.all()) {
             final Contact clonedContact = new Contact(contact.getName());
             clonedContact.setComment(contact.getComment());
             clonedContact.setUrl(contact.getUrl());
             clonedContact.setEmailDistributionList(contact.getEmailDistributionList());
-            clonedSchema.contacts.put(contact.getName(), clonedContact);
+            clonedSchema.contacts.put(clonedContact);
         }
         // Each policy keeps its comment, owner and tags.
-        for (final ProjectionPolicy policy : projectionPolicies.values()) {
-            clonedSchema.projectionPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
+        for (final ProjectionPolicy policy : projectionPolicies.all()) {
+            clonedSchema.projectionPolicies.put(
                 withPolicyDetails(policy, new ProjectionPolicy(policy.getName(), policy.getBody())));
         }
-        for (final AggregationPolicy policy : aggregationPolicies.values()) {
-            clonedSchema.aggregationPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
+        for (final AggregationPolicy policy : aggregationPolicies.all()) {
+            clonedSchema.aggregationPolicies.put(
                 withPolicyDetails(policy, new AggregationPolicy(policy.getName(), policy.getBody())));
         }
-        for (final JoinPolicy policy : joinPolicies.values()) {
-            clonedSchema.joinPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
+        for (final JoinPolicy policy : joinPolicies.all()) {
+            clonedSchema.joinPolicies.put(
                 withPolicyDetails(policy, new JoinPolicy(policy.getName(), policy.getBody())));
         }
-        for (final MaskingPolicy policy : maskingPolicies.values()) {
+        for (final MaskingPolicy policy : maskingPolicies.all()) {
             final MaskingPolicy clonedPolicy = new MaskingPolicy(policy.getName(), policy.getParameters(),
                 policy.getReturnType(), policy.getBody());
             clonedPolicy.setReturnDataType(policy.getReturnDataType());
             clonedPolicy.setReturnSpelling(policy.getReturnSpelling());
             clonedPolicy.setExemptOtherPolicies(policy.isExemptOtherPolicies());
-            clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(Locale.ROOT), withPolicyDetails(policy, clonedPolicy));
+            clonedSchema.maskingPolicies.put(withPolicyDetails(policy, clonedPolicy));
         }
-        for (final RowAccessPolicy policy : rowAccessPolicies.values()) {
+        for (final RowAccessPolicy policy : rowAccessPolicies.all()) {
             final RowAccessPolicy clonedPolicy =
                 new RowAccessPolicy(policy.getName(), policy.getParameters(), policy.getBody());
             clonedPolicy.setExemptOtherPolicies(policy.isExemptOtherPolicies());
-            clonedSchema.rowAccessPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
-                withPolicyDetails(policy, clonedPolicy));
+            clonedSchema.rowAccessPolicies.put(withPolicyDetails(policy, clonedPolicy));
         }
 
         // Clone stages — the DEFINITION carries over (Snowflake's CLONE keeps stage definitions), its
         // file format options, copy options and directory setting included (Stage.copy). Dropping them
         // silently broke every jar-backed UDF in a cloned database ("Stage does not exist" at first
         // invocation).
-        for (final Stage stage : stages.values()) {
-            clonedSchema.stages.put(stage.getName(), stage.copy());
+        for (final Stage stage : stages.all()) {
+            clonedSchema.stages.put(stage.copy());
         }
 
         // Clone file formats; a temporary one is no part of a clone, as a temporary table is not.
-        for (final FileFormat fileFormat : fileFormats.values()) {
+        for (final FileFormat fileFormat : fileFormats.all()) {
             if (fileFormat.isTemporary()) {
                 continue;
             }
@@ -2417,7 +1599,7 @@ public class Schema extends SqlObject {
             }
             clonedFormat.setComment(fileFormat.getComment());
             clonedFormat.setOwner(fileFormat.getOwner());
-            clonedSchema.fileFormats.put(fileFormat.getName(), clonedFormat);
+            clonedSchema.fileFormats.put(clonedFormat);
         }
 
         return clonedSchema;
@@ -2454,32 +1636,21 @@ public class Schema extends SqlObject {
         final boolean here = parts.size() == 1
             || parts.get(parts.size() - 2).equalsIgnoreCase(getName())
                 && (parts.size() == 2 || databaseName == null || parts.get(0).equalsIgnoreCase(databaseName));
-        final Stage stage = here ? stages.get(keyFor(stages, parts.get(parts.size() - 1))) : null;
+        final Stage stage = here ? stages.find(parts.get(parts.size() - 1)) : null;
         return stage != null && stage.getType() == StageType.INTERNAL;
     }
 
     // Stages
     public void addStage(final Stage stage) {
-        final String key = stage.getName();
-        if (stages.containsKey(key)) {
-            throw new NameTakenException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(stage.getName()) + "' already exists."));
-        }
-        stages.put(key, stage);
+        stages.add(stage);
     }
 
     public void dropStage(final String name) {
-        final String upper = keyFor(stages, name);
-        if (!stages.containsKey(upper)) throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
-        stages.remove(upper);
+        stages.drop(name);
     }
 
     public Stage getStage(final String name) {
-        final Stage s = stages.get(keyFor(stages, name));
-        if (s == null || othersTemporary(s, s.isTemporary())) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
-        }
-        return s;
+        return stages.get(name);
     }
 
     /**
@@ -2489,15 +1660,11 @@ public class Schema extends SqlObject {
      * @return the stage
      */
     public Stage getStageExact(final String name) {
-        if (!hasStageExact(name)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
-        }
-        return stages.get(name);
+        return stages.getExact(name);
     }
 
     public boolean hasStage(final String name) {
-        final Stage stage = stages.get(keyFor(stages, name));
-        return stage != null && !othersTemporary(stage, stage.isTemporary());
+        return stages.has(name);
     }
 
     /**
@@ -2505,8 +1672,7 @@ public class Schema extends SqlObject {
      * only in case is a different stage.
      */
     public boolean hasStageExact(final String name) {
-        final Stage stage = stages.get(name);
-        return stage != null && !othersTemporary(stage, stage.isTemporary());
+        return stages.hasExact(name);
     }
 
     /**
@@ -2515,57 +1681,40 @@ public class Schema extends SqlObject {
      * @param name the canonical name
      */
     public void dropStageExact(final String name) {
-        if (!hasStageExact(name)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
-        }
-        dropStage(name);
+        stages.dropExact(name);
     }
 
     /** The stages a statement here lists: every one but another session's temporary ones. */
     public List<Stage> getStages() {
-        final List<Stage> reached = new ArrayList<>();
-        for (final Stage stage : stages.values()) {
-            if (!othersTemporary(stage, stage.isTemporary())) {
-                reached.add(stage);
-            }
-        }
-        return reached;
+        return stages.values();
     }
 
     /** Every stage held here, every session's temporary ones included: the engine's own bookkeeping reads these. */
     public List<Stage> allStages() {
-        return new ArrayList<>(stages.values());
+        return stages.all();
     }
 
     // Cortex search services
     public void addCortexSearchService(final CortexSearchService service) {
         service.setDatabaseName(databaseName);
         service.setSchemaName(getName());
-        cortexSearchServices.put(service.getName(), service);
+        cortexSearchServices.put(service);
     }
 
     public void dropCortexSearchService(final String name) {
-        final String upper = keyFor(cortexSearchServices, name);
-        if (!cortexSearchServices.containsKey(upper)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
-        }
-        cortexSearchServices.remove(upper);
+        cortexSearchServices.drop(name);
     }
 
     public CortexSearchService getCortexSearchService(final String name) {
-        final CortexSearchService service = cortexSearchServices.get(keyFor(cortexSearchServices, name));
-        if (service == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
-        }
-        return service;
+        return cortexSearchServices.get(name);
     }
 
     public boolean hasCortexSearchService(final String name) {
-        return cortexSearchServices.containsKey(keyFor(cortexSearchServices, name));
+        return cortexSearchServices.has(name);
     }
 
     public List<CortexSearchService> getCortexSearchServices() {
-        return new ArrayList<>(cortexSearchServices.values());
+        return cortexSearchServices.values();
     }
 
     /**
@@ -2573,22 +1722,17 @@ public class Schema extends SqlObject {
      * {@code "svc"} and {@code SVC} are two services.
      */
     public CortexSearchService getCortexSearchServiceExact(final String name) {
-        final CortexSearchService service = cortexSearchServices.get(name);
-        if (service == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
-        }
-        return service;
+        return cortexSearchServices.getExact(name);
     }
 
     /** Whether a service of exactly that canonical name exists. */
     public boolean hasCortexSearchServiceExact(final String name) {
-        return cortexSearchServices.containsKey(name);
+        return cortexSearchServices.hasExact(name);
     }
 
-    /** Drops the service of exactly that canonical name; a missing one is refused as {@link #getCortexSearchServiceExact} refuses it. */
+    /** Drops the service of exactly that canonical name; a missing one is refused as missing. */
     public void dropCortexSearchServiceExact(final String name) {
-        getCortexSearchServiceExact(name);
-        cortexSearchServices.remove(name);
+        cortexSearchServices.dropExact(name);
     }
 
     /** The schema's notebooks and Streamlit apps, live and dropped. */
@@ -2598,23 +1742,19 @@ public class Schema extends SqlObject {
 
     // Tags
     public void addTag(final Tag tag) {
-        tags.put(tag.getName(), tag);
+        tags.put(tag);
     }
 
     public void dropTag(final String name) {
-        final String upper = keyFor(tags, name);
-        if (!tags.containsKey(upper)) throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
-        tags.remove(upper);
+        tags.drop(name);
     }
 
     public Tag getTag(final String name) {
-        final Tag tag = tags.get(keyFor(tags, name));
-        if (tag == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
-        return tag;
+        return tags.get(name);
     }
 
     public boolean hasTag(final String name) {
-        return tags.containsKey(keyFor(tags, name));
+        return tags.has(name);
     }
 
     /**
@@ -2622,7 +1762,7 @@ public class Schema extends SqlObject {
      * differs only in case is a different tag (live-verified).
      */
     public boolean hasTagExact(final String name) {
-        return tags.containsKey(name);
+        return tags.hasExact(name);
     }
 
     /**
@@ -2632,11 +1772,7 @@ public class Schema extends SqlObject {
      * @return the tag
      */
     public Tag getTagExact(final String name) {
-        final Tag tag = tags.get(name);
-        if (tag == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
-        }
-        return tag;
+        return tags.getExact(name);
     }
 
     /**
@@ -2645,23 +1781,15 @@ public class Schema extends SqlObject {
      * @param name the tag's canonical name
      */
     public void dropTagExact(final String name) {
-        getTagExact(name);
-        tags.remove(name);
+        tags.dropExact(name);
     }
 
     public List<Tag> getTags() {
-        return new ArrayList<>(tags.values());
+        return tags.values();
     }
 
     public void renameTag(final String oldName, final String newName) {
-        final Tag tag = getTag(oldName);
-        if (tags.containsKey(newName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(newName)
-                + "' already exists."));
-        }
-        tags.remove(keyFor(tags, oldName));
-        tag.rename(newName);
-        tags.put(newName, tag);
+        NamedObjects.rename(tags, oldName, newName);
     }
 
     /**
@@ -2784,11 +1912,11 @@ public class Schema extends SqlObject {
                 return seesTemporary && ownViews() != null && ownViews().containsKey(name)
                     || views.containsKey(name) && (seesTemporary || !views.get(name).isTemporary());
             case MATERIALIZED_VIEW:
-                return materializedViews.containsKey(name);
+                return materializedViews.hasExact(name);
             case DYNAMIC_TABLE:
-                return dynamicTables.containsKey(name);
+                return dynamicTables.hasExact(name);
             default:
-                return streams.containsKey(name);
+                return streams.hasExact(name);
         }
     }
 

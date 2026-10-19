@@ -50,6 +50,7 @@ import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.RoutineEnvironment;
+import dev.frostlake.metastore.model.RoutineSignatures;
 import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
@@ -699,7 +700,7 @@ public class DDLCommandHandler implements CommandHandler {
                 ? destination.hasFunctionSignature(newSimple, ((Function) routine).getParameters())
                 : destination.hasProcedureSignature(newSimple, ((Procedure) routine).getParameters())) {
                 // The name that is taken is worded as the statement wrote it.
-                throw namedAsWritten(new NameTakenException(Schema.alreadyExists(newSimple)), newParts);
+                throw namedAsWritten(new NameTakenException(RoutineSignatures.alreadyExists(newSimple)), newParts);
             }
             // Nor may a routine of the other kind hold the new name with this signature (live-verified).
             destination.requireNotHeldByOtherKind(isFunction, newSimple, isFunction

@@ -17,6 +17,7 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.storage.SnapshotSequence;
 
@@ -34,7 +35,7 @@ import java.util.Objects;
  * Represents a Snowflake Stream - Change Data Capture (CDC) mechanism
  * Streams record DML changes (INSERT, UPDATE, DELETE) made to a table
  */
-public class Stream implements Taggable {
+public class Stream implements Named, Taggable {
 
     private final String name;
     private String sourceTableName;
@@ -448,6 +449,7 @@ public class Stream implements Taggable {
         }
     }
 
+    @Override
     public String getName() {
         return name;
     }

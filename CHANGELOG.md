@@ -1620,6 +1620,10 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Fixed
 
+- **A schema's clone keeps a quoted policy name in its case**: a masking, row access, projection or aggregation
+  policy created as `"mp"` was held in a cloned schema or database under `MP`, so DESCRIBE, SET MASKING POLICY and
+  DROP by `"mp"` refused it as missing there (a column unset from it could not be masked again) while `"MP"` reached
+  it; the clone now holds each policy under its own name, as the source does.
 - **A COPY load's column-count refusal quotes a delimiter of several characters as written**: `Field delimiter '||'
   found while expecting record delimiter '\n'`, where it quoted a stand-in character, and the record delimiter the
   format names; a load and a staged-file query now split a CSV file with one splitter.

@@ -17,6 +17,7 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Named;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,7 +30,7 @@ import java.util.Map;
  * A named file format object (CREATE FILE FORMAT) — a reusable set of parsing/formatting options (TYPE plus
  * format-specific options like FIELD_DELIMITER, SKIP_HEADER) that COPY statements reference via FORMAT_NAME.
  */
-public class FileFormat {
+public class FileFormat implements Named, SessionScoped {
 
     /** The option holding the strings a load reads as NULL. */
     private static final String NULL_IF = "NULL_IF";
@@ -57,6 +58,7 @@ public class FileFormat {
         this.options = new LinkedHashMap<>();
     }
 
+    @Override
     public String getName() {
         return name;
     }
@@ -221,11 +223,13 @@ public class FileFormat {
     }
 
     /** Whether CREATE TEMPORARY FILE FORMAT made it. */
+    @Override
     public boolean isTemporary() {
         return temporary;
     }
 
     /** The session that created a temporary format, or null. */
+    @Override
     public Long getCreatedInSession() {
         return createdInSession;
     }

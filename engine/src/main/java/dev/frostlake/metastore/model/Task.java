@@ -18,6 +18,7 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementTokens;
+import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.Taggable;
 
 import java.time.LocalDateTime;
@@ -33,7 +34,7 @@ import java.util.TreeMap;
 /**
  * Represents a Snowflake Task - Scheduled SQL execution
  */
-public class Task implements Taggable {
+public class Task implements Named, Taggable {
 
     private final String name;
     /** The task's id, drawn by the statement creating it so that a replay of the statement keeps it. */
@@ -162,6 +163,7 @@ public class Task implements Taggable {
         return explicitParameters.contains(parameterName.toUpperCase(Locale.ROOT));
     }
 
+    @Override
     public String getName() {
         return name;
     }

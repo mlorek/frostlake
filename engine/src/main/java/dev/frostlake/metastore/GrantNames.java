@@ -23,6 +23,7 @@ import dev.frostlake.metastore.model.GrantRemap;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.RoutineSignatures;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.User;
 
@@ -245,7 +246,7 @@ public final class GrantNames {
      * @return the name
      */
     public static String routine(final Schema schema, final String name, final List<Parameter> parameters) {
-        return schema.qualifiedName(name) + Schema.signatureText(parameters);
+        return schema.qualifiedName(name) + RoutineSignatures.signatureText(parameters);
     }
 
     /**

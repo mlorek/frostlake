@@ -17,6 +17,7 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.Taggable;
 
 import java.time.LocalDateTime;
@@ -38,7 +39,7 @@ import java.util.Map;
  * <p>The embedding model defaults to {@code snowflake-arctic-embed-m-v1.5}, which is the model
  * Snowflake picks when CREATE names none.
  */
-public class CortexSearchService implements Taggable {
+public class CortexSearchService implements Named, Taggable {
 
     /** The model Snowflake indexes with when CREATE names no EMBEDDING_MODEL. */
     public static final String DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed-m-v1.5";
@@ -83,6 +84,7 @@ public class CortexSearchService implements Taggable {
         this.createdOn = StatementClock.hostLocal();
     }
 
+    @Override
     public String getName() {
         return name;
     }

@@ -22,7 +22,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-public class View extends SqlObject {
+public class View extends SqlObject implements SessionScoped {
 
     private final String definition;
     private final List<String> columnNames;
@@ -162,6 +162,7 @@ public class View extends SqlObject {
      * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
      * it models the lifetime and not the isolation.
      */
+    @Override
     public boolean isTemporary() { return temporary; }
 
     /** Whether the view was created RECURSIVE. */

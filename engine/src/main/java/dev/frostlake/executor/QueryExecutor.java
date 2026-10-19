@@ -180,6 +180,7 @@ import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ProjectionPolicy;
 import dev.frostlake.metastore.model.RefreshMode;
 import dev.frostlake.metastore.model.RelationSlot;
+import dev.frostlake.metastore.model.RoutineSignatures;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObject;
@@ -11359,8 +11360,8 @@ public class QueryExecutor implements ImportLocalizer {
                 return false;
             }
             for (int i = 0; i < parameters.size(); i++) {
-                if (!Schema.signatureFamily(parameters.get(i).getDataType().getName())
-                        .equals(Schema.signatureFamily(writtenTypes.get(i)))) {
+                if (!RoutineSignatures.signatureFamily(parameters.get(i).getDataType().getName())
+                        .equals(RoutineSignatures.signatureFamily(writtenTypes.get(i)))) {
                     return false;
                 }
             }

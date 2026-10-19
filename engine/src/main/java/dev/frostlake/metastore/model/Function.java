@@ -22,7 +22,7 @@ import dev.frostlake.types.DataType;
 import java.util.ArrayList;
 import java.util.List;
 
-public class Function extends SqlObject {
+public class Function extends SqlObject implements Routine {
 
     private String serviceName;
     private String serviceEndpoint;
@@ -81,14 +81,17 @@ public class Function extends SqlObject {
         this.runtimeVersion = runtimeVersion;
     }
 
+    @Override
     public List<Parameter> getParameters() {
         return new ArrayList<>(parameters);
     }
 
+    @Override
     public List<Parameter> getReturnColumns() {
         return new ArrayList<>(returnColumns);
     }
 
+    @Override
     public DataType getReturnType() {
         return returnType;
     }
@@ -98,6 +101,12 @@ public class Function extends SqlObject {
     }
 
     public boolean isTableFunction() {
+        return isTableFunction;
+    }
+
+    /** Whether the function returns a table: {@link #isTableFunction}, as a procedure answers it too. */
+    @Override
+    public boolean returnsTable() {
         return isTableFunction;
     }
 
@@ -148,6 +157,7 @@ public class Function extends SqlObject {
      */
     private Boolean returnSized;
 
+    @Override
     public Boolean getReturnSized() { return returnSized; }
     public void setReturnSized(final Boolean returnSized) { this.returnSized = returnSized; }
 
@@ -177,6 +187,7 @@ public class Function extends SqlObject {
      * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
      * it models the lifetime and not the isolation.
      */
+    @Override
     public boolean isTemporary() { return temporary; }
 
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }

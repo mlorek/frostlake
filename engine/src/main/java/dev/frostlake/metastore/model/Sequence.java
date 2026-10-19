@@ -17,6 +17,7 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.StatementDraws;
 
 import java.time.Instant;
@@ -25,7 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Represents a database SEQUENCE object
  */
-public class Sequence {
+public class Sequence implements Named {
     private String name;
     /** The value the next draw serves: the START value until something is drawn, whatever the step becomes. */
     private final AtomicLong nextValue;
@@ -121,6 +122,7 @@ public class Sequence {
     /** Owning role; defaults to SYSADMIN until stamped with the creating role at CREATE. */
     private String owner = "SYSADMIN";
 
+    @Override
     public String getName() {
         return name;
     }
