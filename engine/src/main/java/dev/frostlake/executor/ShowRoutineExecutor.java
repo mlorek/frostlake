@@ -20,6 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.OperatorFunctionNames;
 import dev.frostlake.functions.UnlistedFunctionNames;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -33,6 +34,7 @@ import dev.frostlake.metastore.model.NullHandling;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ProjectionPolicy;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SearchOptimizationExpression;
@@ -45,11 +47,16 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
+import dev.frostlake.types.VectorType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * SHOW / DESCRIBE handlers for routines and metadata objects: functions, procedures, tags, file formats,
@@ -59,10 +66,27 @@ final class ShowRoutineExecutor {
 
     private final Catalog catalog;
     private final FunctionRegistry functionRegistry;
+    /** Says whether the session may act as a routine's owner, who alone reads all of its body. */
+    private final DefinitionOwnership ownership;
 
-    ShowRoutineExecutor(final Catalog catalog, final FunctionRegistry functionRegistry) {
+    ShowRoutineExecutor(final Catalog catalog, final FunctionRegistry functionRegistry,
+                        final DefinitionOwnership ownership) {
         this.catalog = catalog;
         this.functionRegistry = functionRegistry;
+        this.ownership = ownership;
+    }
+
+    /**
+     * Whether a listing carries an object of a schema, and DESCRIBE answers it: only when the session sees it - its
+     * roles own the object or hold a privilege on it, or hold MANAGE GRANTS, which sees every object (documented).
+     */
+    private boolean seen(final String objectType, final Schema schema, final String name, final String owner) {
+        return ownership.sees(objectType, schema.qualifiedName(name), owner);
+    }
+
+    /** {@link #seen} for a routine overload, whose privileges are its signature's own. */
+    private boolean seen(final GrantedObject routine) {
+        return ownership.sees(routine.getKind(), routine.getName(), routine.getOwner());
     }
 
     public ResultSet showProcedures(final String schemaName, final boolean userOnly) {
@@ -73,7 +97,7 @@ final class ShowRoutineExecutor {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName != null && scName != null) {
-            appendUserProcedureRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+            appendUserProcedureRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         }
 
         // SHOW PROCEDURES = the built-in catalog plus the user procedures in scope, and SHOW USER
@@ -134,7 +158,7 @@ final class ShowRoutineExecutor {
     public ResultSet showProceduresInDatabase(final String databaseName) {
         final List<ResultSetColumn> columns = procedureColumns();
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserProcedureRows(schema, databaseName, rows);
         }
         appendBuiltinProcedureRows(rows);
@@ -144,7 +168,7 @@ final class ShowRoutineExecutor {
     /** SHOW USER PROCEDURES IN DATABASE &lt;db&gt;: the same listing with the built-in half dropped. */
     public ResultSet showUserProceduresInDatabase(final String databaseName) {
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserProcedureRows(schema, databaseName, rows);
         }
         return new ResultSet(procedureColumns(), rows);
@@ -177,8 +201,13 @@ final class ShowRoutineExecutor {
             }
         });
         for (final Procedure proc : procedures) {
-            final String sig = proc.getName() + buildArgSig(proc.getParameters())
-                + " RETURN " + proc.getReturnType().getName();
+            if (!seen(QueryExecutor.procedureGrant(schema, proc))) {
+                continue;
+            }
+            // A table procedure prints its columns, bare type names and all, and is flagged as a table function is.
+            final String sig = proc.getName() + listedArgumentsText(proc.getParameters())
+                + " RETURN " + (proc.returnsTable() ? "TABLE " + routineSignature(proc.getReturnColumns())
+                    : listedType(proc.getReturnType()));
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(proc.getCreatedTime()),
                 proc.getName(),
@@ -188,10 +217,11 @@ final class ShowRoutineExecutor {
                 sig,
                 routineDescription(proc.getComment(), "user-defined procedure"),
                 dbName,
-                "N", "N", "N",
-                // Live leaves secrets and external_access_integrations EMPTY, not null, as for a function
-                // (live-verified).
-                "", ""
+                proc.returnsTable() ? "Y" : "N", "N", proc.isSecure() ? "Y" : "N",
+                // Live leaves secrets and external_access_integrations EMPTY, not null, for a routine that
+                // names none, as for a function (live-verified).
+                proc.getEnvironment().secretsText(dbName, schema.getName()),
+                integrationsText(proc.getEnvironment())
             )));
         }
     }
@@ -219,8 +249,8 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("is_builtin", StringType.VARCHAR),
             new ResultSetColumn("is_aggregate", StringType.VARCHAR),
             new ResultSetColumn("is_ansi", StringType.VARCHAR),
-            new ResultSetColumn("min_num_arguments", NumericType.INTEGER),
-            new ResultSetColumn("max_num_arguments", NumericType.INTEGER),
+            new ResultSetColumn("min_num_arguments", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_num_arguments", ShowResultHelpers.COUNT),
             new ResultSetColumn("arguments", StringType.VARCHAR),
             new ResultSetColumn("description", StringType.VARCHAR),
             new ResultSetColumn("catalog_name", StringType.VARCHAR),
@@ -240,7 +270,7 @@ final class ShowRoutineExecutor {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName != null && scName != null) {
-            appendUserFunctionRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+            appendUserFunctionRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         }
 
         // Built-in (system-defined) functions. SHOW FUNCTIONS lists these alongside user functions
@@ -252,6 +282,48 @@ final class ShowRoutineExecutor {
             appendBuiltinFunctionRows(rows);
         }
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * A schema's routines, each as the listing's arguments column names it — {@code F(NUMBER)}, the text before
+     * its RETURN — beside its declaration with the parameters' names, {@code F(X NUMBER)}. The names are what
+     * tells one schema's routine from another schema's of the same name and argument types, which the listing
+     * itself no longer shows.
+     *
+     * @param schemaName the schema, as a listing's scope names it
+     * @param procedures whether the schema's procedures are meant rather than its functions
+     * @return the declarations, by listed text
+     */
+    public Map<String, String> namedDeclarations(final String schemaName, final boolean procedures) {
+        final Map<String, String> declarations = new HashMap<>();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
+        if (dbName == null || scName == null) {
+            return declarations;
+        }
+        final Schema schema = catalog.databaseExact(dbName).schemaExact(scName);
+        if (procedures) {
+            for (final Procedure procedure : schema.getProcedures()) {
+                declarations.put(procedure.getName() + listedArgumentsText(procedure.getParameters()),
+                    procedure.getName() + namedArgumentsText(procedure.getParameters()));
+            }
+        } else {
+            for (final Function function : schema.getFunctions()) {
+                declarations.put(function.getName() + listedArgumentsText(function.getParameters()),
+                    function.getName() + namedArgumentsText(function.getParameters()));
+            }
+        }
+        return declarations;
+    }
+
+    /** A signature with each parameter's name before its type, {@code (X NUMBER, Y VARCHAR)}. */
+    private static String namedArgumentsText(final List<Parameter> params) {
+        final StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; params != null && i < params.size(); i++) {
+            sb.append(i > 0 ? ", " : "").append(params.get(i).getName()).append(' ')
+                .append(params.get(i).getDataType().getName());
+        }
+        return sb.append(")").toString();
     }
 
     /**
@@ -301,7 +373,7 @@ final class ShowRoutineExecutor {
     public ResultSet showFunctionsInDatabase(final String databaseName) {
         final List<ResultSetColumn> columns = functionColumns();
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserFunctionRows(schema, databaseName, rows);
         }
         appendBuiltinFunctionRows(rows);
@@ -311,7 +383,7 @@ final class ShowRoutineExecutor {
     /** SHOW USER FUNCTIONS IN DATABASE &lt;db&gt;: the same listing with the built-in half dropped. */
     public ResultSet showUserFunctionsInDatabase(final String databaseName) {
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserFunctionRows(schema, databaseName, rows);
         }
         return new ResultSet(functionColumns(), rows);
@@ -344,23 +416,29 @@ final class ShowRoutineExecutor {
             }
         });
         for (final Function func : functions) {
-            final String sig = func.getName() + buildArgSig(func.getParameters())
-                + " RETURN " + func.getReturnType().getName();
+            if (!seen(QueryExecutor.functionGrant(schema, func))) {
+                continue;
+            }
+            final String sig = func.getName() + listedArgumentsText(func.getParameters())
+                + " RETURN " + (func.isTableFunction() ? "TABLE " + routineSignature(func.getReturnColumns())
+                    : listedType(func.getReturnType()));
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(func.getCreatedTime()),
                 func.getName(),
                 schema.getName(),
-                "N", "N", "N",
+                "N", func.isAggregate() ? "Y" : "N", "N",
                 func.getParameters().size(), func.getParameters().size(),
                 sig,
                 routineDescription(func.getComment(), "user-defined function"),
                 dbName,
                 func.isTableFunction() ? "Y" : "N",
                 "N", func.isSecure() ? "Y" : "N",
-                // Live leaves secrets and external_access_integrations EMPTY, not null (live-verified).
-                "", "",
-                "N",
-                func.getLanguage(),
+                // Live leaves secrets and external_access_integrations EMPTY, not null, for a function that
+                // names none (live-verified).
+                func.getEnvironment().secretsText(dbName, schema.getName()),
+                integrationsText(func.getEnvironment()),
+                func.isExternalFunction() ? "Y" : "N",
+                func.isExternalFunction() ? "EXTERNAL" : func.getLanguage(),
                 func.isMemoizable() ? "Y" : "N", "N", "N"
             )));
         }
@@ -381,8 +459,8 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("is_builtin", StringType.VARCHAR),
             new ResultSetColumn("is_aggregate", StringType.VARCHAR),
             new ResultSetColumn("is_ansi", StringType.VARCHAR),
-            new ResultSetColumn("min_num_arguments", NumericType.INTEGER),
-            new ResultSetColumn("max_num_arguments", NumericType.INTEGER),
+            new ResultSetColumn("min_num_arguments", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_num_arguments", ShowResultHelpers.COUNT),
             new ResultSetColumn("arguments", StringType.VARCHAR),
             new ResultSetColumn("description", StringType.VARCHAR),
             new ResultSetColumn("catalog_name", StringType.VARCHAR),
@@ -481,23 +559,45 @@ final class ShowRoutineExecutor {
         return byName != 0 ? byName : argumentTypesText(leftParameters).compareTo(argumentTypesText(rightParameters));
     }
 
-    /** A signature's argument types alone, {@code (NUMBER, VARCHAR)}. */
-    private static String argumentTypesText(final List<Parameter> params) {
+    /**
+     * A signature's argument types alone, {@code (NUMBER, VARCHAR)}: what the listings' {@code arguments} column
+     * prints after the routine's name, and what orders the overloads of one name. The parameters' names are
+     * INFORMATION_SCHEMA's to show ({@code argument_signature}), not SHOW's.
+     */
+    /**
+     * A routine's arguments as its listing's {@code arguments} cell tells them: the types alone, an argument that
+     * has a default marked — {@code (NUMBER, DEFAULT VARCHAR)} (live-verified).
+     */
+    /** The integrations a routine names, as one JSON list; nothing for a routine that names none. */
+    private static String integrationsText(final RoutineEnvironment environment) {
+        final List<String> names = environment.getExternalAccessIntegrations();
+        return names.isEmpty() ? "" : JsonTextList.of(names);
+    }
+
+    private static String listedArgumentsText(final List<Parameter> params) {
         final StringBuilder sb = new StringBuilder("(");
         for (int i = 0; params != null && i < params.size(); i++) {
-            sb.append(i > 0 ? ", " : "").append(params.get(i).getDataType().getName());
+            sb.append(i > 0 ? ", " : "").append(params.get(i).hasDefault() ? "DEFAULT " : "")
+                .append(listedType(params.get(i).getDataType()));
         }
         return sb.append(")").toString();
     }
 
-    private String buildArgSig(final List<Parameter> params) {
-        if (params == null || params.isEmpty()) return "()";
+    private static String argumentTypesText(final List<Parameter> params) {
         final StringBuilder sb = new StringBuilder("(");
-        for (int i = 0; i < params.size(); i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(params.get(i).getName()).append(" ").append(params.get(i).getDataType().getName());
+        for (int i = 0; params != null && i < params.size(); i++) {
+            sb.append(i > 0 ? ", " : "").append(listedType(params.get(i).getDataType()));
         }
         return sb.append(")").toString();
+    }
+
+    /**
+     * A parameter's type as the listings print it: its bare name, and a structured one with its shape, the types
+     * inside it bare too — {@code OBJECT(a NUMBER)}, {@code ARRAY(NUMBER)}, {@code MAP(VARCHAR, NUMBER)}
+     * (live-verified). So f(x OBJECT) and f(x OBJECT(a INT)) are listed as the two overloads they are.
+     */
+    private static String listedType(final DataType type) {
+        return StructuredTypes.signatureText(type);
     }
 
     public ResultSet showTags(final String schemaName) {
@@ -505,7 +605,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(tagColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendTagRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendTagRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(tagColumns(), rows);
     }
 
@@ -525,7 +625,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(tagColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendTagRows(schema, dbName, rows);
         }
         return new ResultSet(tagColumns(), rows);
@@ -534,6 +634,9 @@ final class ShowRoutineExecutor {
     private void appendTagRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Tag tag : schema.getTags()) {
+            if (!seen("TAG", schema, tag.getName(), tag.getOwner())) {
+                continue;
+            }
             final String av = allowedValuesText(tag);
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(tag.getCreatedTime()),
@@ -552,17 +655,7 @@ final class ShowRoutineExecutor {
 
     /** How live spells a tag's ALLOWED_VALUES: a JSON array of the values, or NULL when unset. */
     private static String allowedValuesText(final Tag tag) {
-        if (!tag.hasAllowedValues()) {
-            return null;
-        }
-        final StringBuilder sb = new StringBuilder("[");
-        for (final String value : tag.getAllowedValues()) {
-            if (sb.length() > 1) {
-                sb.append(',');
-            }
-            sb.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
-        }
-        return sb.append(']').toString();
+        return tag.allowedValuesText();
     }
 
     private List<ResultSetColumn> tagColumns() {
@@ -581,27 +674,6 @@ final class ShowRoutineExecutor {
         );
     }
 
-    public ResultSet describeTag(final String tagName) {
-        final List<Row> rows = new ArrayList<>();
-        final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
-        );
-
-        final Tag tag = catalog.getTag(tagName);
-        rows.add(new Row(Arrays.asList("name", tag.getName())));
-
-        if (tag.hasAllowedValues()) {
-            rows.add(new Row(Arrays.asList("allowed_values", allowedValuesText(tag))));
-        }
-
-        if (tag.getComment() != null) {
-            rows.add(new Row(Arrays.asList("comment", tag.getComment())));
-        }
-
-        return new ResultSet(columns, rows);
-    }
-
     /**
      * DESCRIBE FUNCTION: the overload the written signature picks, by the function's exact canonical name.
      *
@@ -614,19 +686,31 @@ final class ShowRoutineExecutor {
         if (owner == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", QualifiedName.join(parts)));
         }
-        final Function fn = owner.getFunctionBySignature(parts[parts.length - 1], argumentTypes);
+        final Function fn = owner.getFunctionByWrittenSignature(parts[parts.length - 1], argumentTypes);
+        if (!seen(QueryExecutor.functionGrant(owner, fn))) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", owner.qualifiedName(fn.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("signature", routineSignature(fn.getParameters()))));
+        rows.add(new Row(Arrays.asList("signature", describedSignature(fn.getParameters()))));
+        // A RETURNS type written NOT NULL says so here, and in no DDL (live-verified).
         rows.add(new Row(Arrays.asList("returns", fn.isTableFunction()
-            ? "TABLE " + routineSignature(fn.getReturnColumns()) : SqlTypeNames.routineType(fn.getReturnType()))));
+            ? "TABLE " + routineSignature(fn.getReturnColumns())
+            : SqlTypeNames.routineType(fn.getReturnType(), fn.getReturnSized())
+                + (fn.isReturnNotNull() ? " NOT NULL" : ""))));
         rows.add(new Row(Arrays.asList("language", fn.getLanguage() != null ? fn.getLanguage() : "SQL")));
         if (!isSqlLanguage(fn.getLanguage())) {
             rows.add(new Row(Arrays.asList("null handling", fn.getNullHandling())));
             rows.add(new Row(Arrays.asList("volatility", fn.getVolatility())));
         }
-        if (fn.getBody() != null) {
-            rows.add(new Row(Arrays.asList("body", fn.getBody())));
+        // A SQL function written without a body describes one all the same, as NULL (live-verified).
+        if (fn.getBody() != null || RoutineDescriptionRows.isHandlerLanguage(fn.getLanguage())
+                || isSqlLanguage(fn.getLanguage()) && !fn.isServiceFunction()) {
+            // A SECURE function describes its body to its owner alone: any other role reads NULL (live-verified).
+            rows.add(new Row(Arrays.asList("body",
+                fn.isSecure() && !ownership.actsAsOwner(fn.getOwner()) ? null : fn.getBody())));
         }
+        RoutineDescriptionRows.add(rows, fn.getLanguage(), fn.getHandler(), fn.getRuntimeVersion(), fn.getImports(),
+            fn.getEnvironment(), Boolean.valueOf(fn.isAggregate()));
         if (fn.isServiceFunction()) {
             rows.add(new Row(Arrays.asList("service", fn.getServiceName())));
             rows.add(new Row(Arrays.asList("endpoint", fn.getServiceEndpoint())));
@@ -649,10 +733,17 @@ final class ShowRoutineExecutor {
         if (owner == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", QualifiedName.join(parts)));
         }
-        final Procedure proc = owner.getProcedureBySignature(parts[parts.length - 1], argumentTypes);
+        final Procedure proc = owner.getProcedureByWrittenSignature(parts[parts.length - 1], argumentTypes);
+        if (!seen(QueryExecutor.procedureGrant(owner, proc))) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure",
+                owner.qualifiedName(proc.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("signature", routineSignature(proc.getParameters()))));
-        rows.add(new Row(Arrays.asList("returns", SqlTypeNames.routineType(proc.getReturnType()))));
+        rows.add(new Row(Arrays.asList("signature", describedSignature(proc.getParameters()))));
+        rows.add(new Row(Arrays.asList("returns", proc.returnsTable()
+            ? "TABLE " + routineSignature(proc.getReturnColumns())
+            : SqlTypeNames.routineType(proc.getReturnType(), proc.getReturnSized())
+                + (proc.isReturnNotNull() ? " NOT NULL" : ""))));
         rows.add(new Row(Arrays.asList("language", proc.getLanguage() != null ? proc.getLanguage() : "SQL")));
         if (!isSqlLanguage(proc.getLanguage())) {
             // A procedure declares neither, so the two rows carry the account's own defaults - which is
@@ -663,27 +754,42 @@ final class ShowRoutineExecutor {
         if (proc.getExecuteAs() != null) {
             rows.add(new Row(Arrays.asList("execute as", proc.getExecuteAs())));
         }
-        if (proc.getBody() != null) {
-            rows.add(new Row(Arrays.asList("body", proc.getBody())));
+        if (proc.getBody() != null || RoutineDescriptionRows.isHandlerLanguage(proc.getLanguage())) {
+            // A procedure's body is its owner's: to any other role a SECURE one describes NULL and a plain
+            // one the empty string (live-verified).
+            rows.add(new Row(Arrays.asList("body", ownership.actsAsOwner(proc.getOwner()) ? proc.getBody()
+                : proc.isSecure() ? null : "")));
         }
+        final RoutineEnvironment environment = proc.getEnvironment().copy();
+        environment.setPackages(proc.getPackages());
+        RoutineDescriptionRows.add(rows, proc.getLanguage(), proc.getHandler(), proc.getRuntimeVersion(),
+            proc.getImports(), environment, null);
         return propertyValueResult(rows);
     }
 
     public ResultSet describeMaskingPolicy(final String name) {
-        final MaskingPolicy policy = resolveDescribeSchema().getMaskingPolicy(lastSegment(name));
-        if (policy == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", name));
+        final Schema home = describedSchema(name);
+        // Named exactly: a quoted name in another case is another policy, which is not there (live-verified).
+        final MaskingPolicy policy = home.getMaskingPolicyExact(lastSegment(name));
+        if (policy == null || !seen("MASKING_POLICY", home, policy.getName(), policy.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", fullPath(home, name)));
         }
-        return policyDescribeResult(policy.getName(), routineSignature(policy.getParameters()),
-            normalizePolicyType(policy.getReturnType()), policy.getBody());
+        // The return type reads as declared, in the account's own spelling: a DOUBLE reads FLOAT, an INT
+        // NUMBER(38,0), and a string or a binary keeps the width it was written with (live-verified).
+        final String returns = policy.getReturnSpelling() != null ? policy.getReturnSpelling()
+            : policy.getReturnDataType() != null ? SqlTypeNames.routineType(policy.getReturnDataType())
+            : normalizePolicyType(policy.getReturnType());
+        return policyDescribeResult(policy.getName(), describedSignature(policy.getParameters()), returns,
+            policy.getBody());
     }
 
     public ResultSet describeRowAccessPolicy(final String name) {
-        final RowAccessPolicy policy = resolveDescribeSchema().getRowAccessPolicy(lastSegment(name));
-        if (policy == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", name));
+        final Schema home = describedSchema(name);
+        final RowAccessPolicy policy = home.getRowAccessPolicyExact(lastSegment(name));
+        if (policy == null || !seen("ROW_ACCESS_POLICY", home, policy.getName(), policy.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", fullPath(home, name)));
         }
-        return policyDescribeResult(policy.getName(), routineSignature(policy.getParameters()),
+        return policyDescribeResult(policy.getName(), describedSignature(policy.getParameters()),
             "BOOLEAN", policy.getBody());
     }
 
@@ -709,7 +815,7 @@ final class ShowRoutineExecutor {
         if (typeName == null) {
             return null;
         }
-        final String upper = typeName.toUpperCase();
+        final String upper = typeName.toUpperCase(Locale.ROOT);
         if (upper.equals("STRING") || upper.equals("TEXT")) {
             return "VARCHAR";
         }
@@ -722,9 +828,11 @@ final class ShowRoutineExecutor {
      * SHOW FILE FORMATS instead (live-verified).
      */
     public ResultSet describeFileFormat(final String name) {
-        final FileFormat ff = resolveDescribeSchema().getFileFormat(lastSegment(name));
-        if (ff == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", name));
+        final Schema home = describedSchema(name);
+        // Named exactly, as a policy is (live-verified).
+        final FileFormat ff = home.getFileFormatExact(lastSegment(name));
+        if (ff == null || !seen("FILE_FORMAT", home, ff.getName(), ff.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", fullPath(home, name)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("property", StringType.VARCHAR),
@@ -732,15 +840,12 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("property_value", StringType.VARCHAR),
             new ResultSetColumn("property_default", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
-        for (final FormatProperty property
-                : FileFormatSurfaces.tree(ff.getType())) {
-            String value = ff.getOptions().get(property.name);
-            if (value == null) {
-                value = "TYPE".equals(property.name) ? ff.getType() : property.valueDefault;
-            } else if ("NULL_IF".equals(property.name)) {
-                value = "[" + String.join(", ", ff.getNullIfValues()) + "]";
-            }
-            rows.add(new Row(Arrays.asList(property.name, property.type, value, property.shownDefault)));
+        for (final FormatProperty property : FileFormatSurfaces.tree(ff.getType())) {
+            final String value = "TYPE".equals(property.name) ? ff.getType()
+                : FileFormatSurfaces.described(property, ff.getOptions().get(property.name));
+            // A format's default TYPE is CSV whatever its own is, as a stage's is.
+            rows.add(new Row(Arrays.asList(property.name, property.type, value,
+                "TYPE".equals(property.name) ? "CSV" : property.shownDefault)));
         }
         return new ResultSet(columns, rows);
     }
@@ -770,7 +875,8 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(fileFormatColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : ShowResultHelpers.scopeDatabaseReportedGenerically(catalog, dbName)
+                .getAllSchemas()) {
             appendFileFormatRows(schema, dbName, rows);
         }
         return new ResultSet(fileFormatColumns(), rows);
@@ -779,6 +885,9 @@ final class ShowRoutineExecutor {
     private void appendFileFormatRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final FileFormat ff : schema.getFileFormats()) {
+            if (!seen("FILE_FORMAT", schema, ff.getName(), ff.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(ff.getCreatedTime()),
                 ff.getName(),
@@ -822,38 +931,10 @@ final class ShowRoutineExecutor {
             }
             first = false;
             json.append('"').append(property.name).append("\":");
-            String value = format.getOptions().get(property.name);
-            if (value == null) {
-                value = "TYPE".equals(property.name) ? format.getType() : property.valueDefault;
-            }
-            if ("Integer".equals(property.type) || "Long".equals(property.type)
-                    || "Boolean".equals(property.type)) {
-                json.append(value.isEmpty() ? "null" : value);
-            } else if ("List".equals(property.type)) {
-                json.append(nullIfJsonArray(format.getNullIfValues(), property.valueDefault));
-            } else if ("FILE_EXTENSION".equals(property.name)
-                    && format.getOptions().get(property.name) == null) {
-                json.append("null");
-            } else {
-                json.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
-            }
+            json.append("TYPE".equals(property.name) ? "\"" + format.getType() + "\""
+                : FileFormatSurfaces.json(property, format.getOptions().get(property.name)));
         }
         return json.append('}').toString();
-    }
-
-    /** NULL_IF as a JSON string array: the format's own values, or the type's default when it sets none. */
-    private static String nullIfJsonArray(final List<String> values, final String valueDefault) {
-        if (values == null) {
-            return "[]".equals(valueDefault) ? "[]" : "[\"\\\\N\"]";
-        }
-        final StringBuilder array = new StringBuilder("[");
-        for (int i = 0; i < values.size(); i++) {
-            if (i > 0) {
-                array.append(',');
-            }
-            array.append('"').append(values.get(i).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
-        }
-        return array.append(']').toString();
     }
 
     public ResultSet showMaskingPolicies(final String schemaName) {
@@ -861,7 +942,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendMaskingPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendMaskingPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(policyColumns(), rows);
     }
 
@@ -881,7 +962,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendMaskingPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(policyColumns(), rows);
@@ -890,6 +971,9 @@ final class ShowRoutineExecutor {
     private void appendMaskingPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final MaskingPolicy mp : schema.getMaskingPolicies()) {
+            if (!seen("MASKING_POLICY", schema, mp.getName(), mp.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(mp.getCreatedTime()),
                 mp.getName(),
@@ -898,7 +982,7 @@ final class ShowRoutineExecutor {
                 mp.getOwner(),
                 ShowResultHelpers.text(mp.getComment()),
                 "ROLE",
-                ""
+                policyOptions(mp.isExemptOtherPolicies())
             )));
         }
     }
@@ -908,7 +992,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendRowAccessPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendRowAccessPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(policyColumns(), rows);
     }
 
@@ -928,7 +1012,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendRowAccessPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(policyColumns(), rows);
@@ -937,6 +1021,9 @@ final class ShowRoutineExecutor {
     private void appendRowAccessPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final RowAccessPolicy rap : schema.getRowAccessPolicies()) {
+            if (!seen("ROW_ACCESS_POLICY", schema, rap.getName(), rap.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(rap.getCreatedTime()),
                 rap.getName(),
@@ -945,9 +1032,14 @@ final class ShowRoutineExecutor {
                 rap.getOwner(),
                 ShowResultHelpers.text(rap.getComment()),
                 "ROLE",
-                ""
+                policyOptions(rap.isExemptOtherPolicies())
             )));
         }
+    }
+
+    /** A policy's options cell: {@code {"EXEMPT_OTHER_POLICIES":true}} where it is set, else empty (live-verified). */
+    private static String policyOptions(final boolean exempt) {
+        return exempt ? "{\"EXEMPT_OTHER_POLICIES\":true}" : "";
     }
 
     /** Shared column shape for SHOW MASKING POLICIES and SHOW ROW ACCESS POLICIES. */
@@ -986,7 +1078,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        appendJoinPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendJoinPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(projectionPolicyColumns(), rows);
     }
 
@@ -996,7 +1088,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendJoinPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(projectionPolicyColumns(), rows);
@@ -1014,6 +1106,9 @@ final class ShowRoutineExecutor {
 
     private void appendJoinPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final JoinPolicy policy : schema.getJoinPolicies()) {
+            if (!seen("JOIN_POLICY", schema, policy.getName(), policy.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(policy.getCreatedTime()),
                 policy.getName(),
@@ -1030,7 +1125,8 @@ final class ShowRoutineExecutor {
     /** DESCRIBE JOIN POLICY — name, empty signature, return type and body. */
     public ResultSet describeJoinPolicy(final String policyName) {
         final JoinPolicy policy = catalog.findJoinPolicy(policyName);
-        if (policy == null) {
+        if (policy == null
+                || !ownership.sees("JOIN_POLICY", catalog.qualifiedObjectName(policyName), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
                 catalog.qualifiedObjectName(policyName)));
         }
@@ -1053,7 +1149,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        appendAggregationPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendAggregationPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(projectionPolicyColumns(), rows);
     }
 
@@ -1063,7 +1159,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendAggregationPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(projectionPolicyColumns(), rows);
@@ -1081,6 +1177,9 @@ final class ShowRoutineExecutor {
 
     private void appendAggregationPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final AggregationPolicy policy : schema.getAggregationPolicies()) {
+            if (!seen("AGGREGATION_POLICY", schema, policy.getName(), policy.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(policy.getCreatedTime()),
                 policy.getName(),
@@ -1096,10 +1195,11 @@ final class ShowRoutineExecutor {
 
     /** DESCRIBE AGGREGATION POLICY — name, empty signature, return type and body. */
     public ResultSet describeAggregationPolicy(final String policyName) {
-        final AggregationPolicy policy = catalog.findAggregationPolicy(policyName);
-        if (policy == null) {
+        final AggregationPolicy policy = catalog.findAggregationPolicyExact(policyName);
+        if (policy == null
+                || !ownership.sees("AGGREGATION_POLICY", catalog.qualifiedExactName(policyName), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
-                catalog.qualifiedObjectName(policyName)));
+                catalog.qualifiedExactName(policyName)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -1120,7 +1220,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        appendProjectionPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendProjectionPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(projectionPolicyColumns(), rows);
     }
 
@@ -1130,7 +1230,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendProjectionPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(projectionPolicyColumns(), rows);
@@ -1148,6 +1248,9 @@ final class ShowRoutineExecutor {
 
     private void appendProjectionPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final ProjectionPolicy policy : schema.getProjectionPolicies()) {
+            if (!seen("PROJECTION_POLICY", schema, policy.getName(), policy.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(policy.getCreatedTime()),
                 policy.getName(),
@@ -1177,10 +1280,11 @@ final class ShowRoutineExecutor {
 
     /** DESCRIBE PROJECTION POLICY — one row: the name, its empty signature, return type and body. */
     public ResultSet describeProjectionPolicy(final String policyName) {
-        final ProjectionPolicy policy = catalog.findProjectionPolicy(policyName);
-        if (policy == null) {
+        final ProjectionPolicy policy = catalog.findProjectionPolicyExact(policyName);
+        if (policy == null
+                || !ownership.sees("PROJECTION_POLICY", catalog.qualifiedExactName(policyName), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
-                catalog.qualifiedObjectName(policyName)));
+                catalog.qualifiedExactName(policyName)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -1199,7 +1303,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(contactColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendContactRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendContactRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(contactColumns(), rows);
     }
 
@@ -1207,7 +1311,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(contactColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendContactRows(schema, dbName, rows);
         }
         return new ResultSet(contactColumns(), rows);
@@ -1226,6 +1330,9 @@ final class ShowRoutineExecutor {
     private void appendContactRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Contact contact : schema.getContacts()) {
+            if (!seen("CONTACT", schema, contact.getName(), contact.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(contact.getCreatedTime()),
                 contact.getName(),
@@ -1255,7 +1362,7 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
             new ResultSetColumn("email_distribution_list", StringType.VARCHAR),
             new ResultSetColumn("url", StringType.VARCHAR),
-            new ResultSetColumn("entries_in_users", NumericType.NUMBER),
+            new ResultSetColumn("entries_in_users", ShowResultHelpers.COUNT),
             new ResultSetColumn("users", StringType.VARCHAR),
             new ResultSetColumn("email_list", StringType.VARCHAR)
         );
@@ -1276,6 +1383,22 @@ final class ShowRoutineExecutor {
         );
     }
 
+    /**
+     * A function's or a procedure's parameters as DESCRIBE's {@code signature} row tells them: each name and its
+     * type, a structured type with its shape and the types inside it bare — {@code (X OBJECT(a NUMBER), Y
+     * ARRAY(NUMBER))} — and a VECTOR with its element type and its size (live-verified).
+     */
+    private static String describedSignature(final List<Parameter> params) {
+        final StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; i < params.size(); i++) {
+            final DataType type = params.get(i).getDataType();
+            sb.append(i > 0 ? ", " : "").append(params.get(i).getName()).append(' ')
+                .append(StructuredTypes.isStructured(type) || type instanceof VectorType
+                    ? StructuredTypes.signatureText(type) : String.valueOf(type));
+        }
+        return sb.append(")").toString();
+    }
+
     /** Render a routine/policy parameter list as "(name TYPE, …)". */
     private String routineSignature(final List<Parameter> params) {
         final StringBuilder sb = new StringBuilder("(");
@@ -1290,8 +1413,7 @@ final class ShowRoutineExecutor {
 
     /** The simple object name (last segment) of a possibly-qualified name. */
     private String lastSegment(final String name) {
-        final int dot = name.lastIndexOf('.');
-        return dot >= 0 ? name.substring(dot + 1) : name;
+        return QualifiedName.parse(name).last();
     }
 
     /**
@@ -1304,13 +1426,26 @@ final class ShowRoutineExecutor {
             return resolveDescribeSchema();
         }
         final String db = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
-        final Database database = db == null ? null : catalog.getDatabase(db);
-        return database == null ? null : database.getSchema(parts[parts.length - 2]);
+        final Database database = db == null ? null : catalog.databaseExact(db);
+        return database == null ? null : database.schemaExact(parts[parts.length - 2]);
     }
 
     /** Current database.schema for describe lookups. */
     private Schema resolveDescribeSchema() {
         return ShowResultHelpers.resolveDescribeSchema(catalog);
+    }
+
+    /**
+     * The schema a described policy or file format lives in: the one its name gives, which is refused as a
+     * schema when it is missing, else the session's.
+     */
+    private Schema describedSchema(final String name) {
+        return QualifiedName.parse(name).size() > 1 ? catalog.resolveOwningSchema(name) : resolveDescribeSchema();
+    }
+
+    /** A described object's full path, which a missing one is refused by whatever way its name was written. */
+    private String fullPath(final Schema home, final String name) {
+        return QualifiedName.join(home.getDatabaseName(), home.getName(), lastSegment(name));
     }
 
     /** Build a two-column (property, value) describe result. */

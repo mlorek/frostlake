@@ -51,8 +51,9 @@ public final class DatabaseResource implements RestResource {
 
     /** Properties only a database takes, beside the shared ones. */
     private static final String[][] DATABASE_PROPERTIES = {
-        {"catalog_sync_namespace_mode", "CATALOG_SYNC_NAMESPACE_MODE", ContainerRest.TEXT},
-        {"catalog_sync_namespace_flatten_delimiter", "CATALOG_SYNC_NAMESPACE_FLATTEN_DELIMITER", ContainerRest.TEXT},
+        {"catalog_sync_namespace_mode", "CATALOG_SYNC_NAMESPACE_MODE", ContainerRest.TEXT, ContainerRest.NOT_RESET},
+        {"catalog_sync_namespace_flatten_delimiter", "CATALOG_SYNC_NAMESPACE_FLATTEN_DELIMITER", ContainerRest.TEXT,
+            ContainerRest.NOT_RESET},
     };
 
     @Override
@@ -135,7 +136,7 @@ public final class DatabaseResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = call.sql().showNamed("SHOW DATABASES" + RestShow.likeName(name), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Database '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Database", name);
         }
         return toJson(rows.get(0), call.sql().show("SHOW PARAMETERS IN DATABASE " + name.sql()));
     }

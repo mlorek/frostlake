@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -35,7 +36,7 @@ public class ArrayDistinct extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         // Live-verified: when nothing is a duplicate the array comes back UNCHANGED
         // (ARRAY_DISTINCT(ARRAY_CONSTRUCT(NULL,1,2)) is [undefined,1,2], ARRAY_DISTINCT([2,NULL,1]) is
@@ -72,5 +73,13 @@ public class ArrayDistinct extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        return null;
     }
 }

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
@@ -28,10 +29,19 @@ public class Strtok extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
-        final String str = args.get(0).toString();
-        final String delimiters = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : " ";
-        final int partNum = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
+        final String delimiters = args.size() > 1 && args.get(1) != null
+            ? SharedFunctionHelpers.textOf(args.get(1)) : " ";
+        final int partNum = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
+        if (delimiters.isEmpty()) {
+            // With no delimiter the whole text is its one token (live-verified).
+            return partNum == 1 && !str.isEmpty() ? str : null;
+        }
         final String regex = "[" + Pattern.quote(delimiters) + "]+";
         final String[] tokens = str.split(regex, -1);
         final List<String> nonEmpty = new ArrayList<>();

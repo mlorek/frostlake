@@ -111,8 +111,7 @@ public final class CortexSearchServiceResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW CORTEX SEARCH SERVICES" + RestShow.likeName(name)
             + " IN SCHEMA " + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Cortex Search Service '" + AppObjectRest.qualifiedDisplay(call, name)
-                + "' does not exist or not authorized.");
+            throw RestException.missing("Cortex Search Service", AppObjectRest.qualifiedDisplay(call, name));
         }
         return rows.get(0);
     }

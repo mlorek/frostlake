@@ -17,17 +17,26 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.GrantedObject;
-import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.DatabaseRole;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.User;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -35,8 +44,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Handles {@code GRANT …} and {@code REVOKE …} statements, extracted verbatim from
@@ -53,6 +65,9 @@ public class GrantRevokeHandler implements CommandHandler {
     private static final Logger logger = LoggerFactory.getLogger(GrantRevokeHandler.class);
 
     private static final String OWNERSHIP_TO_USER = "SQL execution error: Cannot grant OWNERSHIP to users.";
+
+    /** A REVOKE's two passes over what it takes back: judged first with nothing changed, then applied. */
+    private static final boolean[] PASSES = {false, true};
 
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
@@ -75,10 +90,55 @@ public class GrantRevokeHandler implements CommandHandler {
         return queryExecutor;
     }
 
+    private String principal(final FrostlakeParser.PrincipalNameContext name) {
+        return PrincipalNames.of(name, queryExecutor);
+    }
+
+    /** The canonical parts of the object a statement names, an IDENTIFIER() reference resolved. */
+    private String[] objectParts(final FrostlakeParser.GrantedObjectNameContext name) {
+        if (name.wholeObjectName() == null) {
+            // The word IDENTIFIER standing as the object's own name.
+            return new String[] {name.getText().toUpperCase(Locale.ROOT)};
+        }
+        return queryExecutor.resolveWholeObjectNameParts(name.wholeObjectName());
+    }
+
+    /**
+     * A database and a warehouse are named by one part: an IDENTIFIER() reference spelling a path names neither,
+     * and is answered by the sentence that names nothing (live-verified).
+     */
+    private static void requireReferencedPath(final String objectType,
+                                              final FrostlakeParser.GrantedObjectNameContext name,
+                                              final String[] parts) {
+        final boolean reference = name.wholeObjectName() != null
+            && name.wholeObjectName().identifierArgument() != null;
+        if (reference && parts.length > 1 && ("DATABASE".equals(objectType) || "WAREHOUSE".equals(objectType))) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+    }
+
+    /** {@link #objectParts}, as one name. */
+    private String objectText(final FrostlakeParser.GrantedObjectNameContext name) {
+        if (name.wholeObjectName() == null) {
+            return name.getText().toUpperCase(Locale.ROOT);
+        }
+        return queryExecutor.resolveWholeObjectName(name.wholeObjectName());
+    }
+
+    /** No privilege is granted on, or revoked from, INFORMATION_SCHEMA or one of its views (live-verified). */
+    private void refuseSystemObject(final String writtenType, final String[] parts) {
+        if ("TABLE".equals(writtenType) || "VIEW".equals(writtenType)) {
+            InformationSchemaGuard.refuseWrite(catalog, parts);
+        } else if ("SCHEMA".equals(writtenType)) {
+            InformationSchemaGuard.refuseSchemaGrant(parts);
+        }
+    }
+
     public Object handleGrant(final FrostlakeParser.GrantStatementContext ctx) {
         try {
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
-                : AccessControlHandler.databaseRole(catalog, ctx.databaseRoleGrantee().qualifiedName());
+                : AccessControlHandler.databaseRole(catalog,
+                    PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
             final boolean grantOption = ctx.withGrantOption() != null;
             if (ctx.bulkObjectType() != null) {
                 // GRANT privs ON ALL/FUTURE <types> IN DATABASE/SCHEMA/ACCOUNT <name> TO USER/ROLE/DATABASE ROLE target
@@ -89,15 +149,19 @@ public class GrantRevokeHandler implements CommandHandler {
                 final String scopeType = scope.DATABASE() != null ? "DATABASE"
                     : "SCHEMA";
                 // The scope must exist before anything is granted in it (live-verified).
-                final String scopeName = AccessControlHandler.scopeName(catalog, scope);
+                final String[] scopeParts = PrincipalNames.parts(scope.referencedName(), queryExecutor);
+                final String scopeName = AccessControlHandler.scopeName(catalog, scope.SCHEMA() != null, scopeParts);
+                if (scope.SCHEMA() != null) {
+                    InformationSchemaGuard.refuseSchemaGrant(scopeParts);
+                }
                 if (!isFuture && "PIPE".equals(objectKind)) {
                     throw new RuntimeException(SqlCompilationError.of("Bulk grant on objects of type PIPE to "
                         + bulkGranteeKind(ctx.USER() != null, ctx.databaseRoleGrantee() != null) + " is restricted."));
                 }
                 final List<String> privileges = bulkPrivileges(ctx.privilegeList(), objectKind);
-                final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+                final List<FrostlakeParser.PrincipalNameContext> ids = ctx.principalName();
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : ids != null && !ids.isEmpty() ? visitor.getText(ids.get(ids.size() - 1)) : "";
+                    : ids != null && !ids.isEmpty() ? principal(ids.get(ids.size() - 1)) : "";
                 final boolean isUser = ctx.USER() != null;
                 if (databaseGrantee == null) {
                     requireGrantee(isUser, targetName);
@@ -106,22 +170,25 @@ public class GrantRevokeHandler implements CommandHandler {
                 if (ownership && isUser) {
                     throw new RuntimeException(OWNERSHIP_TO_USER);
                 }
+                if (isFuture && isUser) {
+                    throw new RuntimeException(SqlCompilationError.of("Future grants to users are not supported."));
+                }
+                requireBulkAuthority(isFuture, objectKind, scopeType, scopeName,
+                    ownership ? Collections.<String>emptyList() : privileges);
                 if (ownership && !isFuture && databaseGrantee == null) {
                     // The objects are counted before they change hands, as the privileges of a bulk grant are.
                     final int inScope = AccessControlHandler.objectsInScope(catalog, objectKind, scopeType, scopeName)
                         .size();
                     if (new OwnershipTransfer(catalog, queryExecutor)
-                            .transferAll(objectType, scope, targetName, ctx.currentGrants())) {
+                            .transferAll(objectType, scope.SCHEMA() != null, scopeParts, targetName,
+                                ctx.currentGrants())) {
                         logger.trace("Transferred ownership of all {} in {} {} to {}", objectType, scopeType,
                             scopeName, targetName);
                         return objectsAffected(inScope);
                     }
                 }
                 if (isFuture) {
-                    if (isUser) {
-                        throw new RuntimeException(SqlCompilationError.of("Future grants to users are not supported."));
-                    }
-                    final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRole(targetName);
+                    final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName);
                     for (final String privilege : privileges) {
                         holder.addFutureGrant(objectKind, scopeType, scopeName, privilege, grantOption);
                     }
@@ -145,20 +212,22 @@ public class GrantRevokeHandler implements CommandHandler {
                     && databaseGrantee == null) {
                 // GRANT ROLE role_name TO USER/ROLE target_name
                 // identifiers: 0=role_name, 1=target_name
-                final String roleName = visitor.getText(ctx.identifier(0));
-                final String targetName2 = visitor.getText(ctx.identifier(1));
+                final String roleName = principal(ctx.principalName(0));
+                final String targetName2 = principal(ctx.principalName(1));
 
                 if ("PUBLIC".equals(roleName)) {
                     // Every user and role holds PUBLIC already: the grant changes nothing, and says so once the
                     // grantee is found.
                     if (ctx.USER() != null) {
-                        catalog.getUser(targetName2);
+                        catalog.getUserExact(targetName2);
                     } else {
-                        catalog.getRole(targetName2);
+                        catalog.getRoleExact(targetName2);
                     }
                     return StatusResults.of("Granting role PUBLIC has no effect.  Every user and role has role PUBLIC"
                         + " implicitly granted.");
-                } else if (ctx.USER() != null) {
+                }
+                requireRoleAuthority(ctx.USER() != null, roleName, targetName2);
+                if (ctx.USER() != null) {
                     catalog.grantRoleToUser(roleName, targetName2);
                     logger.trace("Granted role {} to user {}", roleName, targetName2);
                 } else {
@@ -170,7 +239,8 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.globalPrivilegeList() != null) {
                 // GRANT global_privileges TO ROLE role_name
                 // identifiers: 0=role_name
-                final String roleName = visitor.getText(ctx.identifier(0));
+                final String roleName = principal(ctx.principalName(0));
+                requireAccountAuthority();
 
                 for (final FrostlakeParser.GlobalPrivilegeContext privCtx : ctx.globalPrivilegeList().globalPrivilege()) {
                     final String privilege = privilegeName(privCtx);
@@ -181,8 +251,9 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.ACCOUNT() != null) {
                 // GRANT privileges ON ACCOUNT TO USER/ROLE target_name
                 // identifiers: 0=target_name
-                final String targetName = visitor.getText(ctx.identifier(0));
+                final String targetName = principal(ctx.principalName(0));
                 final boolean isUser = ctx.USER() != null;
+                requireAccountAuthority();
 
                 if (ctx.privilegeList().ALL() != null) {
                     grantTo(null, isUser, targetName, "ALL", "ACCOUNT", "ACCOUNT", null, grantOption);
@@ -197,19 +268,37 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.privilegeList() != null || ctx.OWNERSHIP() != null) {
                 // GRANT privileges/OWNERSHIP ON object TO USER/ROLE/DATABASE ROLE target_name
                 // identifiers: 0=target_name
-                final String writtenType = SecurableKinds.of(ctx.objectType());
-                final String objectName = visitor.getText(ctx.qualifiedName());
+                // An object named without its kind is a table or a view (live-verified).
+                final String writtenType = ctx.objectType() == null ? "TABLE" : SecurableKinds.of(ctx.objectType());
+                // A table or a view the current schema does not hold is looked for along the session's
+                // SEARCH_PATH, and the grant is recorded on the one found there (live-verified).
+                final boolean relation = "TABLE".equals(writtenType) || "VIEW".equals(writtenType)
+                    || "MATERIALIZED_VIEW".equals(writtenType);
+                // A grantee written as a reference is read before the object's own reference (live-verified).
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : visitor.getText(ctx.identifier(0));
+                    : granteeName(ctx);
+                final String writtenName = objectText(ctx.grantedObjectName());
+                final String objectName = relation ? queryExecutor.searchPathQualified(writtenName) : writtenName;
                 final boolean isUser = ctx.USER() != null;
-                final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+                final String[] parts = objectName.equals(writtenName)
+                    ? objectParts(ctx.grantedObjectName()) : QualifiedName.parse(objectName).parts();
+                requireReferencedPath(writtenType, ctx.grantedObjectName(), parts);
                 final Integer arity = ctx.LPAREN() == null ? null
                     : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size());
+                requireArgumentTypes(writtenType, parts, ctx.LPAREN() != null);
+                requireTypeWords(writtenType, ctx.identifierList());
                 // The object is found first, then the grantee, and only then is the grant itself judged
                 // (live-verified).
                 queryExecutor.requireSecurable(writtenType, parts, arity);
+                refuseSystemObject(writtenType, parts);
                 final String objectType = grantedKind(writtenType, parts);
+                final List<String> writtenTypes = writtenArgumentTypes(ctx.LPAREN() != null, ctx.identifierList());
+                // A routine's privileges are each overload's own, under its signature (GrantNames.routine).
+                final List<String> recordedNames = isRoutine(objectType)
+                    ? queryExecutor.routineGrantNames(objectType, parts, writtenTypes)
+                    : Collections.singletonList(recordedName(objectType, parts, arity, objectName));
                 if (databaseGrantee == null) {
+                    refuseUnmodelledGrantee(ctx);
                     requireGrantee(isUser, targetName);
                 }
                 final boolean ownership = ctx.OWNERSHIP() != null
@@ -217,7 +306,13 @@ public class GrantRevokeHandler implements CommandHandler {
 
                 // Only an owner / administrative role may grant privileges on an object.
                 if (queryExecutor.getSecurityManager() != null) {
-                    queryExecutor.getSecurityManager().checkGrantAuthority(objectType, objectName);
+                    final String owner = ownerOf(objectType, parts, arity, writtenTypes, objectName);
+                    final List<String> passedOn = ownership ? Collections.<String>emptyList()
+                        : grantedPrivileges(ctx.privilegeList(), objectType);
+                    for (final String recorded : recordedNames) {
+                        queryExecutor.getSecurityManager().checkGrantAuthority(objectType,
+                            isRoutine(objectType) ? recorded : objectName, owner, passedOn);
+                    }
                 }
 
                 if (ownership && databaseGrantee == null) {
@@ -229,29 +324,39 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                     if (!new OwnershipTransfer(catalog, queryExecutor)
                             .transfer(objectType, parts, arity, objectName, targetName, ctx.currentGrants())) {
-                        catalog.grantPrivilegeToRole("OWNERSHIP", objectType, objectName, targetName);
+                        for (final String recorded : recordedNames) {
+                            catalog.grantPrivilegeToRole("OWNERSHIP", objectType,
+                                GrantNames.of(catalog, objectType, recorded), targetName);
+                        }
                     }
                     logger.trace("Granted OWNERSHIP on {} {} to role {}", objectType, objectName, targetName);
+                } else if (ownership && new OwnershipTransfer(catalog, queryExecutor)
+                        .transfer(objectType, parts, arity, objectName, databaseGrantee, ctx.currentGrants())) {
+                    // A database role owns what it is granted the ownership of, as an account role does.
+                    logger.trace("Granted OWNERSHIP on {} {} to database role {}", objectType, objectName, targetName);
                 } else {
-                    // A grant on an object is recorded in its owner's name, whichever role runs it (live-verified).
-                    final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity);
-                    final String grantor = granted != null && granted.getOwner() != null
+                    // A grant on an object is recorded in its owner's name, whichever role runs it (live-verified),
+                    // unless the session passes the privilege on through a grant option (see grantorFor).
+                    final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity, writtenTypes);
+                    final String owner = granted != null && granted.getOwner() != null
                         && !granted.getOwner().isEmpty() ? granted.getOwner() : null;
-                    if (ctx.privilegeList().ALL() != null) {
-                        // GRANT ALL stores the EXPANSION, never an ALL marker — live-verified:
-                        // SHOW GRANTS lists the individual privileges, revoking one leaves the
-                        // rest, and OWNERSHIP is never part of the set. A type without a modeled
-                        // vocabulary keeps the legacy ALL row.
-                        for (final String privilege : allPrivilegesFor(objectType)) {
-                            grantTo(databaseGrantee, isUser, targetName, privilege, objectType, objectName, grantor,
-                                grantOption);
-                        }
-                    } else {
-                        for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                            final String privilege = privilegeName(privCtx);
-                            rejectInvalidPrivilegeForObjectType(privilege, objectType);
-                            grantTo(databaseGrantee, isUser, targetName, privilege, objectType, objectName, grantor,
-                                grantOption);
+                    for (final String recorded : recordedNames) {
+                        if (ctx.privilegeList().ALL() != null) {
+                            // GRANT ALL stores the EXPANSION, never an ALL marker — live-verified:
+                            // SHOW GRANTS lists the individual privileges, revoking one leaves the
+                            // rest, and OWNERSHIP is never part of the set. A type without a modeled
+                            // vocabulary keeps the legacy ALL row.
+                            for (final String privilege : allPrivilegesFor(objectType)) {
+                                grantTo(databaseGrantee, isUser, targetName, privilege, objectType, recorded,
+                                    grantorFor(objectType, recorded, owner, privilege), owner, grantOption);
+                            }
+                        } else {
+                            for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
+                                final String privilege = privilegeName(privCtx);
+                                rejectInvalidPrivilegeForObjectType(privilege, objectType);
+                                grantTo(databaseGrantee, isUser, targetName, privilege, objectType, recorded,
+                                    grantorFor(objectType, recorded, owner, privilege), owner, grantOption);
+                            }
                         }
                     }
                     logger.trace("Granted privileges on {} {} to {}", objectType, objectName, targetName);
@@ -270,8 +375,10 @@ public class GrantRevokeHandler implements CommandHandler {
     public Object handleRevoke(final FrostlakeParser.RevokeStatementContext ctx) {
         try {
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
-                : AccessControlHandler.databaseRole(catalog, ctx.databaseRoleGrantee().qualifiedName());
+                : AccessControlHandler.databaseRole(catalog,
+                    PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
             final boolean optionOnly = ctx.grantOptionFor() != null;
+            final boolean cascade = ctx.revokeMode() != null && ctx.revokeMode().CASCADE() != null;
             if (ctx.bulkObjectType() != null) {
                 // REVOKE [GRANT OPTION FOR] privs ON ALL/FUTURE <types> IN <scope> FROM ROLE/DATABASE ROLE target
                 final boolean isFuture = ctx.FUTURE() != null;
@@ -279,36 +386,42 @@ public class GrantRevokeHandler implements CommandHandler {
                 final FrostlakeParser.BulkScopeContext scope = ctx.bulkScope();
                 final String scopeType = scope.DATABASE() != null ? "DATABASE"
                     : "SCHEMA";
-                final String scopeName = AccessControlHandler.scopeName(catalog, scope);
+                final String scopeName = AccessControlHandler.scopeName(catalog, scope.SCHEMA() != null,
+                    PrincipalNames.parts(scope.referencedName(), queryExecutor));
                 if (!isFuture && "PIPE".equals(objectKind)) {
                     throw new RuntimeException(SqlCompilationError.of("Bulk revoke on objects of type PIPE from "
                         + bulkGranteeKind(ctx.USER() != null, ctx.databaseRoleGrantee() != null) + " is restricted."));
                 }
                 final List<String> privileges = bulkPrivileges(ctx.privilegeList(), objectKind);
-                final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+                final List<FrostlakeParser.PrincipalNameContext> ids = ctx.principalName();
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : ids != null && !ids.isEmpty() ? visitor.getText(ids.get(ids.size() - 1)) : "";
+                    : ids != null && !ids.isEmpty() ? principal(ids.get(ids.size() - 1)) : "";
                 final boolean isUser = ctx.USER() != null;
                 if (databaseGrantee == null) {
                     requireGrantee(isUser, targetName);
                 }
                 if (isFuture) {
+                    requireBulkAuthority(true, objectKind, scopeType, scopeName, Collections.<String>emptyList());
                     if (!isUser) {
-                        final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRole(targetName);
+                        final Role holder = databaseGrantee != null ? databaseGrantee
+                            : catalog.getRoleExact(targetName);
                         for (final String privilege : privileges) {
                             holder.revokeFutureGrant(objectKind, scopeType, scopeName, privilege, optionOnly);
                         }
                     }
                 } else {
                     int affected = 0;
-                    for (final String objectName : AccessControlHandler.objectsInScope(catalog, objectKind, scopeType,
-                            scopeName)) {
-                        boolean revoked = false;
-                        for (final String privilege : privileges) {
-                            revoked |= revokeFrom(databaseGrantee, isUser, targetName, privilege, objectKind,
-                                objectName, optionOnly);
+                    for (final boolean applying : PASSES) {
+                        affected = 0;
+                        for (final String objectName : AccessControlHandler.objectsInScope(catalog, objectKind,
+                                scopeType, scopeName)) {
+                            boolean revoked = false;
+                            for (final String privilege : privileges) {
+                                revoked |= revokeFrom(databaseGrantee, isUser, targetName, privilege, objectKind,
+                                    objectName, optionOnly, cascade, applying);
+                            }
+                            affected += revoked ? 1 : 0;
                         }
-                        affected += revoked ? 1 : 0;
                     }
                     return objectsAffected(affected);
                 }
@@ -317,8 +430,9 @@ public class GrantRevokeHandler implements CommandHandler {
                     && databaseGrantee == null) {
                 // REVOKE ROLE role_name FROM USER/ROLE target_name
                 // identifiers: 0=role_name, 1=target_name
-                final String roleName = visitor.getText(ctx.identifier(0));
-                final String targetName = visitor.getText(ctx.identifier(1));
+                final String roleName = principal(ctx.principalName(0));
+                final String targetName = principal(ctx.principalName(1));
+                requireRoleAuthority(ctx.USER() != null, roleName, targetName);
 
                 if (ctx.USER() != null) {
                     catalog.revokeRoleFromUser(roleName, targetName);
@@ -332,28 +446,38 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.globalPrivilegeList() != null) {
                 // REVOKE global_privileges FROM ROLE role_name
                 // identifiers: 0=role_name
-                final String roleName = visitor.getText(ctx.identifier(0));
+                final String roleName = principal(ctx.principalName(0));
+                requireAccountAuthority();
 
                 boolean revoked = false;
-                for (final FrostlakeParser.GlobalPrivilegeContext privCtx : ctx.globalPrivilegeList().globalPrivilege()) {
-                    revoked |= revokeFrom(null, false, roleName, privilegeName(privCtx), "ACCOUNT", "ACCOUNT",
-                        optionOnly);
+                for (final boolean applying : PASSES) {
+                    revoked = false;
+                    for (final FrostlakeParser.GlobalPrivilegeContext privCtx
+                            : ctx.globalPrivilegeList().globalPrivilege()) {
+                        revoked |= revokeFrom(null, false, roleName, privilegeName(privCtx), "ACCOUNT", "ACCOUNT",
+                            optionOnly, cascade, applying);
+                    }
                 }
                 return objectsAffected(revoked ? 1 : 0);
 
             } else if (ctx.ACCOUNT() != null) {
                 // REVOKE privileges ON ACCOUNT FROM USER/ROLE target_name
                 // identifiers: 0=target_name
-                final String targetName = visitor.getText(ctx.identifier(0));
+                final String targetName = principal(ctx.principalName(0));
                 final boolean isUser = ctx.USER() != null;
+                requireAccountAuthority();
 
                 boolean revoked = false;
-                if (ctx.privilegeList().ALL() != null) {
-                    revoked = revokeFrom(null, isUser, targetName, "ALL", "ACCOUNT", "ACCOUNT", optionOnly);
-                } else {
-                    for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                        revoked |= revokeFrom(null, isUser, targetName, privilegeName(privCtx), "ACCOUNT", "ACCOUNT",
-                            optionOnly);
+                for (final boolean applying : PASSES) {
+                    revoked = false;
+                    if (ctx.privilegeList().ALL() != null) {
+                        revoked = revokeFrom(null, isUser, targetName, "ALL", "ACCOUNT", "ACCOUNT", optionOnly,
+                            cascade, applying);
+                    } else {
+                        for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
+                            revoked |= revokeFrom(null, isUser, targetName, privilegeName(privCtx), "ACCOUNT",
+                                "ACCOUNT", optionOnly, cascade, applying);
+                        }
                     }
                 }
                 return objectsAffected(revoked ? 1 : 0);
@@ -361,16 +485,27 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.privilegeList() != null || ctx.OWNERSHIP() != null) {
                 // REVOKE privileges/OWNERSHIP ON object FROM USER/ROLE/DATABASE ROLE target_name
                 // identifiers: 0=target_name
-                final String writtenType = SecurableKinds.of(ctx.objectType());
-                final String objectName = visitor.getText(ctx.qualifiedName());
+                // An object named without its kind is a table or a view (live-verified).
+                final String writtenType = ctx.objectType() == null ? "TABLE" : SecurableKinds.of(ctx.objectType());
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : visitor.getText(ctx.identifier(0));
+                    : principal(ctx.principalName(0));
+                final String objectName = objectText(ctx.grantedObjectName());
                 final boolean isUser = ctx.USER() != null;
+                final String[] parts = objectParts(ctx.grantedObjectName());
+                requireReferencedPath(writtenType, ctx.grantedObjectName(), parts);
+                final Integer arity = ctx.LPAREN() == null ? null
+                    : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size());
+                requireArgumentTypes(writtenType, parts, ctx.LPAREN() != null);
+                requireTypeWords(writtenType, ctx.identifierList());
                 // The object is found before the grantee or any authority is judged (live-verified).
-                queryExecutor.requireSecurable(writtenType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()),
-                    ctx.LPAREN() == null ? null
-                        : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size()));
-                final String objectType = grantedKind(writtenType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
+                queryExecutor.requireSecurable(writtenType, parts, arity);
+                refuseSystemObject(writtenType, parts);
+                final String objectType = grantedKind(writtenType, parts);
+                // A routine's privileges are each overload's own, under its signature (GrantNames.routine).
+                final List<String> recordedNames = isRoutine(objectType)
+                    ? queryExecutor.routineGrantNames(objectType, parts,
+                        writtenArgumentTypes(ctx.LPAREN() != null, ctx.identifierList()))
+                    : Collections.singletonList(recordedName(objectType, parts, arity, objectName));
 
                 if (ctx.OWNERSHIP() != null || namesOwnership(ctx.privilegeList())) {
                     // An object always has an owner: live refuses to revoke it, once the grantee is found.
@@ -379,26 +514,37 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                     throw new RuntimeException("SQL execution error: OWNERSHIP can only be transferred.");
                 }
-                boolean revoked = false;
-                if (ctx.privilegeList().ALL() != null) {
-                    // REVOKE ALL removes the expanded set (and a legacy stored ALL marker),
-                    // mirroring the grant-side expansion.
-                    final List<String> allToRevoke = new ArrayList<>(allPrivilegesFor(objectType));
-                    if (!allToRevoke.contains("ALL")) {
-                        allToRevoke.add("ALL");
-                    }
-                    for (final String privilege : allToRevoke) {
-                        revoked |= revokeFrom(databaseGrantee, isUser, targetName, privilege, objectType, objectName,
-                            optionOnly);
-                    }
-                } else {
-                    for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                        revoked |= revokeFrom(databaseGrantee, isUser, targetName, privilegeName(privCtx), objectType,
-                            objectName, optionOnly);
+                // A REVOKE naming its object counts every privilege it took back: two for SELECT, INSERT, and
+                // one for each privilege ALL stands for that the grantee held (live-verified).
+                int revoked = 0;
+                for (final boolean applying : PASSES) {
+                    revoked = 0;
+                    for (final String recorded : recordedNames) {
+                        if (ctx.privilegeList().ALL() != null) {
+                            // REVOKE ALL removes the expanded set (and a legacy stored ALL marker),
+                            // mirroring the grant-side expansion.
+                            final List<String> allToRevoke = new ArrayList<>(allPrivilegesFor(objectType));
+                            if (!allToRevoke.contains("ALL")) {
+                                allToRevoke.add("ALL");
+                            }
+                            for (final String privilege : allToRevoke) {
+                                if (revokeFrom(databaseGrantee, isUser, targetName, privilege, objectType, recorded,
+                                        optionOnly, cascade, applying)) {
+                                    revoked++;
+                                }
+                            }
+                        } else {
+                            for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
+                                if (revokeFrom(databaseGrantee, isUser, targetName, privilegeName(privCtx),
+                                        objectType, recorded, optionOnly, cascade, applying)) {
+                                    revoked++;
+                                }
+                            }
+                        }
                     }
                 }
                 logger.trace("Revoked privileges on {} {} from {}", objectType, objectName, targetName);
-                return objectsAffected(revoked ? 1 : 0);
+                return objectsAffected(revoked);
             }
 
             return null;
@@ -411,6 +557,77 @@ public class GrantRevokeHandler implements CommandHandler {
     }
 
     /**
+     * A routine is named with its argument types wherever a privilege on it is granted, revoked or listed:
+     * routines overload, and the account refuses a bare name whether or not it has overloads, a procedure's in
+     * the same words as a function's (live-verified).
+     */
+    static void requireArgumentTypes(final String objectType, final String[] parts, final boolean listWritten) {
+        if (!listWritten && isRoutine(objectType)) {
+            throw new RuntimeException("Argument types of function '" + parts[parts.length - 1]
+                + "' must be specified.");
+        }
+    }
+
+    /**
+     * A routine's argument list names types. A plain word there is no type, and is refused as one before the
+     * routine is looked for, the first such word in the order written: {@code GRANT USAGE ON FUNCTION f1(x)} is
+     * {@code Unsupported data type 'X'.} (live-verified).
+     */
+    private static void requireTypeWords(final String objectType, final FrostlakeParser.IdentifierListContext types) {
+        if (types == null || !isRoutine(objectType)) {
+            return;
+        }
+        for (final FrostlakeParser.IdentifierContext type : types.identifier()) {
+            final int token = type.getStart().getType();
+            if (token == FrostlakeLexer.IDENTIFIER || token == FrostlakeLexer.QUOTED_IDENTIFIER) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Unsupported data type '" + SqlIdentifiers.canonical(type) + "'."));
+            }
+        }
+    }
+
+    /**
+     * The name a privilege on an object that is no routine is recorded under: the full name of the object the
+     * statement's name reaches, as the catalog holds it, so that every spelling of one object keeps one set of
+     * privileges. A kind with no object to look up keeps the name as written.
+     */
+    private String recordedName(final String objectType, final String[] parts, final Integer arity,
+                                final String written) {
+        try {
+            final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity, null);
+            if (granted != null && granted.getName() != null) {
+                return granted.getName();
+            }
+        } catch (final RuntimeException unresolved) {
+            // The statement reports what it cannot find itself; the name stays as written until it does.
+        }
+        return written;
+    }
+
+    /** Whether privileges on this kind are an overload's own, recorded under its signature. */
+    private static boolean isRoutine(final String objectType) {
+        return "FUNCTION".equals(objectType) || "PROCEDURE".equals(objectType);
+    }
+
+    /**
+     * The argument types a statement writes after a routine's name, as written, or null when it writes no argument
+     * list at all.
+     */
+    private List<String> writtenArgumentTypes(final boolean listWritten,
+                                              final FrostlakeParser.IdentifierListContext types) {
+        if (!listWritten) {
+            return null;
+        }
+        final List<String> written = new ArrayList<>();
+        if (types != null) {
+            for (final FrostlakeParser.IdentifierContext type : types.identifier()) {
+                written.add(visitor.getText(type));
+            }
+        }
+        return written;
+    }
+
+    /**
      * Grants one privilege on one object to a user, an account role or a database role, recording the grant
      * option when the grant carries one (a user never holds one).
      *
@@ -418,51 +635,240 @@ public class GrantRevokeHandler implements CommandHandler {
      * @param grantor the role the grant is recorded in the name of, or null for the current role
      */
     private void grantTo(final DatabaseRole databaseGrantee, final boolean isUser, final String targetName,
-                         final String privilege, final String objectType, final String objectName,
+                         final String privilege, final String objectType, final String written,
                          final String grantor, final boolean grantOption) {
+        grantTo(databaseGrantee, isUser, targetName, privilege, objectType, written, grantor, grantor, grantOption);
+    }
+
+    /**
+     * Grants one privilege on one object, as {@link #grantTo(DatabaseRole, boolean, String, String, String, String,
+     * String, boolean)} does. A grant passed on through a grant option - recorded under another name than the
+     * owner's - to a grantee already holding the privilege leaves the record of the grant it holds: the grants of
+     * one privilege to one grantee are one here, made by whoever made the first.
+     *
+     * @param databaseGrantee the database role granted to, or null for a user or an account role
+     * @param grantor the role the grant is recorded in the name of, or null for the current role
+     * @param owner   the object's owner, or null when none is recorded
+     */
+    private void grantTo(final DatabaseRole databaseGrantee, final boolean isUser, final String targetName,
+                         final String privilege, final String objectType, final String written,
+                         final String grantor, final String owner, final boolean grantOption) {
+        // Recorded under the object's resolved full name, never the spelling (GrantNames).
+        final String objectName = GrantNames.of(catalog, objectType, written);
+        final Privilege granted = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
+        final boolean throughOption = grantor != null && !grantor.equals(owner);
         if (isUser) {
-            catalog.grantPrivilegeToUser(privilege, objectType, objectName, targetName, grantor);
+            final User user = catalog.getUserExact(targetName);
+            final String kept = throughOption && user.hasPrivilege(objectType, objectName, granted)
+                ? user.recordedPrivilegeGrantor(objectType, objectName, granted) : null;
+            catalog.grantPrivilegeToUser(privilege, objectType, objectName, targetName, kept != null ? kept : grantor);
+            // A user keeps the grant option as a role does (live-verified).
+            if (grantOption) {
+                user.setGrantOption(objectType, objectName, granted, true);
+            }
             return;
         }
-        final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRole(targetName);
-        final Privilege granted = Privilege.valueOf(privilege.toUpperCase());
-        holder.grantPrivilege(objectType, objectName, granted, grantor != null ? grantor : catalog.currentRoleForOwner());
+        final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName);
+        final String kept = throughOption && holder.hasPrivilege(objectType, objectName, granted)
+            ? holder.recordedPrivilegeGrantor(objectType, objectName, granted) : null;
+        holder.grantPrivilege(objectType, objectName, granted,
+            kept != null ? kept : grantor != null ? grantor : catalog.currentRoleForOwner());
         if (grantOption) {
             holder.setGrantOption(objectType, objectName, granted, true);
         }
     }
 
     /**
+     * The role a grant on an object is recorded in the name of: the object's owner, whichever role runs the GRANT
+     * (live-verified), unless the session passes the privilege on through a grant option it holds - then its own
+     * role's name, which the grant depends on (documented, see {@link DependentGrants}).
+     */
+    private String grantorFor(final String objectType, final String recorded, final String owner,
+                              final String privilege) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        final String passedOn = security == null ? null
+            : security.grantOptionGrantor(objectType, recorded, owner, privilege);
+        return passedOn != null ? passedOn : owner;
+    }
+
+    /**
+     * A bulk statement is a GRANT or a REVOKE on each object it reaches, so each object asks the authority its own
+     * statement would, every one before anything changes. A future grant asks MANAGE GRANTS, or the ownership of
+     * the schema when the schema has managed access.
+     */
+    private void requireBulkAuthority(final boolean future, final String objectKind, final String scopeType,
+                                      final String scopeName, final List<String> privileges) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null) {
+            return;
+        }
+        if (future) {
+            final Schema schema = "SCHEMA".equals(scopeType)
+                ? catalog.resolveSchema(QualifiedName.parse(scopeName)) : null;
+            final boolean managed = schema != null && schema.isManagedAccess();
+            security.checkManageGrants("future grants in " + scopeType.toLowerCase(Locale.ROOT) + " '" + scopeName
+                + "'", managed ? "SCHEMA" : null, scopeName, managed ? schema.getOwner() : null);
+            return;
+        }
+        for (final Map.Entry<String, String> object : ownersInScope(objectKind, scopeType, scopeName).entrySet()) {
+            security.checkGrantAuthority(objectKind, object.getKey(), object.getValue(), privileges);
+        }
+    }
+
+    /**
+     * The role that owns each object a bulk statement reaches, by the name {@link AccessControlHandler#objectsInScope}
+     * gives it: a routine's overloads each by their own signature.
+     */
+    private Map<String, String> ownersInScope(final String objectKind, final String scopeType,
+                                              final String scopeName) {
+        final Map<String, String> owners = new LinkedHashMap<>();
+        if (!isRoutine(objectKind)) {
+            for (final String name : AccessControlHandler.objectsInScope(catalog, objectKind, scopeType, scopeName)) {
+                owners.put(name, ownerOf(objectKind, QualifiedName.parse(name).parts(), null, null, name));
+            }
+            return owners;
+        }
+        final List<Schema> schemas = new ArrayList<>();
+        if ("DATABASE".equals(scopeType)) {
+            schemas.addAll(catalog.databaseExact(scopeName).getAllSchemas());
+        } else {
+            schemas.add(catalog.resolveSchema(QualifiedName.parse(scopeName)));
+        }
+        for (final Schema schema : schemas) {
+            if ("FUNCTION".equals(objectKind)) {
+                for (final Function function : schema.getFunctions()) {
+                    owners.put(GrantNames.routine(schema, function.getName(), function.getParameters()),
+                        function.getOwner());
+                }
+            } else {
+                for (final Procedure procedure : schema.getProcedures()) {
+                    owners.put(GrantNames.routine(schema, procedure.getName(), procedure.getParameters()),
+                        procedure.getOwner());
+                }
+            }
+        }
+        return owners;
+    }
+
+    /** The role that owns an object a statement names, found as its grants find it; null when none is recorded. */
+    private String ownerOf(final String objectType, final String[] parts, final Integer arity,
+                           final List<String> writtenTypes, final String objectName) {
+        try {
+            final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity, writtenTypes);
+            if (granted != null) {
+                return granted.getOwner() == null || granted.getOwner().isEmpty() ? null : granted.getOwner();
+            }
+        } catch (final RuntimeException unresolved) {
+            // A kind this cannot look up keeps the catalog's own answer below.
+        }
+        return catalog.getObjectOwnerRole(objectType.replace('_', ' '), objectName);
+    }
+
+    /** The privileges a GRANT naming its object passes on: ALL as the set it stands for on that kind. */
+    private List<String> grantedPrivileges(final FrostlakeParser.PrivilegeListContext list, final String objectType) {
+        final List<String> privileges = new ArrayList<>();
+        if (list.ALL() != null) {
+            privileges.addAll(allPrivilegesFor(objectType));
+            return privileges;
+        }
+        for (final FrostlakeParser.PrivilegeContext privilege : list.privilege()) {
+            privileges.add(privilegeName(privilege));
+        }
+        return privileges;
+    }
+
+    /**
+     * GRANT ROLE and REVOKE ROLE are decided by the role's owner beside the roles that decide every grant; a system
+     * role has no owner that decides it. The grantee is found first and the role then, as the statement finds them.
+     */
+    private void requireRoleAuthority(final boolean toUser, final String roleName, final String granteeName) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null) {
+            return;
+        }
+        if (toUser) {
+            catalog.getUserExact(granteeName);
+        } else {
+            catalog.getRoleExact(granteeName);
+        }
+        final Role role = catalog.getRoleExact(roleName);
+        security.checkManageGrants("role '" + role.getName() + "'", "ROLE", role.getName(),
+            catalog.isSystemRole(role.getName()) ? null : role.getOwner());
+    }
+
+    /** A privilege on the account is granted and revoked by the roles that decide every grant alone. */
+    private void requireAccountAuthority() {
+        if (queryExecutor.getSecurityManager() != null) {
+            queryExecutor.getSecurityManager().checkManageGrants("privileges on the account", null, null, null);
+        }
+    }
+
+    /**
      * Revokes one privilege on one object from a user, an account role or a database role — or, with
-     * {@code optionOnly}, only the grant option it carries.
+     * {@code optionOnly}, only the grant option it carries. The grants the grantee passed on through an option it
+     * loses depend on it (see {@link DependentGrants}). A statement makes two passes over what it revokes: the
+     * first, {@code applying} false, changes nothing and refuses a RESTRICT revoke that would leave such grants
+     * behind, so that nothing changes when one is refused; the second revokes, and takes the dependent grants back
+     * with it where CASCADE asks.
+     *
+     * @return whether the grantee held what is revoked, and the session may take it back
      */
     private boolean revokeFrom(final DatabaseRole databaseGrantee, final boolean isUser, final String targetName,
-                               final String privilege, final String objectType, final String objectName,
-                               final boolean optionOnly) {
-        final Privilege revoked = Privilege.valueOf(privilege.toUpperCase());
+                               final String privilege, final String objectType, final String written,
+                               final boolean optionOnly, final boolean cascade, final boolean applying) {
+        final String objectName = GrantNames.of(catalog, objectType, written);
+        final Privilege revoked = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
+        final SecurityManager security = queryExecutor.getSecurityManager();
         if (isUser) {
-            if (optionOnly) {
+            final User user = catalog.getUserExact(targetName);
+            if (security != null && !security.revokesGrant(objectType, objectName,
+                    user.getPrivilegeGrantor(objectType, objectName, revoked))) {
                 return false;
             }
-            final boolean held = catalog.getUser(targetName).hasPrivilege(objectType, objectName, revoked);
-            catalog.revokePrivilegeFromUser(privilege, objectType, objectName, targetName);
+            if (optionOnly) {
+                final boolean had = user.hasGrantOption(objectType, objectName, revoked);
+                if (applying) {
+                    user.setGrantOption(objectType, objectName, revoked, false);
+                }
+                return had;
+            }
+            final boolean held = user.hasPrivilege(objectType, objectName, revoked);
+            if (applying) {
+                catalog.revokePrivilegeFromUser(privilege, objectType, objectName, targetName);
+            }
             return held;
         }
-        final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRole(targetName);
-        if (optionOnly) {
-            final boolean had = holder.hasGrantOption(objectType, objectName, revoked);
-            holder.setGrantOption(objectType, objectName, revoked, false);
-            return had;
+        final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName);
+        if (security != null && !security.revokesGrant(objectType, objectName,
+                holder.getPrivilegeGrantor(objectType, objectName, revoked))) {
+            return false;
         }
-        final boolean held = holder.hasPrivilege(objectType, objectName, revoked);
-        holder.revokePrivilege(objectType, objectName, revoked);
+        final boolean held = optionOnly ? holder.hasGrantOption(objectType, objectName, revoked)
+            : holder.hasPrivilege(objectType, objectName, revoked);
+        final DependentGrants dependents = new DependentGrants(catalog);
+        final String owner = "ACCOUNT".equals(objectType) ? null : catalog.getObjectOwnerRole(objectType, objectName);
+        final boolean losesOption = dependents.losesOption(objectType, objectName, revoked, holder, owner);
+        if (!applying) {
+            if (losesOption && !cascade) {
+                dependents.requireNone(objectType, objectName, revoked, holder, owner);
+            }
+            return held;
+        }
+        if (optionOnly) {
+            holder.setGrantOption(objectType, objectName, revoked, false);
+        } else {
+            holder.revokePrivilege(objectType, objectName, revoked);
+        }
+        if (losesOption) {
+            dependents.revokeAll(objectType, objectName, revoked, holder);
+        }
         return held;
     }
 
     /**
      * The sentence of a GRANT or REVOKE that reaches objects by the count: {@code Statement executed successfully.
-     * N objects affected.} A bulk GRANT counts the objects in its scope; a REVOKE counts the objects it took a
-     * privilege, or a grant option, back from.
+     * N objects affected.} A bulk GRANT counts the objects in its scope, and a bulk REVOKE the objects it took a
+     * privilege, or a grant option, back from; a REVOKE that names its object counts the privileges it took back.
      */
     private static ResultSet objectsAffected(final int count) {
         return StatusResults.of(StatusResults.EXECUTED + " " + count + " objects affected.");
@@ -505,12 +911,48 @@ public class GrantRevokeHandler implements CommandHandler {
         return privileges;
     }
 
+    /**
+     * A grantee named without a principal name: ROLE written alone names a role called ROLE, and an application
+     * role is named by its reference (live-verified).
+     */
+    private String granteeName(final FrostlakeParser.GrantStatementContext ctx) {
+        if (!ctx.principalName().isEmpty()) {
+            return principal(ctx.principalName(0));
+        }
+        if (ctx.APPLICATION() != null) {
+            return applicationRoleName(ctx);
+        }
+        return "ROLE";
+    }
+
+    /** An application role's name, with the current database when its own is not written. */
+    private String applicationRoleName(final FrostlakeParser.GrantStatementContext ctx) {
+        final String[] parts = PrincipalNames.parts(ctx.referencedName(), queryExecutor);
+        final String database = parts.length > 1 ? parts[0] : catalog.getCurrentDatabase();
+        return QualifiedName.join(database, parts[parts.length - 1]);
+    }
+
+    /**
+     * A share and an application role are grantees no catalog object models, so a grant to one is refused as the
+     * account refuses a grantee that is not there: the share named with the account in one quoted part
+     * (live-verified).
+     */
+    private void refuseUnmodelledGrantee(final FrostlakeParser.GrantStatementContext ctx) {
+        if (ctx.SHARE() != null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Share",
+                DropCommandHandler.shareName(catalog.getAccountLocator(), principal(ctx.principalName(0)))));
+        }
+        if (ctx.APPLICATION() != null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Application role", applicationRoleName(ctx)));
+        }
+    }
+
     /** A grantee that does not exist is refused by its kind and name before anything about the grant. */
     private void requireGrantee(final boolean isUser, final String name) {
         if (isUser) {
-            catalog.getUser(name);
+            catalog.getUserExact(name);
         } else {
-            catalog.getRole(name);
+            catalog.getRoleExact(name);
         }
     }
 
@@ -556,7 +998,7 @@ public class GrantRevokeHandler implements CommandHandler {
      * is the view's (live-verified). Every other kind is recorded as written.
      */
     private String grantedKind(final String writtenType, final String[] parts) {
-        if (!"TABLE".equals(writtenType) && !"VIEW".equals(writtenType)) {
+        if (!"TABLE".equals(writtenType) && !"VIEW".equals(writtenType) && !"MATERIALIZED_VIEW".equals(writtenType)) {
             return writtenType;
         }
         final GrantedObject granted = queryExecutor.grantedObject(writtenType, parts, null);
@@ -617,11 +1059,15 @@ public class GrantRevokeHandler implements CommandHandler {
         }
     }
 
-    /** The privileges a network policy, a network rule, a password policy or a secret takes; null for another kind. */
+    /**
+     * The privileges a network policy, a network rule, a password policy, a secret or an external volume takes; null
+     * for another kind.
+     */
     private static List<String> securityObjectPrivileges(final String objectType) {
         switch (objectType) {
             case "NETWORK_POLICY":
             case "NETWORK_RULE":
+            case "EXTERNAL_VOLUME":
                 return List.of("USAGE");
             case "PASSWORD_POLICY":
                 return List.of("APPLY");
@@ -641,6 +1087,7 @@ public class GrantRevokeHandler implements CommandHandler {
     private List<String> allPrivilegesFor(final String objectType) {
         switch (objectType) {
             case "TABLE":
+            case "MATERIALIZED_VIEW":
                 return List.of("APPLYBUDGET", "DELETE", "DELETE_ERROR_TABLE", "EVOLVE_SCHEMA", "INSERT", "REBUILD",
                     "REFERENCES", "SELECT", "SELECT_ERROR_TABLE", "TRUNCATE", "UPDATE");
             case "VIEW":
@@ -698,6 +1145,7 @@ public class GrantRevokeHandler implements CommandHandler {
             case "NETWORK_RULE":
             case "PASSWORD_POLICY":
             case "SECRET":
+            case "EXTERNAL_VOLUME":
                 return securityObjectPrivileges(objectType);
             default:
                 return List.of("ALL");
@@ -712,6 +1160,6 @@ public class GrantRevokeHandler implements CommandHandler {
             }
             sb.append(privCtx.getChild(i).getText());
         }
-        return sb.toString().toUpperCase();
+        return sb.toString().toUpperCase(Locale.ROOT);
     }
 }

@@ -94,6 +94,16 @@ final class CountStatisticsBound {
         this.sourceRows = sourceRows;
     }
 
+    /** The relation the clause reads. */
+    Table table() {
+        return table;
+    }
+
+    /** The clause's relations by alias. */
+    Map<String, Table> aliases() {
+        return aliasToTable;
+    }
+
     /** Whether the clause reads past its table's statistics bound. */
     boolean isUnbounded() {
         if (unbounded == null) {
@@ -462,7 +472,7 @@ final class CountStatisticsBound {
     private List<Row> tableRows() {
         if (tableRows == null) {
             tableRows = sourceRows != null ? sourceRows
-                : executor.readTableRowsForTransaction(table.getQualifiedName());
+                : executor.statisticsRowsFor(table.getQualifiedName());
         }
         return tableRows;
     }

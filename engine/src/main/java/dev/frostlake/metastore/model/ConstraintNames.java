@@ -16,7 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
-import java.util.UUID;
+import dev.frostlake.executor.StatementTokens;
 
 /**
  * Names for constraints declared without an explicit {@code CONSTRAINT <name>} clause. Snowflake names
@@ -35,8 +35,16 @@ public final class ConstraintNames {
     private ConstraintNames() {
     }
 
-    /** A fresh auto-generated constraint name. */
+    /**
+     * A fresh auto-generated constraint name: one the statement that needs it draws, so a replay of the statement
+     * names the constraint as it was first named.
+     */
     public static String generate() {
-        return PREFIX + UUID.randomUUID();
+        return PREFIX + StatementTokens.uuid();
+    }
+
+    /** Whether a name is one a constraint was given for want of a name of its own. */
+    public static boolean isGenerated(final String name) {
+        return name != null && name.startsWith(PREFIX);
     }
 }

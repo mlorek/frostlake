@@ -129,6 +129,40 @@ final class JoinConditionEnd {
         return null;
     }
 
+    /**
+     * The line naming the ON of a join whose condition holds the parse's first fault inside a bracket of its own —
+     * a call's, a cast's, a group's: {@code SELECT * FROM t JOIN t u ON UPPER(1 2) = 1} and {@code … ON t.a =
+     * CAST(1, 2)} are 'ON' at 25 alone, whatever follows the condition (live-verified). A fault outside every
+     * bracket is refused itself.
+     *
+     * @param spoken     the default-channel tokens of the input, end of input included
+     * @param faultIndex the token index of the token the parse's first line names
+     * @return the line, or null
+     */
+    static String bracketFault(final List<Token> spoken, final int faultIndex) {
+        final int fault = CastFaultPlace.positionOf(spoken, faultIndex);
+        if (fault < 3 || CastFaultPlace.enclosingParen(spoken, fault) < 0) {
+            return null;
+        }
+        int start = fault;
+        while (start > 0 && spoken.get(start - 1).getType() != FrostlakeLexer.SEMI) {
+            start--;
+        }
+        final Token keyword = openKeyword(spoken, start, fault);
+        if (keyword == null || keyword.getType() != FrostlakeLexer.ON) {
+            return null;
+        }
+        // The bracket must have opened inside the condition, not around the whole join.
+        int open = CastFaultPlace.enclosingParen(spoken, fault);
+        int outermost = open;
+        while (open >= 0 && spoken.get(open).getTokenIndex() > keyword.getTokenIndex()) {
+            outermost = open;
+            open = CastFaultPlace.enclosingParen(spoken, open);
+        }
+        return spoken.get(outermost).getTokenIndex() > keyword.getTokenIndex()
+            ? SyntaxErrorListener.sentence(keyword) : null;
+    }
+
     /** Whether a condition's last token leaves it waiting for more: the keyword itself, an operator, AND, OR, NOT. */
     private static boolean leavesAnOperandOpen(final int type) {
         return type == FrostlakeLexer.ON || type == FrostlakeLexer.USING || type == FrostlakeLexer.AND

@@ -107,12 +107,25 @@ public class CopyFileFormatOptionsTest {
         assertEquals("real", value("SELECT name FROM t WHERE id = 3").toString());
     }
 
+    /** The text \N is NULL_IF's own default: a format that names no NULL_IF loads it as NULL (live-verified). */
     @Test
-    public void withoutNullIfTokensAreLoadedLiterally() throws IOException {
-        writeStageFile("t.csv", "1,\\N\n");
+    public void withoutNullIfTheDefaultTokenIsLoadedAsNull() throws IOException {
+        writeStageFile("t.csv", "1,\\N\n2,NULL\n");
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
 
         engine.execute("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = 'CSV')");
+
+        assertNull(value("SELECT name FROM t WHERE id = 1"));
+        assertEquals("NULL", value("SELECT name FROM t WHERE id = 2").toString());
+    }
+
+    /** NULL_IF = () turns the default off: every token is loaded as written. */
+    @Test
+    public void withAnEmptyNullIfTokensAreLoadedLiterally() throws IOException {
+        writeStageFile("t.csv", "1,\\N\n");
+        engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
+
+        engine.execute("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = 'CSV' NULL_IF = ())");
 
         assertEquals("\\N", value("SELECT name FROM t WHERE id = 1").toString());
     }

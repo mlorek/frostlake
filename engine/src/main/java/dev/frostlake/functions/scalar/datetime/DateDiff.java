@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.datetime;
 
+import dev.frostlake.executor.SessionWeek;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
@@ -82,7 +83,7 @@ public class DateDiff extends BuiltInFunction {
         final LocalDateTime endAt   = atUtc(args.get(2), end);
         // Snowflake DATEDIFF counts unit BOUNDARIES crossed, not elapsed whole units: both operands are
         // truncated to the unit first, so DATEDIFF(DAY, '23:00', '01:00 next day') = 1 and
-        // DATEDIFF(HOUR, 10:59, 11:01) = 1. Weeks start on Monday (default WEEK_START).
+        // DATEDIFF(HOUR, 10:59, 11:01) = 1. Weeks start where the session's WEEK_START puts them.
         switch (unit) {
             case "YEAR": case "Y": case "YYYY": case "YR":
                 return (long) (end.getYear() - start.getYear());
@@ -92,8 +93,7 @@ public class DateDiff extends BuiltInFunction {
             case "MONTH": case "MM": case "MON":
                 return (long) ((end.getYear() * 12 + end.getMonthValue()) - (start.getYear() * 12 + start.getMonthValue()));
             case "WEEK": case "WK":
-                return Math.floorDiv(end.toLocalDate().toEpochDay() + 3, 7)
-                    - Math.floorDiv(start.toLocalDate().toEpochDay() + 3, 7);
+                return SessionWeek.weeksBetween(start.toLocalDate(), end.toLocalDate());
             case "DAY": case "DD": case "D":
                 return end.toLocalDate().toEpochDay() - start.toLocalDate().toEpochDay();
             case "HOUR": case "H": case "HH":

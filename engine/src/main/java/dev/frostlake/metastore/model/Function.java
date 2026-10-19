@@ -22,11 +22,14 @@ import dev.frostlake.types.DataType;
 import java.util.ArrayList;
 import java.util.List;
 
-public class Function extends SqlObject {
+public class Function extends SqlObject implements Routine {
 
     private String serviceName;
     private String serviceEndpoint;
     private Long maxBatchRows;
+    private boolean aggregate;
+    private String apiIntegration;
+    private String externalUrl;
     private final List<Parameter> parameters;
     private final DataType returnType;
     private final List<Parameter> returnColumns; // for RETURNS TABLE(col TYPE, ...)
@@ -38,9 +41,14 @@ public class Function extends SqlObject {
     private NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
     private Volatility volatility = Volatility.VOLATILE;
     private boolean secure = false;
+    /** The schema that holds the function, or null while none does. */
+    private volatile Schema home;
     private boolean memoizable = false;
     private boolean temporary = false;
+    // A temporary handler function created without its handler judged: the first call judges it.
+    private volatile boolean unvalidated = false;
     private List<String> imports = new ArrayList<>();
+    private RoutineEnvironment environment = new RoutineEnvironment();
 
     public Function(final String name, final List<Parameter> parameters,
                    final DataType returnType, final String body, final boolean isTableFunction) {
@@ -73,14 +81,17 @@ public class Function extends SqlObject {
         this.runtimeVersion = runtimeVersion;
     }
 
+    @Override
     public List<Parameter> getParameters() {
         return new ArrayList<>(parameters);
     }
 
+    @Override
     public List<Parameter> getReturnColumns() {
         return new ArrayList<>(returnColumns);
     }
 
+    @Override
     public DataType getReturnType() {
         return returnType;
     }
@@ -90,6 +101,12 @@ public class Function extends SqlObject {
     }
 
     public boolean isTableFunction() {
+        return isTableFunction;
+    }
+
+    /** Whether the function returns a table: {@link #isTableFunction}, as a procedure answers it too. */
+    @Override
+    public boolean returnsTable() {
         return isTableFunction;
     }
 
@@ -118,6 +135,43 @@ public class Function extends SqlObject {
     public void setVolatility(final String v) { this.volatility = Volatility.fromString(v); }
 
     public boolean isSecure() { return secure; }
+
+    /**
+     * The schema that holds the function: where the names its body writes without a schema are looked for when it
+     * is called.
+     *
+     * @return the schema, or null while no schema holds the function
+     */
+    public Schema getHome() {
+        return home;
+    }
+
+    /** Records the schema the function is added to, or null when it is removed from one. */
+    void setHome(final Schema home) {
+        this.home = home;
+    }
+    /**
+     * Whether the RETURNS type was written with its width: a text or a binary written {@code VARCHAR(16777216)}
+     * is spelled so where one written bare is spelled bare. Null for a routine restored from a snapshot that
+     * did not tell.
+     */
+    private Boolean returnSized;
+
+    @Override
+    public Boolean getReturnSized() { return returnSized; }
+    public void setReturnSized(final Boolean returnSized) { this.returnSized = returnSized; }
+
+    /** Whether the RETURNS type was written NOT NULL, which DESCRIBE FUNCTION's returns row tells. */
+    private boolean returnNotNull;
+
+    public boolean isReturnNotNull() {
+        return returnNotNull;
+    }
+
+    public void setReturnNotNull(final boolean returnNotNull) {
+        this.returnNotNull = returnNotNull;
+    }
+
     public void setSecure(final boolean secure) { this.secure = secure; }
 
     /**
@@ -133,9 +187,27 @@ public class Function extends SqlObject {
      * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
      * it models the lifetime and not the isolation.
      */
+    @Override
     public boolean isTemporary() { return temporary; }
 
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }
+
+    /**
+     * Whether the function was created without its handler judged: a TEMPORARY Python or Java function is, and the
+     * judgment waits for its first call (live-verified).
+     */
+    public boolean isUnvalidated() { return unvalidated; }
+
+    /** Records whether the handler is still to be judged. */
+    public void setUnvalidated(final boolean unvalidated) { this.unvalidated = unvalidated; }
+
+    /** What the routine is given to run with: packages, repository, target path, integrations and secrets. */
+    public RoutineEnvironment getEnvironment() { return environment; }
+
+    /** Records what the routine is given to run with. */
+    public void setEnvironment(final RoutineEnvironment environment) {
+        this.environment = environment == null ? new RoutineEnvironment() : environment;
+    }
 
     public List<String> getImports() { return new ArrayList<>(imports); }
     public void setImports(final List<String> imports) { this.imports = imports != null ? new ArrayList<>(imports) : new ArrayList<>(); }
@@ -180,5 +252,46 @@ public class Function extends SqlObject {
     /** Whether this is a service function. */
     public boolean isServiceFunction() {
         return serviceName != null;
+    }
+
+    /**
+     * Marks this function an external one: a call would reach the URL through the API integration named.
+     *
+     * @param integration the API integration's name
+     * @param url the remote service's URL, as the AS clause wrote it
+     */
+    public void setExternal(final String integration, final String url) {
+        this.apiIntegration = integration;
+        this.externalUrl = url;
+    }
+
+    /** Whether this is an external function. */
+    public boolean isExternalFunction() {
+        return apiIntegration != null;
+    }
+
+    /**
+     * Marks this function a user-defined aggregate: CREATE AGGREGATE FUNCTION made it, and a call reduces a group's
+     * rows through its handler's accumulate, merge and finish.
+     *
+     * @param aggregate whether it is one
+     */
+    public void setAggregate(final boolean aggregate) {
+        this.aggregate = aggregate;
+    }
+
+    /** Whether this is a user-defined aggregate function. */
+    public boolean isAggregate() {
+        return aggregate;
+    }
+
+    /** The API integration an external function names, or null for any other function. */
+    public String getApiIntegration() {
+        return apiIntegration;
+    }
+
+    /** The URL an external function's calls would reach, or null. */
+    public String getExternalUrl() {
+        return externalUrl;
     }
 }

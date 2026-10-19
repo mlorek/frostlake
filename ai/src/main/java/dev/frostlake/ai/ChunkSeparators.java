@@ -19,6 +19,7 @@ package dev.frostlake.ai;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * The separator ladder each {@code format} of SPLIT_TEXT_RECURSIVE_CHARACTER splits on, most
@@ -46,7 +47,7 @@ final class ChunkSeparators {
 
     /** The ladder for a format name, case-insensitively; null when the name is not one we model. */
     static List<String> forFormat(final String format) {
-        final String name = format == null ? "" : format.trim().toLowerCase();
+        final String name = format == null ? "" : format.trim().toLowerCase(Locale.ROOT);
         if ("none".equals(name)) {
             return new ArrayList<>(PLAIN);
         }

@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.TypedVectorNode;
 import dev.frostlake.values.UuidTextNode;
@@ -28,9 +29,6 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
-
-import java.util.Map;
-import java.util.Set;
 
 /**
  * Pure JSON/VARIANT path helpers extracted from {@link ExpressionEvaluatorVisitor}: extract an object
@@ -66,25 +64,15 @@ final class JsonPathExtractor {
     }
 
     /**
-     * The RAW child node at {@code property} (same lookup as {@link #extractProperty}, including
-     * the case-insensitive fallback) with NO value conversion — for INTERMEDIATE path steps, where
-     * converting per step wrapped every subtree in a {@code VariantValue} whose constructor
-     * serialized it, only for the next step to unwrap the node again.
+     * The RAW child node at {@code property} (same lookup as {@link #extractProperty}) with NO value
+     * conversion — for INTERMEDIATE path steps, where converting per step wrapped every subtree in a
+     * {@code VariantValue} whose constructor serialized it, only for the next step to unwrap the node
+     * again. A step names a key exactly, whatever its spelling: {@code PARSE_JSON('{"id":1}'):ID} is
+     * NULL, as {@code GET} answers it (live-verified).
      */
     static JsonNode propertyNode(final JsonNode root, final String property) {
         if (root == null || (!root.isObject() && !root.isArray())) return null;
-        JsonNode node = root.get(property);
-        if (node == null && root.isObject()) {
-            // Case-insensitive fallback
-            final Set<Map.Entry<String, JsonNode>> fields = root.properties();
-            for (final Map.Entry<String, JsonNode> field : fields) {
-                if (field.getKey().equalsIgnoreCase(property)) {
-                    node = field.getValue();
-                    break;
-                }
-            }
-        }
-        return node;
+        return root.get(property);
     }
 
     static Object extractJsonArrayElement(final String jsonString, final int index) {
@@ -124,6 +112,9 @@ final class JsonPathExtractor {
         if (typedMember != null) return typedMember;
         // A UUID member stays the VARIANT that remembers its type — TYPEOF(OBJECT_CONSTRUCT('k', u):k) is UUID.
         if (UuidTextNode.holds(node)) return VariantValue.ofNode(node);
+        // So does a DECFLOAT member: TYPEOF(OBJECT_CONSTRUCT('k', CAST(1.5 AS DECFLOAT)):k) is DECFLOAT
+        // (live-verified).
+        if (DecfloatTextNode.holds(node)) return VariantValue.ofNode(node);
         if (node.isTextual()) {
             // A STRING whose content itself looks like JSON structure ('["ROLE"]', '{"a":1}') keeps its
             // QUOTED JSON form — unquoting it made a string value indistinguishable from a real

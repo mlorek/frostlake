@@ -59,9 +59,9 @@ public final class DeclaredTypeFold {
 
     /**
      * Whether two declared types are the SAME type — the family and its parameters. A VECTOR's
-     * dimension and a structured OBJECT's fields are rendered into the name; the width of a string or
-     * binary, a number's precision and scale, and a temporal's precision are not, so those compare
-     * their parameters explicitly.
+     * dimension is rendered into its name; the width of a string or binary, a number's precision and
+     * scale, a temporal's precision and a structured type's shape are not, so those compare their
+     * parameters explicitly.
      *
      * @param left  one type
      * @param right the other
@@ -87,12 +87,46 @@ public final class DeclaredTypeFold {
                 && ((BinaryType) left).isFixed() == ((BinaryType) right).isFixed()
                 && ((BinaryType) left).getWidthSpelling() == ((BinaryType) right).getWidthSpelling();
         }
+        if (StructuredTypes.isStructured(left)) {
+            // Every structured type is called OBJECT, ARRAY or MAP whatever its shape, so the shape is
+            // compared part by part. Comparing the names alone made ARRAY(INT) and ARRAY(VARCHAR) one type,
+            // and a fold of the two handed back the first, whose column then held values it does not fit.
+            return sameShape(left, right);
+        }
         // A temporal's PRECISION is deliberately not compared here. The set-operation path has always
         // treated two same-named temporals as one declared type, and the vendor gate depends on it —
         // making them differ changed how an EXCEPT compared timestamp columns. The measured
         // max-precision rule is applied by the folds themselves instead (combine and foldBranches),
         // which change the declared type and never how two values compare.
         return true;
+    }
+
+    /**
+     * Whether two structured types of one class declare the same shape: an OBJECT's keys in the same
+     * order with the same types and NOT NULL flags, a MAP's key and value types, an ARRAY's element type.
+     */
+    private static boolean sameShape(final DataType left, final DataType right) {
+        if (left instanceof StructuredObjectType) {
+            final List<StructuredField> leftFields = ((StructuredObjectType) left).getFields();
+            final List<StructuredField> rightFields = ((StructuredObjectType) right).getFields();
+            if (leftFields.size() != rightFields.size()) {
+                return false;
+            }
+            for (int i = 0; i < leftFields.size(); i++) {
+                final StructuredField l = leftFields.get(i);
+                final StructuredField r = rightFields.get(i);
+                if (!l.getName().equals(r.getName()) || l.isNotNull() != r.isNotNull()
+                        || !sameDeclaredType(l.getDataType(), r.getDataType())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (left instanceof MapType) {
+            return sameDeclaredType(((MapType) left).getKeyType(), ((MapType) right).getKeyType())
+                && sameDeclaredType(((MapType) left).getValueType(), ((MapType) right).getValueType());
+        }
+        return sameDeclaredType(((ArrayType) left).getElementType(), ((ArrayType) right).getElementType());
     }
 
     /**
@@ -126,16 +160,27 @@ public final class DeclaredTypeFold {
             return null;
         }
         if (left instanceof NumericType && right instanceof NumericType) {
+            // A DECFLOAT beside any number is a DECFLOAT (live-verified).
+            if (NumericType.isDecfloat(left) || NumericType.isDecfloat(right)) {
+                return NumericType.DECFLOAT;
+            }
             if (NumericType.isApproximate(left)) {
                 return left;
             }
             if (NumericType.isApproximate(right)) {
                 return right;
             }
-            if ("NUMBER".equalsIgnoreCase(left.getName())
-                    && "NUMBER".equalsIgnoreCase(right.getName())) {
-                return numericSupertype((NumericType) left, (NumericType) right);
-            }
+            // Two exact numerics fold to the supertype whatever they are called. A function's registry type
+            // keeps the INTEGER or BIGINT name its declaration was written with (DATE_PART over an identifier
+            // part, MAP_SIZE), and is the same NUMBER(38,0) a column reports.
+            return numericSupertype((NumericType) left, (NumericType) right);
+        }
+        if ((left instanceof UuidType || right instanceof UuidType)
+                && left instanceof StringType && right instanceof StringType) {
+            // A UUID dominates a text beside it, in either order, as it does across a conditional's branches
+            // (uuidFold): a UNION ALL of a UUID and a text is a UUID, and its text arm is converted to one
+            // (live-verified).
+            return UuidType.UUID;
         }
         if (left instanceof StringType && right instanceof StringType
                 || left instanceof BinaryType && right instanceof BinaryType) {
@@ -171,7 +216,107 @@ public final class DeclaredTypeFold {
                 Math.max(((IntervalYearMonthType) left).getLeadingPrecision(),
                     ((IntervalYearMonthType) right).getLeadingPrecision()));
         }
+        if (StructuredTypes.isStructured(left) && left.getClass().equals(right.getClass())) {
+            return combineStructured(left, right);
+        }
         return widerTemporal(left, right);
+    }
+
+    /**
+     * Two structured types of one kind folded into the one that holds both, or null when neither coerces
+     * to the other. Snowflake documents the coercion: "A structured type value can be coerced to another
+     * structured type value if the two basic types are the same". OBJECTs need the same keys in the same
+     * order, a MAP's keys may differ only in an integer's precision, and the members fold as
+     * {@link #combineMember} says. A field stays NOT NULL only where both sides declare it so.
+     */
+    private static DataType combineStructured(final DataType left, final DataType right) {
+        if (left instanceof StructuredObjectType && right instanceof StructuredObjectType) {
+            final List<StructuredField> leftFields = ((StructuredObjectType) left).getFields();
+            final List<StructuredField> rightFields = ((StructuredObjectType) right).getFields();
+            if (leftFields.size() != rightFields.size()) {
+                return null;
+            }
+            final List<StructuredField> fields = new ArrayList<>(leftFields.size());
+            for (int i = 0; i < leftFields.size(); i++) {
+                final StructuredField l = leftFields.get(i);
+                final StructuredField r = rightFields.get(i);
+                if (!l.getName().equals(r.getName())) {
+                    return null;
+                }
+                final DataType value = combineMember(l.getDataType(), r.getDataType());
+                if (value == null) {
+                    return null;
+                }
+                fields.add(new StructuredField(l.getName(), value, l.isNotNull() && r.isNotNull()));
+            }
+            return new StructuredObjectType(fields);
+        }
+        if (left instanceof MapType && right instanceof MapType) {
+            final DataType key = combineMapKey(((MapType) left).getKeyType(), ((MapType) right).getKeyType());
+            final DataType value = combineMember(((MapType) left).getValueType(), ((MapType) right).getValueType());
+            return key == null || value == null ? null : new MapType(key, value,
+                ((MapType) left).isValueNotNull() && ((MapType) right).isValueNotNull());
+        }
+        if (left instanceof StructuredArrayType && right instanceof StructuredArrayType) {
+            final DataType element = combineMember(((ArrayType) left).getElementType(),
+                ((ArrayType) right).getElementType());
+            return element == null ? null : new StructuredArrayType(element,
+                ((StructuredArrayType) left).isElementNotNull() && ((StructuredArrayType) right).isElementNotNull());
+        }
+        return null;
+    }
+
+    /**
+     * Two members of structured types (an ARRAY's elements, an OBJECT's or a MAP's values) folded as the
+     * documentation lets them coerce: a number of any precision and scale, NUMBER against FLOAT, a
+     * timestamp of one flavour at any precision, and TIMESTAMP_LTZ against TIMESTAMP_TZ. Strings and
+     * binaries widen as they do outside a structured type; the documentation lists neither, but the wider
+     * one holds both sides' values. Anything else, such as a DATE beside a NUMBER or a VARCHAR beside an
+     * INT, does not fold.
+     */
+    private static DataType combineMember(final DataType left, final DataType right) {
+        if (left == null || right == null) {
+            return null;
+        }
+        if (sameDeclaredType(left, right)) {
+            return atWiderPrecision(left, left, right);
+        }
+        if (StructuredTypes.isStructured(left) || StructuredTypes.isStructured(right)) {
+            return left.getClass().equals(right.getClass()) ? combineStructured(left, right) : null;
+        }
+        if (left instanceof NumericType && right instanceof NumericType) {
+            return combine(left, right);
+        }
+        if (left instanceof StringType && right instanceof StringType
+                || left instanceof BinaryType && right instanceof BinaryType) {
+            return left.getCommonType(right);
+        }
+        if (left instanceof DateTimeType && right instanceof DateTimeType) {
+            final int leftRank = temporalRank(left.getName());
+            final int rightRank = temporalRank(right.getName());
+            final int zoned = TEMPORAL_WIDENING_ORDER.length - 2;
+            if (leftRank >= zoned && rightRank >= zoned) {
+                // TIMESTAMP_LTZ against TIMESTAMP_TZ, in either order: the zoned one keeps both.
+                return atWiderPrecision(leftRank > rightRank ? left : right, left, right);
+            }
+        }
+        return null;
+    }
+
+    /** A MAP's key types folded: the same type, two integers that differ only in precision, or two strings. */
+    private static DataType combineMapKey(final DataType left, final DataType right) {
+        if (sameDeclaredType(left, right)) {
+            return left;
+        }
+        if (left instanceof NumericType && right instanceof NumericType
+                && !NumericType.isApproximate(left) && !NumericType.isApproximate(right)
+                && ((NumericType) left).getScale() == 0 && ((NumericType) right).getScale() == 0) {
+            return numericSupertype((NumericType) left, (NumericType) right);
+        }
+        if (left instanceof StringType && right instanceof StringType) {
+            return left.getCommonType(right);
+        }
+        return null;
     }
 
     /**
@@ -271,13 +416,18 @@ public final class DeclaredTypeFold {
     }
 
     /**
-     * Snowflake's numeric supertype: the widest INTEGER PART meets the widest SCALE.
+     * Snowflake's numeric supertype: the widest INTEGER PART meets the widest SCALE, and a DECFLOAT on either side
+     * makes a DECFLOAT.
      *
      * @param left  one number
      * @param right the other
      * @return the number that holds both
      */
     public static NumericType numericSupertype(final NumericType left, final NumericType right) {
+        if (NumericType.isDecfloat(left) || NumericType.isDecfloat(right)) {
+            // A DECFLOAT beside any exact number is the DECFLOAT both fold to (live-verified).
+            return NumericType.DECFLOAT;
+        }
         final int integerDigits = Math.max(left.getPrecision() - left.getScale(),
             right.getPrecision() - right.getScale());
         final int scale = Math.max(left.getScale(), right.getScale());
@@ -303,14 +453,9 @@ public final class DeclaredTypeFold {
      */
     public static DataType stringContribution(final DataType nonString) {
         if (nonString instanceof NumericType) {
-            final String name = nonString.getName();
-            if ("NUMBER".equalsIgnoreCase(name)) {
-                return new NumericType("NUMBER", 18, 5);
-            }
-            if ("FLOAT".equalsIgnoreCase(name) || "DOUBLE".equalsIgnoreCase(name)) {
-                return nonString;
-            }
-            return null;
+            // By family, as combine folds them: an exact numeric of any name takes the string as NUMBER(18,5),
+            // an approximate one as itself.
+            return NumericType.isApproximate(nonString) ? nonString : new NumericType("NUMBER", 18, 5);
         }
         // EVERY temporal takes the string with it — live declares COALESCE(vt, ts) TIMESTAMP_NTZ,
         // COALESCE(vt, tl) TIMESTAMP_LTZ and COALESCE(vt, tm) TIME, in either written order. TIME is
@@ -449,6 +594,21 @@ public final class DeclaredTypeFold {
     }
 
     /**
+     * A DECFLOAT among numbers and numeric texts: the branches fold to a DECFLOAT, IFF(c, d, 1) and COALESCE(d, 1.5)
+     * alike (live-verified); null where no branch is one, or another family stands among them.
+     */
+    private static DataType decfloatFold(final List<DataType> branchTypes) {
+        boolean any = false;
+        for (final DataType type : branchTypes) {
+            if (type != null && !(type instanceof NumericType) && !(type instanceof StringType)) {
+                return null;
+            }
+            any = any || NumericType.isDecfloat(type);
+        }
+        return any ? NumericType.DECFLOAT : null;
+    }
+
+    /**
      * The branch fold, told which branches were written as STRING LITERALS and what each measures as
      * a number. A string literal beside a number contributes exactly what the same number written
      * WITHOUT quotes would — measured on a real account, and the pair is identical either way:
@@ -478,6 +638,10 @@ public final class DeclaredTypeFold {
                                         final List<DataType> literalMeasurements) {
         if (branchTypes.isEmpty()) {
             return null;
+        }
+        final DataType decfloat = decfloatFold(branchTypes);
+        if (decfloat != null) {
+            return decfloat;
         }
         if (literalMeasurements != null) {
             final List<DataType> measured = new ArrayList<>(branchTypes.size());

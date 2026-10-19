@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DefaultValueExpression;
@@ -25,6 +26,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
 import java.time.Instant;
@@ -35,6 +37,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Small stateless helpers shared by more than one SHOW/DESCRIBE sub-executor. Kept in one place so the
@@ -109,14 +112,47 @@ public final class ShowResultHelpers {
     static Schema scopeSchemaReportedGenerically(final Catalog catalog, final String databaseName,
                                                  final String schemaName) {
         try {
-            return catalog.getDatabase(databaseName).getSchema(schemaName);
+            return catalog.databaseExact(databaseName).schemaExact(schemaName);
         } catch (final RuntimeException missing) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
     }
 
+    /**
+     * The database a SHOW scope names, for a kind whose miss live reports generically — the IN DATABASE form of
+     * {@link #scopeSchemaReportedGenerically}.
+     */
+    public static Database scopeDatabaseReportedGenerically(final Catalog catalog, final String databaseName) {
+        try {
+            return catalog.databaseExact(databaseName);
+        } catch (final RuntimeException missing) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+    }
+
+    /**
+     * The session's current schema, for a DESCRIBE or a SHOW scoped to it: refused as a statement with no current
+     * database or schema is refused.
+     */
     static Schema resolveDescribeSchema(final Catalog catalog) {
-        return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+        requireCurrentScope(catalog.getCurrentDatabase(), catalog.getCurrentSchema());
+        return catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema());
+    }
+
+    /**
+     * Refuses a listing's scope that names no database or no schema, as a statement with no current one is refused:
+     * the database first.
+     *
+     * @param databaseName the scope's database, or null for none
+     * @param schemaName   the scope's schema, or null for none
+     */
+    static void requireCurrentScope(final String databaseName, final String schemaName) {
+        if (databaseName == null) {
+            throw NoCurrentDatabaseRefusal.forStatement();
+        }
+        if (schemaName == null) {
+            throw NoCurrentDatabaseRefusal.schemaForStatement();
+        }
     }
 
     /**
@@ -145,7 +181,7 @@ public final class ShowResultHelpers {
             return def.toString();
         }
         final String s = def.toString();
-        final String upper = s.toUpperCase();
+        final String upper = s.toUpperCase(Locale.ROOT);
         if (upper.equals("CURRENT_TIMESTAMP") || upper.equals("CURRENT_DATE") || upper.equals("CURRENT_TIME")
                 || upper.equals("TRUE") || upper.equals("FALSE") || upper.equals("NULL") || upper.endsWith("()")) {
             return s;
@@ -153,7 +189,12 @@ public final class ShowResultHelpers {
         return "'" + s.replace("'", "''") + "'";
     }
 
-    /** SQL LIKE match (case-insensitive, {@code %} and {@code _} wildcards) for SHOW … LIKE filters. */
+    /**
+     * SQL LIKE match (case-insensitive, {@code %} and {@code _} wildcards) for SHOW … LIKE filters. A backslash
+     * before a wildcard makes it the character itself: {@code SHOW STAGES LIKE 'LK\\_INT'} names LK_INT and not
+     * LKXINT (live-verified). The pattern reaches here as the statement wrote it or already decoded, so the
+     * backslash may stand once or twice.
+     */
     public static boolean matchesLike(final String value, final String pattern) {
         if (value == null) {
             return false;
@@ -161,6 +202,17 @@ public final class ShowResultHelpers {
         final StringBuilder regex = new StringBuilder();
         for (int i = 0; i < pattern.length(); i++) {
             final char c = pattern.charAt(i);
+            if (c == '\\') {
+                int next = i + 1;
+                if (next < pattern.length() && pattern.charAt(next) == '\\') {
+                    next++;
+                }
+                if (next < pattern.length() && (pattern.charAt(next) == '_' || pattern.charAt(next) == '%')) {
+                    regex.append('\\').append(pattern.charAt(next));
+                    i = next;
+                    continue;
+                }
+            }
             if (c == '%') {
                 regex.append(".*");
             } else if (c == '_') {
@@ -208,6 +260,15 @@ public final class ShowResultHelpers {
      * also the precision the cells carry (see {@link #createdOn(Instant)}).
      */
     public static final DateTimeType CREATED_ON = new DateTimeType("TIMESTAMP_LTZ", 3, true);
+
+    /**
+     * The type of a listing's small counts — an argument count, a key's position, a warehouse's clusters:
+     * NUMBER(9,0), where its sizes and ids are NUMBER(38,0) (live-verified).
+     */
+    public static final NumericType COUNT = new NumericType("NUMBER", 9, 0);
+
+    /** A listing's timestamp kept to the second, as SHOW MANAGED ACCOUNTS keeps its old-URL instants. */
+    public static final DateTimeType WHOLE_SECONDS = new DateTimeType("TIMESTAMP_LTZ", 0, true);
 
     public static OffsetDateTime createdOn(final Instant createdTime) {
         if (createdTime == null) {

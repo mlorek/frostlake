@@ -109,6 +109,6 @@ final class SecurityRest {
 
     /** The answer for an object a SHOW does not list, worded as the statement's own refusal is. */
     static RestException missing(final String noun, final String name) {
-        return RestException.notFound(noun + " '" + name + "' does not exist or not authorized.");
+        return RestException.missing(noun, name);
     }
 }

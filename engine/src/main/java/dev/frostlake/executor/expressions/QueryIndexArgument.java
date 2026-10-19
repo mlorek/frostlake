@@ -107,12 +107,25 @@ final class QueryIndexArgument {
         if (NumericType.isApproximate(type)) {
             return "CAST(" + printed + " AS NUMBER(" + INDEX_DIGITS + ",0))";
         }
-        if (type instanceof NumericType && ((NumericType) type).getScale() > 0) {
+        if (type instanceof NumericType && ((NumericType) type).getScale() > 0 && !convertsTextOverNull(index)) {
             final NumericType number = (NumericType) type;
             return "CAST(" + printed + " AS NUMBER("
                 + Math.max(INDEX_DIGITS, number.getPrecision() - number.getScale()) + ",0))";
         }
         return printed;
+    }
+
+    /**
+     * Whether the index is arithmetic over a conditional of texts and a NULL, which the index takes uncast:
+     * {@code (TO_NUMBER(IFF(…), 18, 1)) * 1} (live-verified; see {@link PlanTextNumber#settlesOverNull}).
+     */
+    private static boolean convertsTextOverNull(final Expression index) {
+        if (!(index instanceof BinaryOperationExpression)) {
+            return false;
+        }
+        final BinaryOperationExpression arithmetic = (BinaryOperationExpression) index;
+        return PlanTextNumber.settlesOverNull(arithmetic.getLeft())
+            || PlanTextNumber.settlesOverNull(arithmetic.getRight());
     }
 
     /**

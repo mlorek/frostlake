@@ -17,24 +17,42 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-/** INVOKER_ROLE() — the invoking role (the current role in the embedded engine). */
+/**
+ * INVOKER_ROLE() — the role that owns the object executing: a view's owner while the view's body runs, a function's
+ * inside its body, an owner's-rights procedure's inside the procedure, and the session's current role outside them,
+ * a caller's-rights procedure included, as Snowflake's INVOKER_ROLE page lays out. A policy on a table read through a
+ * view therefore sees the view's owner. An owner that is a database role is no account role, and the answer is NULL.
+ */
 public class InvokerRole extends BuiltInFunction {
 
     private final SessionContext sessionContext;
+    private final Catalog catalog;
 
-    public InvokerRole(final SessionContext sessionContext) {
+    public InvokerRole(final SessionContext sessionContext, final Catalog catalog) {
         super("INVOKER_ROLE", StringType.VARCHAR);
         this.sessionContext = sessionContext;
+        this.catalog = catalog;
     }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return sessionContext == null ? "SYSADMIN" : sessionContext.getCurrentRole();
+        if (sessionContext == null) {
+            return "SYSADMIN";
+        }
+        final String owner = sessionContext.getInvokerOwner();
+        if (owner == null) {
+            return sessionContext.getCurrentRole();
+        }
+        if (catalog != null && catalog.roleExists(owner)) {
+            return catalog.resolveRoleName(owner);
+        }
+        return owner.indexOf('.') >= 0 ? null : owner;
     }
 
     @Override

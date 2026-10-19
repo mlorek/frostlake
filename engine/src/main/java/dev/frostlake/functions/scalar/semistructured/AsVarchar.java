@@ -16,15 +16,16 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 
-public class AsVarchar extends StructuredArgumentFunction {
+public class AsVarchar extends VariantArgumentFunction {
     public AsVarchar() { super("AS_VARCHAR", StringType.VARCHAR); }
 
     @Override
@@ -32,14 +33,13 @@ public class AsVarchar extends StructuredArgumentFunction {
         if (args.get(0) == null) return null;
         final Object v = args.get(0);
         final JsonNode node = JsonTypeHelper.parse(v);
-        // A UUID is no VARCHAR to extract: live, AS_VARCHAR(TO_VARIANT(u)) is NULL.
-        if (UuidTextNode.holds(node)) return null;
+        // Only a text is one: a number, a BOOLEAN, a date or a UUID held in the VARIANT is NULL here, as
+        // every cast of the family answers for another kind (live-verified).
         if (node != null) {
-            if (node.isTextual()) return node.asText();
-            if (node.isValueNode()) return node.asText();
-            return null;
+            return node.isTextual() && !UuidTextNode.holds(node) && !DecfloatTextNode.holds(node)
+                ? node.asText() : null;
         }
-        return v.toString();
+        return v instanceof String ? v : null;
     }
 
     @Override

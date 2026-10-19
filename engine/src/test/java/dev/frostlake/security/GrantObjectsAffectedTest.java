@@ -163,11 +163,18 @@ public class GrantObjectsAffectedTest extends BaseDatabaseTest {
         // Ownership moves the same way, counted.
         assertEquals(EXECUTED + " 2 objects affected.",
             status("GRANT OWNERSHIP ON ALL TABLES IN SCHEMA goa TO ROLE " + ROLE));
-        final ResultSet tables = engine.executeQuery("SHOW TABLES IN SCHEMA test_db.goa");
-        assertEquals(ROLE, cell(tables, soleRowWhere(tables, "name", "T1"), "owner"));
-        assertEquals(ROLE, cell(tables, soleRowWhere(tables, "name", "T2"), "owner"));
-        assertTrue(!ROLE.equals(cell(tables, soleRowWhere(tables, "name", "TMP"), "owner")),
-            "a temporary table keeps its owner");
+        assertEquals(ROLE, ownerOf("T1"));
+        assertEquals(ROLE, ownerOf("T2"));
+        assertTrue(!ROLE.equals(ownerOf("TMP")), "a temporary table keeps its owner");
+    }
+
+    /**
+     * The role holding OWNERSHIP of a table of the schema, as its grants name it: a role that gave a table away sees it
+     * in SHOW TABLES only while it holds a privilege on it, or MANAGE GRANTS.
+     */
+    private String ownerOf(final String table) {
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE test_db.goa." + table);
+        return cell(grants, soleRowWhere(grants, "privilege", "OWNERSHIP"), "grantee_name");
     }
 
     @Test

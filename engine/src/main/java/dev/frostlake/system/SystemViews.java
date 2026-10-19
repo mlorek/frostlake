@@ -16,9 +16,14 @@
 
 package dev.frostlake.system;
 
+import dev.frostlake.executor.ClusteringKeySpelling;
+import dev.frostlake.executor.JsonTextList;
 import dev.frostlake.executor.ShowResultHelpers;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.RetentionChain;
+import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.FileFormat;
@@ -29,6 +34,7 @@ import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
@@ -49,14 +55,20 @@ import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
+import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
+import dev.frostlake.types.VectorType;
+import dev.frostlake.values.ValueRange;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,9 +94,46 @@ public class SystemViews {
     /** Where a table's rows are, so TABLES can count them as it lists the table. */
     private final StorageEngine storageEngine;
 
+    /** Says whether the session may act as an object's owner; null shows every definition. */
+    private DefinitionOwnership ownership;
+
+    /** Says which objects the rights a statement runs with reach; null lists every object. */
+    private ObjectVisibility visibility;
+
     public SystemViews(final Catalog catalog, final StorageEngine storageEngine) {
         this.catalog = catalog;
         this.storageEngine = storageEngine;
+    }
+
+    /**
+     * Tell the views whose definitions the session may read: VIEW_DEFINITION, FUNCTION_DEFINITION and
+     * PROCEDURE_DEFINITION are NULL for an object another role owns, SECURE or not (live-verified).
+     *
+     * @param ownership says whether the session may act as an object's owner
+     */
+    public void setDefinitionOwnership(final DefinitionOwnership ownership) {
+        this.ownership = ownership;
+    }
+
+    private boolean readsDefinitionOf(final String owner) {
+        return ownership == null || ownership.actsAsOwner(owner);
+    }
+
+    /**
+     * Tell the views which objects to list: only those the rights a statement runs with reach.
+     *
+     * @param visibility says which objects those are
+     */
+    public void setVisibility(final ObjectVisibility visibility) {
+        this.visibility = visibility;
+    }
+
+    private boolean enters(final Database db, final Schema schema) {
+        return visibility == null || visibility.entersSchema(db, schema);
+    }
+
+    private boolean lists(final String objectType, final Schema schema, final String name, final String owner) {
+        return visibility == null || visibility.lists(objectType, schema, name, owner);
     }
 
     // ── DATABASES ─────────────────────────────────────────────────────────────
@@ -101,14 +150,14 @@ public class SystemViews {
                 // metadata surfaces disagree on spelling by design.
                 db.getName(), db.getOwner(), db.isTransientObject() ? "YES" : YES_NO_FALSE,
                 db.getComment(),
-                db.getCreatedTime(), db.getCreatedTime(),
+                db.getCreatedTime(), db.getLastDdlTime(),
                 db.getDataRetentionTimeInDays() != null
                     ? Long.valueOf(db.getDataRetentionTimeInDays().longValue()) : DEFAULT_RETENTION_TIME,
                 "STANDARD",
                 "UNSET", OWNER_ROLE_TYPE
             ));
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── SCHEMATA ──────────────────────────────────────────────────────────────
@@ -124,10 +173,20 @@ public class SystemViews {
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : db.getAllSchemas()) {
+                final SystemSchema system = SystemSchema.of(db.getName(), schema.getName());
+                if (system != null && !system.isInSchemata()) {
+                    // The account's SCHEMATA leaves these schemas of the SNOWFLAKE database out (live-verified).
+                    continue;
+                }
+                if (!enters(db, schema)) {
+                    continue;
+                }
                 result.addRow(new Row(
-                    db.getName(), schema.getName(), schema.getOwner(),
+                    db.getName(), schema.getName(), system != null ? null : schema.getOwner(),
                     schema.isTransientObject() ? "YES" : YES_NO_FALSE,
-                    YES_NO_FALSE,
+                    // The schema's own flag, WITH MANAGED ACCESS or ALTER SCHEMA … ENABLE: the fact SHOW
+                    // SCHEMAS spells as the MANAGED ACCESS option reads YES here (live-verified).
+                    yesNo(schema.isManagedAccess()),
                     // The schema's own value, else its database's, else the account default — the
                     // same live-resolved inheritance SHOW SCHEMAS reports.
                     schema.getDataRetentionTimeInDays() != null
@@ -136,12 +195,12 @@ public class SystemViews {
                             ? Long.valueOf(db.getDataRetentionTimeInDays().longValue())
                             : DEFAULT_RETENTION_TIME,
                     null, null, null, null,
-                    schema.getCreatedTime(), schema.getCreatedTime(), schema.getComment(),
+                    schema.getCreatedTime(), schema.getLastDdlTime(), schema.getComment(),
                     "UNSET", OWNER_ROLE_TYPE
                 ));
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── TABLES ────────────────────────────────────────────────────────────────
@@ -189,7 +248,12 @@ public class SystemViews {
                 tables.addAll(schema.getShadowedTables());
                 for (int i = 0; i < tables.size(); i++) {
                     final Table table = tables.get(i);
-                    final String type = table.isTemporary() ? "LOCAL TEMPORARY" : "BASE TABLE";
+                    if (!lists("TABLE", schema, table.getName(), table.getOwner())) {
+                        continue;
+                    }
+                    // An event table is a kind of its own here (live-verified).
+                    final String type = table.isTemporary() ? "LOCAL TEMPORARY"
+                        : table.isEventTable() ? "EVENT TABLE" : "BASE TABLE";
                     // ROW_COUNT is the committed rows; BYTES stays 0 — live's figure is the compressed
                     // size of its micro-partitions (512 for one INT row, 1024 for two to a hundred,
                     // 2048 for one row of a thousand random characters), which in-memory rows cannot
@@ -198,32 +262,46 @@ public class SystemViews {
                         QualifiedName.key(db.getName(), schema.getName(), table.getName()), i >= visible);
                     result.addRow(new Row(
                         db.getName(), schema.getName(), table.getName(), table.getOwner(),
-                        type, yesNo(table.isTransient()),
-                        table.getClusterKeys().isEmpty() ? null : String.join(", ", table.getClusterKeys()),
-                        rowCount, 0L, DEFAULT_RETENTION_TIME,
+                        // A temporary table is neither transient nor not, and keeps no history (live-verified).
+                        type, table.isTemporary() ? null : yesNo(table.isTransient()),
+                        // The key reads as SHOW TABLES spells it (live-verified).
+                        ClusteringKeySpelling.listed(table.getClusterByText()),
+                        // The retention SHOW TABLES reports: the table's own, else its container's; a temporary
+                        // table keeps no history.
+                        rowCount, 0L, table.isTemporary() ? Long.valueOf(0L)
+                            : Long.valueOf(RetentionChain.effectiveDays(db, schema, table)),
                         null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
-                        table.getCreatedTime(), table.getCreatedTime(), table.getCreatedTime(),
-                        table.getLastDdlBy(), YES_NO_FALSE, table.getComment(),
+                        table.getCreatedTime(), table.getLastAlteredTime(), table.getLastDdlTime(),
+                        // A table with a clustering key is reclustered unless that was suspended.
+                        table.getLastDdlBy(), yesNo(!table.getClusterKeys().isEmpty()
+                            && !table.isReclusterSuspended()), table.getComment(),
                         yesNo(table.isTemporary()), YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE,
                         yesNo(table.isHybrid()), YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
                     ));
                 }
                 for (final View view : schema.getViews()) {
+                    if (!lists("VIEW", schema, view.getName(), view.getOwner())) {
+                        continue;
+                    }
                     result.addRow(viewRow(db, schema, view.getName(), view.getOwner(), view.getLastDdlBy(),
-                        "VIEW", systemViewTime(schema, view), view.getComment(), null));
+                        "VIEW", systemViewTime(schema, view), systemViewDdlTime(schema, view), view.getComment(), null));
                 }
                 for (final MaterializedView view : schema.getMaterializedViews()) {
-                    result.addRow(viewRow(db, schema, view.getName(), view.getOwner(), view.getLastDdlBy(),
-                        "MATERIALIZED VIEW", view.getCreatedTime(), view.getComment(), DEFAULT_RETENTION_TIME));
+                    // A clustered materialized view lists its key and whether it is reclustered (live-verified).
+                    final boolean keyed = !view.getClusterKeys().isEmpty();
+                    result.addRow(shapedRow(db, schema, view.getName(), view.getOwner(), view.getLastDdlBy(),
+                        "MATERIALIZED VIEW", view.getCreatedTime(), view.getLastDdlTime(), view.getComment(), null,
+                        Long.valueOf(RetentionChain.effectiveDays(db, schema, null)),
+                        keyed ? "LINEAR(" + String.join(", ", view.getClusterKeys()) + ")" : null,
+                        keyed && !view.isReclusterSuspended() ? YES_NO_TRUE : YES_NO_FALSE));
                 }
                 for (final DynamicTable dynamicTable : schema.getDynamicTables()) {
-                    result.addRow(tableShapedRow(db, schema, dynamicTable.getName(), dynamicTable.getOwner(),
-                        dynamicTable.getLastDdlBy(), "BASE TABLE", dynamicTable.getCreatedTime(), dynamicTable.getComment(),
-                        dynamicTable.isTransient()));
+                    result.addRow(dynamicTableRow(db, schema, dynamicTable,
+                        Long.valueOf(RetentionChain.effectiveDays(db, schema, null))));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     /**
@@ -232,28 +310,42 @@ public class SystemViews {
      * included, is empty.
      */
     private Row viewRow(final Database db, final Schema schema, final String name, final String owner,
-                        final String lastDdlBy, final String type, final Instant created, final String comment,
-                        final Long retention) {
-        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, comment, null, retention);
+                        final String lastDdlBy, final String type, final Instant created, final Instant lastDdl,
+                        final String comment, final Long retention) {
+        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, lastDdl, comment, null, retention, null,
+            YES_NO_FALSE);
     }
 
-    /** A dynamic table's TABLES row: listed as a BASE TABLE, TRANSIENT as it was declared, retained a day. */
-    private Row tableShapedRow(final Database db, final Schema schema, final String name,
-                               final String owner, final String lastDdlBy, final String type, final Instant created,
-                               final String comment, final boolean transientRelation) {
-        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, comment,
-            transientRelation ? YES_NO_TRUE : YES_NO_FALSE, DEFAULT_RETENTION_TIME);
+    /**
+     * A dynamic table's TABLES row: listed as a BASE TABLE that IS_DYNAMIC, TRANSIENT as it was declared, retained
+     * what SHOW TABLES reports for it, and counting the rows its last refresh held.
+     */
+    private Row dynamicTableRow(final Database db, final Schema schema, final DynamicTable table,
+                                final Long retention) {
+        return new Row(
+            db.getName(), schema.getName(), table.getName(), table.getOwner(), "BASE TABLE",
+            table.isTransient() ? YES_NO_TRUE : YES_NO_FALSE, null, Long.valueOf(table.getRefreshedRows()), 0L,
+            retention, null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
+            table.getCreatedTime(), table.getLastDdlTime(), table.getLastDdlTime(), table.getLastDdlBy(),
+            YES_NO_FALSE, table.getComment(),
+            YES_NO_FALSE, YES_NO_FALSE, YES_NO_TRUE,
+            YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
+        );
     }
 
-    /** A relation with no stored rows of its own in the TABLES row shape: no clustering key, no sizes. */
+    /**
+     * A relation with no stored rows of its own in the TABLES row shape: no sizes, a clustering key if it has one.
+     * Only DDL moves such a relation, so its LAST_ALTERED is its LAST_DDL.
+     */
     private Row shapedRow(final Database db, final Schema schema, final String name, final String owner,
-                          final String lastDdlBy, final String type, final Instant created, final String comment,
-                          final String transience, final Long retention) {
+                          final String lastDdlBy, final String type, final Instant created, final Instant lastDdl,
+                          final String comment, final String transience, final Long retention,
+                          final String clusteringKey, final String autoClustering) {
         return new Row(
             db.getName(), schema.getName(), name, owner, type,
-            transience, null, null, null, retention,
+            transience, clusteringKey, null, null, retention,
             null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
-            created, created, created, lastDdlBy, YES_NO_FALSE, comment,
+            created, lastDdl, lastDdl, lastDdlBy, autoClustering, comment,
             YES_NO_FALSE, YES_NO_FALSE, "DYNAMIC TABLE".equals(type) ? YES_NO_TRUE : YES_NO_FALSE,
             YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
         );
@@ -265,6 +357,11 @@ public class SystemViews {
      */
     private static Instant systemViewTime(final Schema schema, final View view) {
         return "INFORMATION_SCHEMA".equals(schema.getName()) ? null : view.getCreatedTime();
+    }
+
+    /** {@link #systemViewTime} for the view's LAST_DDL: none for INFORMATION_SCHEMA's own, the last DDL otherwise. */
+    private static Instant systemViewDdlTime(final Schema schema, final View view) {
+        return "INFORMATION_SCHEMA".equals(schema.getName()) ? null : view.getLastDdlTime();
     }
 
     // ── COLUMNS ───────────────────────────────────────────────────────────────
@@ -301,7 +398,7 @@ public class SystemViews {
             colText("COLUMN_DEFAULT", 134217728), colYesNo("IS_NULLABLE"),
             col("DATA_TYPE"), colInt("CHARACTER_MAXIMUM_LENGTH"), colInt("CHARACTER_OCTET_LENGTH"),
             colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX", 2), colInt("NUMERIC_SCALE"),
-            colInt("DATETIME_PRECISION"), colNull("INTERVAL_TYPE"), colLong("INTERVAL_PRECISION"),
+            colInt("DATETIME_PRECISION"), colNull("INTERVAL_TYPE"), colNullNumber("INTERVAL_PRECISION"),
             colNull("CHARACTER_SET_CATALOG"), colNull("CHARACTER_SET_SCHEMA"), colNull("CHARACTER_SET_NAME"),
             colNull("COLLATION_CATALOG"), colNull("COLLATION_SCHEMA"), col("COLLATION_NAME"),
             colNull("DOMAIN_CATALOG"), colNull("DOMAIN_SCHEMA"), colNull("DOMAIN_NAME"),
@@ -318,6 +415,9 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Table table : tablesFor(schema, tableName)) {
+                    if (!lists("TABLE", schema, table.getName(), table.getOwner())) {
+                        continue;
+                    }
                     int pos = 1;
                     for (final TableColumn col : table.getColumns()) {
                         // The position the column was GIVEN, not where it sits today: a dropped column
@@ -328,6 +428,9 @@ public class SystemViews {
                     }
                 }
                 for (final View view : schema.getViews()) {
+                    if (!lists("VIEW", schema, view.getName(), view.getOwner())) {
+                        continue;
+                    }
                     if (matchesName(view.getName(), tableName)) {
                         addDerivedColumnRows(result, db, schema, view.getName(), view.getResolvedColumns());
                     }
@@ -337,9 +440,16 @@ public class SystemViews {
                         addDerivedColumnRows(result, db, schema, view.getName(), view.getResolvedColumns());
                     }
                 }
+                // A dynamic table's columns are listed as they resolved when it was created.
+                for (final DynamicTable dynamicTable : schema.getDynamicTables()) {
+                    if (matchesName(dynamicTable.getName(), tableName) && dynamicTable.getResolvedColumns() != null) {
+                        addDerivedColumnRows(result, db, schema, dynamicTable.getName(),
+                            dynamicTable.getResolvedColumns());
+                    }
+                }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     /** The base tables a COLUMNS read covers: one named table, or all of them, each with the permanent
@@ -384,7 +494,7 @@ public class SystemViews {
     private Row columnRow(final Database db, final Schema schema, final String relationName,
                           final TableColumn col, final int position, final boolean fromBaseTable) {
         final DataType dataType = col.getDataType();
-        final String typeName = dataType.getName().toUpperCase();
+        final String typeName = dataType.getName().toUpperCase(Locale.ROOT);
         // An interval reports its fields without their precisions, INTERVAL DAY TO SECOND (live-verified).
         final String canonical = dataType instanceof IntervalDayTimeType
             ? "INTERVAL " + ((IntervalDayTimeType) dataType).getQualifier().fieldsName()
@@ -396,18 +506,22 @@ public class SystemViews {
         // and its octet length is four bytes a character, uncapped: VARCHAR(5) reads 20 and the
         // 16MB maximum 67108864 (live-verified).
         // A UUID reports neither length, as a BINARY does not (live-verified).
+        // A table's own column keeps the length it was declared with, and the octets stop at the widest a value
+        // can be: VARCHAR(134217728) reads 134217728 in both and VARCHAR(16777217) 67108868 octets (live-verified).
         final Integer charLen = dataType instanceof StringType && !(dataType instanceof UuidType)
-            ? Integer.valueOf((int) Math.min(((StringType) dataType).getMaxLength(),
-                SqlTypeNames.DESCRIBED_STRING_MAXIMUM)) : null;
+            ? Integer.valueOf(fromBaseTable ? ((StringType) dataType).getMaxLength()
+                : (int) Math.min(((StringType) dataType).getMaxLength(), SqlTypeNames.DESCRIBED_STRING_MAXIMUM))
+            : null;
         // A BINARY column reports NEITHER length, declared width or not — live leaves both NULL for a
         // table column, a view column and a CTAS column alike; its size reaches JDBC through SHOW
         // COLUMNS instead (live-verified).
-        final Integer octetLen = charLen == null ? null : Integer.valueOf(charLen.intValue() * 4);
+        final Integer octetLen = charLen == null ? null
+            : Integer.valueOf((int) Math.min(charLen.longValue() * 4, StringResultWidths.UNBOUNDED));
         // Live reports precision/scale only for the exact-numeric family: a FLOAT column
         // leaves both NULL, and every non-numeric type leaves both NULL too.
         Integer numPrec = null;
         Integer numScale = null;
-        if (dataType instanceof NumericType && !"FLOAT".equals(canonical)) {
+        if (dataType instanceof NumericType && !"FLOAT".equals(canonical) && !"DECFLOAT".equals(canonical)) {
             numPrec = Integer.valueOf(((NumericType) dataType).getPrecision());
             numScale = Integer.valueOf(((NumericType) dataType).getScale());
         }
@@ -439,7 +553,9 @@ public class SystemViews {
             identity ? Long.valueOf(col.getIdentityStart()) : null,
             identity ? Long.valueOf(col.getIdentityIncrement()) : null,
             null, null,
-            identity ? YES_NO_FALSE : null, identity ? YES_NO_FALSE : null,
+            identity ? YES_NO_FALSE : null,
+            // An identity declared ORDER hands its numbers out in order; NOORDER is the default (live-verified).
+            identity ? yesNo(col.isIdentityOrdered()) : null,
             null, dataType.getName(), fromBaseTable ? col.getComment() : null,
             null, null
         );
@@ -499,23 +615,28 @@ public class SystemViews {
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                for (final View view : schema.getViews()) {
+                // Every session's temporary views are listed, as live lists them, though another session reaches none.
+                for (final View view : schema.allViews()) {
+                    if (!lists("VIEW", schema, view.getName(), view.getOwner())) {
+                        continue;
+                    }
                     // Snowflake's VIEW_DEFINITION is the view's full executable DDL, not just its
                     // query: deployment tooling recreates views via EXECUTE IMMEDIATE of this text.
                     // INFORMATION_SCHEMA's own views were never created: no definition, no times.
                     final Instant created = systemViewTime(schema, view);
                     result.addRow(new Row(
                         db.getName(), schema.getName(), view.getName(), view.getOwner(),
-                        created == null ? null : view.getDefinitionText() != null ? view.getDefinitionText()
+                        created == null || !readsDefinitionOf(view.getOwner()) ? null
+                            : view.getDefinitionText() != null ? view.getDefinitionText()
                             : view.ddl(schema.getName() + "." + view.getName()), "NONE",
                         YES_NO_FALSE, YES_NO_FALSE, yesNo(view.isSecure()),
-                        created, created, created,
+                        created, systemViewDdlTime(schema, view), systemViewDdlTime(schema, view),
                         view.getLastDdlBy(), view.getComment()
                     ));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── TABLE_CONSTRAINTS ─────────────────────────────────────────────────────
@@ -530,6 +651,9 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Table table : schema.getTables()) {
+                    if (!lists("TABLE", schema, table.getName(), table.getOwner())) {
+                        continue;
+                    }
                     // ONE row per CONSTRAINT, never one per column (live-verified): a composite
                     // PRIMARY KEY (a, b) is a single constraint under a single name, and so is a
                     // multi-column UNIQUE. Frostlake models both as per-column flags, so the row count
@@ -537,11 +661,11 @@ public class SystemViews {
                     final String primaryKeyName = table.primaryKeyConstraintName();
                     if (primaryKeyName != null) {
                         result.addRow(constraintRow(db, schema, table, primaryKeyName, "PRIMARY KEY",
-                            relyOfColumns(table, table.getPrimaryKeys())));
+                            table.getPrimaryKeyRely()));
                     }
                     for (final UniqueConstraint unique : table.getUniqueConstraints()) {
                         result.addRow(constraintRow(db, schema, table, unique.getConstraintName(), "UNIQUE",
-                            relyOfColumns(table, unique.getColumnNames())));
+                            unique.getRely()));
                     }
                     // An inline REFERENCES is its own single-column FOREIGN KEY constraint.
                     for (final TableColumn col : table.getColumns()) {
@@ -561,7 +685,7 @@ public class SystemViews {
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // One TABLE_CONSTRAINTS row for one constraint, under the name it reports everywhere else: the name an
@@ -576,18 +700,7 @@ public class SystemViews {
         return new Row(db.getName(), schema.getName(), name,
                        db.getName(), schema.getName(), table.getName(),
                        type, YES_NO_FALSE, YES_NO_TRUE, YES_NO_FALSE, null,
-                       table.getCreatedTime(), table.getCreatedTime(), relyText);
-    }
-
-    // RELY for a constraint spanning several columns: RELY is declared per column in Frostlake, so the
-    // constraint relies when any of its columns does.
-    private Boolean relyOfColumns(final Table table, final List<String> columnNames) {
-        for (final String columnName : columnNames) {
-            if (table.hasColumn(columnName) && Boolean.TRUE.equals(table.getColumn(columnName).getRely())) {
-                return Boolean.TRUE;
-            }
-        }
-        return Boolean.FALSE;
+                       table.constraintCreatedTime(name), table.constraintLastAlteredTime(name), relyText);
     }
 
     // The name of the PRIMARY KEY constraint a foreign key points at — REFERENTIAL_CONSTRAINTS reports it
@@ -618,15 +731,18 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Table table : schema.getTables()) {
+                    if (!lists("TABLE", schema, table.getName(), table.getOwner())) {
+                        continue;
+                    }
                     for (final TableColumn col : table.getColumns()) {
                         if (col.hasForeignKey()) {
+                            final String name = table.columnForeignKeyConstraintName(col.getName());
                             result.addRow(new Row(
-                                db.getName(), schema.getName(),
-                                table.columnForeignKeyConstraintName(col.getName()),
+                                db.getName(), schema.getName(), name,
                                 db.getName(), schema.getName(),
                                 referencedPrimaryKeyName(schema, col.getReferencedTable()),
                                 FOREIGN_KEY_MATCH, "NO ACTION", "NO ACTION", null,
-                                table.getCreatedTime(), table.getCreatedTime()
+                                table.constraintCreatedTime(name), table.constraintLastAlteredTime(name)
                             ));
                         }
                     }
@@ -640,13 +756,14 @@ public class SystemViews {
                             FOREIGN_KEY_MATCH,
                             fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
                             fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
-                            null, table.getCreatedTime(), table.getCreatedTime()
+                            null, table.constraintCreatedTime(fk.getConstraintName()),
+                            table.constraintLastAlteredTime(fk.getConstraintName())
                         ));
                     }
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── PROCEDURES ────────────────────────────────────────────────────────────
@@ -666,25 +783,35 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Procedure proc : schema.getProcedures()) {
+                    if (visibility != null && !visibility.listsProcedure(schema, proc)) {
+                        continue;
+                    }
+                    // A table procedure's DATA_TYPE reads "TABLE (COL TYPE, …)", as a table function's does.
                     final DataType returns = proc.getReturnType();
-                    final boolean exactNumeric = returns instanceof NumericType
-                        && !"FLOAT".equals(returns.getName().toUpperCase());
+                    final boolean exactNumeric = !proc.returnsTable() && returns instanceof NumericType
+                        && !"FLOAT".equals(returns.getName().toUpperCase(Locale.ROOT));
                     result.addRow(new Row(
                         db.getName(), schema.getName(), proc.getName(), proc.getOwner(),
-                        buildArgSignature(proc.getParameters()), returns.getName(),
-                        null, null,
+                        buildArgSignature(proc.getParameters()),
+                        proc.returnsTable() ? "TABLE (" + columnSignature(proc.getReturnColumns()) + ")"
+                            : SqlTypeNames.routineDataType(returns, proc.getReturnSized()),
+                        proc.returnsTable() ? null
+                            : SqlTypeNames.routineTextLength(returns, proc.getReturnSized()), null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getPrecision()) : null,
                         exactNumeric ? Integer.valueOf(10) : null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getScale()) : null,
-                        proc.getLanguage(), proc.getBody(),
-                        proc.getCreatedTime(), proc.getCreatedTime(), proc.getComment(),
-                        null, null,
-                        proc.getRuntimeVersion(), listOrNull(proc.getPackages()), null, null
+                        proc.getLanguage(), readsDefinitionOf(proc.getOwner()) ? proc.getBody() : null,
+                        proc.getCreatedTime(), proc.getLastDdlTime(), proc.getComment(),
+                        listOrNull(proc.getEnvironment().getExternalAccessIntegrations()),
+                        textOrNull(proc.getEnvironment().secretsText(db.getName(), schema.getName())),
+                        proc.getRuntimeVersion(), listOrNull(proc.getPackages()),
+                        installedPackages(proc.getLanguage()),
+                        artifactRepository(proc.getLanguage(), proc.getEnvironment(), proc.getPackages())
                     ));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── FUNCTIONS ─────────────────────────────────────────────────────────────
@@ -707,36 +834,46 @@ public class SystemViews {
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                for (final Function func : schema.getFunctions()) {
+                for (final Function func : schema.allFunctions()) {
+                    if (visibility != null && !visibility.listsFunction(schema, func)) {
+                        continue;
+                    }
                     // A table function has no IS_TABLE_FUNCTION flag on a real account — its
                     // DATA_TYPE reads "TABLE (COL TYPE, …)" instead, which is what marks it.
                     final DataType returns = func.getReturnType();
                     final String dataType = func.isTableFunction()
                         ? "TABLE (" + columnSignature(func.getReturnColumns()) + ")"
-                        : returns.getName();
+                        : SqlTypeNames.routineDataType(returns, func.getReturnSized());
                     final boolean exactNumeric = !func.isTableFunction()
-                        && returns instanceof NumericType && !"FLOAT".equals(returns.getName().toUpperCase());
+                        && returns instanceof NumericType && !"FLOAT".equals(returns.getName().toUpperCase(Locale.ROOT));
                     result.addRow(new Row(
                         db.getName(), schema.getName(), func.getName(), func.getOwner(),
                         buildArgSignature(func.getParameters()), dataType,
-                        null, null,
+                        func.isTableFunction() ? null
+                            : SqlTypeNames.routineTextLength(returns, func.getReturnSized()), null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getPrecision()) : null,
                         exactNumeric ? Integer.valueOf(10) : null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getScale()) : null,
-                        func.getLanguage(), func.getBody(),
+                        func.getLanguage(), readsDefinitionOf(func.getOwner()) ? func.getBody() : null,
                         func.getVolatility(), yesNo("CALLED ON NULL INPUT".equals(func.getNullHandling())),
                         yesNo(func.isSecure()),
-                        func.getCreatedTime(), func.getCreatedTime(), func.getComment(),
+                        func.getCreatedTime(), func.getLastDdlTime(), func.getComment(),
                         YES_NO_FALSE, null, null, null, null, null,
-                        null, listOrNull(func.getImports()), func.getHandler(), null,
-                        func.getRuntimeVersion(), null, null,
-                        yesNo(func.isMemoizable()), null, null,
-                        YES_NO_FALSE, YES_NO_FALSE, null
+                        null, listOrNull(func.getImports()), func.getHandler(),
+                        func.getEnvironment().getTargetPath(),
+                        func.getRuntimeVersion(), listOrNull(func.getEnvironment().getPackages()),
+                        installedPackages(func.getLanguage()),
+                        yesNo(func.isMemoizable()),
+                        listOrNull(func.getEnvironment().getExternalAccessIntegrations()),
+                        textOrNull(func.getEnvironment().secretsText(db.getName(), schema.getName())),
+                        YES_NO_FALSE, yesNo(func.isAggregate()),
+                        artifactRepository(func.getLanguage(), func.getEnvironment(),
+                            func.getEnvironment().getPackages())
                     ));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── SEQUENCES ─────────────────────────────────────────────────────────────
@@ -755,21 +892,25 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Sequence seq : schema.getSequences()) {
-                    // A never-altered sequence's LAST_ALTERED is its creation instant (live-verified),
-                    // and ORDERED spells the ORDER clause YES/NO where SHOW spells it Y/N.
+                    if (!lists("SEQUENCE", schema, seq.getName(), seq.getOwner())) {
+                        continue;
+                    }
+                    // A never-altered sequence's LAST_ALTERED is its creation instant (live-verified), an ALTER or a
+                    // COMMENT ON moves it, and ORDERED spells the ORDER clause YES/NO where SHOW spells it Y/N.
                     final OffsetDateTime created = ShowResultHelpers.createdOn(seq.getCreatedTime());
+                    final OffsetDateTime lastAltered = ShowResultHelpers.createdOn(seq.getLastDdlTime());
                     result.addRow(new Row(
-                        db.getName(), schema.getName(), seq.getName().toUpperCase(), seq.getOwner(),
+                        db.getName(), schema.getName(), seq.getName().toUpperCase(Locale.ROOT), seq.getOwner(),
                         "NUMBER", 38L, 10L, 0L,
                         String.valueOf(seq.getStartValue()), String.valueOf(Long.MIN_VALUE),
                         String.valueOf(Long.MAX_VALUE), String.valueOf(seq.peekNextValue()),
                         String.valueOf(seq.getIncrement()), YES_NO_FALSE,
-                        created, created, seq.isOrder() ? YES_NO_TRUE : YES_NO_FALSE, seq.getComment()
+                        created, lastAltered, seq.isOrder() ? YES_NO_TRUE : YES_NO_FALSE, seq.getComment()
                     ));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── STAGES ────────────────────────────────────────────────────────────────
@@ -781,32 +922,31 @@ public class SystemViews {
             col("COMMENT"), colLtz("CREATED"), colLtz("LAST_ALTERED"),
             col("ENDPOINT"), colBool("DIRECTORY_ENABLED")
         ));
-        try {
-            final String dbN = databaseName != null ? databaseName : catalog.getCurrentDatabase();
-            final String scN = schemaName != null ? schemaName : catalog.getCurrentSchema();
-            if (dbN != null && scN != null) {
-                for (final Stage stage : catalog.getDatabase(dbN).getSchema(scN).getStages()) {
+        for (final Database db : databases(databaseName)) {
+            for (final Schema schema : schemas(db, schemaName)) {
+                for (final Stage stage : schema.getStages()) {
+                    if (!lists("STAGE", schema, stage.getName(), stage.getOwner())) {
+                        continue;
+                    }
                     final String url = stage.getUrl();
                     // Live's stage-type vocabulary is "External Named" / "Internal Named";
                     // an internal stage reports a null URL and null region.
-                    final boolean external = url != null && (url.startsWith("s3://")
-                        || url.startsWith("azure://") || url.startsWith("gcs://"));
+                    final boolean external = stage.locationCloud() != null;
+                    // The name as the catalog holds it: a quoted name keeps its case, "s.dotted" included.
                     result.addRow(new Row(
-                        dbN, scN, stage.getName().toUpperCase(),
+                        db.getName(), schema.getName(), stage.getName(),
                         external ? url : null, null,
                         external ? "External Named" : "Internal Named", stage.getOwner(),
-                        stage.getComment(), stage.getCreatedAt(), stage.getCreatedAt(),
-                        // A stage declared without DIRECTORY reports NULL here, one with it enabled TRUE (live-verified).
-                        null, stage.isDirectoryEnabled() ? Boolean.TRUE : null
+                        stage.getComment(), stage.getCreatedAt(), stage.getLastDdlTime(),
+                        // A stage never given a DIRECTORY property list reports NULL here; one that was reports
+                        // whether its directory table is on, FALSE included (live-verified).
+                        null, stage.isDirectoryDeclared() || stage.isDirectoryEnabled()
+                            ? Boolean.valueOf(stage.isDirectoryEnabled()) : null
                     ));
                 }
             }
-        } catch (final Exception e) {
-            // Skip a row that failed to build rather than failing the whole system view, but log at
-            // debug so the underlying error stays diagnosable.
-            logger.debug("Skipping a system-view row that could not be built: {}", e.getMessage(), e);
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── PIPES ─────────────────────────────────────────────────────────────────
@@ -822,14 +962,14 @@ public class SystemViews {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Pipe pipe : schema.getPipes()) {
                     result.addRow(new Row(
-                        db.getName(), schema.getName(), pipe.getName().toUpperCase(), pipe.getOwner(),
+                        db.getName(), schema.getName(), pipe.getName().toUpperCase(Locale.ROOT), pipe.getOwner(),
                         pipe.getCopyStatement(), yesNo(pipe.isAutoIngest()),
-                        null, pipe.getCreatedTime(), pipe.getCreatedTime(), pipe.getComment(), null
+                        null, pipe.getCreatedTime(), pipe.getLastDdlTime(), pipe.getComment(), null
                     ));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── ENABLED_ROLES ─────────────────────────────────────────────────────────
@@ -840,7 +980,7 @@ public class SystemViews {
         for (final Role role : catalog.getAllRoles()) {
             result.addRow(new Row(role.getName(), role.getOwner()));
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── APPLICABLE_ROLES ──────────────────────────────────────────────────────
@@ -854,41 +994,49 @@ public class SystemViews {
                 result.addRow(new Row(user.getName(), role, catalog.getRole(role).getOwner(), "NO"));
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── TABLE_PRIVILEGES ──────────────────────────────────────────────────────
 
-    public ResultSet queryTablePrivileges(final String databaseName, final String schemaName) {
+    public ResultSet queryTablePrivileges(final List<Row> privileges) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("TABLE_CATALOG"),
             col("TABLE_SCHEMA"), col("TABLE_NAME"),
             col("PRIVILEGE_TYPE"), colText("IS_GRANTABLE", 134217728), colText("WITH_HIERARCHY", 2), colLtz("CREATED")
         ));
-        // Privileges are not fully tracked yet; return empty result set
-        return result;
+        for (final Row privilege : privileges) {
+            result.addRow(privilege);
+        }
+        return inSessionZone(result);
     }
 
     // ── OBJECT_PRIVILEGES ─────────────────────────────────────────────────────
 
-    public ResultSet queryObjectPrivileges() {
+    public ResultSet queryObjectPrivileges(final List<Row> privileges) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("OBJECT_CATALOG"),
             col("OBJECT_SCHEMA"), col("OBJECT_NAME"), colText("OBJECT_TYPE", 134217728),
             col("PRIVILEGE_TYPE"), colText("IS_GRANTABLE", 134217728), colLtz("CREATED")
         ));
-        return result;
+        for (final Row privilege : privileges) {
+            result.addRow(privilege);
+        }
+        return inSessionZone(result);
     }
 
     // ── USAGE_PRIVILEGES ──────────────────────────────────────────────────────
 
-    public ResultSet queryUsagePrivileges() {
+    public ResultSet queryUsagePrivileges(final List<Row> privileges) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("OBJECT_CATALOG"),
             col("OBJECT_SCHEMA"), col("OBJECT_NAME"), colText("OBJECT_TYPE", 30),
             colText("PRIVILEGE_TYPE", 5), colText("IS_GRANTABLE", 134217728), colLtz("CREATED")
         ));
-        return result;
+        for (final Row privilege : privileges) {
+            result.addRow(privilege);
+        }
+        return inSessionZone(result);
     }
 
     // ── FILE_FORMATS ──────────────────────────────────────────────────────────
@@ -907,9 +1055,14 @@ public class SystemViews {
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                for (final FileFormat format : schema.getFileFormats()) {
+                // Every session's temporary formats are listed, as live lists them, though another session reaches
+                // none.
+                for (final FileFormat format : schema.allFileFormats()) {
+                    if (!lists("FILE_FORMAT", schema, format.getName(), format.getOwner())) {
+                        continue;
+                    }
                     result.addRow(new Row(
-                        db.getName(), schema.getName(), format.getName().toUpperCase(), null,
+                        db.getName(), schema.getName(), format.getName().toUpperCase(Locale.ROOT), null,
                         format.getType(), format.getOption("RECORD_DELIMITER"),
                         format.getOption("FIELD_DELIMITER"), skipHeaderCount(format),
                         format.getOption("DATE_FORMAT"), format.getOption("TIME_FORMAT"),
@@ -917,13 +1070,14 @@ public class SystemViews {
                         format.getOption("ESCAPE"), format.getOption("ESCAPE_UNENCLOSED_FIELD"),
                         format.getOption("TRIM_SPACE"), format.getOption("FIELD_OPTIONALLY_ENCLOSED_BY"),
                         nullIfText(format), format.getOption("COMPRESSION"),
-                        format.getOption("ERROR_ON_COLUMN_COUNT_MISMATCH"), format.getCreatedTime(), format.getCreatedTime(),
+                        format.getOption("ERROR_ON_COLUMN_COUNT_MISMATCH"), format.getCreatedTime(),
+                        format.getLastDdlTime(),
                         format.getComment()
                     ));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     /** The format's NULL_IF values joined by commas, or null when it sets none. */
@@ -964,12 +1118,12 @@ public class SystemViews {
                         storageEngine.storedRowCount(
                             QualifiedName.key(db.getName(), schema.getName(), table.getName()), false),
                         0L, 1L,
-                        table.getCreatedTime(), table.getCreatedTime(), table.getComment()
+                        table.getCreatedTime(), table.getLastAlteredTime(), table.getComment()
                     ));
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── TABLE_STORAGE_METRICS ─────────────────────────────────────────────────
@@ -998,7 +1152,7 @@ public class SystemViews {
                 }
             }
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── INFORMATION_SCHEMA_CATALOG_NAME ───────────────────────────────────────
@@ -1010,7 +1164,7 @@ public class SystemViews {
         if (name != null) {
             result.addRow(new Row(name));
         }
-        return result;
+        return inSessionZone(result);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -1021,10 +1175,18 @@ public class SystemViews {
             : catalog.getAllDatabases();
     }
 
+    /** The schemas of a database a view walks: the named one or all of them, less those the rights do not enter. */
     private List<Schema> schemas(final Database db, final String schemaName) {
-        return schemaName != null
+        final List<Schema> walked = new ArrayList<>();
+        final List<Schema> named = schemaName != null
             ? Collections.singletonList(db.getSchema(schemaName))
             : db.getAllSchemas();
+        for (final Schema schema : named) {
+            if (enters(db, schema)) {
+                walked.add(schema);
+            }
+        }
+        return walked;
     }
 
     /** INFORMATION_SCHEMA spells booleans YES / NO — never Y / N, which is the SHOW convention. */
@@ -1079,9 +1241,37 @@ public class SystemViews {
         return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", 38, 0));
     }
 
+    /**
+     * A NUMBER(38,0) cell the account's view fills with NULL in every row (COLUMNS.INTERVAL_PRECISION): it holds
+     * no value, so it is stored in the narrowest width, where a cell that counts something takes the widest.
+     */
+    private ResultSetColumn colNullNumber(final String name) {
+        return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", 38, 0), true, false,
+            ValueRange.EMPTY);
+    }
+
     /** A whole-number cell the account declares narrower — NUMBER(2,0) for SEQUENCES.NUMERIC_PRECISION. */
     private ResultSetColumn colNumber(final String name, final int precision) {
         return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", precision, 0));
+    }
+
+    /**
+     * The view's creation and alteration instants as the account gives them: TIMESTAMP_LTZ(3) values in the session's
+     * zone, as {@link ShowResultHelpers#createdOn} gives SHOW's created_on. The models keep a raw instant, which as a
+     * cell compared as text, rendered in the host's zone and ignored the session's TIMEZONE.
+     *
+     * @param result the view's rows
+     * @return the same rows, every instant cell converted
+     */
+    private static ResultSet inSessionZone(final ResultSet result) {
+        for (final Row row : result.getRows()) {
+            for (int i = 0; i < row.size(); i++) {
+                if (row.getValue(i) instanceof Instant) {
+                    row.setValue(i, ShowResultHelpers.createdOn((Instant) row.getValue(i)));
+                }
+            }
+        }
+        return result;
     }
 
     /** A creation or alteration instant — TIMESTAMP_LTZ(3) on the account, rendered at the session zone. */
@@ -1089,9 +1279,30 @@ public class SystemViews {
         return new ResultSetColumn(name, ShowResultHelpers.CREATED_ON, null, ShowResultHelpers.CREATED_ON);
     }
 
-    /** A list rendered as live renders IMPORTS / PACKAGES, or null when it holds nothing. */
+    /** A list as the JSON array live tells IMPORTS, PACKAGES and the like by, or null when it holds nothing. */
     private String listOrNull(final List<String> values) {
-        return values == null || values.isEmpty() ? null : "[" + String.join(", ", values) + "]";
+        return values == null || values.isEmpty() ? null : JsonTextList.of(values);
+    }
+
+    /** A cell that is NULL where a listing leaves it empty. */
+    private static String textOrNull(final String text) {
+        return text == null || text.isEmpty() ? null : text;
+    }
+
+    /** What an account installed for a Python routine: nothing here, where the engine installs nothing. */
+    private static String installedPackages(final String language) {
+        return "PYTHON".equalsIgnoreCase(language) ? "[]" : null;
+    }
+
+    /** The artifact repository a Python routine's packages come from, as its description tells it. */
+    private static String artifactRepository(final String language, final RoutineEnvironment environment,
+                                             final List<String> packages) {
+        if (!"PYTHON".equalsIgnoreCase(language)) {
+            return null;
+        }
+        final RoutineEnvironment described = environment.copy();
+        described.setPackages(packages);
+        return described.describedArtifactRepository();
     }
 
     /** A table function's returned columns as {@code NAME TYPE, …}, the body of live's
@@ -1116,9 +1327,18 @@ public class SystemViews {
         final StringBuilder sb = new StringBuilder("(");
         for (int i = 0; i < params.size(); i++) {
             if (i > 0) sb.append(", ");
-            sb.append(params.get(i).getName()).append(" ").append(params.get(i).getDataType().getName());
+            sb.append(params.get(i).getName()).append(" ").append(argumentType(params.get(i).getDataType()));
         }
         sb.append(")");
         return sb.toString();
+    }
+
+    /**
+     * A parameter's type as ARGUMENT_SIGNATURE names it: its bare name, a structured one with its shape and the
+     * types inside it bare — {@code OBJECT(a NUMBER)}, {@code MAP(VARCHAR, NUMBER)} — and a VECTOR without its
+     * element type and size, which DESCRIBE and SHOW print (live-verified).
+     */
+    private static String argumentType(final DataType type) {
+        return type instanceof VectorType ? "VECTOR" : StructuredTypes.signatureText(type);
     }
 }

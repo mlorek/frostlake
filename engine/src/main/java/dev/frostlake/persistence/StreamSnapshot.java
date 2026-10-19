@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +40,8 @@ public class StreamSnapshot implements Serializable {
     public String streamType;
     public boolean showInitialRows;
     public boolean stale;
+    // Whether the stream is a table stream a clone made lost. False on older snapshots.
+    public boolean lostInClone;
     public String comment;
     public String owner;
     public List<StreamRecordSnapshot> records = new ArrayList<>();
@@ -50,4 +53,9 @@ public class StreamSnapshot implements Serializable {
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
     public Map<String, String> tags;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public LocalDateTime createdAt;
+    // Where the stream's offset falls in the order table snapshots are taken in, which a join view's stream reads
+    // its tables' rows at. Null on snapshots written before it was saved, which restore the offset as now.
+    public Long offsetSequence;
 }

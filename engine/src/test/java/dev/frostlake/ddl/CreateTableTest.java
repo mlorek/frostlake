@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -96,7 +98,7 @@ public class CreateTableTest extends BaseDatabaseTest {
         // AUTOINCREMENT is visible in the reconstructed DDL (the GET_DDL spelling).
         final String ddl = engine.executeQuery("SELECT GET_DDL('TABLE', 'users')")
             .getRows().get(0).getValue(0).toString();
-        assertTrue(ddl.toLowerCase().contains("autoincrement"), ddl);
+        assertTrue(ddl.toLowerCase(Locale.ROOT).contains("autoincrement"), ddl);
     }
 
     @Test

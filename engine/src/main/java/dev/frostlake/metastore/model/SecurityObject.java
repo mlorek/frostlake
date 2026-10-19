@@ -53,6 +53,26 @@ public class SecurityObject extends SqlObject {
         this.kind = kind;
     }
 
+    /**
+     * A copy of this object for a clone of its schema: its kind, name, properties, comment, owner and tags.
+     * List-valued properties are copied, so altering one copy leaves the other as it was.
+     *
+     * @return the copy
+     */
+    public synchronized SecurityObject copy() {
+        final SecurityObject copy = new SecurityObject(kind, getName());
+        for (final Map.Entry<String, Object> property : properties.entrySet()) {
+            final Object value = property.getValue();
+            copy.properties.put(property.getKey(), value instanceof List ? new ArrayList<Object>((List<?>) value) : value);
+        }
+        copy.setComment(getComment());
+        copy.setOwner(getOwner());
+        for (final Map.Entry<String, String> tag : getTagValues().entrySet()) {
+            copy.setTag(tag.getKey(), tag.getValue());
+        }
+        return copy;
+    }
+
     /** The object's kind. */
     public SecurityObjectKind getKind() {
         return kind;

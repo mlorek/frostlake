@@ -167,14 +167,19 @@ final class SchemaDdl {
             add(tables, table.getName(), relations.dynamicTableDdl(table, schema, names));
         }
         for (final MaterializedView view : schema.getMaterializedViews()) {
-            add(tables, view.getName(), relations.materializedViewDdl(view, schema, names));
+            // A SECURE object another role owns is left out of the listing, here and below.
+            if (!(view.isSecure() && relations.isAnothers(view.getOwner()))) {
+                add(tables, view.getName(), relations.materializedViewDdl(view, schema, names));
+            }
         }
         appendAll(out, temporary);
         appendAll(out, tables);
 
         final Map<String, List<String>> views = new TreeMap<String, List<String>>();
         for (final View view : schema.getViews()) {
-            add(views, view.getName(), relations.viewDdl(view, schema, names));
+            if (!(view.isSecure() && relations.isAnothers(view.getOwner()))) {
+                add(views, view.getName(), relations.viewDdl(view, schema, names));
+            }
         }
         appendAll(out, views);
 
@@ -186,12 +191,16 @@ final class SchemaDdl {
 
         final Map<String, List<String>> routines = new TreeMap<String, List<String>>();
         for (final Function function : schema.getFunctions()) {
-            add(routines, routineKey(function.getName(), function.getParameters()),
-                relations.functionDdl(function, schema, names));
+            if (!(function.isSecure() && relations.isAnothers(function.getOwner()))) {
+                add(routines, routineKey(function.getName(), function.getParameters()),
+                    relations.functionDdl(function, schema, names));
+            }
         }
         for (final Procedure procedure : schema.getProcedures()) {
-            add(routines, routineKey(procedure.getName(), procedure.getParameters()),
-                relations.procedureDdl(procedure, schema, names));
+            if (!(procedure.isSecure() && relations.isAnothers(procedure.getOwner()))) {
+                add(routines, routineKey(procedure.getName(), procedure.getParameters()),
+                    relations.procedureDdl(procedure, schema, names));
+            }
         }
         appendAll(out, routines);
 
@@ -209,7 +218,8 @@ final class SchemaDdl {
 
         final Map<String, List<String>> tasks = new TreeMap<String, List<String>>();
         for (final Task task : schema.getTasks()) {
-            add(tasks, task.getName(), ObjectDdl.task(task, schema, names.object(schema, task.getName())));
+            add(tasks, task.getName(), ObjectDdl.task(task, schema, names.object(schema, task.getName()),
+                relations.tagAssignments(task, schema)));
         }
         appendAll(out, tasks);
 

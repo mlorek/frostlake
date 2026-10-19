@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -29,10 +30,14 @@ public class SplitPart extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
-        final String str = args.get(0).toString();
-        final String delim = args.get(1) == null ? "" : args.get(1).toString();
-        final int part = ((Number) args.get(2)).intValue();
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
+        final String delim = args.get(1) == null ? "" : SharedFunctionHelpers.textOf(args.get(1));
+        final int part = partNumber(args.get(2));
         if (delim.isEmpty()) return part == 1 ? str : "";
         final String[] parts = str.split(Pattern.quote(delim), -1);
         final int idx = part > 0 ? part - 1 : parts.length + part;
@@ -43,17 +48,27 @@ public class SplitPart extends TextArgumentFunction {
     /** Under a collation the text splits on every separator the collation matches. */
     @Override
     public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (collation == null || args.get(0) == null || args.get(1) == null) {
             return evaluate(args);
         }
-        final List<String> parts = CollationMatching.splitUnder(collation, args.get(0).toString(),
-            args.get(1).toString());
-        final int part = ((Number) args.get(2)).intValue();
+        final List<String> parts = CollationMatching.splitUnder(collation, SharedFunctionHelpers.textOf(args.get(0)),
+            SharedFunctionHelpers.textOf(args.get(1)));
+        final int part = partNumber(args.get(2));
         final int idx = part > 0 ? part - 1 : parts.size() + part;
         if (idx < 0 || idx >= parts.size()) {
             return "";
         }
         return parts.get(idx);
+    }
+
+    /** The part asked for: 0 is the first part, as 1 is (live-verified). */
+    private static int partNumber(final Object written) {
+        final int part = wholeNumber(written);
+        return part == 0 ? 1 : part;
     }
 
     @Override

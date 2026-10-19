@@ -17,6 +17,8 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.StatementAnswers;
+import dev.frostlake.security.SessionContext;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -27,16 +29,18 @@ import java.util.List;
  * inside that transaction.
  */
 public class LastTransaction extends BuiltInFunction {
-    private final dev.frostlake.security.SessionContext sessionContext;
+    private final SessionContext sessionContext;
 
-    public LastTransaction(final dev.frostlake.security.SessionContext sessionContext) {
+    public LastTransaction(final SessionContext sessionContext) {
         super("LAST_TRANSACTION", StringType.VARCHAR);
         this.sessionContext = sessionContext;
     }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return sessionContext != null ? sessionContext.getLastTransactionId() : null;
+        // A replayed statement answers the transaction it first saw end (see StatementAnswers).
+        return StatementAnswers.answered(getName(),
+            sessionContext != null ? sessionContext.getLastTransactionId() : null);
     }
 
     @Override

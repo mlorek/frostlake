@@ -16,6 +16,8 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.types.DataType;
+
 import java.io.Serializable;
 
 /**
@@ -27,5 +29,22 @@ public class ParameterSnapshot implements Serializable {
 
     public String name;
     public String dataType;
+    /**
+     * The type itself, so every declared parameter survives a checkpoint or an engine clone. The type NAME
+     * alone restored NUMBER(8,4) as NUMBER(38,0), VARCHAR(10) as VARCHAR, TIMESTAMP_NTZ(3) as
+     * TIMESTAMP_NTZ(9) and a structured ARRAY or OBJECT as the plain one. Null on snapshots written before
+     * it was persisted, which restore from the name as they always did.
+     */
+    public DataType type;
     public String defaultValue;
+    /**
+     * Whether a text or a binary parameter was declared with no length of its own. Null on snapshots written
+     * before it was persisted, which restore a type held at the default length as declared without one.
+     */
+    public Boolean unsized;
+    /**
+     * The default as it is told back, where that is not the default as written. Null on snapshots written before
+     * it was persisted, which tell the default as written.
+     */
+    public String defaultTold;
 }

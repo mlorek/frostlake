@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -65,7 +67,7 @@ public class WholeDayUnitOverTimeTest extends BaseDatabaseTest {
     @Test
     public void theAddFamilyRefusesAWholeDayUnit() {
         for (final String unit : new String[] {"day", "week", "month", "year"}) {
-            assertEquals("SQL compilation error: ['" + unit.toUpperCase()
+            assertEquals("SQL compilation error: ['" + unit.toUpperCase(Locale.ROOT)
                     + "'] is not a valid date/time component for function DATEADD and type TIME(9).",
                 outcome("SELECT TO_VARCHAR(DATEADD(" + unit + ", 1, tm)) AS x FROM dt"), unit);
         }

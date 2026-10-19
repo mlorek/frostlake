@@ -25,6 +25,8 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ValueRange;
 
+import java.util.Locale;
+
 
 /**
  * What {@code SYSTEM$TYPEOF} answers: a DECLARED type name and a physical storage tag, and the two come
@@ -104,11 +106,15 @@ public final class SystemTypeOfDescription {
             if (numeric.getName().equalsIgnoreCase("FLOAT") || numeric.getName().equalsIgnoreCase("DOUBLE")) {
                 return "DOUBLE";
             }
+            if (NumericType.isDecfloat(numeric)) {
+                // Every DECFLOAT, whatever its value: DECFLOAT(38)[DECFLOAT18] (live-verified).
+                return "DECFLOAT18";
+            }
             return range != null ? SignedStorageWidth.tagOfRange(range, numeric.getScale())
                 : SignedStorageWidth.tagOfPrecision(numeric.getPrecision());
         }
         if (declared instanceof DateTimeType) {
-            final String name = declared.getName().toUpperCase();
+            final String name = declared.getName().toUpperCase(Locale.ROOT);
             if (name.equals("DATE")) {
                 return "SB4";
             }

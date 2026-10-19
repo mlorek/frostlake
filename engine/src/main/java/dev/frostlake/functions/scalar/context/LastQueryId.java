@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.context;
 import dev.frostlake.executor.QueryResultCache;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.metastore.StatementAnswers;
 import dev.frostlake.types.StringType;
 
 import java.math.BigDecimal;
@@ -52,15 +53,17 @@ public class LastQueryId extends NumericArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A replayed statement answers the query IDs it first saw (see StatementAnswers).
         if (args.isEmpty()) {
-            return resultCache.getQueryId(-1);
+            return StatementAnswers.answered(getName() + "(-1)", resultCache.getQueryId(-1));
         }
         final BigDecimal index = wholeIndex(args.get(0));
         if (index == null) {
             return null;
         }
         requireWithinLimit(index);
-        return resultCache.getQueryId(index.intValue());
+        return StatementAnswers.answered(getName() + "(" + index.intValue() + ")",
+            resultCache.getQueryId(index.intValue()));
     }
 
     /**

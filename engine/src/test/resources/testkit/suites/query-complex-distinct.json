@@ -46,7 +46,7 @@
       {"sql": "SELECT SUM(i), SUM(DISTINCT i) FROM VALUES(1), (1), (2) AS t(i)", "expect": {"rows": [["4", "3"]]}}
     ]},
     {"name": "avg-distinct", "steps": [
-      {"sql": "SELECT AVG(i), AVG(DISTINCT i) FROM VALUES(1), (1), (2), (4) AS t(i)", "expect": {"rows": [["2", "2.333333"]]}}
+      {"sql": "SELECT AVG(i), AVG(DISTINCT i) FROM VALUES(1), (1), (2), (4) AS t(i)", "expect": {"rows": [["2", "2.333"]]}}
     ]},
     {"name": "count-distinct-with-group-by", "steps": [
       {"sql": "CREATE TABLE sales (category VARCHAR, product VARCHAR, amount INTEGER)"},

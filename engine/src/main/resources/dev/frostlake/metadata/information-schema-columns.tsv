@@ -1,0 +1,920 @@
+# The columns of INFORMATION_SCHEMA's own views as a real account describes them (DESCRIBE VIEW), tab-separated:
+# view, column, type, whether the column takes NULL, description. The views and their columns keep the account's order.
+APPLICABLE_ROLES	GRANTEE	VARCHAR(16777216)	N	Role or user to whom the privilege is granted
+APPLICABLE_ROLES	ROLE_NAME	VARCHAR(16777216)	N	Name of the role
+APPLICABLE_ROLES	ROLE_OWNER	VARCHAR(16777216)	N	Owner of the role
+APPLICABLE_ROLES	IS_GRANTABLE	VARCHAR(3)	Y	Whether this role can be granted to others
+APPLICATION_CONFIGURATIONS	NAME	VARCHAR(16777216)	N	Name of the application configuration
+APPLICATION_CONFIGURATIONS	APPLICATION_NAME	VARCHAR(16777216)	N	Name of the application that contains the application configuration
+APPLICATION_CONFIGURATIONS	CREATED_ON	TIMESTAMP_LTZ(9)	Y	Timestamp when this configuration was created
+APPLICATION_CONFIGURATIONS	UPDATED_ON	TIMESTAMP_LTZ(9)	Y	Timestamp when this configuration was last updated
+APPLICATION_CONFIGURATIONS	TYPE	VARCHAR(16777216)	N	Type of the application configuration
+APPLICATION_CONFIGURATIONS	STATUS	VARCHAR(16777216)	N	Configuration status (PENDING or DONE)
+APPLICATION_CONFIGURATIONS	SENSITIVE	BOOLEAN	Y	Whether this configuration is sensitive
+APPLICATION_CONFIGURATIONS	VALUE	VARCHAR(16777216)	Y	Value of the configuration
+APPLICATION_CONFIGURATIONS	VALUE_UPDATED_ON	TIMESTAMP_LTZ(9)	Y	Timestamp when this configuration value was last updated
+APPLICATION_CONFIGURATIONS	LABEL	VARCHAR(16777216)	N	Consumer visible configuration label
+APPLICATION_CONFIGURATIONS	DESCRIPTION	VARCHAR(16777216)	N	Application configuration description
+APPLICATION_CONFIGURATIONS	APPLICATION_ROLES	VARCHAR(16777216)	N	Comma-separated list of application roles that can access this configuration
+APPLICATION_CONFIGURATIONS	ADDITIONAL_PROPERTIES	VARCHAR(16777216)	Y	Type-specific additional properties for the configuration
+APPLICATION_SERVICES	APPLICATION_SERVICE_CATALOG	VARCHAR(16777216)	N	Database that the application service belongs to
+APPLICATION_SERVICES	APPLICATION_SERVICE_SCHEMA	VARCHAR(16777216)	N	Schema that the application service belongs to
+APPLICATION_SERVICES	APPLICATION_SERVICE_NAME	VARCHAR(16777216)	N	Name of the application service
+APPLICATION_SERVICES	STATUS	VARCHAR(16777216)	Y	Current runtime status of the application service (e.g. RUNNING, SUSPENDED, PENDING)
+APPLICATION_SERVICES	URL	VARCHAR(16777216)	Y	Public ingress endpoint URL for the default endpoint of the service
+APPLICATION_SERVICES	PRIVATELINK_URL	VARCHAR(16777216)	Y	PrivateLink ingress endpoint URL for the default endpoint of the service
+APPLICATION_SERVICES	SOURCE	VARCHAR(16777216)	Y	JSON describing the artifact repository, package, version, and alias
+APPLICATION_SERVICES	APPLICATION_SERVICE_OWNER	VARCHAR(16777216)	Y	Name of the role that owns the application service
+APPLICATION_SERVICES	APPLICATION_SERVICE_OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of the owner role (e.g. ROLE, DATABASE_ROLE)
+APPLICATION_SERVICES	CREATED_BY	VARCHAR(16777216)	Y	Name of the user who created the application service
+APPLICATION_SERVICES	COMMENT	VARCHAR(16777216)	Y	User-provided comment on the application service
+APPLICATION_SERVICES	ADDITIONAL_PROPERTIES	VARCHAR(16777216)	Y	JSON of additional properties (description, label) from the app.yaml profile
+APPLICATION_SERVICES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the application service
+APPLICATION_SERVICES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the application service
+APPLICATION_SERVICES	LAST_RESUMED	TIMESTAMP_LTZ(9)	Y	Time when the application service was last resumed
+APPLICATION_SERVICES	LAST_SUSPENDED	TIMESTAMP_LTZ(9)	Y	Time when the application service was last suspended
+APPLICATION_SERVICES	IS_UPGRADING	BOOLEAN	Y	Whether the application service is currently undergoing an upgrade
+APPLICATION_SERVICES	AUTO_RESUME	BOOLEAN	N	Whether the application service automatically resumes on incoming requests
+APPLICATION_SERVICES	AUTO_SUSPEND_SECS	NUMBER(9,0)	Y	Number of seconds of inactivity before the service is automatically suspended (0 = disabled)
+APPLICATION_SERVICES	QUERY_WAREHOUSE	VARCHAR(16777216)	Y	Default warehouse used when service containers connect back to Snowflake
+APPLICATION_SERVICES	COMPUTE_RESOURCE	VARCHAR(16777216)	N	Compute backend the application service runs on (SERVERLESS or MANAGED_COMPUTE_POOL)
+APPLICATION_SERVICES	MIN_INSTANCES	NUMBER	N	Minimum number of active instances for the service
+APPLICATION_SERVICES	MAX_INSTANCES	NUMBER	N	Maximum number of active instances for the service
+APPLICATION_SERVICES	CURRENT_INSTANCES	NUMBER	N	Current number of active instances for the service
+APPLICATION_SERVICES	EXTERNAL_ACCESS_INTEGRATIONS	VARCHAR(16777216)	Y	External access integrations associated with the application service
+APPLICATION_SERVICES	URL_PREFIX	VARCHAR(16777216)	Y	Custom URL stub for the application service's endpoint
+APPLICATION_SPECIFICATIONS	NAME	VARCHAR(16777216)	N	Name of the application specification
+APPLICATION_SPECIFICATIONS	APPLICATION_NAME	VARCHAR(16777216)	N	Name of the application that contains the application specification
+APPLICATION_SPECIFICATIONS	TYPE	VARCHAR(16777216)	N	Type of the application specification
+APPLICATION_SPECIFICATIONS	SEQUENCE_NUMBER	NUMBER	N	Id for a specification request, unique identifier the spec definition across different specification versions
+APPLICATION_SPECIFICATIONS	REQUESTED_ON	TIMESTAMP_LTZ(9)	Y	Timestamp when this specification request was created by application
+APPLICATION_SPECIFICATIONS	STATUS	VARCHAR(16777216)	N	Specification approval status
+APPLICATION_SPECIFICATIONS	STATUS_UPDATED_ON	TIMESTAMP_LTZ(9)	Y	Timestamp recording the last change in status for Approval/Decline.
+APPLICATION_SPECIFICATIONS	LABEL	VARCHAR(16777216)	N	Consumer visible specification name
+APPLICATION_SPECIFICATIONS	DESCRIPTION	VARCHAR(16777216)	N	Application specification description
+APPLICATION_SPECIFICATIONS	DEFINITION	VARCHAR(16777216)	N	Application specification content in JSON format
+BACKUPS	ID	VARCHAR(16777216)	Y	Unique identifier of the Backup
+BACKUPS	CREATED	TIMESTAMP_LTZ(9)	Y	Data and time when the backup was created
+BACKUPS	BACKUP_SET_NAME	VARCHAR(16777216)	Y	Name of Backup Set that contains the backup
+BACKUPS	BACKUP_SET_SCHEMA	VARCHAR(16777216)	Y	Name of schema which the Backup Set belongs to
+BACKUPS	BACKUP_SET_CATALOG	VARCHAR(16777216)	Y	Name of database which the Backup Set belongs to
+BACKUPS	EXPIRATION_SCHEDULED_FOR	TIMESTAMP_LTZ(9)	Y	Timestamp at which the backup will be expired
+BACKUPS	IS_UNDER_LEGAL_HOLD	BOOLEAN	Y	Whether the backup is under legal hold
+BACKUPS	COMMENT	VARCHAR(16777216)	Y	Comment for the Backup
+BACKUP_POLICIES	BACKUP_POLICY_NAME	VARCHAR(16777216)	Y	Name of the Backup Policy
+BACKUP_POLICIES	BACKUP_POLICY_SCHEMA	VARCHAR(16777216)	Y	Schema which the Backup Policy belongs to
+BACKUP_POLICIES	BACKUP_POLICY_CATALOG	VARCHAR(16777216)	Y	Database which the Backup Policy belongs to
+BACKUP_POLICIES	SCHEDULE	VARCHAR(16777216)	Y	Schedule for backup creation
+BACKUP_POLICIES	EXPIRE_AFTER_DAYS	NUMBER	Y	Days after backup creation when backup should be expired
+BACKUP_POLICIES	HAS_RETENTION_LOCK	VARCHAR(16777216)	Y	Indicates whether the policy includes a retention lock. Y if policy has retention lock; N otherwise
+BACKUP_POLICIES	OWNER	VARCHAR(16777216)	Y	Name of the role that owns the Backup Policy
+BACKUP_POLICIES	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of role that owns the Backup Policy
+BACKUP_POLICIES	CREATED	TIMESTAMP_LTZ(9)	Y	Data and time when the Backup Policy was created
+BACKUP_POLICIES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Data and time when the Backup Policy was last altered
+BACKUP_POLICIES	COMMENT	VARCHAR(16777216)	Y	Comment for the Backup Policy
+BACKUP_SETS	BACKUP_SET_NAME	VARCHAR(16777216)	Y	Name of the Backup Set
+BACKUP_SETS	BACKUP_SET_SCHEMA	VARCHAR(16777216)	Y	Schema which the Backup Set belongs to
+BACKUP_SETS	BACKUP_SET_CATALOG	VARCHAR(16777216)	Y	Database which the Backup Set belongs to
+BACKUP_SETS	OBJECT_KIND	VARCHAR(16777216)	Y	Type of object that the backup set is backing up
+BACKUP_SETS	OBJECT_NAME	VARCHAR(16777216)	Y	Name of the object that the backup set is backing up
+BACKUP_SETS	OBJECT_SCHEMA	VARCHAR(16777216)	Y	Name of the schema that contains the object being backed up by this backup set
+BACKUP_SETS	OBJECT_CATALOG	VARCHAR(16777216)	Y	Name of the database that contains the object being backed up by this backup set
+BACKUP_SETS	BACKUP_POLICY_NAME	VARCHAR(16777216)	Y	Name of the Backup Policy attached to this backup set
+BACKUP_SETS	BACKUP_POLICY_SCHEMA	VARCHAR(16777216)	Y	Name of the schema that contains the Backup Policy
+BACKUP_SETS	BACKUP_POLICY_CATALOG	VARCHAR(16777216)	Y	Name of the database that contains the Backup Policy
+BACKUP_SETS	OWNER	VARCHAR(16777216)	Y	Name of the role that owns the Backup Set
+BACKUP_SETS	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of role that owns the Backup Set
+BACKUP_SETS	CREATED	TIMESTAMP_LTZ(9)	Y	Data and time when the Backup Set was created
+BACKUP_SETS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Data and time when the Backup Set was last altered
+BACKUP_SETS	COMMENT	VARCHAR(16777216)	Y	Comment for the Backup Set
+CHECK_CONSTRAINTS	CONSTRAINT_CATALOG	VARCHAR(16777216)	N	Database that the constraint belongs to
+CHECK_CONSTRAINTS	CONSTRAINT_SCHEMA	VARCHAR(16777216)	N	Schema that the constraint belongs to
+CHECK_CONSTRAINTS	CONSTRAINT_TABLE	VARCHAR(16777216)	N	Table that the constraint belongs to
+CHECK_CONSTRAINTS	CONSTRAINT_NAME	VARCHAR(16777216)	N	Name of the constraint
+CHECK_CONSTRAINTS	CHECK_CLAUSE	VARCHAR(16777216)	N	Check clause of the constraint
+CLASSES	NAME	VARCHAR(16777216)	N	Name of the BUNDLE CLASS
+CLASSES	SCHEMA_NAME	VARCHAR(16777216)	N	Schema which the CLASS belongs to
+CLASSES	DATABASE_NAME	VARCHAR(16777216)	N	Database which the CLASS belongs to
+CLASSES	VERSION	VARCHAR(16777216)	N	Current version of the CLASS
+CLASSES	OWNER	VARCHAR(16777216)	N	Name of the role that owns the CLASS
+CLASSES	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of role that owns the CLASS.
+CLASSES	IS_SERVICE_CLASS	VARCHAR(16777216)	Y	Whether this is a SERVICE class
+CLASSES	CREATED	TIMESTAMP_LTZ(9)	Y	Date and time when the CLASS was created
+CLASSES	COMMENT	VARCHAR(16777216)	Y	Comment for the CLASS
+CLASS_INSTANCES	NAME	VARCHAR(16777216)	N	Name of the BUNDLE INSTANCE
+CLASS_INSTANCES	SCHEMA_NAME	VARCHAR(16777216)	N	Schema which the INSTANCE belongs to
+CLASS_INSTANCES	DATABASE_NAME	VARCHAR(16777216)	N	Database which the INSTANCE belongs to
+CLASS_INSTANCES	CLASS_NAME	VARCHAR(16777216)	N	CLASS which the INSTANCE is instantiated from
+CLASS_INSTANCES	CLASS_SCHEMA_NAME	VARCHAR(16777216)	N	Schema of the CLASS which the INSTANCE is instantiated from
+CLASS_INSTANCES	CLASS_DATABASE_NAME	VARCHAR(16777216)	N	Database of the CLASS which the INSTANCE is instantiated from
+CLASS_INSTANCES	VERSION	VARCHAR(16777216)	N	Current version of the INSTANCE
+CLASS_INSTANCES	OWNER	VARCHAR(16777216)	N	Name of the role that owns the INSTANCE
+CLASS_INSTANCES	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of role that owns the INSTANCE.
+CLASS_INSTANCES	CREATED	TIMESTAMP_LTZ(9)	Y	Date and time when the INSTANCE was created
+CLASS_INSTANCES	COMMENT	VARCHAR(16777216)	Y	Comment for the INSTANCE
+CLASS_INSTANCE_FUNCTIONS	FUNCTION_NAME	VARCHAR(16777216)	N	Name of the function
+CLASS_INSTANCE_FUNCTIONS	FUNCTION_INSTANCE_NAME	VARCHAR(16777216)	N	Name of the instance which the function belongs to
+CLASS_INSTANCE_FUNCTIONS	FUNCTION_INSTANCE_SCHEMA	VARCHAR(16777216)	N	Name of the schema which the instance belongs to
+CLASS_INSTANCE_FUNCTIONS	FUNCTION_INSTANCE_DATABASE	VARCHAR(16777216)	N	Name of the database which the instance belongs to
+CLASS_INSTANCE_FUNCTIONS	FUNCTION_OWNER	VARCHAR(16777216)	N	Name of the role that owns the function
+CLASS_INSTANCE_FUNCTIONS	ARGUMENT_SIGNATURE	VARCHAR(16777216)	N	Type signature of the function's arguments
+CLASS_INSTANCE_FUNCTIONS	DATA_TYPE	VARCHAR(16777216)	N	Return value data type
+CLASS_INSTANCE_FUNCTIONS	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters of string return value
+CLASS_INSTANCE_FUNCTIONS	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes of string return value
+CLASS_INSTANCE_FUNCTIONS	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision of numeric return value
+CLASS_INSTANCE_FUNCTIONS	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of precision of numeric return value
+CLASS_INSTANCE_FUNCTIONS	NUMERIC_SCALE	NUMBER(9,0)	Y	Scale of numeric return value
+CLASS_INSTANCE_FUNCTIONS	FUNCTION_LANGUAGE	VARCHAR(16777216)	N	Language of the function
+CLASS_INSTANCE_FUNCTIONS	FUNCTION_DEFINITION	VARCHAR(16777216)	Y	Function definition
+CLASS_INSTANCE_FUNCTIONS	VOLATILITY	VARCHAR(16777216)	Y	Whether the function is volatile or immutable
+CLASS_INSTANCE_FUNCTIONS	IS_NULL_CALL	VARCHAR(3)	Y	Whether the function is called on null input
+CLASS_INSTANCE_FUNCTIONS	IS_SECURE	VARCHAR(3)	Y	Whether this function is secure.
+CLASS_INSTANCE_FUNCTIONS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the function
+CLASS_INSTANCE_FUNCTIONS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the function
+CLASS_INSTANCE_FUNCTIONS	COMMENT	VARCHAR(16777216)	Y	Comment for this function
+CLASS_INSTANCE_FUNCTIONS	IS_EXTERNAL	VARCHAR(3)	Y	Whether this function is external
+CLASS_INSTANCE_FUNCTIONS	API_INTEGRATION	VARCHAR(16777216)	Y	Integration for this function
+CLASS_INSTANCE_FUNCTIONS	CONTEXT_HEADERS	VARCHAR(16777216)	Y	Context headers for this function
+CLASS_INSTANCE_FUNCTIONS	MAX_BATCH_ROWS	NUMBER(9,0)	Y	Max batch rows for this function
+CLASS_INSTANCE_FUNCTIONS	COMPRESSION	VARCHAR(16777216)	Y	Type of compression used for serializing function payload
+CLASS_INSTANCE_FUNCTIONS	PACKAGES	VARCHAR(16777216)	Y	Packages requested by the function.
+CLASS_INSTANCE_FUNCTIONS	RUNTIME_VERSION	VARCHAR(16777216)	Y	Runtime version of the function. NULL if function is SQL or Javascript
+CLASS_INSTANCE_FUNCTIONS	INSTALLED_PACKAGES	VARCHAR(16777216)	Y	All packages installed by the function.
+CLASS_INSTANCE_FUNCTIONS	IS_MEMOIZABLE	VARCHAR(3)	Y	Whether this function is memoizable.
+CLASS_INSTANCE_PROCEDURES	PROCEDURE_NAME	VARCHAR(16777216)	N	Name of the procedure
+CLASS_INSTANCE_PROCEDURES	PROCEDURE_INSTANCE_NAME	VARCHAR(16777216)	N	Name of the instance which the procedure belongs to
+CLASS_INSTANCE_PROCEDURES	PROCEDURE_INSTANCE_SCHEMA	VARCHAR(16777216)	N	Name of the schema which the procedure belongs to
+CLASS_INSTANCE_PROCEDURES	PROCEDURE_INSTANCE_DATABASE	VARCHAR(16777216)	N	Name of the database which the procedure belongs to
+CLASS_INSTANCE_PROCEDURES	PROCEDURE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the procedure
+CLASS_INSTANCE_PROCEDURES	ARGUMENT_SIGNATURE	VARCHAR(16777216)	N	Type signature of the procedure's arguments
+CLASS_INSTANCE_PROCEDURES	DATA_TYPE	VARCHAR(16777216)	N	Return value data type
+CLASS_INSTANCE_PROCEDURES	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters of string return value
+CLASS_INSTANCE_PROCEDURES	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes of string return value
+CLASS_INSTANCE_PROCEDURES	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision of numeric return value
+CLASS_INSTANCE_PROCEDURES	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of precision of numeric return value
+CLASS_INSTANCE_PROCEDURES	NUMERIC_SCALE	NUMBER(9,0)	Y	Scale of numeric return value
+CLASS_INSTANCE_PROCEDURES	PROCEDURE_LANGUAGE	VARCHAR(16777216)	N	Language of the procedure
+CLASS_INSTANCE_PROCEDURES	PROCEDURE_DEFINITION	VARCHAR(16777216)	Y	Procedure definition
+CLASS_INSTANCE_PROCEDURES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the procedure
+CLASS_INSTANCE_PROCEDURES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the procedure
+CLASS_INSTANCE_PROCEDURES	COMMENT	VARCHAR(16777216)	Y	Comment for this procedure
+COLUMNS	TABLE_CATALOG	VARCHAR(16777216)	N	Database that the table belongs to
+COLUMNS	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema that the table belongs to
+COLUMNS	TABLE_NAME	VARCHAR(16777216)	N	Table that the column belongs to
+COLUMNS	COLUMN_NAME	VARCHAR(16777216)	N	Name of the column
+COLUMNS	ORDINAL_POSITION	NUMBER(9,0)	Y	Ordinal position of the column in the table
+COLUMNS	COLUMN_DEFAULT	VARCHAR(16777216)	N	Default value of the column
+COLUMNS	IS_NULLABLE	VARCHAR(3)	Y	'YES' if the column may contain NULL, 'NO' otherwise
+COLUMNS	DATA_TYPE	VARCHAR(16777216)	N	Data type of the column
+COLUMNS	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters of string columns
+COLUMNS	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes of string columns
+COLUMNS	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision of numeric columns
+COLUMNS	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of precision of numeric columns
+COLUMNS	NUMERIC_SCALE	NUMBER(9,0)	Y	Scale of numeric columns
+COLUMNS	DATETIME_PRECISION	NUMBER(9,0)	Y	Not applicable for Snowflake.
+COLUMNS	INTERVAL_TYPE	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	INTERVAL_PRECISION	NUMBER(9,0)	Y	Not applicable for Snowflake.
+COLUMNS	CHARACTER_SET_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	CHARACTER_SET_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	CHARACTER_SET_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	COLLATION_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	COLLATION_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	COLLATION_NAME	VARCHAR(16777216)	Y	The name of collation, if present
+COLUMNS	DOMAIN_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	DOMAIN_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	DOMAIN_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	UDT_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	UDT_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	UDT_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	SCOPE_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	SCOPE_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	SCOPE_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	MAXIMUM_CARDINALITY	NUMBER(9,0)	Y	Not applicable for Snowflake.
+COLUMNS	DTD_IDENTIFIER	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	IS_SELF_REFERENCING	VARCHAR(3)	Y	Not applicable for Snowflake.
+COLUMNS	IS_IDENTITY	VARCHAR(3)	Y	Whether this column is an identity column
+COLUMNS	IDENTITY_GENERATION	VARCHAR(16777216)	Y	Whether an identity column's value is always generated or only generated by default.  Snowflake only supports BY DEFAULT
+COLUMNS	IDENTITY_START	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	IDENTITY_INCREMENT	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	IDENTITY_MAXIMUM	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	IDENTITY_MINIMUM	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+COLUMNS	IDENTITY_CYCLE	VARCHAR(16777216)	Y	Whether the value of an identity column may cycle.  Snowflake only supports NO CYCLE.
+COLUMNS	IDENTITY_ORDERED	VARCHAR(3)	Y	Whether the identity column is backed by an ordered sequence
+COLUMNS	SCHEMA_EVOLUTION_RECORD	VARCHAR(16777216)	Y	The record of the latest schema evolution of the column, if present
+COLUMNS	DATA_TYPE_ALIAS	VARCHAR(16777216)	Y	The data type of the column defined in the DDL command when the column was created
+COLUMNS	COMMENT	VARCHAR(16777216)	Y	Comment for this column
+COLUMNS	EXPRESSION	VARCHAR(16777216)	Y	The expression for a virtual column; null for non-virtual columns
+COLUMNS	KIND	VARCHAR(16777216)	Y	The column kind (e.g. COLUMN, VIRTUAL_COLUMN)
+CORTEX_SEARCH_SERVICES	SERVICE_CATALOG	VARCHAR(16777216)	N	Database that the Cortex Search Service belongs to
+CORTEX_SEARCH_SERVICES	SERVICE_SCHEMA	VARCHAR(16777216)	N	Schema that the Cortex Search Service belongs to
+CORTEX_SEARCH_SERVICES	SERVICE_NAME	VARCHAR(16777216)	N	Name of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	DEFINITION	VARCHAR(16777216)	N	Definition of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	SEARCH_COLUMN	VARCHAR(16777216)	N	Name of the search column in the Cortex Search Service
+CORTEX_SEARCH_SERVICES	ATTRIBUTE_COLUMNS	VARCHAR(16777216)	N	Names of the attribute columns in the Cortex Search Service
+CORTEX_SEARCH_SERVICES	COLUMNS	VARCHAR(16777216)	N	Names of all the columns in the Cortex Search Service
+CORTEX_SEARCH_SERVICES	TARGET_LAG	VARCHAR(16777216)	N	Target lag of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	WAREHOUSE	VARCHAR(16777216)	N	Warehouse assigned for refreshes of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	COMMENT	VARCHAR(16777216)	Y	Comment for this Cortex Search Service
+CORTEX_SEARCH_SERVICES	SERVICE_QUERY_URL	VARCHAR(16777216)	N	URL for querying the Cortex Search Service
+CORTEX_SEARCH_SERVICES	OWNER	VARCHAR(16777216)	N	Name of the role that owns the Cortex Search Service
+CORTEX_SEARCH_SERVICES	OWNER_ROLE_TYPE	VARCHAR(16777216)	N	Type of the role that owns the Cortex Search Service
+CORTEX_SEARCH_SERVICES	DATA_TIMESTAMP	TIMESTAMP_LTZ(9)	Y	Data timestamp of the Cortex Search Service source data
+CORTEX_SEARCH_SERVICES	SOURCE_DATA_BYTES	NUMBER(9,0)	N	Size of the materialized source data, in bytes
+CORTEX_SEARCH_SERVICES	SOURCE_DATA_NUM_ROWS	NUMBER(9,0)	N	Number of rows in the source data indexed by the Cortex Search Service
+CORTEX_SEARCH_SERVICES	INDEXING_STATE	VARCHAR(16777216)	N	Indexing status of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	INDEXING_ERROR	VARCHAR(16777216)	Y	Last error encountered during a refresh of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	SERVING_STATE	TIMESTAMP_LTZ(9)	Y	Serving status of the Cortex Search Service
+CORTEX_SEARCH_SERVICES	SERVING_DATA_BYTES	NUMBER(9,0)	N	Size of the billable serving data, in bytes
+CORTEX_SEARCH_SERVICES	EMBEDDING_MODEL	VARCHAR(16777216)	N	Embedding model used by the Cortex Search Service
+CORTEX_SEARCH_SERVICES	PRIMARY_KEY_COLUMNS	VARCHAR(16777216)	N	Names of the primary key columns in the Cortex Search Service
+CORTEX_SEARCH_SERVICES	SCORING_PROFILE_COUNT	NUMBER	N	Number of scoring profiles defined in the Cortex Search Service
+CORTEX_SEARCH_SERVICES	AUTO_SUSPEND	NUMBER	Y	Auto suspend threshold of the Cortex Search Service in seconds
+CORTEX_SEARCH_SERVICES	REFRESH_MODE	VARCHAR(16777216)	Y	Refresh mode of the source dynamic table
+CORTEX_SEARCH_SERVICES	VECTOR_INDEXES	VARCHAR(16777216)	Y	Vector indexes defined in the Cortex Search Service
+CORTEX_SEARCH_SERVICES	REQUEST_LOGGING	BOOLEAN	Y	Service-level request logging setting for Cortex Search Service
+CORTEX_SEARCH_SERVICES	INHERIT_DATA_GOVERNANCE_POLICIES	BOOLEAN	Y	Whether the Cortex Search Service inherits row access and masking policies from the base tables of its source query. NULL for a service that has never had the property set, which serves as though it were FALSE.
+CORTEX_SEARCH_SERVICE_SCORING_PROFILES	SERVICE_CATALOG	VARCHAR(16777216)	N	Database that the Cortex Search Service belongs to
+CORTEX_SEARCH_SERVICE_SCORING_PROFILES	SERVICE_SCHEMA	VARCHAR(16777216)	N	Schema that the Cortex Search Service belongs to
+CORTEX_SEARCH_SERVICE_SCORING_PROFILES	SERVICE_NAME	VARCHAR(16777216)	N	Name of the Cortex Search Service
+CORTEX_SEARCH_SERVICE_SCORING_PROFILES	SCORING_PROFILE_NAME	VARCHAR(16777216)	N	Name of the scoring profile
+CORTEX_SEARCH_SERVICE_SCORING_PROFILES	SCORING_PROFILE	VARCHAR(16777216)	N	Scoring profile
+CURRENT_PACKAGES_POLICY	NAME	VARCHAR(16777216)	N	Packages policy name
+CURRENT_PACKAGES_POLICY	LANGUAGE	VARCHAR(16777216)	N	Package language
+CURRENT_PACKAGES_POLICY	ALLOWLIST	VARCHAR(16777216)	N	Allowlist
+CURRENT_PACKAGES_POLICY	BLOCKLIST	VARCHAR(16777216)	N	BLocklist
+CURRENT_PACKAGES_POLICY	ADDITIONAL_CREATION_BLOCKLIST	VARCHAR(16777216)	N	Additional creation blocklist
+CURRENT_PACKAGES_POLICY	COMMENT	VARCHAR(16777216)	Y	comment
+DATABASES	DATABASE_NAME	VARCHAR(16777216)	N	Name of the database
+DATABASES	DATABASE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the schema
+DATABASES	IS_TRANSIENT	VARCHAR(3)	Y	Whether this is a transient table
+DATABASES	COMMENT	VARCHAR(16777216)	Y	Comment for this database
+DATABASES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the database
+DATABASES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the database
+DATABASES	RETENTION_TIME	NUMBER(9,0)	Y	Number of days that historical data is retained for Time Travel
+DATABASES	TYPE	VARCHAR(16777216)	N	The type of database
+DATABASES	REPLICABLE_WITH_FAILOVER_GROUPS	VARCHAR(16777216)	Y	Whether this object is replicable with a failover group
+DATABASES	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of the role that owns the database
+ELEMENT_TYPES	OBJECT_CATALOG	VARCHAR(16777216)	N	Database that contains the object that uses this array type
+ELEMENT_TYPES	OBJECT_SCHEMA	VARCHAR(16777216)	N	Schema that contains the object that uses this array type
+ELEMENT_TYPES	OBJECT_NAME	VARCHAR(16777216)	N	Name of the object that uses this array type
+ELEMENT_TYPES	OBJECT_TYPE	VARCHAR(16777216)	N	Type of the object that uses this array type
+ELEMENT_TYPES	COLLECTION_TYPE_IDENTIFIER	VARCHAR(16777216)	N	Type identifier
+ELEMENT_TYPES	DATA_TYPE	VARCHAR(16777216)	N	Element data type
+ELEMENT_TYPES	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters for string types
+ELEMENT_TYPES	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes for string types
+ELEMENT_TYPES	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision for numeric types
+ELEMENT_TYPES	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of precision for numeric types
+ELEMENT_TYPES	NUMERIC_SCALE	NUMBER(9,0)	Y	Scale for numeric types
+ELEMENT_TYPES	DATETIME_PRECISION	NUMBER(9,0)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	INTERVAL_TYPE	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	INTERVAL_PRECISION	NUMBER(9,0)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	CHARACTER_SET_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	CHARACTER_SET_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	CHARACTER_SET_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	COLLATION_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	COLLATION_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	COLLATION_NAME	VARCHAR(16777216)	Y	The name of collation, if present
+ELEMENT_TYPES	UDT_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	UDT_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	UDT_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	SCOPE_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	SCOPE_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	SCOPE_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	MAXIMUM_CARDINALITY	NUMBER(9,0)	Y	Not applicable for Snowflake.
+ELEMENT_TYPES	DTD_IDENTIFIER	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+ENABLED_ROLES	ROLE_NAME	VARCHAR(16777216)	N	Name of the role
+ENABLED_ROLES	ROLE_OWNER	VARCHAR(16777216)	N	Owner of the role
+EVENT_TABLES	TABLE_CATALOG	VARCHAR(16777216)	N	Database that the event table belongs to
+EVENT_TABLES	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema that the event table belongs to
+EVENT_TABLES	TABLE_NAME	VARCHAR(16777216)	N	Name of the event table
+EVENT_TABLES	TABLE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the event table
+EVENT_TABLES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the event table
+EVENT_TABLES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the event table
+EVENT_TABLES	COMMENT	VARCHAR(16777216)	Y	Comment for this event table
+EXTERNAL_TABLES	TABLE_CATALOG	VARCHAR(16777216)	N	Database that the external table belongs to
+EXTERNAL_TABLES	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema that the external table belongs to
+EXTERNAL_TABLES	TABLE_NAME	VARCHAR(16777216)	N	Name of the external table
+EXTERNAL_TABLES	TABLE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the external table
+EXTERNAL_TABLES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the external table
+EXTERNAL_TABLES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the external table
+EXTERNAL_TABLES	LAST_DDL	TIMESTAMP_LTZ(9)	Y	Last DDL time of the view
+EXTERNAL_TABLES	LAST_DDL_BY	VARCHAR(16777216)	Y	User name that performed the last DDL of the view
+EXTERNAL_TABLES	COMMENT	VARCHAR(16777216)	Y	Comment for this external table
+EXTERNAL_TABLES	LOCATION	VARCHAR(16777216)	Y	Location of the external table
+EXTERNAL_TABLES	FILE_FORMAT_NAME	VARCHAR(16777216)	Y	File format name (if there is one) of the external table
+EXTERNAL_TABLES	FILE_FORMAT_TYPE	VARCHAR(16777216)	Y	File format type (if not named) of the external table
+FIELDS	OBJECT_CATALOG	VARCHAR(16777216)	N	Database that contains the object that uses this object type
+FIELDS	OBJECT_SCHEMA	VARCHAR(16777216)	N	Schema that contains the object that uses this object type
+FIELDS	OBJECT_NAME	VARCHAR(16777216)	N	Name of the object that uses this object type
+FIELDS	OBJECT_TYPE	VARCHAR(16777216)	N	Type of the object that uses this object type
+FIELDS	ROW_IDENTIFIER	VARCHAR(16777216)	N	Type identifier
+FIELDS	FIELD_NAME	VARCHAR(16777216)	Y	Field name
+FIELDS	ORDINAL_POSITION	NUMBER(9,0)	N	Ordinal position
+FIELDS	DATA_TYPE	VARCHAR(16777216)	N	Data type of the field
+FIELDS	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters of string fields
+FIELDS	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes of string fields
+FIELDS	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision of numeric fields
+FIELDS	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of precision of numeric fields
+FIELDS	NUMERIC_SCALE	NUMBER(9,0)	Y	Scale of numeric fields
+FIELDS	DATETIME_PRECISION	NUMBER(9,0)	Y	Not applicable for Snowflake.
+FIELDS	INTERVAL_TYPE	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	INTERVAL_PRECISION	NUMBER(9,0)	Y	Not applicable for Snowflake.
+FIELDS	CHARACTER_SET_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	CHARACTER_SET_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	CHARACTER_SET_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	COLLATION_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	COLLATION_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	COLLATION_NAME	VARCHAR(16777216)	Y	The name of collation, if present
+FIELDS	UDT_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	UDT_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	UDT_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	SCOPE_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	SCOPE_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	SCOPE_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FIELDS	MAXIMUM_CARDINALITY	NUMBER(9,0)	Y	Not applicable for Snowflake.
+FIELDS	DTD_IDENTIFIER	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+FILE_FORMATS	FILE_FORMAT_CATALOG	VARCHAR(16777216)	N	Database that the file format belongs to
+FILE_FORMATS	FILE_FORMAT_SCHEMA	VARCHAR(16777216)	N	Schema that the file format belongs to
+FILE_FORMATS	FILE_FORMAT_NAME	VARCHAR(16777216)	N	Name of the file format
+FILE_FORMATS	FILE_FORMAT_OWNER	VARCHAR(16777216)	N	Name of the role that owns the file format
+FILE_FORMATS	FILE_FORMAT_TYPE	VARCHAR(16777216)	N	Type of the file format
+FILE_FORMATS	RECORD_DELIMITER	VARCHAR(1)	Y	Character that separates records
+FILE_FORMATS	FIELD_DELIMITER	VARCHAR(1)	Y	Character that separates fields
+FILE_FORMATS	SKIP_HEADER	NUMBER(9,0)	Y	Number of lines skipped at the start of the file
+FILE_FORMATS	DATE_FORMAT	VARCHAR(16777216)	Y	Date format
+FILE_FORMATS	TIME_FORMAT	VARCHAR(16777216)	Y	Time format
+FILE_FORMATS	TIMESTAMP_FORMAT	VARCHAR(16777216)	Y	Timestamp format
+FILE_FORMATS	BINARY_FORMAT	VARCHAR(16777216)	Y	Binary format
+FILE_FORMATS	ESCAPE	VARCHAR(1)	Y	String used as the escape character for any field values
+FILE_FORMATS	ESCAPE_UNENCLOSED_FIELD	VARCHAR(1)	Y	String used as the escape character for unenclosed field values
+FILE_FORMATS	TRIM_SPACE	VARCHAR(16777216)	Y	Whether whitespace is removed from fields
+FILE_FORMATS	FIELD_OPTIONALLY_ENCLOSED_BY	VARCHAR(16777216)	Y	Character used to enclose strings
+FILE_FORMATS	NULL_IF	VARCHAR(16777216)	Y	A list of strings to be replaced by null
+FILE_FORMATS	COMPRESSION	VARCHAR(16777216)	Y	Compression method for the data file
+FILE_FORMATS	ERROR_ON_COLUMN_COUNT_MISMATCH	VARCHAR(16777216)	Y	Whether to generate a parsing error if the number of fields in an input file does not match the number of columns in the corresponding table
+FILE_FORMATS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the file format
+FILE_FORMATS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the file format
+FILE_FORMATS	COMMENT	VARCHAR(16777216)	Y	Comment for this file format
+FUNCTIONS	FUNCTION_CATALOG	VARCHAR(16777216)	N	Database which the function belongs to
+FUNCTIONS	FUNCTION_SCHEMA	VARCHAR(16777216)	N	Schema which the function belongs to
+FUNCTIONS	FUNCTION_NAME	VARCHAR(16777216)	N	Name of the function
+FUNCTIONS	FUNCTION_OWNER	VARCHAR(16777216)	N	Name of the role that owns the function
+FUNCTIONS	ARGUMENT_SIGNATURE	VARCHAR(16777216)	N	Type signature of the function's arguments
+FUNCTIONS	DATA_TYPE	VARCHAR(16777216)	N	Return value data type
+FUNCTIONS	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters of string return value
+FUNCTIONS	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes of string return value
+FUNCTIONS	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision of numeric return value
+FUNCTIONS	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of precision of numeric return value
+FUNCTIONS	NUMERIC_SCALE	NUMBER(9,0)	Y	Scale of numeric return value
+FUNCTIONS	FUNCTION_LANGUAGE	VARCHAR(16777216)	N	Language of the function
+FUNCTIONS	FUNCTION_DEFINITION	VARCHAR(16777216)	Y	Function definition
+FUNCTIONS	VOLATILITY	VARCHAR(16777216)	Y	Whether the function is volatile or immutable
+FUNCTIONS	IS_NULL_CALL	VARCHAR(3)	Y	Whether the function is called on null input
+FUNCTIONS	IS_SECURE	VARCHAR(3)	Y	Whether this function is secure.
+FUNCTIONS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the function
+FUNCTIONS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the function
+FUNCTIONS	COMMENT	VARCHAR(16777216)	Y	Comment for this function
+FUNCTIONS	IS_EXTERNAL	VARCHAR(3)	Y	Whether this function is external
+FUNCTIONS	API_INTEGRATION	VARCHAR(16777216)	Y	Integration for this function
+FUNCTIONS	CONTEXT_HEADERS	VARCHAR(16777216)	Y	Context headers for this function
+FUNCTIONS	MAX_BATCH_ROWS	NUMBER(9,0)	Y	Max batch rows for this function
+FUNCTIONS	REQUEST_TRANSLATOR	VARCHAR(16777216)	Y	Request Translator function name
+FUNCTIONS	RESPONSE_TRANSLATOR	VARCHAR(16777216)	Y	Response Translator function name
+FUNCTIONS	COMPRESSION	VARCHAR(16777216)	Y	Type of compression used for serializing function payload
+FUNCTIONS	IMPORTS	VARCHAR(16777216)	Y	List of imports for the function
+FUNCTIONS	HANDLER	VARCHAR(16777216)	Y	Handler for the function
+FUNCTIONS	TARGET_PATH	VARCHAR(16777216)	Y	Stage path for storage of compiled inline Java UDF code
+FUNCTIONS	RUNTIME_VERSION	VARCHAR(16777216)	Y	Runtime version of the function. NULL if function is SQL or Javascript
+FUNCTIONS	PACKAGES	VARCHAR(16777216)	Y	Packages requested by the function.
+FUNCTIONS	INSTALLED_PACKAGES	VARCHAR(16777216)	Y	All packages installed by the function.
+FUNCTIONS	IS_MEMOIZABLE	VARCHAR(3)	Y	Whether this function is memoizable.
+FUNCTIONS	EXTERNAL_ACCESS_INTEGRATIONS	VARCHAR(16777216)	Y	External Access integrations associated with this function
+FUNCTIONS	SECRETS	VARCHAR(16777216)	Y	Secrets associated with this function
+FUNCTIONS	IS_DATA_METRIC	VARCHAR(3)	Y	Whether this function is a data metric function.
+FUNCTIONS	IS_AGGREGATE	VARCHAR(3)	Y	Whether this is an aggregate function.
+FUNCTIONS	ARTIFACT_REPOSITORY	VARCHAR(16777216)	Y	Artifact repository associated with this function
+GIT_REPOSITORIES	GIT_REPOSITORY_CATALOG	VARCHAR(16777216)	N	Database that the git repository belongs to
+GIT_REPOSITORIES	GIT_REPOSITORY_SCHEMA	VARCHAR(16777216)	N	Schema that the git repository belongs to
+GIT_REPOSITORIES	GIT_REPOSITORY_NAME	VARCHAR(16777216)	N	Name of the git repository
+GIT_REPOSITORIES	GIT_REPOSITORY_OWNER	VARCHAR(16777216)	Y	Name of the role that owns the git repository
+GIT_REPOSITORIES	ORIGIN	VARCHAR(16777216)	N	Origin of the git repository
+GIT_REPOSITORIES	API_INTEGRATION	VARCHAR(16777216)	N	Name of the api integration used by the git repository
+GIT_REPOSITORIES	GIT_CREDENTIALS	VARCHAR(16777216)	Y	Name of the secret used by the git repository
+GIT_REPOSITORIES	COMMENT	VARCHAR(16777216)	Y	Comment for this git repository
+GIT_REPOSITORIES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the git repository
+GIT_REPOSITORIES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the git repository
+HYBRID_TABLES	CATALOG	VARCHAR(16777216)	N	Database that the table belongs to
+HYBRID_TABLES	SCHEMA	VARCHAR(16777216)	N	Schema that the table belongs to
+HYBRID_TABLES	NAME	VARCHAR(16777216)	N	Name of the table
+HYBRID_TABLES	OWNER	VARCHAR(16777216)	N	Name of the role that owns the table
+HYBRID_TABLES	ROW_COUNT	NUMBER(38,0)	Y	Number of rows in the table
+HYBRID_TABLES	BYTES	NUMBER(38,0)	Y	Number of bytes accessed by a scan of the table
+HYBRID_TABLES	RETENTION_TIME	NUMBER(9,0)	Y	Number of days that historical data is retained for Time Travel
+HYBRID_TABLES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the table
+HYBRID_TABLES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the table
+HYBRID_TABLES	COMMENT	VARCHAR(16777216)	Y	Comment for this table
+INDEXES	TABLE_CATALOG	VARCHAR(16777216)	N	Database that the table belongs to
+INDEXES	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema that the table belongs to
+INDEXES	TABLE_NAME	VARCHAR(16777216)	N	Name of the table
+INDEXES	NAME	VARCHAR(16777216)	N	Name of the index
+INDEXES	OWNER	VARCHAR(16777216)	N	Name of the role that owns the index
+INDEXES	IS_UNIQUE	VARCHAR(3)	Y	Whether this index is unique
+INDEXES	CONSTRAINT_NAME	VARCHAR(16777216)	Y	Name of the constraint associated with this index, if any
+INDEXES	STATUS	VARCHAR(16777216)	N	The status of the index
+INDEXES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the index
+INDEX_COLUMNS	TABLE_CATALOG	VARCHAR(16777216)	N	Database that the table belongs to
+INDEX_COLUMNS	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema that the table belongs to
+INDEX_COLUMNS	TABLE_NAME	VARCHAR(16777216)	N	Name of the table
+INDEX_COLUMNS	INDEX_NAME	VARCHAR(16777216)	N	Name of the index
+INDEX_COLUMNS	NAME	VARCHAR(16777216)	N	Name of the column
+INDEX_COLUMNS	KEY_SEQUENCE	NUMBER(9,0)	N	Position of the column in the index
+INDEX_COLUMNS	INDEX_OWNER	VARCHAR(16777216)	N	Name of the role that owns the index
+INDEX_COLUMNS	IS_UNIQUE	VARCHAR(3)	Y	Whether this index is unique
+INDEX_COLUMNS	CONSTRAINT_NAME	VARCHAR(16777216)	Y	Name of the constraint associated with this index, if any
+INDEX_COLUMNS	STATUS	VARCHAR(16777216)	N	The status of the index
+INDEX_COLUMNS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the index
+INFORMATION_SCHEMA_CATALOG_NAME	CATALOG_NAME	VARCHAR(16777216)	N	The name of the database in which this information_schema resides.
+LISTINGS	GLOBAL_NAME	VARCHAR(16777216)	Y	Global name of the listing
+LISTINGS	NAME	VARCHAR(16777216)	Y	Name of the listing
+LISTINGS	OWNER	VARCHAR(16777216)	Y	Owner of the listing
+LISTINGS	CREATED_ON	TIMESTAMP_LTZ(9)	Y	Creation time of the listing
+LISTINGS	UPDATED_ON	TIMESTAMP_LTZ(9)	Y	Last updated time of the listing
+LISTINGS	PUBLISHED_ON	TIMESTAMP_LTZ(9)	Y	Last published time of the listing
+LISTINGS	TITLE	VARCHAR(16777216)	Y	Title of the listing
+LISTINGS	SUBTITLE	VARCHAR(16777216)	Y	Subtitle of the listing
+LISTINGS	DESCRIPTION	VARCHAR(16777216)	Y	Description of the listing
+LISTINGS	LISTING_TERMS	VARCHAR(16777216)	Y	Listing terms
+LISTINGS	STATE	VARCHAR(16777216)	Y	State of the listing
+LISTINGS	SHARE	VARCHAR(16777216)	Y	Share of the listing
+LISTINGS	APPLICATION_PACKAGE	VARCHAR(16777216)	Y	Application package of the listing
+LISTINGS	DATA_ATTRIBUTES	VARCHAR(16777216)	Y	Data attributes
+LISTINGS	CATEGORIES	VARCHAR(16777216)	Y	Categories of the listing
+LISTINGS	PROFILE	VARCHAR(16777216)	Y	Profile of the listing
+LISTINGS	CUSTOMIZED_CONTACT_INFO	VARCHAR(16777216)	Y	Customized contact info
+LISTINGS	COMMENT	VARCHAR(16777216)	Y	Comment of the listing
+LISTINGS	TARGETS	VARCHAR(16777216)	Y	Targets
+LISTINGS	AUTO_FULFILLMENT	VARCHAR(16777216)	Y	Auto fulfillment settings
+LISTINGS	IS_SHARE	BOOLEAN	Y	Whether the listing is a share
+LISTINGS	IS_APPLICATION	BOOLEAN	Y	Whether the listing is an application
+LISTINGS	DISTRIBUTION	VARCHAR(16777216)	Y	Distribution of the listing
+LISTINGS	IS_MOUNTLESS_QUERYABLE	BOOLEAN	Y	Whether the listing is mountless queryable
+LISTINGS	ORGANIZATION_PROFILE_NAME	VARCHAR(16777216)	Y	Organization profile name of the listing
+LISTINGS	UNIFORM_LISTING_LOCATOR	VARCHAR(16777216)	Y	Uniform listing locator of the listing
+LISTINGS	APPROVER_CONTACT	VARCHAR(16777216)	Y	Approver contact
+LISTINGS	SUPPORT_CONTACT	VARCHAR(16777216)	Y	Support contact
+LISTINGS	RESHARING	VARCHAR(16777216)	Y	Resharing
+LISTINGS	SHARE_RESTRICTIONS	BOOLEAN	Y	Whether the listing has share restrictions
+LISTINGS	CUSTOM_ATTRIBUTES	VARCHAR(16777216)	Y	Custom attributes associated with the listing
+LOAD_HISTORY	SCHEMA_NAME	VARCHAR(16777216)	N	Schema of target table
+LOAD_HISTORY	FILE_NAME	VARCHAR(16777216)	N	Name of source file
+LOAD_HISTORY	TABLE_NAME	VARCHAR(16777216)	N	Name of target table
+LOAD_HISTORY	LAST_LOAD_TIME	TIMESTAMP_LTZ(9)	Y	Timestamp of the load record
+LOAD_HISTORY	STATUS	VARCHAR(16777216)	N	Status: loaded, load failed or partially loaded
+LOAD_HISTORY	ROW_COUNT	NUMBER(9,0)	Y	Number of rows loaded from the source file
+LOAD_HISTORY	ROW_PARSED	NUMBER(9,0)	Y	Number of rows parsed from the source file
+LOAD_HISTORY	FIRST_ERROR_MESSAGE	VARCHAR(16777216)	Y	First error of the source file
+LOAD_HISTORY	FIRST_ERROR_LINE_NUMBER	NUMBER(9,0)	Y	Line number of the first error
+LOAD_HISTORY	FIRST_ERROR_CHARACTER_POSITION	NUMBER(9,0)	Y	Position of the first error character
+LOAD_HISTORY	FIRST_ERROR_COL_NAME	VARCHAR(16777216)	Y	Column name of the first error
+LOAD_HISTORY	ERROR_COUNT	NUMBER(9,0)	Y	Number of error rows in the source file
+LOAD_HISTORY	ERROR_LIMIT	NUMBER(9,0)	Y	If the number of error reach this limit, then abort
+MODEL_VERSIONS	CATALOG_NAME	VARCHAR(16777216)	N	Database name which the MODEL VERSION belongs to
+MODEL_VERSIONS	CATALOG_ID	NUMBER(9,0)	N	ID of the database which the MODEL VERSION belongs to
+MODEL_VERSIONS	SCHEMA_NAME	VARCHAR(16777216)	N	Schema which the MODEL VERSION belongs to
+MODEL_VERSIONS	SCHEMA_ID	NUMBER(9,0)	N	ID of the Schema which the MODEL VERSION belongs to
+MODEL_VERSIONS	MODEL_NAME	VARCHAR(16777216)	N	Name of the model which the MODEL VERSION belongs to
+MODEL_VERSIONS	MODEL_VERSION_NAME	VARCHAR(16777216)	N	Name of the MODEL VERSION
+MODEL_VERSIONS	VERSION_ALIASES	ARRAY	Y	All the aliases of the MODEL VERSION
+MODEL_VERSIONS	COMMENT	VARCHAR(16777216)	Y	Comment for this MODEL VERSION
+MODEL_VERSIONS	MODEL_COMMENT	VARCHAR(16777216)	Y	Comment for the MODEL this MODEL VERSION belongs to
+MODEL_VERSIONS	OWNER	VARCHAR(16777216)	N	Name of the role that owns the MODEL VERSION
+MODEL_VERSIONS	CREATED_ON	TIMESTAMP_LTZ(9)	Y	Date and time when the MODEL VERSION was created
+MODEL_VERSIONS	LAST_ALTERED_ON	TIMESTAMP_LTZ(9)	Y	Date and time when the MODEL VERSION was last updated
+MODEL_VERSIONS	FUNCTIONS	VARCHAR(16777216)	N	Functions in the MODEL VERSION
+MODEL_VERSIONS	MODEL_TYPE	VARCHAR(16777216)	Y	Type of the model the MODEL VERSION belongs to
+MODEL_VERSIONS	PYTHON_VERSION	VARCHAR(16777216)	Y	Python version the MODEL VERSION is using
+MODEL_VERSIONS	LANGUAGE	VARCHAR(16777216)	N	Language the MODEL VERSION is implemented in
+MODEL_VERSIONS	DEPENDENCIES	VARCHAR(16777216)	N	Dependencies of the MODEL VERSION
+MODEL_VERSIONS	METADATA	OBJECT	Y	Metadata of the MODEL VERSION
+MODEL_VERSIONS	USERDATA	OBJECT	Y	Userdata of the model version
+NOTEBOOKS	NOTEBOOK_CATALOG	VARCHAR(16777216)	N	Database that the notebook belongs to
+NOTEBOOKS	NOTEBOOK_SCHEMA	VARCHAR(16777216)	N	Schema that the Notebook belongs to
+NOTEBOOKS	NOTEBOOK_NAME	VARCHAR(16777216)	N	Name of the notebook
+NOTEBOOKS	NOTEBOOK_OWNER	VARCHAR(16777216)	Y	Name of the role that owns the notebook
+NOTEBOOKS	NOTEBOOK_MAIN_FILE	VARCHAR(16777216)	Y	Main file of the notebook
+NOTEBOOKS	NOTEBOOK_QUERY_WAREHOUSE	VARCHAR(16777216)	Y	Query warehouse of the notebook
+NOTEBOOKS	NOTEBOOK_URL_ID	VARCHAR(16777216)	Y	URL id of the notebook
+NOTEBOOKS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the notebook
+NOTEBOOKS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the notebook
+NOTEBOOKS	COMMENT	VARCHAR(16777216)	Y	Comment for this notebook
+OBJECT_PRIVILEGES	GRANTOR	VARCHAR(16777216)	N	Role who granted the privilege
+OBJECT_PRIVILEGES	GRANTEE	VARCHAR(16777216)	N	Object to which the privilege is granted
+OBJECT_PRIVILEGES	GRANTED_TO	VARCHAR(16777216)	N	Object kind on which the privilege is granted
+OBJECT_PRIVILEGES	OBJECT_CATALOG	VARCHAR(16777216)	N	Database containing the object on which the privilege is granted
+OBJECT_PRIVILEGES	OBJECT_SCHEMA	VARCHAR(16777216)	N	Schema containing the object on which the privilege is granted
+OBJECT_PRIVILEGES	OBJECT_NAME	VARCHAR(16777216)	N	Name of the object on which the privilege is granted
+OBJECT_PRIVILEGES	OBJECT_TYPE	VARCHAR(16777216)	N	Type of the object on which the privilege is granted
+OBJECT_PRIVILEGES	PRIVILEGE_TYPE	VARCHAR(16777216)	N	Type of the granted privilege
+OBJECT_PRIVILEGES	IS_GRANTABLE	VARCHAR(3)	Y	Whether the privilege was granted WITH GRANT OPTION
+OBJECT_PRIVILEGES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the privilege
+PACKAGES	PACKAGE_NAME	VARCHAR(16777216)	N	Package name
+PACKAGES	VERSION	VARCHAR(16777216)	N	Package version
+PACKAGES	LANGUAGE	VARCHAR(16777216)	N	Package language
+PACKAGES	RUNTIME_VERSION	VARCHAR(16777216)	Y	Supported runtime version
+PIPES	PIPE_CATALOG	VARCHAR(16777216)	N	Database that the pipe belongs to
+PIPES	PIPE_SCHEMA	VARCHAR(16777216)	N	Schema that the pipe belongs to
+PIPES	PIPE_NAME	VARCHAR(16777216)	N	Name of the pipe
+PIPES	PIPE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the pipe
+PIPES	DEFINITION	VARCHAR(16777216)	N	Definition of the pipe as it was created
+PIPES	IS_AUTOINGEST_ENABLED	VARCHAR(3)	Y	Whether this is an auto-ingest tpipe
+PIPES	NOTIFICATION_CHANNEL_NAME	VARCHAR(16777216)	Y	Notification channel name if it is an auto-ingest pipe
+PIPES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the pipe
+PIPES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the pipe
+PIPES	COMMENT	VARCHAR(16777216)	Y	Comment for this pipe
+PIPES	PATTERN	VARCHAR(16777216)	Y	Pattern used to filter the files in Snowpipe
+PROCEDURES	PROCEDURE_CATALOG	VARCHAR(16777216)	N	Database which the procedure belongs to
+PROCEDURES	PROCEDURE_SCHEMA	VARCHAR(16777216)	N	Schema which the procedure belongs to
+PROCEDURES	PROCEDURE_NAME	VARCHAR(16777216)	N	Name of the procedure
+PROCEDURES	PROCEDURE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the procedure
+PROCEDURES	ARGUMENT_SIGNATURE	VARCHAR(16777216)	N	Type signature of the procedure's arguments
+PROCEDURES	DATA_TYPE	VARCHAR(16777216)	N	Return value data type
+PROCEDURES	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters of string return value
+PROCEDURES	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes of string return value
+PROCEDURES	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision of numeric return value
+PROCEDURES	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of precision of numeric return value
+PROCEDURES	NUMERIC_SCALE	NUMBER(9,0)	Y	Scale of numeric return value
+PROCEDURES	PROCEDURE_LANGUAGE	VARCHAR(16777216)	N	Language of the procedure
+PROCEDURES	PROCEDURE_DEFINITION	VARCHAR(16777216)	Y	Procedure definition
+PROCEDURES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the procedure
+PROCEDURES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the procedure
+PROCEDURES	COMMENT	VARCHAR(16777216)	Y	Comment for this procedure
+PROCEDURES	EXTERNAL_ACCESS_INTEGRATIONS	VARCHAR(16777216)	Y	External Access integrations associated with this function
+PROCEDURES	SECRETS	VARCHAR(16777216)	Y	Secrets associated with this function
+PROCEDURES	RUNTIME_VERSION	VARCHAR(16777216)	Y	Runtime version of the procedure. NULL if function is SQL or Javascript
+PROCEDURES	PACKAGES	VARCHAR(16777216)	Y	Packages requested by the procedure.
+PROCEDURES	INSTALLED_PACKAGES	VARCHAR(16777216)	Y	All packages installed by the procedure.
+PROCEDURES	ARTIFACT_REPOSITORY	VARCHAR(16777216)	Y	Artifact repository associated with this procedure
+REFERENTIAL_CONSTRAINTS	CONSTRAINT_CATALOG	VARCHAR(16777216)	N	Database that the constraint belongs to
+REFERENTIAL_CONSTRAINTS	CONSTRAINT_SCHEMA	VARCHAR(16777216)	N	Schema that the constraint belongs to
+REFERENTIAL_CONSTRAINTS	CONSTRAINT_NAME	VARCHAR(16777216)	N	Name of the constraint
+REFERENTIAL_CONSTRAINTS	UNIQUE_CONSTRAINT_CATALOG	VARCHAR(16777216)	N	Database of the unique constraint referenced by the current constraint
+REFERENTIAL_CONSTRAINTS	UNIQUE_CONSTRAINT_SCHEMA	VARCHAR(16777216)	N	Schema of the unique constraint referenced by the current constraint
+REFERENTIAL_CONSTRAINTS	UNIQUE_CONSTRAINT_NAME	VARCHAR(16777216)	N	Name of the unique constraint referenced by the current constraint
+REFERENTIAL_CONSTRAINTS	MATCH_OPTION	VARCHAR(16777216)	N	Match option for the constraint
+REFERENTIAL_CONSTRAINTS	UPDATE_RULE	VARCHAR(16777216)	N	Update Rule for the current constraint
+REFERENTIAL_CONSTRAINTS	DELETE_RULE	VARCHAR(16777216)	N	Delete Rule for the current constraint
+REFERENTIAL_CONSTRAINTS	COMMENT	VARCHAR(16777216)	Y	Comment for this constraint
+REFERENTIAL_CONSTRAINTS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the constraint
+REFERENTIAL_CONSTRAINTS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the constraint
+REPLICATION_DATABASES	REGION_GROUP	VARCHAR(16777216)	N	Region group of this database
+REPLICATION_DATABASES	SNOWFLAKE_REGION	VARCHAR(16777216)	N	Snowflake region of this database
+REPLICATION_DATABASES	ACCOUNT_NAME	VARCHAR(16777216)	N	Name of the account that owns the database
+REPLICATION_DATABASES	DATABASE_NAME	VARCHAR(16777216)	N	Name of the database
+REPLICATION_DATABASES	COMMENT	VARCHAR(16777216)	Y	Comment for this database
+REPLICATION_DATABASES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the database
+REPLICATION_DATABASES	IS_PRIMARY	BOOLEAN	N	Whether this database is the primary
+REPLICATION_DATABASES	PRIMARY	VARCHAR(16777216)	N	Primary database of this replication group
+REPLICATION_DATABASES	REPLICATION_ALLOWED_TO_ACCOUNTS	VARCHAR(16777216)	N	List of accounts that can host secondary replicas for this database
+REPLICATION_DATABASES	FAILOVER_ALLOWED_TO_ACCOUNTS	VARCHAR(16777216)	N	List of accounts that can host primary replicas for this database
+REPLICATION_GROUPS	REGION_GROUP	VARCHAR(16777216)	N	Region group of this database
+REPLICATION_GROUPS	SNOWFLAKE_REGION	VARCHAR(16777216)	N	Snowflake region of this replication group
+REPLICATION_GROUPS	CREATED_ON	TIMESTAMP_LTZ(9)	Y	Creation time of the replication group
+REPLICATION_GROUPS	ACCOUNT_NAME	VARCHAR(16777216)	N	Name of the account that owns the replication group
+REPLICATION_GROUPS	NAME	VARCHAR(16777216)	N	Name of the replication group
+REPLICATION_GROUPS	TYPE	VARCHAR(16777216)	N	Type of this replication group
+REPLICATION_GROUPS	COMMENT	VARCHAR(16777216)	Y	Comment for this replication group
+REPLICATION_GROUPS	IS_PRIMARY	BOOLEAN	N	Whether this replication group is the primary
+REPLICATION_GROUPS	PRIMARY	VARCHAR(16777216)	N	Primary replication group name
+REPLICATION_GROUPS	OBJECT_TYPES	VARCHAR(16777216)	N	Object types in the replication group
+REPLICATION_GROUPS	ALLOWED_INTEGRATION_TYPES	VARCHAR(16777216)	N	Allowed integration types in the replication group
+REPLICATION_GROUPS	ALLOWED_ACCOUNTS	VARCHAR(16777216)	N	List of accounts that can host secondary replicas for this replication group
+REPLICATION_GROUPS	ORGANIZATION_NAME	VARCHAR(16777216)	N	Name of the organization that owns the replication group
+REPLICATION_GROUPS	ACCOUNT_LOCATOR	VARCHAR(16777216)	N	Account locator for this replication group
+REPLICATION_GROUPS	REPLICATION_SCHEDULE	VARCHAR(16777216)	Y	Replication schedule for this replication group
+REPLICATION_GROUPS	SECONDARY_STATE	VARCHAR(16777216)	Y	Secondary state for this replication group
+REPLICATION_GROUPS	NEXT_SCHEDULED_REFRESH	TIMESTAMP_LTZ(9)	Y	Next schduled refresh time for this replication group
+REPLICATION_GROUPS	OWNER	VARCHAR(16777216)	Y	Owner of the replication group
+REPLICATION_GROUPS	IS_LISTING_AUTO_FULFILLMENT_GROUP	BOOLEAN	N	Whether this is auto-fulfillment listing group
+REPLICATION_GROUPS	ERROR_INTEGRATION	VARCHAR(16777216)	Y	Integration to which an error notification is sent in cases of refresh failures
+SCHEMATA	CATALOG_NAME	VARCHAR(16777216)	N	Database that the schema belongs to
+SCHEMATA	SCHEMA_NAME	VARCHAR(16777216)	N	Name of the schema
+SCHEMATA	SCHEMA_OWNER	VARCHAR(16777216)	N	Name of the role that owns the schema
+SCHEMATA	IS_TRANSIENT	VARCHAR(3)	Y	Whether this is a transient table
+SCHEMATA	IS_MANAGED_ACCESS	VARCHAR(3)	Y	Whether this is a managed access schema
+SCHEMATA	RETENTION_TIME	NUMBER(9,0)	Y	Number of days that historical data is retained for Time Travel
+SCHEMATA	DEFAULT_CHARACTER_SET_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+SCHEMATA	DEFAULT_CHARACTER_SET_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+SCHEMATA	DEFAULT_CHARACTER_SET_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+SCHEMATA	SQL_PATH	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+SCHEMATA	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the schema
+SCHEMATA	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the schema
+SCHEMATA	COMMENT	VARCHAR(16777216)	Y	Comment for this schema
+SCHEMATA	REPLICABLE_WITH_FAILOVER_GROUPS	VARCHAR(16777216)	Y	Whether this object is replicable with a failover group
+SCHEMATA	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of the role that owns the schema
+SEMANTIC_DIMENSIONS	SEMANTIC_VIEW_CATALOG	VARCHAR(16777216)	N	Database that the Semantic View belongs to
+SEMANTIC_DIMENSIONS	SEMANTIC_VIEW_SCHEMA	VARCHAR(16777216)	N	Schema that the Semantic View belongs to
+SEMANTIC_DIMENSIONS	SEMANTIC_VIEW_NAME	VARCHAR(16777216)	N	Name of the Semantic View
+SEMANTIC_DIMENSIONS	TABLE_NAME	VARCHAR(16777216)	Y	Name of the semantic table the dimension belongs to.
+SEMANTIC_DIMENSIONS	NAME	VARCHAR(16777216)	N	The name of the dimension
+SEMANTIC_DIMENSIONS	DATA_TYPE	VARCHAR(16777216)	N	The Data type of the dimension expression
+SEMANTIC_DIMENSIONS	EXPRESSION	VARCHAR(16777216)	N	The SQL expression to calculate the dimension
+SEMANTIC_DIMENSIONS	SYNONYMS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	Synonyms for the dimension
+SEMANTIC_DIMENSIONS	COMMENT	VARCHAR(16777216)	Y	Description of the dimension
+SEMANTIC_DIMENSIONS	CORTEX_SEARCH_SERVICE_DATABASE_NAME	VARCHAR(16777216)	Y	Database that the cortex search service belongs to
+SEMANTIC_DIMENSIONS	CORTEX_SEARCH_SERVICE_SCHEMA_NAME	VARCHAR(16777216)	Y	Schema that the cortex search service belongs to
+SEMANTIC_DIMENSIONS	CORTEX_SEARCH_SERVICE_NAME	VARCHAR(16777216)	Y	Name of cortex search service
+SEMANTIC_DIMENSIONS	CORTEX_SEARCH_SERVICE_COLUMN_NAME	VARCHAR(16777216)	Y	Name of the indexed column in the cortex search service
+SEMANTIC_DIMENSIONS	LABELS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	Labels associated with this dimension
+SEMANTIC_DIMENSIONS	LOD_DIMENSIONS	ARRAY(VARIANT NOT NULL)	Y	LOD-clause dimension list (FIXED / INCLUDE / EXCLUDE) of the LOD dimension
+SEMANTIC_DIMENSIONS	LOD_DIMENSION_TYPE	VARCHAR(16777216)	Y	LOD-clause kind of the dimension: FIXED, INCLUDE, or EXCLUDE; null on non-LOD dimensions
+SEMANTIC_DIMENSIONS	ACCESS_MODIFIER	VARCHAR(16777216)	Y	Access modifier of the dimension
+SEMANTIC_FACTS	SEMANTIC_VIEW_CATALOG	VARCHAR(16777216)	N	Database that the Semantic View belongs to
+SEMANTIC_FACTS	SEMANTIC_VIEW_SCHEMA	VARCHAR(16777216)	N	Schema that the Semantic View belongs to
+SEMANTIC_FACTS	SEMANTIC_VIEW_NAME	VARCHAR(16777216)	N	Name of the Semantic View
+SEMANTIC_FACTS	TABLE_NAME	VARCHAR(16777216)	Y	Name of the semantic table the fact belongs to.
+SEMANTIC_FACTS	NAME	VARCHAR(16777216)	Y	The name of the fact
+SEMANTIC_FACTS	DATA_TYPE	VARCHAR(16777216)	N	The Data type of the fact expression
+SEMANTIC_FACTS	EXPRESSION	VARCHAR(16777216)	N	The SQL expression to calculate the fact
+SEMANTIC_FACTS	SYNONYMS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	Synonyms for the fact
+SEMANTIC_FACTS	COMMENT	VARCHAR(16777216)	Y	Description of the fact
+SEMANTIC_FACTS	LABELS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	Labels associated with this fact
+SEMANTIC_FACTS	ACCESS_MODIFIER	VARCHAR(16777216)	Y	Access modifier of the fact
+SEMANTIC_FACTS	LOD_DIMENSIONS	ARRAY(VARIANT NOT NULL)	Y	LOD-clause dimension list (FIXED / INCLUDE / EXCLUDE) of the LOD fact
+SEMANTIC_FACTS	LOD_DIMENSION_TYPE	VARCHAR(16777216)	Y	LOD-clause kind of the fact: FIXED, INCLUDE, or EXCLUDE; null on non-LOD facts
+SEMANTIC_METRICS	SEMANTIC_VIEW_CATALOG	VARCHAR(16777216)	N	Database that the Semantic View belongs to
+SEMANTIC_METRICS	SEMANTIC_VIEW_SCHEMA	VARCHAR(16777216)	N	Schema that the Semantic View belongs to
+SEMANTIC_METRICS	SEMANTIC_VIEW_NAME	VARCHAR(16777216)	N	Name of the Semantic View
+SEMANTIC_METRICS	TABLE_NAME	VARCHAR(16777216)	Y	Name of the semantic table the metric belongs to.
+SEMANTIC_METRICS	NAME	VARCHAR(16777216)	N	The name of the metric
+SEMANTIC_METRICS	DATA_TYPE	VARCHAR(16777216)	N	The Data type of the metric expression
+SEMANTIC_METRICS	EXPRESSION	VARCHAR(16777216)	N	The SQL expression to calculate the metric
+SEMANTIC_METRICS	SYNONYMS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	Synonyms for the metric
+SEMANTIC_METRICS	COMMENT	VARCHAR(16777216)	Y	Description of the metric
+SEMANTIC_METRICS	ADDITIVE_DIMENSIONS	ARRAY(VARIANT NOT NULL)	Y	Additive dimensions for the metric (only apply for semi-additive metrics)
+SEMANTIC_METRICS	NON_ADDITIVE_DIMENSIONS	ARRAY(VARIANT NOT NULL)	Y	Non-additive dimensions for the metric (only apply for semi-additive metrics)
+SEMANTIC_METRICS	USING_RELATIONSHIPS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	List of relationship names used by the metric
+SEMANTIC_METRICS	ACCESS_MODIFIER	VARCHAR(16777216)	Y	Access modifier of the metric
+SEMANTIC_RELATIONSHIPS	SEMANTIC_VIEW_CATALOG	VARCHAR(16777216)	N	Database that the Semantic View belongs to
+SEMANTIC_RELATIONSHIPS	SEMANTIC_VIEW_SCHEMA	VARCHAR(16777216)	N	Schema that the Semantic View belongs to
+SEMANTIC_RELATIONSHIPS	SEMANTIC_VIEW_NAME	VARCHAR(16777216)	N	Name of the Semantic View
+SEMANTIC_RELATIONSHIPS	NAME	VARCHAR(16777216)	N	Name of the Semantic View relationship
+SEMANTIC_RELATIONSHIPS	TABLE_NAME	VARCHAR(16777216)	N	Alias of the semantic table referencing the other table
+SEMANTIC_RELATIONSHIPS	FOREIGN_KEYS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	Name of columns referring to the columns of the other table
+SEMANTIC_RELATIONSHIPS	REF_TABLE_NAME	VARCHAR(16777216)	N	Alias of the semantic table being referenced
+SEMANTIC_RELATIONSHIPS	REF_KEYS	ARRAY(VARIANT NOT NULL)	Y	Name of columns being referenced
+SEMANTIC_TABLES	SEMANTIC_VIEW_CATALOG	VARCHAR(16777216)	N	Database that the Semantic View belongs to
+SEMANTIC_TABLES	SEMANTIC_VIEW_SCHEMA	VARCHAR(16777216)	N	Schema that the Semantic View belongs to
+SEMANTIC_TABLES	SEMANTIC_VIEW_NAME	VARCHAR(16777216)	N	Name of the Semantic View
+SEMANTIC_TABLES	NAME	VARCHAR(16777216)	N	Alias of the table
+SEMANTIC_TABLES	BASE_TABLE_CATALOG	VARCHAR(16777216)	Y	Database that the base table belongs to. NULL if definition is provided
+SEMANTIC_TABLES	BASE_TABLE_SCHEMA	VARCHAR(16777216)	Y	Schema that the base table belongs to. NULL if definition is provided
+SEMANTIC_TABLES	BASE_TABLE_NAME	VARCHAR(16777216)	Y	Name of the base table. NULL if definition is provided
+SEMANTIC_TABLES	PRIMARY_KEYS	ARRAY(VARCHAR(16777216))	Y	List of primary key columns of the table
+SEMANTIC_TABLES	SYNONYMS	ARRAY(VARCHAR(16777216) NOT NULL)	Y	Synonyms for the table
+SEMANTIC_TABLES	UNIQUE_KEYS	ARRAY(ARRAY(VARCHAR(16777216) NOT NULL))	Y	List of unique key combinations in the table
+SEMANTIC_TABLES	DISTINCT_RANGES	VARIANT	Y	Distinct range constraints defined on the semantic table
+SEMANTIC_TABLES	COMMENT	VARCHAR(16777216)	Y	Description of the Semantic View Table
+SEMANTIC_TABLES	DEFINITION	VARCHAR(16777216)	Y	Definition of the semantic table
+SEMANTIC_VARIABLES	SEMANTIC_VIEW_CATALOG	VARCHAR(16777216)	N	Database that the Semantic View belongs to
+SEMANTIC_VARIABLES	SEMANTIC_VIEW_SCHEMA	VARCHAR(16777216)	N	Schema that the Semantic View belongs to
+SEMANTIC_VARIABLES	SEMANTIC_VIEW_NAME	VARCHAR(16777216)	N	Name of the Semantic View
+SEMANTIC_VARIABLES	NAME	VARCHAR(16777216)	N	Name of the variable
+SEMANTIC_VARIABLES	DATA_TYPE	VARCHAR(16777216)	N	The data type of the variable
+SEMANTIC_VARIABLES	DEFAULT_VALUE	VARCHAR(16777216)	Y	The default value expression for the variable
+SEMANTIC_VARIABLES	COMMENT	VARCHAR(16777216)	Y	Description of the variable
+SEMANTIC_VIEWS	CATALOG	VARCHAR(16777216)	N	Database that the Semantic View belongs to
+SEMANTIC_VIEWS	SCHEMA	VARCHAR(16777216)	N	Schema that the Semantic View belongs to
+SEMANTIC_VIEWS	NAME	VARCHAR(16777216)	N	Name of the Semantic View
+SEMANTIC_VIEWS	OWNER	VARCHAR(16777216)	N	Owner of the Semantic View
+SEMANTIC_VIEWS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the Semantic View
+SEMANTIC_VIEWS	COMMENT	VARCHAR(16777216)	Y	Description of the Semantic View
+SEMANTIC_VIEWS	MAX_STALENESS_SEC	NUMBER	Y	Max staleness of the Semantic View in seconds
+SEMANTIC_VIEWS	AI_SQL_GENERATION	VARCHAR(16777216)	Y	AI SQL generation custom instruction for the Semantic View
+SEMANTIC_VIEWS	AI_QUESTION_CATEGORIZATION	VARCHAR(16777216)	Y	AI question categorization custom instruction for the Semantic View
+SEQUENCES	SEQUENCE_CATALOG	VARCHAR(16777216)	N	Database that the sequence belongs to
+SEQUENCES	SEQUENCE_SCHEMA	VARCHAR(16777216)	N	Schema that the sequence belongs to
+SEQUENCES	SEQUENCE_NAME	VARCHAR(16777216)	N	Name of the sequence
+SEQUENCES	SEQUENCE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the sequence
+SEQUENCES	DATA_TYPE	VARCHAR(16777216)	N	Data type of the sequence
+SEQUENCES	NUMERIC_PRECISION	NUMBER(9,0)	N	Numeric precision of the data type of the sequence
+SEQUENCES	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	N	Radix of the numeric precision of the data type of the sequence
+SEQUENCES	NUMERIC_SCALE	NUMBER(9,0)	N	Scale of the data type of the sequence
+SEQUENCES	START_VALUE	VARCHAR(16777216)	Y	Initial value of the sequence
+SEQUENCES	MINIMUM_VALUE	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+SEQUENCES	MAXIMUM_VALUE	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+SEQUENCES	NEXT_VALUE	VARCHAR(16777216)	Y	Next value that the sequence will produce
+SEQUENCES	INCREMENT	VARCHAR(16777216)	Y	Increment of the sequence generator
+SEQUENCES	CYCLE_OPTION	VARCHAR(3)	Y	Not applicable for Snowflake.
+SEQUENCES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the sequence
+SEQUENCES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the sequence
+SEQUENCES	ORDERED	VARCHAR(3)	Y	Whether or not the sequence is ordered
+SEQUENCES	COMMENT	VARCHAR(16777216)	Y	Comment for this sequence
+SERVICES	SERVICE_CATALOG	VARCHAR(16777216)	N	Database that the service belongs to
+SERVICES	SERVICE_SCHEMA	VARCHAR(16777216)	N	Schema that the service belongs to
+SERVICES	SERVICE_NAME	VARCHAR(16777216)	N	Name of the service
+SERVICES	STATUS	VARCHAR(16777216)	N	Status of the service
+SERVICES	SERVICE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the service
+SERVICES	SERVICE_OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of role that owns the service
+SERVICES	COMPUTE_POOL_NAME	VARCHAR(16777216)	N	Name of the compute pool where the service runs
+SERVICES	DNS_NAME	VARCHAR(16777216)	Y	DNS name associated with the service
+SERVICES	CURRENT_INSTANCES	NUMBER	N	Current number of active instances for the service
+SERVICES	TARGET_INSTANCES	NUMBER	N	Target number of active instances for the service
+SERVICES	MIN_READY_INSTANCES	NUMBER	N	Minimum number of ready instances to declare service as READY
+SERVICES	MIN_INSTANCES	NUMBER	N	Minimum number of active instances for the service
+SERVICES	MAX_INSTANCES	NUMBER	N	Maximum number of active instances for the service
+SERVICES	AUTO_RESUME	BOOLEAN	N	Whether the service can be automatically resumed
+SERVICES	COMMENT	VARCHAR(16777216)	Y	Comment for this service
+SERVICES	QUERY_WAREHOUSE	VARCHAR(16777216)	Y	Query warehouse of the service
+SERVICES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the service
+SERVICES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the service
+SERVICES	LAST_RESUMED	TIMESTAMP_LTZ(9)	Y	Time when the service was last resumed
+SERVICES	IS_JOB	BOOLEAN	Y	Whether this is a Snowpark Container Services Job
+SERVICES	SPEC_DIGEST	VARCHAR(16777216)	Y	A unique and immutable identifier to represent the service spec content
+SERVICES	IS_UPGRADING	BOOLEAN	Y	Whether the service is upgrading or not
+SERVICES	MANAGING_OBJECT_DOMAIN	VARCHAR(16777216)	Y	The domain of the managing object
+SERVICES	MANAGING_OBJECT_NAME	VARCHAR(16777216)	Y	The fully qualified name of the managing object
+SHARES	CREATED_ON	TIMESTAMP_LTZ(9)	Y	Creation time of the share
+SHARES	KIND	VARCHAR(16777216)	Y	Type of share (INBOUND or OUTBOUND)
+SHARES	OWNER_ACCOUNT	VARCHAR(16777216)	Y	Account that owns the share
+SHARES	NAME	VARCHAR(16777216)	N	Name of the share
+SHARES	DATABASE_NAME	VARCHAR(16777216)	Y	Database being shared (for outbound shares)
+SHARES	TO	VARCHAR(16777216)	Y	Accounts this share is shared with
+SHARES	OWNER	VARCHAR(16777216)	Y	Name of the role that owns the share
+SHARES	COMMENT	VARCHAR(16777216)	Y	Comment for this share
+SHARES	LISTING_GLOBAL_NAME	VARCHAR(16777216)	Y	Global name of the associated listing
+SHARES	SECURE_OBJECTS_ONLY	VARCHAR(16777216)	Y	Whether the share allows secure views only.
+SNAPSHOTS	ID	VARCHAR(16777216)	Y	Unique identifier of the Snapshot
+SNAPSHOTS	CREATED	TIMESTAMP_LTZ(9)	Y	Data and time when the Snapshot was created
+SNAPSHOTS	SNAPSHOT_SET_NAME	VARCHAR(16777216)	Y	Name of Snapshot Set that contains the snapshot
+SNAPSHOTS	SNAPSHOT_SET_SCHEMA	VARCHAR(16777216)	Y	Name of schema which the Snapshot Set belongs to
+SNAPSHOTS	SNAPSHOT_SET_CATALOG	VARCHAR(16777216)	Y	Name of database which the Snapshot Set belongs to
+SNAPSHOTS	EXPIRATION_SCHEDULED_FOR	TIMESTAMP_LTZ(9)	Y	Timestamp at which the snapshot will be expired
+SNAPSHOTS	IS_UNDER_LEGAL_HOLD	BOOLEAN	Y	Whether the snapshot is under legal hold
+SNAPSHOTS	COMMENT	VARCHAR(16777216)	Y	Comment for the Snapshot
+SNAPSHOT_POLICIES	SNAPSHOT_POLICY_NAME	VARCHAR(16777216)	Y	Name of the Snapshot Policy
+SNAPSHOT_POLICIES	SNAPSHOT_POLICY_SCHEMA	VARCHAR(16777216)	Y	Schema which the Snapshot Policy belongs to
+SNAPSHOT_POLICIES	SNAPSHOT_POLICY_CATALOG	VARCHAR(16777216)	Y	Database which the Snapshot Policy belongs to
+SNAPSHOT_POLICIES	SCHEDULE	VARCHAR(16777216)	Y	Schedule for snapshot creation
+SNAPSHOT_POLICIES	EXPIRE_AFTER_DAYS	NUMBER	Y	Days after snapshot creation when snapshot should be expired
+SNAPSHOT_POLICIES	HAS_RETENTION_LOCK	VARCHAR(16777216)	Y	Indicates whether the policy includes a retention lock. Y if policy has retention lock; N otherwise
+SNAPSHOT_POLICIES	OWNER	VARCHAR(16777216)	Y	Name of the role that owns the Snapshot Policy
+SNAPSHOT_POLICIES	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of role that owns the Snapshot Policy
+SNAPSHOT_POLICIES	CREATED	TIMESTAMP_LTZ(9)	Y	Data and time when the Snapshot Policy was created
+SNAPSHOT_POLICIES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Data and time when the Snapshot Policy was last altered
+SNAPSHOT_POLICIES	COMMENT	VARCHAR(16777216)	Y	Comment for the Snapshot Policy
+SNAPSHOT_SETS	SNAPSHOT_SET_NAME	VARCHAR(16777216)	Y	Name of the Snapshot Set
+SNAPSHOT_SETS	SNAPSHOT_SET_SCHEMA	VARCHAR(16777216)	Y	Schema which the Snapshot Set belongs to
+SNAPSHOT_SETS	SNAPSHOT_SET_CATALOG	VARCHAR(16777216)	Y	Database which the Snapshot Set belongs to
+SNAPSHOT_SETS	OBJECT_KIND	VARCHAR(16777216)	Y	Type of object that the snapshot set is snapshotting
+SNAPSHOT_SETS	OBJECT_NAME	VARCHAR(16777216)	Y	Name of the object that the snapshot set is snapshotting
+SNAPSHOT_SETS	OBJECT_SCHEMA	VARCHAR(16777216)	Y	Name of the schema that contains the object being snapshotted by this snapshot set
+SNAPSHOT_SETS	OBJECT_CATALOG	VARCHAR(16777216)	Y	Name of the database that contains the object being snapshotted by this snapshot set
+SNAPSHOT_SETS	SNAPSHOT_POLICY_NAME	VARCHAR(16777216)	Y	Name of the Snapshot Policy attached to this snapshot set
+SNAPSHOT_SETS	SNAPSHOT_POLICY_SCHEMA	VARCHAR(16777216)	Y	Name of the schema that contains the Snapshot Policy
+SNAPSHOT_SETS	SNAPSHOT_POLICY_CATALOG	VARCHAR(16777216)	Y	Name of the database that contains the Snapshot Policy
+SNAPSHOT_SETS	OWNER	VARCHAR(16777216)	Y	Name of the role that owns the Snapshot Set
+SNAPSHOT_SETS	OWNER_ROLE_TYPE	VARCHAR(16777216)	Y	Type of role that owns the Snapshot Set
+SNAPSHOT_SETS	CREATED	TIMESTAMP_LTZ(9)	Y	Data and time when the Snapshot Set was created
+SNAPSHOT_SETS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Data and time when the Snapshot Set was last altered
+SNAPSHOT_SETS	COMMENT	VARCHAR(16777216)	Y	Comment for the Snapshot Set
+STAGES	STAGE_CATALOG	VARCHAR(16777216)	N	Database that the stage belongs to
+STAGES	STAGE_SCHEMA	VARCHAR(16777216)	N	Schema that the stage belongs to
+STAGES	STAGE_NAME	VARCHAR(16777216)	N	Name of the stage
+STAGES	STAGE_URL	VARCHAR(16777216)	Y	Location of an external stage
+STAGES	STAGE_REGION	VARCHAR(16777216)	Y	AWS region where the stage resides
+STAGES	STAGE_TYPE	VARCHAR(16777216)	Y	Type of stage: User, Table, Internal Named or External Named
+STAGES	STAGE_OWNER	VARCHAR(16777216)	Y	Name of the role that owns the stage
+STAGES	COMMENT	VARCHAR(16777216)	Y	Comment for this stage
+STAGES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the stage
+STAGES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the stage
+STAGES	ENDPOINT	VARCHAR(16777216)	Y	S3-compatible API endpoint
+STAGES	DIRECTORY_ENABLED	BOOLEAN	Y	Whether or not the stage has directory tables enabled
+STREAMLITS	STREAMLIT_CATALOG	VARCHAR(16777216)	N	Database that the streamlit belongs to
+STREAMLITS	STREAMLIT_SCHEMA	VARCHAR(16777216)	N	Schema that the streamlit belongs to
+STREAMLITS	STREAMLIT_NAME	VARCHAR(16777216)	N	Name of the streamlit
+STREAMLITS	STREAMLIT_OWNER	VARCHAR(16777216)	Y	Name of the role that owns the streamlit
+STREAMLITS	STREAMLIT_ROOT_LOCATION	VARCHAR(16777216)	Y	Root location of the streamlit
+STREAMLITS	STREAMLIT_MAIN_FILE	VARCHAR(16777216)	Y	Main file of the streamlit
+STREAMLITS	STREAMLIT_QUERY_WAREHOUSE	VARCHAR(16777216)	Y	Query warehouse of the streamlit
+STREAMLITS	STREAMLIT_URL_ID	VARCHAR(16777216)	Y	URL id of the streamlit
+STREAMLITS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the streamlit
+STREAMLITS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the streamlit
+STREAMLITS	COMMENT	VARCHAR(16777216)	Y	Comment for this streamlit
+STREAMLITS	STREAMLIT_TITLE	VARCHAR(16777216)	Y	Title for the streamlit app
+TABLES	TABLE_CATALOG	VARCHAR(16777216)	N	Database that the table belongs to
+TABLES	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema that the table belongs to
+TABLES	TABLE_NAME	VARCHAR(16777216)	N	Name of the table
+TABLES	TABLE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the table
+TABLES	TABLE_TYPE	VARCHAR(16777216)	N	Whether the table is a base table, temporary table, or view
+TABLES	IS_TRANSIENT	VARCHAR(3)	Y	Whether this is a transient table
+TABLES	CLUSTERING_KEY	VARCHAR(16777216)	Y	Clustering key for the table
+TABLES	ROW_COUNT	NUMBER(38,0)	Y	Number of rows in the table
+TABLES	BYTES	NUMBER(38,0)	Y	Number of bytes accessed by a scan of the table
+TABLES	RETENTION_TIME	NUMBER(9,0)	Y	Number of days that historical data is retained for Time Travel
+TABLES	SELF_REFERENCING_COLUMN_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+TABLES	REFERENCE_GENERATION	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+TABLES	USER_DEFINED_TYPE_CATALOG	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+TABLES	USER_DEFINED_TYPE_SCHEMA	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+TABLES	USER_DEFINED_TYPE_NAME	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+TABLES	IS_INSERTABLE_INTO	VARCHAR(3)	Y	Not applicable for Snowflake.
+TABLES	IS_TYPED	VARCHAR(3)	Y	Not applicable for Snowflake.
+TABLES	COMMIT_ACTION	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+TABLES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the function
+TABLES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the function
+TABLES	LAST_DDL	TIMESTAMP_LTZ(9)	Y	Last DDL time of the table
+TABLES	LAST_DDL_BY	VARCHAR(16777216)	Y	User name that performed the Last DDL of the table
+TABLES	AUTO_CLUSTERING_ON	VARCHAR(3)	Y	Whether automatic clustering is on for the table
+TABLES	COMMENT	VARCHAR(16777216)	Y	Comment for this table
+TABLES	IS_TEMPORARY	VARCHAR(3)	Y	Whether this is a temporary table
+TABLES	IS_ICEBERG	VARCHAR(3)	Y	Whether this is an Iceberg table
+TABLES	IS_DYNAMIC	VARCHAR(3)	Y	Whether this is a dynamic table
+TABLES	IS_IMMUTABLE	VARCHAR(3)	Y	Whether this is a READ ONLY table
+TABLES	IS_HYBRID	VARCHAR(3)	Y	Whether this is a hybrid table
+TABLES	ROW_TIMESTAMP_ON	VARCHAR(3)	Y	Whether row timestamp is enabled for this table
+TABLES	ERROR_LOGGING	VARCHAR(3)	Y	Is error logging enabled for the table
+TABLES	IS_INTERACTIVE	VARCHAR(3)	Y	Whether this is an interactive table
+TABLE_CONSTRAINTS	CONSTRAINT_CATALOG	VARCHAR(16777216)	N	Database that the constraint belongs to
+TABLE_CONSTRAINTS	CONSTRAINT_SCHEMA	VARCHAR(16777216)	N	Schema that the constraint belongs to
+TABLE_CONSTRAINTS	CONSTRAINT_NAME	VARCHAR(16777216)	N	Name of the constraint
+TABLE_CONSTRAINTS	TABLE_CATALOG	VARCHAR(16777216)	N	Name of the database of the current table
+TABLE_CONSTRAINTS	TABLE_SCHEMA	VARCHAR(16777216)	N	Name of the schema of the current table
+TABLE_CONSTRAINTS	TABLE_NAME	VARCHAR(16777216)	N	Name of the current table
+TABLE_CONSTRAINTS	CONSTRAINT_TYPE	VARCHAR(16777216)	N	Type of the constraint
+TABLE_CONSTRAINTS	IS_DEFERRABLE	VARCHAR(3)	Y	Whether evaluation of the constraint can be deferred
+TABLE_CONSTRAINTS	INITIALLY_DEFERRED	VARCHAR(3)	Y	Whether evaluation of the constraint is deferrable and initially deferred
+TABLE_CONSTRAINTS	ENFORCED	VARCHAR(3)	Y	Whether the constraint is enforced
+TABLE_CONSTRAINTS	COMMENT	VARCHAR(16777216)	Y	Comment for this constraint
+TABLE_CONSTRAINTS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the constraint
+TABLE_CONSTRAINTS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the constraint
+TABLE_CONSTRAINTS	RELY	VARCHAR(3)	Y	Whether to use RELY
+TABLE_PRIVILEGES	GRANTOR	VARCHAR(16777216)	N	Role who granted the table privilege
+TABLE_PRIVILEGES	GRANTEE	VARCHAR(16777216)	N	Object to which the table privilege is granted
+TABLE_PRIVILEGES	GRANTED_TO	VARCHAR(16777216)	N	Object kind on which the table privilege is granted
+TABLE_PRIVILEGES	TABLE_CATALOG	VARCHAR(16777216)	N	Database containing the table on which the privilege is granted
+TABLE_PRIVILEGES	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema containing the table on which the privilege is granted
+TABLE_PRIVILEGES	TABLE_NAME	VARCHAR(16777216)	N	Name of the table on which the privilege is granted
+TABLE_PRIVILEGES	PRIVILEGE_TYPE	VARCHAR(16777216)	N	Type of the granted privilege
+TABLE_PRIVILEGES	IS_GRANTABLE	VARCHAR(3)	Y	Whether the privilege was granted WITH GRANT OPTION
+TABLE_PRIVILEGES	WITH_HIERARCHY	VARCHAR(3)	Y	Not applicable for Snowflake.
+TABLE_PRIVILEGES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the privilege
+TABLE_STORAGE_METRICS	TABLE_CATALOG	VARCHAR(16777216)	Y	Database that the table belongs to.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	TABLE_SCHEMA	VARCHAR(16777216)	Y	Schema that the table belongs to.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	TABLE_NAME	VARCHAR(16777216)	Y	Name of the table.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	ID	NUMBER(9,0)	N	Unique identifier of the table
+TABLE_STORAGE_METRICS	CLONE_GROUP_ID	NUMBER(9,0)	N	Unique identifier of the oldest clone ancestor of this table.  Same as this table's ID if it is not a clone.
+TABLE_STORAGE_METRICS	IS_TRANSIENT	VARCHAR(3)	Y	'YES' if table is transient, 'NO' otherwise.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	ACTIVE_BYTES	NUMBER(9,0)	N	Bytes in the active version of the table. Some bytes may be billed to another table if this table is a clone.
+TABLE_STORAGE_METRICS	TIME_TRAVEL_BYTES	NUMBER(9,0)	N	Bytes in time travel versions of the table. Some bytes may be billed to another table if this table is a clone
+TABLE_STORAGE_METRICS	FAILSAFE_BYTES	NUMBER(9,0)	N	Bytes in failsafe versions of the table. All such bytes are billed to this table.
+TABLE_STORAGE_METRICS	RETAINED_FOR_CLONE_BYTES	NUMBER(9,0)	N	Bytes which used to be owned by this table and are no longer referenced by it. Still, they are retained (and billed) because other clone(s) of that table are still referencing these bytes. Note that the original metadata for this table might have been purged so the table, schema, and database names might be NULL in this case.
+TABLE_STORAGE_METRICS	TABLE_CREATED	TIMESTAMP_LTZ(9)	Y	Time at which this table was created.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	TABLE_DROPPED	TIMESTAMP_LTZ(9)	Y	Time at which the table was dropped, or NULL.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	TABLE_ENTERED_FAILSAFE	TIMESTAMP_LTZ(9)	Y	Time at which the table entered the failsafe state, or NULL.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	CATALOG_CREATED	TIMESTAMP_LTZ(9)	Y	Time at which the database was created.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	CATALOG_DROPPED	TIMESTAMP_LTZ(9)	Y	Time at which the database was dropped.  Potentially NULL if table is past failsafe.
+TABLE_STORAGE_METRICS	SCHEMA_CREATED	TIMESTAMP_LTZ(9)	Y	Time at which the schema was created.  Potentially NULL if table is past failsafe.
+TABLE_STORAGE_METRICS	SCHEMA_DROPPED	TIMESTAMP_LTZ(9)	Y	Time at which the schema was dropped.  Potentially NULL if table is in failsafe.
+TABLE_STORAGE_METRICS	COMMENT	VARCHAR(16777216)	Y	Table's comment.  Potentially NULL if table is in failsafe.
+TYPES	TYPE_CATALOG	VARCHAR(16777216)	N	Database that the type belongs to
+TYPES	TYPE_SCHEMA	VARCHAR(16777216)	N	Schema that the type belongs to
+TYPES	TYPE_NAME	VARCHAR(16777216)	N	Name of the type
+TYPES	TYPE_OWNER	VARCHAR(16777216)	Y	Name of the role that owns the type
+TYPES	BASE_DATA_TYPE	VARCHAR(16777216)	N	Underlying data type of the user-defined type
+TYPES	CHARACTER_MAXIMUM_LENGTH	NUMBER(9,0)	Y	Maximum length in characters for VARCHAR types
+TYPES	CHARACTER_OCTET_LENGTH	NUMBER(9,0)	Y	Maximum length in bytes for VARCHAR types
+TYPES	NUMERIC_PRECISION	NUMBER(9,0)	Y	Numeric precision for NUMBER types
+TYPES	NUMERIC_PRECISION_RADIX	NUMBER(9,0)	Y	Radix of the numeric precision for NUMBER types
+TYPES	NUMERIC_SCALE	NUMBER(9,0)	Y	Numeric scale for NUMBER types
+TYPES	DATETIME_PRECISION	NUMBER(9,0)	Y	Fractional seconds precision for TIMESTAMP types
+TYPES	CHECK_EXPRESSION	VARCHAR(16777216)	Y	Reserved for future use
+TYPES	DEFAULT_EXPRESSION	VARCHAR(16777216)	Y	Reserved for future use
+TYPES	IS_NULLABLE_DEFAULT	VARCHAR(16777216)	Y	Reserved for future use
+TYPES	COLLATION_NAME	VARCHAR(16777216)	Y	Reserved for future use
+TYPES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the type
+TYPES	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the type
+TYPES	COMMENT	VARCHAR(16777216)	Y	Comment for this type
+USAGE_PRIVILEGES	GRANTOR	VARCHAR(16777216)	N	Role who granted the usage privilege
+USAGE_PRIVILEGES	GRANTEE	VARCHAR(16777216)	N	Object to which the usage privilege is granted
+USAGE_PRIVILEGES	GRANTED_TO	VARCHAR(16777216)	N	Object kind on which the usage privilege is granted
+USAGE_PRIVILEGES	OBJECT_CATALOG	VARCHAR(16777216)	N	Database containing the object on which the privilege is granted
+USAGE_PRIVILEGES	OBJECT_SCHEMA	VARCHAR(16777216)	N	Schema containing the object on which the privilege is granted
+USAGE_PRIVILEGES	OBJECT_NAME	VARCHAR(16777216)	N	Name of the object on which the privilege is granted
+USAGE_PRIVILEGES	OBJECT_TYPE	VARCHAR(16777216)	N	Type of the object on which the privilege is granted
+USAGE_PRIVILEGES	PRIVILEGE_TYPE	VARCHAR(16777216)	N	Type of the granted privilege
+USAGE_PRIVILEGES	IS_GRANTABLE	VARCHAR(3)	Y	Whether the privilege was granted WITH GRANT OPTION
+USAGE_PRIVILEGES	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the privilege
+VIEWS	TABLE_CATALOG	VARCHAR(16777216)	N	Database that the view belongs to
+VIEWS	TABLE_SCHEMA	VARCHAR(16777216)	N	Schema that the view belongs to
+VIEWS	TABLE_NAME	VARCHAR(16777216)	N	Name of the view
+VIEWS	TABLE_OWNER	VARCHAR(16777216)	N	Name of the role that owns the view
+VIEWS	VIEW_DEFINITION	VARCHAR(16777216)	N	Text of the view's query expression
+VIEWS	CHECK_OPTION	VARCHAR(16777216)	Y	Not applicable for Snowflake.
+VIEWS	IS_UPDATABLE	VARCHAR(3)	Y	Not applicable for Snowflake.
+VIEWS	INSERTABLE_INTO	VARCHAR(3)	Y	Not applicable for Snowflake.
+VIEWS	IS_SECURE	VARCHAR(3)	Y	Whether this view is secure.
+VIEWS	CREATED	TIMESTAMP_LTZ(9)	Y	Creation time of the view
+VIEWS	LAST_ALTERED	TIMESTAMP_LTZ(9)	Y	Last altered time of the view
+VIEWS	LAST_DDL	TIMESTAMP_LTZ(9)	Y	Last DDL time of the view
+VIEWS	LAST_DDL_BY	VARCHAR(16777216)	Y	User name that performed the last DDL of the view
+VIEWS	COMMENT	VARCHAR(16777216)	Y	Comment for this view

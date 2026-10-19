@@ -29,21 +29,22 @@ import java.util.Set;
  * {@code value IN (subquery)} so each outer row is an O(1) probe instead of an O(subqueryRows) linear
  * scan — turning the membership test from O(outer × sub) into O(outer + sub).
  *
- * <p>It reproduces exactly the equality used by {@code ExpressionEvaluatorVisitor.equals}: two Numbers
- * compare numerically and scale-insensitively (like {@code BigDecimal.compareTo} — so {@code 5},
- * {@code 5L}, {@code 5.0} are equal), while any comparison involving a non-Number compares the
- * operands' {@code toString()}. The three-valued NULL rules live in the CALLER: it never probes a
- * NULL, and turns a miss into UNKNOWN when {@link #hasNull()} says the set held a NULL member. To
- * honour both equality rules with one structure every
- * numeric value is indexed under a canonical numeric key <em>and</em> every value under its
- * {@code toString()}: a Number probe checks the numeric key (numeric-vs-numeric) or the string key
- * (numeric-vs-non-numeric), and a non-Number probe checks only the string key.
+ * <p>It answers only a probe of the kind every member is, where hashing is the comparison's own: two Numbers
+ * compare numerically and scale-insensitively (like {@code BigDecimal.compareTo} — so {@code 5}, {@code 5L},
+ * {@code 5.0} are equal), and two texts by their characters. Any other pair converts as {@code value = member}
+ * converts — a number against text reads the text as a number — so {@link #answers} turns such a probe back to
+ * the caller's scan. The three-valued NULL rules live in the CALLER: it never probes a NULL, and turns a miss
+ * into UNKNOWN when {@link #hasNull()} says the set held a NULL member.
  */
 public class PreparedInSet {
 
     private final Set<String> numericKeys = new HashSet<>();
     private final Set<String> stringKeys = new HashSet<>();
     private boolean containsNull;
+    /** Whether every member that is not NULL is a Number. */
+    private boolean onlyNumbers = true;
+    /** Whether every member that is not NULL is a text. */
+    private boolean onlyTexts = true;
 
     public static PreparedInSet build(final List<Row> rows) {
         final PreparedInSet set = new PreparedInSet();
@@ -54,6 +55,8 @@ public class PreparedInSet {
                 continue;
             }
             set.stringKeys.add(v.toString());
+            set.onlyNumbers = set.onlyNumbers && v instanceof Number;
+            set.onlyTexts = set.onlyTexts && v instanceof String;
             if (v instanceof Number) {
                 final String key = numericKey(v);
                 if (key != null) {
@@ -67,6 +70,17 @@ public class PreparedInSet {
     /** True when the indexed subquery column contained at least one NULL member. */
     public boolean hasNull() {
         return containsNull;
+    }
+
+    /**
+     * Whether the index settles a probe: a number against members that are all numbers, a text against members
+     * that are all texts. Any other probe is compared member by member, as the comparison converts it.
+     *
+     * @param value the probe, not NULL
+     * @return whether {@link #contains} answers it
+     */
+    public boolean answers(final Object value) {
+        return value instanceof Number ? onlyNumbers : value instanceof String && onlyTexts;
     }
 
     /** True iff {@code value} would equal some indexed value under the engine's IN equality. */

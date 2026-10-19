@@ -30,6 +30,7 @@ import dev.frostlake.executor.procedural.SubqueryExpression;
 import dev.frostlake.executor.procedural.UnaryExpression;
 import dev.frostlake.executor.procedural.VariableExpression;
 import dev.frostlake.functions.SystemFunctionNames;
+import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Task;
@@ -37,8 +38,8 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
-import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
+import dev.frostlake.task.TaskOnlyFunctions;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.task.UserTaskCancellation;
 import dev.frostlake.types.NumericLiteralTypes;
@@ -46,13 +47,12 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -63,8 +63,6 @@ import java.util.UUID;
  * engine state through {@code queryExecutor}.
  */
 public class VisitorExpressionBuilder {
-
-    private static final Logger logger = LoggerFactory.getLogger(VisitorExpressionBuilder.class);
 
     private final SQLCommandVisitor visitor;
     private final QueryExecutor queryExecutor;
@@ -188,7 +186,7 @@ public class VisitorExpressionBuilder {
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
             // :varname — procedural variable binding, treat as variable reference
-            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
+            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).variableName());
             return new VariableExpression(varName, true);
         }
 
@@ -212,27 +210,23 @@ public class VisitorExpressionBuilder {
             final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) ctx;
             final String funcName = funcCtx.functionName().getText();
             final List<BaseExpression> args = new ArrayList<>();
+            final List<String> written = new ArrayList<>();
 
             if (funcCtx.functionArgList() != null) {
                 for (final FrostlakeParser.BooleanExprContext argCtx : ParseTreeText.functionBooleanArgs(funcCtx.functionArgList())) {
                     args.add(buildExpression(argCtx));
+                    written.add(NamelessArgument.readsNoName(argCtx) ? visitor.getOriginalText(argCtx) : null);
                 }
             }
 
             final FunctionCallExpression call = new FunctionCallExpression(funcName, args);
             call.describeQuantifier(funcCtx.DISTINCT() != null ? "DISTINCT" : funcCtx.ALL() != null ? "ALL" : null);
+            call.describeNamelessArguments(written);
             return call;
         }
 
         // A value operator written after a LIKE ANY's pattern list applies to the list, not to the predicate the
         // grammar gave it ('ab' LIKE ANY ('a') || 'b' matches 'a' || 'b'), so it is read as SQL reads it below.
-        if (ctx instanceof FrostlakeParser.ConcatExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
-            final FrostlakeParser.ConcatExprContext concatCtx = (FrostlakeParser.ConcatExprContext) ctx;
-            final BaseExpression left = buildExpression(concatCtx.expression(0));
-            final BaseExpression right = buildExpression(concatCtx.expression(1));
-            return new BinaryExpression(left, BinaryOperator.CONCAT, right);
-        }
-
         if (ctx instanceof FrostlakeParser.MultiplicativeExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
             final FrostlakeParser.MultiplicativeExprContext binCtx = (FrostlakeParser.MultiplicativeExprContext) ctx;
             final BaseExpression left = buildExpression(binCtx.expression(0));
@@ -419,7 +413,14 @@ public class VisitorExpressionBuilder {
         }
         if (ctx instanceof FrostlakeParser.SystemUserTaskCancelExprContext) {
             final FrostlakeParser.SystemUserTaskCancelExprContext sctx = (FrostlakeParser.SystemUserTaskCancelExprContext) ctx;
-            final Object nameVal = evaluateExpression(sctx.expression(), scriptingNamesVisible);
+            final int given = sctx.expressionList() == null ? 0 : sctx.expressionList().expression().size();
+            if (given != 1) {
+                throw UserTaskCancellation.wrongCount(sctx.getStart().getLine(),
+                    sctx.getStart().getCharPositionInLine(),
+                    given == 0 ? sctx.SYSTEM_USER_TASK_CANCEL().getText().toUpperCase(Locale.ROOT) + "()"
+                        : ParseTreeText.getOriginalText(sctx), given);
+            }
+            final Object nameVal = evaluateExpression(sctx.expressionList().expression(0), scriptingNamesVisible);
             return UserTaskCancellation.cancel(queryExecutor.getCatalog(),
                 queryExecutor.getTaskScheduler(), nameVal == null ? null : nameVal.toString());
         }
@@ -437,7 +438,9 @@ public class VisitorExpressionBuilder {
             }
             final Object nameVal = evaluateExpression(sshd.expressionList().expression(0),
                 scriptingNamesVisible);
-            final String streamName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
+            // Unquoted parts fold to upper case, a double-quoted part keeps its own — as IDENTIFIER() reads a string.
+            final String streamName = nameVal != null
+                ? SqlIdentifiers.canonicalText(nameVal.toString().replaceAll("^'|'$", "").trim()) : "";
             try {
                 final Catalog cat = queryExecutor.getCatalog();
                 final String dbN = cat.getCurrentDatabase();
@@ -455,8 +458,10 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.SystemFuncExprContext) {
             return evaluateSystemFunc((FrostlakeParser.SystemFuncExprContext) ctx, scriptingNamesVisible);
         }
-        if (ctx instanceof FrostlakeParser.ConcatExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
-            final FrostlakeParser.ConcatExprContext cc = (FrostlakeParser.ConcatExprContext) ctx;
+        if (ctx instanceof FrostlakeParser.AdditiveExprContext
+                && ((FrostlakeParser.AdditiveExprContext) ctx).PIPE_PIPE() != null
+                && !ComparisonLevelChain.appliesToPatternList(ctx)) {
+            final FrostlakeParser.AdditiveExprContext cc = (FrostlakeParser.AdditiveExprContext) ctx;
             final Object left = evaluateExpression(cc.expression(0), scriptingNamesVisible);
             final Object right = evaluateExpression(cc.expression(1), scriptingNamesVisible);
             if (left == null || right == null) return null;
@@ -469,16 +474,17 @@ public class VisitorExpressionBuilder {
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
             // :varname — procedural variable binding, treat as variable reference
-            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
+            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).variableName());
             if (visitor.getProceduralExecutor() != null) {
-                final Object v = visitor.getProceduralExecutor().getVariable(varName);
+                final Object v = visitor.getProceduralExecutor().readExpressionValue(varName);
                 if (v != null) return v;
             }
             return null;
         }
         if (ctx instanceof FrostlakeParser.SessionVarExprContext) {
             final String token = ((FrostlakeParser.SessionVarExprContext) ctx).SESSION_VAR_REF().getText();
-            final String name = token.substring(1).toUpperCase(); // strip leading $
+            final String name = token.substring(1).toUpperCase(Locale.ROOT); // strip leading $
+            SessionVariableUse.requireCallersRights(name);
             final SecurityManager sm = queryExecutor.getSecurityManager();
             return sm != null ? sm.getSessionContext().getSessionVariable(name)
                               : queryExecutor.getSessionVariables().get(name);
@@ -487,7 +493,7 @@ public class VisitorExpressionBuilder {
             // This might be a variable reference
             final String varName = ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().getText();
             if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
-                final Object varValue = visitor.getProceduralExecutor().getVariable(varName);
+                final Object varValue = visitor.getProceduralExecutor().readExpressionValue(varName);
                 if (varValue != null) {
                     return varValue;
                 }
@@ -496,7 +502,7 @@ public class VisitorExpressionBuilder {
             final SecurityManager sm = queryExecutor.getSecurityManager();
             final Object sessionVal = sm != null
                 ? sm.getSessionContext().getSessionVariable(varName)
-                : queryExecutor.getSessionVariables().get(varName.toUpperCase());
+                : queryExecutor.getSessionVariables().get(varName.toUpperCase(Locale.ROOT));
             if (sessionVal != null) {
                 return sessionVal;
             }
@@ -505,7 +511,7 @@ public class VisitorExpressionBuilder {
             if (!scriptingNamesVisible
                     && ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().namePart().isEmpty()) {
                 throw new RuntimeException(SqlCompilationError.at(ctx.getStart().getLine(),
-                    ctx.getStart().getCharPositionInLine(), "invalid identifier '" + varName.toUpperCase() + "'"));
+                    ctx.getStart().getCharPositionInLine(), "invalid identifier '" + varName.toUpperCase(Locale.ROOT) + "'"));
             }
         }
         if (ctx instanceof FrostlakeParser.ParenExprContext) {
@@ -628,9 +634,13 @@ public class VisitorExpressionBuilder {
     /** The columns {@code SELECT } puts ahead of the expression {@link #firstCellOfSelect} evaluates. */
     private static final int SELECT_LEAD = "SELECT ".length();
 
-    /** The first cell of {@code SELECT <exprText>}, or null when the query yields no row. */
+    /**
+     * The first cell of {@code SELECT <exprText>}, or null when the query yields no row. The SELECT evaluates a value
+     * of the statement that wrote it (a SET's value, a CALL's argument), so it takes no query ID and no history row:
+     * {@code SET v = UPPER('a')} is one statement.
+     */
     private Object firstCellOfSelect(final String exprText) {
-        final List<ResultSet> results = queryExecutor.execute("SELECT " + exprText);
+        final List<ResultSet> results = queryExecutor.executeUnrecorded("SELECT " + exprText);
         return !results.isEmpty() && results.get(0).getRowCount() > 0
             ? results.get(0).getRows().get(0).getValue(0) : null;
     }
@@ -641,17 +651,21 @@ public class VisitorExpressionBuilder {
      */
     private Object evaluateSystemFunc(final FrostlakeParser.SystemFuncExprContext ctx,
                                       final boolean scriptingNamesVisible) {
-        final String rawName = ctx.SYSTEM_FUNC().getText().toUpperCase(); // e.g. SYSTEM$WAIT
+        final String rawName = ctx.SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT); // e.g. SYSTEM$WAIT
         // Same guard as SystemFunctionEvaluator: SystemFunctionNames is the single declaration of the
         // SYSTEM$ family, shared with SHOW FUNCTIONS via FunctionRegistry.allDispatchableNames(). This
         // parse-tree path and the expression-AST path both consult it, so neither switch can grow a name
         // the listing does not know about.
+        if (SystemFunctionNames.isLoggingStatement(rawName)) {
+            throw SystemFunctionNames.unknownLoggingFunction(rawName);
+        }
         if (!SystemFunctionNames.contains(rawName)) {
             throw new RuntimeException("Unsupported system function: " + rawName);
         }
-        if ("SYSTEM$TYPEOF".equals(rawName)) {
+        if ("SYSTEM$TYPEOF".equals(rawName) || "SYSTEM$ABORT_TRANSACTION".equals(rawName)) {
             // It types its argument rather than reading a value, so it is evaluated where every expression's
             // type is known: over the block's names in a scripting expression, as SQL everywhere else.
+            // SYSTEM$ABORT_TRANSACTION judges its argument as written, and goes the same way.
             if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
                 return visitor.getProceduralExecutor().evaluateExpression(buildExpression(ctx));
             }
@@ -668,7 +682,8 @@ public class VisitorExpressionBuilder {
             // ── Task / scheduling ──────────────────────────────────────────────
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
                 final Task currentTask = TaskScheduler.currentTask();
-                return currentTask != null ? currentTask.getName() : null;
+                // Outside a task the name is empty, not NULL (live-verified).
+                return currentTask != null ? currentTask.getName() : "";
             }
 
             case "SYSTEM$SET_RETURN_VALUE": {
@@ -683,6 +698,7 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$GET_PREDECESSOR_RETURN_VALUE": {
+                TaskOnlyFunctions.requireTask("SYSTEM$GET_PREDECESSOR_RETURN_VALUE");
                 final Task currentTask = TaskScheduler.currentTask();
                 if (currentTask != null && !currentTask.getPredecessors().isEmpty()) {
                     String predName = currentTask.getPredecessors().get(0);
@@ -720,68 +736,41 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$TASK_RUNTIME_INFO":
+                TaskOnlyFunctions.requireTask("SYSTEM$TASK_RUNTIME_INFO");
                 return "{}";
 
             case "SYSTEM$GET_TASK_GRAPH_CONFIG":
                 return TaskGraphConfig.readInTask(args);
 
             // ── Stream ─────────────────────────────────────────────────────────
-            case "SYSTEM$STREAM_BACKLOG": {
-                if (!args.isEmpty()) {
-                    final String streamName = args.get(0) != null ? args.get(0).toString().replaceAll("^'|'$", "").toUpperCase() : "";
-                    try {
-                        final Catalog cat = queryExecutor.getCatalog();
-                        final String dbN = cat.getCurrentDatabase();
-                        final String scN = cat.getCurrentSchema();
-                        if (dbN != null && scN != null) {
-                            final String fq = dbN + "." + scN + "." + streamName;
-                            final TableStorage ts =
-                                queryExecutor.getStorageEngine().getTableStorage(fq);
-                            return ts != null ? (long) ts.getRowCount() : 0L;
-                        }
-                    } catch (final Exception ignored) {}
-                }
-                return 0L;
-            }
-
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP": {
-                return StatementClock.now();
+                return ChangeTimes.streamTableTimestamp(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
+                    args.isEmpty() ? null : args.get(0));
             }
 
             // ── Session / transaction ──────────────────────────────────────────
             case "SYSTEM$ABORT_SESSION":
-                return "Session aborted.";
-
-            case "SYSTEM$ABORT_TRANSACTION":
-                try { queryExecutor.getTransactionManager().rollback(); } catch (final Exception ignored) {}
-                return "Transaction aborted.";
+                return queryExecutor.evaluateSystemFunction(rawName, args);
 
             case "SYSTEM$CANCEL_QUERY":
             case "SYSTEM$CANCEL_ALL_QUERIES":
                 return "Query cancelled.";
 
             // ── Clustering ─────────────────────────────────────────────────────
-            case "SYSTEM$CLUSTERING_DEPTH": {
-                final String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
-                return "{\"average_depth\": 1.0, \"table_name\": \"" + tblName + "\"}";
-            }
-            case "SYSTEM$CLUSTERING_INFORMATION": {
-                final String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
-                return "{\"clustering_key\": null, \"total_partition_count\": 1, \"average_depth\": 1.0, \"table_name\": \"" + tblName + "\"}";
-            }
+            case "SYSTEM$CLUSTERING_DEPTH":
+                return ClusteringStatistics.depth(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args,
+                    queryExecutor.getFunctionRegistry().getQueryRunner());
+            case "SYSTEM$CLUSTERING_INFORMATION":
+                return ClusteringStatistics.information(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
+                    args);
             case "SYSTEM$CLUSTERING_RATIO":
-                return 1.0;
+                return ClusteringStatistics.ratio(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args);
 
             // ── Tags ───────────────────────────────────────────────────────────
-            case "SYSTEM$GET_TAG": {
-                if (args.size() >= 3 && args.get(0) != null && args.get(1) != null) {
-                    final String tagName = args.get(0).toString().replaceAll("^'|'$", "");
-                    final String objectName = args.get(1).toString().replaceAll("^'|'$", "");
-                    final String domain = args.get(2) == null ? null : args.get(2).toString().replaceAll("^'|'$", "");
-                    return queryExecutor.getCatalog().getObjectTagValue(tagName, objectName, domain);
-                }
-                return null;
-            }
+            case "SYSTEM$GET_TAG":
+                return TagReferencesFunction.systemGetTag(queryExecutor.getCatalog(), args);
+            case "SYSTEM$GET_TAG_ALLOWED_VALUES":
+                return TagReferencesFunction.systemGetTagAllowedValues(queryExecutor.getCatalog(), args);
             case "SYSTEM$GET_TAG_ON_CURRENT_COLUMN":
             case "SYSTEM$GET_TAG_ON_CURRENT_TABLE":
                 return null;
@@ -795,7 +784,7 @@ public class VisitorExpressionBuilder {
                 return "[]";
 
             case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
-                return System.currentTimeMillis();
+                return ChangeTimes.lastChangeCommitTime(queryExecutor.getCatalog(), args.isEmpty() ? null : args.get(0));
 
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":
                 return "{\"token\": \"" + UUID.randomUUID() + "\", \"expires_at\": null}";
@@ -819,18 +808,7 @@ public class VisitorExpressionBuilder {
                 return UUID.randomUUID().toString();
 
             case "SYSTEM$REFERENCE":
-                return args.isEmpty() ? null : args.get(0);
-
-            // ── Logging ────────────────────────────────────────────────────────
-            case "SYSTEM$LOG": {
-                // SYSTEM$LOG(level, message) — emit to logger, return null
-                if (args.size() >= 2) {
-                    logger.info("SYSTEM$LOG [{}]: {}", args.get(0), args.get(1));
-                } else if (!args.isEmpty()) {
-                    logger.info("SYSTEM$LOG: {}", args.get(0));
-                }
-                return null;
-            }
+                return ObjectReferenceTokens.create(queryExecutor.getCatalog(), args);
 
             // ── Wait ───────────────────────────────────────────────────────────
             case "SYSTEM$WAIT":

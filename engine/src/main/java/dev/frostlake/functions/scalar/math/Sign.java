@@ -28,6 +28,11 @@ public class Sign extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        if (args.get(0) instanceof Double || args.get(0) instanceof Float) {
+            // A FLOAT's sign is a FLOAT: 0.0 for NaN and for either zero, an infinity's its own sign (live-verified).
+            final double value = ((Number) args.get(0)).doubleValue();
+            return Double.isNaN(value) || value == 0 ? 0.0 : Math.signum(value);
+        }
         final BigDecimal num = new BigDecimal(args.get(0).toString());
         return num.signum();
     }

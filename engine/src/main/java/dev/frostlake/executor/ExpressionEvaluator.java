@@ -17,17 +17,24 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.executor.expressions.BindVariableExpression;
+import dev.frostlake.executor.expressions.CallOrdinalWalk;
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionCollation;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryMemo;
+import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
@@ -61,6 +68,8 @@ public class ExpressionEvaluator {
     private Set<String> whereAggregateAliases;
     private Map<String, String> whereWindowAliases;
     private Set<String> outputScopeNames;
+    private Set<String> enclosingQualifiers;
+    private Map<String, Table> groupedRelations;
     private Map<String, DataType> outputAliasTypes;
     private Map<String, Object> resultContext;
     private Map<String, Object> subqueryOuterRow;
@@ -211,6 +220,7 @@ public class ExpressionEvaluator {
         visitor.setSubqueryMemo(subqueryMemo);
         visitor.setScriptNameTypes(scriptNameTypes);
         visitor.setBindsAsParameters(bindsAsParameters);
+        visitor.setGroupedRelations(groupedRelations);
         return expression.accept(visitor);
     }
 
@@ -301,8 +311,28 @@ public class ExpressionEvaluator {
      * it: {@code ROW(NUMBER(1,0), VARCHAR(1))}; null for anything else.
      */
     public String multiColumnRowText(final Expression expression) {
+        if (expression instanceof RowExpression) {
+            // A ROW written as a parenthesized list is typed as the row of its values.
+            return preparedVisitor().argumentTypeText(expression);
+        }
         return expression instanceof SubqueryExpression
             ? preparedVisitor().multiColumnRowText((SubqueryExpression) expression) : null;
+    }
+
+    /** How many columns an expression that is a subquery selects; 0 for anything else or an unplannable one. */
+    public int subqueryWidth(final Expression expression) {
+        return expression instanceof SubqueryExpression
+            ? preparedVisitor().subqueryWidth((SubqueryExpression) expression) : 0;
+    }
+
+    /**
+     * Whether a name is a user-defined function's and no built-in's, as this evaluator's catalog resolves it.
+     *
+     * @param parts the name's canonical parts
+     * @return whether a call of the name is a call of a function someone created
+     */
+    public boolean callsUserFunction(final List<String> parts) {
+        return preparedVisitor().callsUserFunction(parts);
     }
 
     /** The plan-time user-defined function argument check alone, over a parsed expression. */
@@ -376,6 +406,17 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * The collation an expression carries with the level it holds it at, which a projection stamps on the
+     * column it builds so the level travels with the relation.
+     *
+     * @param expression the expression
+     * @return its collation, never null
+     */
+    public ExpressionCollation heldCollation(final Expression expression) {
+        return preparedVisitor().collationOf(expression);
+    }
+
+    /**
      * The visitor that types names in this evaluator's scope, for naming that scope as the one AROUND a
      * relation planned inside it (see {@link SubqueryCompilation#beginScope}).
      *
@@ -396,6 +437,8 @@ public class ExpressionEvaluator {
         reusableVisitor.setScopeExemptNames(scopeExemptNames);
         reusableVisitor.setWhereAliasRefusals(whereAggregateAliases, whereWindowAliases);
         reusableVisitor.setOutputScopeNames(outputScopeNames);
+        reusableVisitor.setEnclosingQualifiers(enclosingQualifiers);
+        reusableVisitor.setGroupedRelations(groupedRelations);
         reusableVisitor.setOutputAliasTypes(outputAliasTypes);
         reusableVisitor.setScriptNameTypes(scriptNameTypes);
         reusableVisitor.setBindsAsParameters(bindsAsParameters);
@@ -431,6 +474,26 @@ public class ExpressionEvaluator {
      */
     public void setOutputScopeNames(final Set<String> names) {
         this.outputScopeNames = names;
+    }
+
+    /**
+     * The relations of the FROM a grouped query's HAVING stands over, by the names it reaches each by, for a
+     * subquery of the HAVING to read the statistics of.
+     *
+     * @param relations the FROM's relations, or null
+     */
+    public void setGroupedRelations(final Map<String, Table> relations) {
+        this.groupedRelations = relations;
+    }
+
+    /**
+     * The qualifiers the row around this evaluator's query offers, for a refusal's echo to spell a name read
+     * through one of them as the plan holds it: {@code CORRELATION(FZ.ID)}.
+     *
+     * @param qualifiers the enclosing row's qualifiers, upper-cased, or null
+     */
+    public void setEnclosingQualifiers(final Set<String> qualifiers) {
+        this.enclosingQualifiers = qualifiers;
     }
 
     /**
@@ -564,6 +627,83 @@ public class ExpressionEvaluator {
      * type instead of the VARCHAR placeholder. Never throws: an expression this evaluator cannot even
      * look at is simply undetermined.
      */
+    /**
+     * Whether an expression is a reference to a column that holds nothing but an untyped NULL in this table
+     * context (see {@code TableColumn#isUntypedNull}).
+     *
+     * @param expression the expression
+     * @return true for such a reference
+     */
+    public boolean readsUntypedNull(final Expression expression) {
+        if (!(expression instanceof ColumnReferenceExpression)) {
+            return false;
+        }
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        return reusableVisitor.readsUntypedNull((ColumnReferenceExpression) expression);
+    }
+
+    /**
+     * The type the plan reports for a select item where it differs from the declared one: a SUM over a shifted
+     * column is reported at the width of the intermediate it is rewritten into (see
+     * {@link ExpressionEvaluatorVisitor#planReportedType}).
+     *
+     * @param expression the item
+     * @param declared   the item's declared type
+     * @return the reported type, {@code declared} itself where the plan rewrites nothing
+     */
+    public DataType planReportedType(final Expression expression, final DataType declared) {
+        if (reusableVisitor == null || declared == null) {
+            return declared;
+        }
+        try {
+            return reusableVisitor.planReportedType(expression, declared);
+        } catch (final RuntimeException undetermined) {
+            return declared;
+        }
+    }
+
+    /**
+     * Whether an expression is a scripting variable's reference written alone, {@code :name} or {@code (:name)}, whose
+     * variable holds NULL. A statement of a block reads such a bind with no type where the value is a whole item of
+     * a VALUES row (live-verified).
+     *
+     * @param expression the item
+     * @return whether it is a reference to a variable that holds NULL
+     */
+    public boolean isNullVariable(final Expression expression) {
+        if (!(expression instanceof BindVariableExpression) || queryExecutor == null) {
+            return false;
+        }
+        final ProceduralExecutor procedural = queryExecutor.getProceduralExecutor();
+        final String name = ((BindVariableExpression) expression).getVarName();
+        return procedural != null && procedural.hasVariable(name) && procedural.getVariable(name) == null;
+    }
+
+    /**
+     * The user's function overload a call runs, chosen by its arguments' static types over this evaluator's relation
+     * as the call chooses it, or null when that cannot be told.
+     *
+     * @param call the call
+     * @return the overload, or null
+     */
+    public Function resolvedUserFunction(final FunctionCallExpression call) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        return reusableVisitor.resolvedUserFunction(call);
+    }
+
     public DataType inferStaticType(final Expression expression) {
         if (reusableVisitor == null) {
             reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
@@ -616,6 +756,23 @@ public class ExpressionEvaluator {
     public boolean projectsFoldedDouble(final Expression expression) {
         try {
             return preparedVisitor().projectsFoldedDouble(expression);
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a select item projects the word NULL cast to a text type, or a column carrying one out of a derived
+     * relation — see TableColumn#isNullText. Never throws.
+     *
+     * @param expression a select item
+     * @return true for such an item
+     */
+    public boolean projectsNullText(final Expression expression) {
+        try {
+            return UntypedNullFold.isNullTextConstant(expression)
+                || expression instanceof ColumnReferenceExpression
+                    && preparedVisitor().readsNullText((ColumnReferenceExpression) expression);
         } catch (final RuntimeException undetermined) {
             return false;
         }
@@ -703,6 +860,34 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * The interval a projected item hands on to the column it becomes: {@link #inferStaticRange}'s, or the empty
+     * one for an item of any type that is always NULL; never throws.
+     *
+     * @param expression the select item's expression
+     * @return the interval, or null when none can be known
+     */
+    public ValueRange inferProjectedRange(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        try {
+            return reusableVisitor.inferProjectedRange(expression);
+        } catch (final RuntimeException undetermined) {
+            // A COMPILATION error is a refusal the channel reached on purpose — an operand pair
+            // Snowflake rejects — not the ordinary "could not determine a type" this swallows.
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+                throw undetermined;
+            }
+            return null;
+        }
+    }
+
+    /**
      * Applies the argument-family refusals to every call in {@code expression} from declared types,
      * before any row is read — see {@link ExpressionEvaluatorVisitor#rejectArgumentFamilies}.
      */
@@ -766,6 +951,28 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * {@link #plannedText} with what the plan folds early printed as its value - see
+     * {@link ExpressionEvaluatorVisitor#strictFoldedPlanText}.
+     *
+     * @param expression the expression
+     * @return the expression as the plan holds it, its early folds as their values
+     */
+    public String foldedPlannedText(final Expression expression) {
+        return preparedVisitor().strictFoldedPlanText(expression);
+    }
+
+    /**
+     * {@link #plannedText} for an aggregate call a sentence names by itself — see
+     * {@link ExpressionEvaluatorVisitor#strictPlanCallDefinition}.
+     *
+     * @param expression the call
+     * @return the call as the plan computes it
+     */
+    public String plannedCallDefinition(final Expression expression) {
+        return preparedVisitor().strictPlanCallDefinition(expression);
+    }
+
+    /**
      * {@link #qualifiedText} for an aggregate call that a NESTING message brackets: a plain AVG at
      * that root prints as its SUM half, the way live names it — see
      * {@link ExpressionEvaluatorVisitor#strictAggregateText}.
@@ -812,6 +1019,8 @@ public class ExpressionEvaluator {
         // a genuinely malformed expression or a construct not modeled by the builder; let it
         // propagate rather than silently producing a wrong AST.
         final Expression ast = AntlrExpressionParser.parse(expression);
+        // A handler runtime tells the calls of a text read anew for each row apart by their counts.
+        CallOrdinalWalk.number(ast);
         AST_CACHE.put(expression, ast);
         return ast;
     }

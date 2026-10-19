@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -48,7 +49,11 @@ public final class TableFunctionArguments {
     private static final String QUERY_HISTORY = "QUERY_HISTORY";
     private static final String TASK_HISTORY = "TASK_HISTORY";
     private static final String TAG_REFERENCES = "TAG_REFERENCES";
+    private static final String TAG_REFERENCES_ALL_COLUMNS = "TAG_REFERENCES_ALL_COLUMNS";
+    private static final String DATA_METRIC_FUNCTION_REFERENCES = "DATA_METRIC_FUNCTION_REFERENCES";
     private static final String ALERT_HISTORY = "ALERT_HISTORY";
+    private static final String COPY_HISTORY = "COPY_HISTORY";
+    private static final String GENERATOR = "GENERATOR";
 
     /** The schema the INFORMATION_SCHEMA-only functions must be qualified with. */
     private static final String INFORMATION_SCHEMA = "INFORMATION_SCHEMA";
@@ -60,7 +65,8 @@ public final class TableFunctionArguments {
      */
     private static final Set<String> INFORMATION_SCHEMA_ONLY =
         new HashSet<>(Arrays.asList(QUERY_HISTORY, "QUERY_HISTORY_BY_SESSION", "QUERY_HISTORY_BY_USER",
-            "QUERY_HISTORY_BY_WAREHOUSE", TASK_HISTORY, TAG_REFERENCES, ALERT_HISTORY, "TASK_DEPENDENTS",
+            "QUERY_HISTORY_BY_WAREHOUSE", TASK_HISTORY, TAG_REFERENCES, "TAG_REFERENCES_ALL_COLUMNS",
+            ALERT_HISTORY, COPY_HISTORY, "TASK_DEPENDENTS",
             "CURRENT_TASK_GRAPHS", "COMPLETE_TASK_GRAPHS"));
 
     /**
@@ -128,6 +134,31 @@ public final class TableFunctionArguments {
         POSITIONAL_PARAMETER_NAMES.put(QUERY_HISTORY, Arrays.asList("END_TIME_RANGE_START"));
         POSITIONAL_PARAMETER_NAMES.put(TASK_HISTORY, Arrays.asList("SCHEDULED_TIME_RANGE_START"));
 
+        final Map<String, TableFunctionParameterKind> generator = new HashMap<>();
+        generator.put("ROWCOUNT", TableFunctionParameterKind.NUMBER);
+        generator.put("TIMELIMIT", TableFunctionParameterKind.NUMBER);
+        PARAMETER_KINDS.put(GENERATOR, generator);
+
+        // Both arguments of the tag-reference functions are texts, named in a refusal by the parameter.
+        final Map<String, TableFunctionParameterKind> tagReferences = new HashMap<>();
+        tagReferences.put("OBJECT_NAME", TableFunctionParameterKind.STRING);
+        tagReferences.put("DOMAIN", TableFunctionParameterKind.STRING);
+        for (final String function : Arrays.asList(TAG_REFERENCES, TAG_REFERENCES_ALL_COLUMNS)) {
+            POSITIONAL_PARAMETER_NAMES.put(function, Arrays.asList("OBJECT_NAME", "DOMAIN"));
+            PARAMETER_KINDS.put(function, tagReferences);
+        }
+
+        // The metric a DATA_METRIC_FUNCTION_REFERENCES call names is a text, and so are its entity and its domain.
+        ACCEPTED_NAMES.put(DATA_METRIC_FUNCTION_REFERENCES,
+            Arrays.asList("METRIC_NAME", "REF_ENTITY_NAME", "REF_ENTITY_DOMAIN"));
+        final Map<String, TableFunctionParameterKind> metricReferences = new HashMap<>();
+        metricReferences.put("METRIC_NAME", TableFunctionParameterKind.STRING);
+        metricReferences.put("REF_ENTITY_NAME", TableFunctionParameterKind.STRING);
+        metricReferences.put("REF_ENTITY_DOMAIN", TableFunctionParameterKind.STRING);
+        PARAMETER_KINDS.put(DATA_METRIC_FUNCTION_REFERENCES, metricReferences);
+        // One argument written without a name is the metric's, and is told by that name.
+        POSITIONAL_PARAMETER_NAMES.put(DATA_METRIC_FUNCTION_REFERENCES, Arrays.asList("METRIC_NAME"));
+
         final Map<String, TableFunctionParameterKind> queryHistory = new HashMap<>();
         queryHistory.put("END_TIME_RANGE_START", TableFunctionParameterKind.TIMESTAMP);
         PARAMETER_KINDS.put(QUERY_HISTORY, queryHistory);
@@ -135,6 +166,14 @@ public final class TableFunctionArguments {
         final Map<String, TableFunctionParameterKind> taskHistory = new HashMap<>();
         taskHistory.put("SCHEDULED_TIME_RANGE_START", TableFunctionParameterKind.TIMESTAMP);
         PARAMETER_KINDS.put(TASK_HISTORY, taskHistory);
+
+        // COPY_HISTORY's table is a text and its range two timestamps, a positional call filling them in that order.
+        final Map<String, TableFunctionParameterKind> copyHistory = new HashMap<>();
+        copyHistory.put("TABLE_NAME", TableFunctionParameterKind.STRING);
+        copyHistory.put("START_TIME", TableFunctionParameterKind.TIMESTAMP);
+        copyHistory.put("END_TIME", TableFunctionParameterKind.TIMESTAMP);
+        PARAMETER_KINDS.put(COPY_HISTORY, copyHistory);
+        POSITIONAL_PARAMETER_NAMES.put(COPY_HISTORY, Arrays.asList("TABLE_NAME", "START_TIME", "END_TIME"));
     }
 
     /**
@@ -174,17 +213,73 @@ public final class TableFunctionArguments {
                 final String written = namesInOrder.get(i);
                 // A quoted name matches no parameter, whatever it spells: FLATTEN("INPUT" => …) is refused.
                 if (written != null && !accepted.contains(written)) {
+                    // DATA_METRIC_FUNCTION_REFERENCES is named by the first part of the call's name, the schema
+                    // the function is read from.
+                    final String shown = DATA_METRIC_FUNCTION_REFERENCES.equals(functionName)
+                        ? nameToken.getText().toUpperCase(Locale.ROOT) : echoed(functionName, nameToken);
                     throw new RuntimeException(at(nameToken, "invalid argument for function ["
-                        + functionName + "] unexpected argument [" + written + "] at position "
+                        + shown + "] unexpected argument [" + written + "] at position "
                         + (i + 1) + ","));
                 }
             }
         }
         final String required = REQUIRED_PARAMETER.get(functionName);
         if (required != null && !namesInOrder.isEmpty() && !supplies(namesInOrder, required)) {
-            throw new RuntimeException(at(nameToken,
-                "missing required argument [" + required + "] for function [" + functionName + "]"));
+            throw new RuntimeException(at(nameToken, "missing required argument [" + required + "] for function ["
+                + echoed(functionName, nameToken) + "]"));
         }
+    }
+
+    /**
+     * COPY_HISTORY takes its table and its start time, by name or position: a call that gives fewer arguments is
+     * refused for the count, and a table given as NULL as missing, each naming the first part of the call's name;
+     * TO_QUERY's text given as {@code SQL => NULL} is missing too (live-verified).
+     *
+     * @param functionName  the function, unqualified and upper-cased
+     * @param nameToken     the first token of the call's name, whose position the refusal reports
+     * @param namesInOrder  each argument's name as written and upper-cased, null for a positional one
+     * @param argumentTexts each argument's text as written
+     */
+    public static void validateRequiredArguments(final String functionName, final Token nameToken,
+                                                 final List<String> namesInOrder, final List<String> argumentTexts) {
+        if (TO_QUERY.equals(functionName)) {
+            // TO_QUERY's text given as NULL by its name is missing; a NULL given positionally is no string.
+            for (int i = 0; i < namesInOrder.size(); i++) {
+                if ("SQL".equals(namesInOrder.get(i)) && "NULL".equalsIgnoreCase(argumentTexts.get(i).trim())) {
+                    throw new RuntimeException(at(nameToken, "missing required argument [SQL] for function ["
+                        + nameToken.getText().toUpperCase(Locale.ROOT) + "]"));
+                }
+            }
+            return;
+        }
+        if (!COPY_HISTORY.equals(functionName)) {
+            return;
+        }
+        final String shown = nameToken.getText().toUpperCase(Locale.ROOT);
+        if (namesInOrder.size() < 2) {
+            throw new RuntimeException(at(nameToken, "not enough arguments for function [" + shown + "], expected 2,"
+                + " got " + namesInOrder.size()));
+        }
+        for (int i = 0; i < namesInOrder.size(); i++) {
+            final String name = namesInOrder.get(i) != null ? unquoted(namesInOrder.get(i))
+                : nameOfPositional(functionName, i);
+            if ("TABLE_NAME".equals(name) && "NULL".equalsIgnoreCase(argumentTexts.get(i).trim())) {
+                throw new RuntimeException(at(nameToken, "missing required argument [TABLE_NAME] for function ["
+                    + shown + "]"));
+            }
+        }
+    }
+
+    /**
+     * How a refusal names FLATTEN and SPLIT_TO_TABLE: by the first part of the call's name as it is written,
+     * whatever its case and quotes - {@code [flatten]}, {@code [FQ_S]}, {@code ["fq_s"]}, {@code [test_db]}. A
+     * qualifier before a built-in table function's name is not looked up - the built-in runs whatever schema the
+     * name is written under, one that holds a function of that name included - and is all the refusal echoes
+     * (live-verified). Every other function is named as its own rule measured it.
+     */
+    private static String echoed(final String functionName, final Token nameToken) {
+        return FLATTEN.equals(functionName) || SPLIT_TO_TABLE.equals(functionName) ? nameToken.getText()
+            : functionName;
     }
 
     /**
@@ -203,13 +298,37 @@ public final class TableFunctionArguments {
             throw new RuntimeException(at(nameToken, "not enough arguments for function ["
                 + functionName + "], expected 1, got 0"));
         }
+        if (TO_QUERY.equals(functionName) && argumentTexts.size() == 1
+                && "NULL".equalsIgnoreCase(argumentTexts.get(0).trim())) {
+            // The bare word NULL written for the text is no text at all: the argument is missing (live-verified).
+            throw new RuntimeException(at(nameToken,
+                "missing required argument [" + REQUIRED_PARAMETER.get(TO_QUERY) + "] for function [" + functionName + "]"));
+        }
+        if ((TAG_REFERENCES.equals(functionName) || TAG_REFERENCES_ALL_COLUMNS.equals(functionName))
+                && argumentTexts.size() > 2) {
+            // The refusal names the first part of the call's name, the schema the function is read from.
+            throw new RuntimeException(at(nameToken, "too many arguments for function ["
+                + nameToken.getText().toUpperCase(Locale.ROOT) + "] expected 2, got " + argumentTexts.size()));
+        }
+        final int given = argumentTexts.size();
+        if (FLATTEN.equals(functionName)) {
+            // FLATTEN takes its input and up to four more by position (live-verified).
+            if (given == 0) {
+                throw new RuntimeException(at(nameToken, "not enough arguments for function ["
+                    + nameToken.getText() + "], expected 1, got 0"));
+            }
+            if (given > FLATTEN_PARAMETERS.size()) {
+                throw new RuntimeException(at(nameToken, "too many arguments for function ["
+                    + nameToken.getText() + "] expected " + FLATTEN_PARAMETERS.size() + ", got " + given));
+            }
+            return;
+        }
         if (!SPLIT_TO_TABLE.equals(functionName)) {
             return;
         }
-        final int given = argumentTexts.size();
         if (given == 0) {
             throw new RuntimeException(at(nameToken, "not enough arguments for function ["
-                + functionName + "], expected 1, got 0"));
+                + nameToken.getText() + "], expected 1, got 0"));
         }
         if (given == 1) {
             throw new RuntimeException(SqlCompilationError.at(0, -1, "not enough arguments for function"
@@ -217,8 +336,38 @@ public final class TableFunctionArguments {
         }
         if (given > 2) {
             throw new RuntimeException(at(nameToken, "too many arguments for function ["
-                + functionName + "] expected 2, got " + given));
+                + nameToken.getText() + "] expected 2, got " + given));
         }
+    }
+
+    /**
+     * The order a call's arguments are judged in: as written, or — for DATA_METRIC_FUNCTION_REFERENCES, whose entity
+     * is judged before its domain wherever each is written — in the order the function declares them
+     * (live-verified).
+     *
+     * @param functionName the function
+     * @param namesInOrder the arguments' names as written, upper-cased, null for a positional one
+     * @return the arguments' indexes, in the order to judge them
+     */
+    public static List<Integer> judgingOrder(final String functionName, final List<String> namesInOrder) {
+        final List<Integer> order = new ArrayList<>();
+        final List<String> declared = DATA_METRIC_FUNCTION_REFERENCES.equals(functionName)
+            ? ACCEPTED_NAMES.get(functionName) : null;
+        if (declared != null) {
+            for (final String name : declared) {
+                for (int i = 0; i < namesInOrder.size(); i++) {
+                    if (namesInOrder.get(i) != null && name.equals(unquoted(namesInOrder.get(i)))) {
+                        order.add(Integer.valueOf(i));
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < namesInOrder.size(); i++) {
+            if (!order.contains(Integer.valueOf(i))) {
+                order.add(Integer.valueOf(i));
+            }
+        }
+        return order;
     }
 
     /** The type a named parameter takes, or null when the function's surface has not been measured. */
@@ -248,6 +397,22 @@ public final class TableFunctionArguments {
     public static String nameOfPositional(final String functionName, final int index) {
         final List<String> names = POSITIONAL_PARAMETER_NAMES.get(functionName);
         return names != null && index < names.size() ? names.get(index) : String.valueOf(index + 1);
+    }
+
+    /**
+     * The parameter of FLATTEN a positional argument fills at its place among every argument the call writes: INPUT,
+     * PATH, OUTER, RECURSIVE and MODE in turn.
+     *
+     * @param index the argument's place, from 0
+     * @return the parameter, or null past the last one
+     */
+    public static String flattenParameterAt(final int index) {
+        return index < FLATTEN_PARAMETERS.size() ? FLATTEN_PARAMETERS.get(index) : null;
+    }
+
+    /** @return how many parameters FLATTEN takes */
+    public static int flattenParameterCount() {
+        return FLATTEN_PARAMETERS.size();
     }
 
     /**

@@ -23,6 +23,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -113,7 +115,7 @@ public class CommentClauseTest extends BaseDatabaseTest {
                 engine.execute("CREATE TABLE bad_col (id INTEGER COMMENT = 'User ID')");
             }
         });
-        assertTrue(e.getMessage().toLowerCase().contains("syntax error"),
+        assertTrue(e.getMessage().toLowerCase(Locale.ROOT).contains("syntax error"),
             "unexpected message: " + e.getMessage());
     }
 

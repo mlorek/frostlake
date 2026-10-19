@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -43,8 +45,8 @@ public class PrimaryKeyNullabilityTest extends BaseDatabaseTest {
 
     private String isNullable(final String table, final String column) {
         return String.valueOf(engine.executeQuery("SELECT is_nullable FROM information_schema.columns"
-            + " WHERE table_name = '" + table.toUpperCase() + "' AND column_name = '"
-            + column.toUpperCase() + "'").getRows().get(0).getValue(0));
+            + " WHERE table_name = '" + table.toUpperCase(Locale.ROOT) + "' AND column_name = '"
+            + column.toUpperCase(Locale.ROOT) + "'").getRows().get(0).getValue(0));
     }
 
     private static String nullWrite(final String table, final String column) {

@@ -45,10 +45,11 @@ public final class RowAccessPolicyAttachment {
      * @param policyName the policy name as written
      */
     public static RowAccessPolicy require(final Catalog catalog, final String policyName) {
-        final RowAccessPolicy policy = catalog.findRowAccessPolicy(policyName);
+        // The policy of exactly that name: a quoted name in another case is another policy (live-verified).
+        final RowAccessPolicy policy = catalog.findRowAccessPolicyExact(policyName);
         if (policy == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
-                catalog.qualifiedObjectName(policyName)));
+                catalog.qualifiedExactName(policyName)));
         }
         return policy;
     }
@@ -56,10 +57,16 @@ public final class RowAccessPolicyAttachment {
     /**
      * The argument-count, masked-column and type checks, in live's order. The columns must already be
      * known to exist — resolving them is the caller's job, because the two paths word that refusal
-     * differently.
+     * differently. A column masked by a policy created EXEMPT_OTHER_POLICIES = TRUE may be read; another masked
+     * column is refused, at CREATE TABLE as a column that cannot be masked, the policy read first (see
+     * MaskedArguments).
+     *
+     * @param catalog  the catalog holding the masking policies
+     * @param atCreate whether the policy is attached by the CREATE TABLE that masks the column
      */
-    public static void check(final RowAccessPolicy policy, final Table table, final String objectName,
-                             final String policyName, final List<String> columns) {
+    public static void check(final Catalog catalog, final RowAccessPolicy policy, final Table table,
+                             final String objectName, final String policyName, final List<String> columns,
+                             final boolean atCreate) {
         if (columns.size() != policy.getParameters().size()) {
             throw new RuntimeException(SqlCompilationError.of("Invalid number of arguments for attaching"
                 + " policy '" + bare(policyName) + "' to '" + objectName.toUpperCase(Locale.ROOT)
@@ -71,11 +78,10 @@ public final class RowAccessPolicyAttachment {
         }
         for (int i = 0; i < columns.size(); i++) {
             final TableColumn column = table.getColumn(columns.get(i));
-            if (column.hasMaskingPolicy()) {
-                throw new RuntimeException(SqlCompilationError.PREFIX + " Column '"
-                    + column.getName().toUpperCase(Locale.ROOT) + "' cannot be used as policy"
-                    + " argument because it is masked by another policy.");
+            if (atCreate && MaskedArguments.guarded(catalog, column)) {
+                throw MaskedArguments.cannotBeMasked(column);
             }
+            MaskedArguments.requireReadable(catalog, column);
             if (column.hasProjectionPolicy()) {
                 // The same rule for the other column-level policy kind — and this one's sentence
                 // carries NO compilation-error prefix, where the masked one's does (measured).

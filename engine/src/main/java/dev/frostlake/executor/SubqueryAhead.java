@@ -17,6 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
@@ -114,24 +116,46 @@ public final class SubqueryAhead {
             if (expression == null) {
                 continue;
             }
-            final Expression parsed;
+            // A refusal is placed in the statement, from where the item stands, as the projection places it.
+            final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
+                expression.getStart().getLine(), expression.getStart().getCharPositionInLine()));
             try {
-                parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(expression));
-            } catch (final RuntimeException unparsed) {
+                computeAheadIn(executor, ParseTreeText.getOriginalText(expression), evaluator, row);
+            } finally {
+                ExpressionSource.end(displaced);
+            }
+        }
+    }
+
+    /**
+     * As {@link #computeAhead}, for the one expression {@code text}: a WHERE that may read an aliased item raises
+     * what the item's subqueries raise ahead of the rows before it tests the first row, whether or not it then
+     * computes the item.
+     *
+     * @param executor  the executor the subqueries' texts are read with
+     * @param text      the expression's text
+     * @param evaluator an evaluator over the query's relation
+     * @param row       a row of that relation
+     */
+    static void computeAheadIn(final QueryExecutor executor, final String text, final ExpressionEvaluator evaluator,
+                               final Row row) {
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(text);
+        } catch (final RuntimeException unparsed) {
+            return;
+        }
+        final AheadSubqueryWalk walk = new AheadSubqueryWalk();
+        parsed.accept(walk);
+        for (final SubqueryExpression subquery : walk.subqueries()) {
+            if (!readsARelation(executor.subqueryStatement(subquery.getSubquery()))) {
                 continue;
             }
-            final AheadSubqueryWalk walk = new AheadSubqueryWalk();
-            parsed.accept(walk);
-            for (final SubqueryExpression subquery : walk.subqueries()) {
-                if (!readsARelation(executor.subqueryStatement(subquery.getSubquery()))) {
-                    continue;
-                }
-                try {
-                    evaluator.evaluate(subquery, row);
-                } catch (final RuntimeException raised) {
-                    if (isAhead(raised)) {
-                        throw raised;
-                    }
+            try {
+                evaluator.evaluate(subquery, row);
+            } catch (final RuntimeException raised) {
+                if (isAhead(raised)) {
+                    throw raised;
                 }
             }
         }

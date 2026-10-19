@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -412,7 +413,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
     private String constraintName(final String tableName, final String type) throws SQLException {
         final ResultSet rs = statement.executeQuery(
             "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS "
-            + "WHERE TABLE_NAME = '" + tableName.toUpperCase() + "' AND CONSTRAINT_TYPE = '" + type + "'");
+            + "WHERE TABLE_NAME = '" + tableName.toUpperCase(Locale.ROOT) + "' AND CONSTRAINT_TYPE = '" + type + "'");
         assertTrue(rs.next(), "expected a " + type + " constraint on " + tableName);
         final String name = rs.getString("CONSTRAINT_NAME");
         rs.close();
@@ -436,7 +437,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
     private int constraintCount(final String tableName, final String type) throws SQLException {
         final ResultSet rs = statement.executeQuery(
             "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS "
-            + "WHERE TABLE_NAME = '" + tableName.toUpperCase() + "' AND CONSTRAINT_TYPE = '" + type + "'");
+            + "WHERE TABLE_NAME = '" + tableName.toUpperCase(Locale.ROOT) + "' AND CONSTRAINT_TYPE = '" + type + "'");
         assertTrue(rs.next());
         final int count = rs.getInt("c");
         rs.close();

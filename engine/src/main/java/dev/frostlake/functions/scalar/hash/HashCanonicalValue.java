@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.hash;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.VariantValue;
@@ -131,6 +132,11 @@ public final class HashCanonicalValue {
         }
         if (node.isNull()) {
             return tagged(TAG_VARIANT_NULL, new byte[0]);
+        }
+        if (node instanceof DecfloatTextNode) {
+            // A DECFLOAT member hashes as the number it holds: HASH(TO_VARIANT(CAST(1.5 AS DECFLOAT))) is
+            // HASH(TO_VARIANT(1.5)) (live-verified), though the two never compare equal.
+            return encode(DecfloatTextNode.valueOf(node));
         }
         if (node instanceof UuidTextNode) {
             return tagged(TAG_VARIANT_UUID, node.asText().getBytes(StandardCharsets.UTF_8));

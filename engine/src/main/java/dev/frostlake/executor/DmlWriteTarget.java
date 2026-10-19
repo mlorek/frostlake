@@ -17,6 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.values.StructuredElementRefusal;
+import dev.frostlake.values.VectorCastRefusal;
 
 /**
  * The envelope live wraps a DML write failure in — {@code DML operation to table T failed on column C
@@ -51,6 +53,11 @@ public final class DmlWriteTarget {
             // Refused while compiling, like any prefixed sentence; live's wording simply has no prefix.
             return false;
         }
+        if (failure instanceof VectorCastRefusal || failure instanceof StructuredElementRefusal) {
+            // A cast to a VECTOR, or of an element into a structured ARRAY, is refused in its own words, whatever
+            // row it stops (live-verified).
+            return false;
+        }
         final String message = failure.getMessage();
         return message != null && !message.startsWith("SQL compilation error");
     }
@@ -59,10 +66,14 @@ public final class DmlWriteTarget {
      * @param table the table as it should be named
      * @param column the column the failure is attributed to
      * @param failure the inner failure, whose sentence is kept verbatim
-     * @return the wrapped refusal
+     * @return the wrapped refusal; a fault a source cell holds bare - a CALL's over-wide answer read from its scan -
+     *         is that cell's refusal as it is (see DeferredFault#heldAnswer)
      */
     public static RuntimeException failedOnColumn(final String table, final String column,
                                                   final RuntimeException failure) {
+        if (DeferredFault.isHeldBare(failure)) {
+            return failure;
+        }
         return new RuntimeException("DML operation to table " + table + " failed on column "
             + column + " with error: " + failure.getMessage());
     }

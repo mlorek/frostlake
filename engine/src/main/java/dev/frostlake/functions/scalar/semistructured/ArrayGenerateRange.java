@@ -16,7 +16,9 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
@@ -34,12 +36,14 @@ public class ArrayGenerateRange extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        final long start = ((Number) args.get(0)).longValue();
-        final long stop = ((Number) args.get(1)).longValue();
+        // A bound or a step is read as the whole number it gives, a text's or a VARIANT's included and a fraction
+        // rounded: ARRAY_GENERATE_RANGE(0, 2.6) is [0,1,2] and a step of 1.6 steps by 2 (live-verified).
+        final long start = WholeNumbers.wholeLong(args.get(0));
+        final long stop = WholeNumbers.wholeLong(args.get(1));
         long step = 1;
         if (args.size() > 2) {
             if (args.get(2) == null) return null;
-            step = ((Number) args.get(2)).longValue();
+            step = WholeNumbers.wholeLong(args.get(2));
         }
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         if (step > 0) {
@@ -54,4 +58,12 @@ public class ArrayGenerateRange extends BuiltInFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 3; }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0 || position == 1) {
+            return ArrayArgumentKind.WHOLE_NUMBER;
+        }
+        return null;
+    }
 }

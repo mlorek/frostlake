@@ -19,7 +19,9 @@ package dev.frostlake.functions.table;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -42,9 +44,17 @@ public class CompleteTaskGraphsFunction extends TableFunction {
         // Validated in execute.
     }
 
+    /** The listing's columns are fixed, so a query over it is planned with their types before any row is read. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return TaskGraphRuns.columns(true);
+    }
+
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
-        final int limit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), "COMPLETE_TASK_GRAPHS");
+        // A limit of zero still answers the latest graph run (live-verified), where the other task history
+        // functions answer no row.
+        final int limit = Math.max(1, TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), TaskGraphRuns.DEFAULT_LIMIT));
         final String rootTaskName = TaskGraphRuns.text(namedArgs.get("ROOT_TASK_NAME"));
         final boolean errorOnly = TaskGraphRuns.flag(namedArgs.get("ERROR_ONLY"), false);
         return new ResultSet(TaskGraphRuns.columns(true),

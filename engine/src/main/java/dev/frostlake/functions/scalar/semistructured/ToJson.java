@@ -22,6 +22,7 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
+import tools.jackson.core.StreamWriteFeature;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
@@ -31,7 +32,11 @@ import java.util.Map;
 
 public class ToJson extends StructuredArgumentFunction {
 
-    private static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
+    /** Writes a decimal with its digits in place, never in the exponent form of its Java text. */
+    private static final ObjectMapper MAPPER = JsonMapper.builder()
+        .enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+        .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+        .build();
 
     public ToJson() { super("TO_JSON", StringType.VARCHAR); }
 

@@ -19,6 +19,8 @@ package dev.frostlake.executor.procedural;
 public class ProceduralException extends RuntimeException {
     private final int errorCode;
     private final String exceptionName;
+    // The declaration a RAISE named: a handler catches the exception by it, never by the name alone.
+    private UserDefinedException declaration;
     // Where the RAISE stood in the script; -1 when unknown.
     private int sourceLine = -1;
     private int sourcePosition = -1;
@@ -48,6 +50,18 @@ public class ProceduralException extends RuntimeException {
         return exceptionName;
     }
 
+    /**
+     * The declaration the RAISE named, or null for an exception no declaration stands behind. Two blocks may
+     * each declare an exception of one name; a handler catches the one its own block sees (live-verified).
+     */
+    public UserDefinedException getDeclaration() {
+        return declaration;
+    }
+
+    public void setDeclaration(final UserDefinedException declaration) {
+        this.declaration = declaration;
+    }
+
     public int getSourceLine() {
         return sourceLine;
     }
@@ -68,10 +82,23 @@ public class ProceduralException extends RuntimeException {
      * catchable, {@code getMessage()} stays the RAW text, which is what SQLERRM reads.
      */
     public String uncaughtMessage() {
+        return uncaughtMessage(sourceLine, sourcePosition);
+    }
+
+    /**
+     * That sentence with the statement placed where the caller counts it: a text the session sent is counted past
+     * its opening comments.
+     *
+     * @param line     the 1-based line the sentence names
+     * @param position the 0-based position the sentence names
+     * @return the sentence
+     */
+    public String uncaughtMessage(final int line, final int position) {
         final StringBuilder text = new StringBuilder("Uncaught exception of type '")
-            .append(exceptionName).append("' on line ").append(sourceLine)
-            .append(" at position ").append(sourcePosition);
-        if (getMessage() != null && !getMessage().isEmpty()) {
+            .append(exceptionName).append("' on line ").append(line)
+            .append(" at position ").append(position);
+        if (getMessage() != null) {
+            // A message declared as the empty string still takes its place: the sentence ends in " : ".
             text.append(" : ").append(getMessage());
         }
         return text.toString();

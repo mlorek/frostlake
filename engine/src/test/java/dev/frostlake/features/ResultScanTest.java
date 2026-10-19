@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -197,8 +199,8 @@ public class ResultScanTest extends BaseDatabaseTest {
                 
             }
         });
-        assertTrue(exception.getMessage().toLowerCase().contains("not found") ||
-                   exception.getMessage().toLowerCase().contains("not available"));
+        assertTrue(exception.getMessage().toLowerCase(Locale.ROOT).contains("not found") ||
+                   exception.getMessage().toLowerCase(Locale.ROOT).contains("not available"));
     }
 
     @Test
@@ -211,7 +213,7 @@ public class ResultScanTest extends BaseDatabaseTest {
                 
             }
         });
-        assertTrue(exception.getMessage().toLowerCase().contains("invalid"));
+        assertTrue(exception.getMessage().toLowerCase(Locale.ROOT).contains("invalid"));
     }
 
     @Test

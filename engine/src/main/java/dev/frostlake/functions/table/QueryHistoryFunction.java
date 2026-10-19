@@ -16,28 +16,42 @@
 
 package dev.frostlake.functions.table;
 
+import dev.frostlake.BuildInfo;
+import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.StatementResults;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
 
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * The INFORMATION_SCHEMA.QUERY_HISTORY() TABLE FUNCTION — Snowflake exposes query history ONLY this
  * way ({@code SELECT … FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT => n))}; the bare
  * object form is "does not exist", live-verified). The column set mirrors Snowflake's (62 columns,
- * captured live); the engine populates the subset its tracker records and leaves the rest NULL.
- * Most recent queries first; RESULT_LIMIT defaults to 100 like Snowflake.
+ * captured live); the engine populates what its tracker records (see StatementHistoryCells), answers the cells the
+ * account answers alike for every statement — no data transferred, no external function called, version 2 and 1 of
+ * the two hashes — and leaves the rest NULL. Most recent queries first; RESULT_LIMIT defaults to 100 like
+ * Snowflake.
  */
 public class QueryHistoryFunction extends TableFunction {
 
@@ -62,8 +76,17 @@ public class QueryHistoryFunction extends TableFunction {
         "QUERY_RETRY_CAUSE", "FAULT_HANDLING_TIME", "BIND_VALUES", "AGENT_TYPE"
     };
 
-    /** SESSION_ID's declared type on the account. */
-    private static final NumericType SESSION_ID_TYPE = new NumericType("NUMBER", 38, 0);
+    /** The type the account declares its counts, times in milliseconds and ids with. */
+    private static final NumericType WHOLE_NUMBER = new NumericType("NUMBER", 38, 0);
+
+    /** CREDITS_USED_CLOUD_SERVICES' declared type on the account. */
+    private static final NumericType CREDITS = new NumericType("NUMBER", 38, 9);
+
+    /** The width the account declares every text column of the listing with. */
+    private static final StringType TEXT = new StringType("VARCHAR", DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR);
+
+    /** What EXECUTION_STATUS reads for a statement that failed. */
+    private static final String FAILED_STATUS = "FAILED_WITH_ERROR";
 
     private final QueryHistoryTracker tracker;
     private final QueryHistoryScope scope;
@@ -105,19 +128,36 @@ public class QueryHistoryFunction extends TableFunction {
         return execute(named);
     }
 
+    /**
+     * The listing. A statement the write-ahead log keeps reads it again on replay as it first read it: the replay
+     * runs in a session of its own, after a history of its own (see {@link StatementResults}).
+     */
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
+        final String asked = "#" + scope.functionName() + new TreeMap<String, Object>(namedArgs);
+        final ResultSet replayed = StatementResults.replayed(asked);
+        if (replayed != null) {
+            return replayed.detachedCopy();
+        }
+        final ResultSet listed = listing(namedArgs);
+        if (StatementResults.isRecording()) {
+            StatementResults.record(asked, listed.detachedCopy());
+        }
+        return listed;
+    }
+
+    private ResultSet listing(final Map<String, Object> namedArgs) {
         final Object filter = scope.parameter() == null ? null : scopeValue(namedArgs.get(scope.parameter()));
         int limit = 100;
         final Object resultLimit = namedArgs.get("RESULT_LIMIT");
         if (resultLimit instanceof Number) {
             limit = ((Number) resultLimit).intValue();
         }
-        final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
-        for (final String name : COLUMN_NAMES) {
-            columns.add(new ResultSetColumn(name, columnType(name)));
-        }
+        final List<ResultSetColumn> columns = columns();
+        // The statements still running are listed too, the one reading the listing among them; they began after
+        // every statement that has ended, so they come last here and first once reversed.
         final List<QueryHistory> history = new ArrayList<QueryHistory>(tracker.getAllHistory());
+        history.addAll(tracker.getRunning());
         Collections.reverse(history);   // most recent first, as in Snowflake
         final List<Row> rows = new ArrayList<Row>();
         for (final QueryHistory q : history) {
@@ -134,6 +174,20 @@ public class QueryHistoryFunction extends TableFunction {
             rows.add(new Row(values));
         }
         return new ResultSet(columns, rows);
+    }
+
+    /** The listing's columns are fixed, so a query over it is planned with their types before any row is read. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return columns();
+    }
+
+    private static List<ResultSetColumn> columns() {
+        final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
+        for (final String name : COLUMN_NAMES) {
+            columns.add(new ResultSetColumn(name, columnType(name)));
+        }
+        return DeclaredColumnTypes.typed(columns);
     }
 
     /**
@@ -186,37 +240,133 @@ public class QueryHistoryFunction extends TableFunction {
 
     private static DataType columnType(final String name) {
         switch (name) {
+            case "SESSION_ID":
+            case "AUTHN_EVENT_ID":
+            case "CLUSTER_NUMBER":
+            case "ERROR_CODE":
             case "TOTAL_ELAPSED_TIME":
             case "BYTES_SCANNED":
             case "ROWS_PRODUCED":
             case "COMPILATION_TIME":
             case "EXECUTION_TIME":
+            case "QUEUED_PROVISIONING_TIME":
+            case "QUEUED_REPAIR_TIME":
+            case "QUEUED_OVERLOAD_TIME":
+            case "TRANSACTION_BLOCKED_TIME":
+            case "OUTBOUND_DATA_TRANSFER_BYTES":
+            case "INBOUND_DATA_TRANSFER_BYTES":
+            case "LIST_EXTERNAL_FILE_TIME":
+            case "EXTERNAL_FUNCTION_TOTAL_INVOCATIONS":
+            case "EXTERNAL_FUNCTION_TOTAL_SENT_ROWS":
+            case "EXTERNAL_FUNCTION_TOTAL_RECEIVED_ROWS":
+            case "EXTERNAL_FUNCTION_TOTAL_SENT_BYTES":
+            case "EXTERNAL_FUNCTION_TOTAL_RECEIVED_BYTES":
+            case "QUERY_HASH_VERSION":
+            case "QUERY_PARAMETERIZED_HASH_VERSION":
+            case "TRANSACTION_ID":
+            case "QUERY_ACCELERATION_BYTES_SCANNED":
+            case "QUERY_ACCELERATION_PARTITIONS_SCANNED":
+            case "QUERY_ACCELERATION_UPPER_LIMIT_SCALE_FACTOR":
+            case "BYTES_WRITTEN_TO_RESULT":
+            case "ROWS_WRITTEN_TO_RESULT":
             case "ROWS_INSERTED":
-                return NumericType.INTEGER;
-            case "SESSION_ID":
-                // The session's number, as CURRENT_SESSION() answers it but typed as the account types it.
-                return SESSION_ID_TYPE;
+            case "QUERY_RETRY_TIME":
+            case "FAULT_HANDLING_TIME":
+                // The session's number is what CURRENT_SESSION() answers, typed as the account types it.
+                return WHOLE_NUMBER;
+            case "CREDITS_USED_CLOUD_SERVICES":
+                return CREDITS;
+            case "IS_CLIENT_GENERATED_STATEMENT":
+                return BooleanType.BOOLEAN;
+            case "BIND_VALUES":
+                return VariantType.VARIANT;
+            case "START_TIME":
+            case "END_TIME":
+                // TIMESTAMP_LTZ, as the documentation types both, at the millisecond the account's other time
+                // cells carry: an instant that reads in the session's zone and compares as one.
+                return ShowResultHelpers.CREATED_ON;
             default:
-                return StringType.VARCHAR;
+                return TEXT;
         }
     }
 
+    /** A statement text's hash: the hex MD5 of the text as written. */
+    private static String textHash(final String text) {
+        if (text == null) {
+            return null;
+        }
+        try {
+            final byte[] digest = MessageDigest.getInstance("MD5").digest(text.getBytes(StandardCharsets.UTF_8));
+            final StringBuilder hex = new StringBuilder();
+            for (final byte b : digest) {
+                hex.append(String.format("%02x", b & 0xff));
+            }
+            return hex.toString();
+        } catch (final NoSuchAlgorithmException unavailable) {
+            return null;
+        }
+    }
+
+    /**
+     * One cell of a statement's row. A statement still running has not ended: its END_TIME is the start of the
+     * epoch, its elapsed time the distance back to it from the statement's start, and it has produced no row
+     * (live-verified).
+     */
     private static Object columnValue(final String name, final QueryHistory q) {
         switch (name) {
             case "QUERY_ID": return q.getQueryId();
             case "QUERY_TEXT": return q.getQueryText();
             case "DATABASE_NAME": return q.getDatabase();
             case "SCHEMA_NAME": return q.getSchema();
-            case "QUERY_TYPE": return q.getQueryType();
+            case "QUERY_TYPE": return q.getQueryTypeName();
             case "SESSION_ID": return q.getSessionId();
+            case "AUTHN_EVENT_ID": return q.getSessionId();
+            case "ERROR_CODE": return q.getErrorCode() == null ? null : Long.valueOf(q.getErrorCode().longValue());
+            case "WAREHOUSE_SIZE": return q.getWarehouseSize();
+            case "CLUSTER_NUMBER": return q.getWarehouseSize() != null ? Long.valueOf(1L) : null;
+            case "IS_CLIENT_GENERATED_STATEMENT": return Boolean.FALSE;
+            case "QUERY_HASH":
+            case "QUERY_PARAMETERIZED_HASH":
+                return textHash(q.getQueryText());
+            case "QUERY_HASH_VERSION": return Long.valueOf(2L);
+            case "QUERY_PARAMETERIZED_HASH_VERSION": return Long.valueOf(1L);
+            case "TRANSACTION_ID": return Long.valueOf(q.getTransactionId());
+            case "OUTBOUND_DATA_TRANSFER_BYTES":
+            case "INBOUND_DATA_TRANSFER_BYTES":
+            case "LIST_EXTERNAL_FILE_TIME":
+            case "EXTERNAL_FUNCTION_TOTAL_INVOCATIONS":
+            case "EXTERNAL_FUNCTION_TOTAL_SENT_ROWS":
+            case "EXTERNAL_FUNCTION_TOTAL_RECEIVED_ROWS":
+            case "EXTERNAL_FUNCTION_TOTAL_SENT_BYTES":
+            case "EXTERNAL_FUNCTION_TOTAL_RECEIVED_BYTES":
+            case "QUERY_ACCELERATION_BYTES_SCANNED":
+            case "QUERY_RETRY_TIME":
+            case "FAULT_HANDLING_TIME":
+            case "BYTES_WRITTEN_TO_RESULT":
+                // Nothing travels between regions, no external function or query acceleration is reached and no
+                // statement is retried; no size is told for a result.
+                return Long.valueOf(0L);
+            case "CREDITS_USED_CLOUD_SERVICES": return BigDecimal.ZERO.setScale(CREDITS.getScale());
+            case "RELEASE_VERSION": return BuildInfo.version();
+            case "ROWS_WRITTEN_TO_RESULT": return Long.valueOf(q.getRowsWrittenToResult());
             case "USER_NAME": return q.getUser();
             case "ROLE_NAME": return q.getRole();
             case "WAREHOUSE_NAME": return q.getWarehouse();
-            case "EXECUTION_STATUS": return q.getStatus();
+            case "EXECUTION_STATUS": return "FAILED".equals(q.getStatus()) ? FAILED_STATUS : q.getStatus();
             case "ERROR_MESSAGE": return q.getErrorMessage();
-            case "START_TIME": return q.getStartTimeFormatted();
-            case "END_TIME": return q.getEndTimeFormatted();
-            case "TOTAL_ELAPSED_TIME": return Long.valueOf(q.getExecutionTimeMs());
+            case "START_TIME": return ShowResultHelpers.createdOn(q.getStartInstant());
+            case "END_TIME":
+                return ShowResultHelpers.createdOn(q.getEndInstant() != null ? q.getEndInstant() : Instant.EPOCH);
+            case "TOTAL_ELAPSED_TIME":
+                return Long.valueOf(q.getEndInstant() != null || q.getStartInstant() == null ? q.getExecutionTimeMs()
+                    : -q.getStartInstant().toEpochMilli());
+            case "BYTES_SCANNED": return q.getEndInstant() != null ? null : Long.valueOf(0L);
+            case "QUEUED_PROVISIONING_TIME":
+            case "QUEUED_REPAIR_TIME":
+            case "QUEUED_OVERLOAD_TIME":
+            case "TRANSACTION_BLOCKED_TIME":
+                // No statement waits here: nothing queues one and no lock holds one back.
+                return Long.valueOf(0L);
             case "EXECUTION_TIME": return Long.valueOf(q.getExecutionTimeMs());
             case "COMPILATION_TIME": return Long.valueOf(q.getCompilationTimeMs());
             case "ROWS_PRODUCED": return Long.valueOf(q.getRowsProduced());

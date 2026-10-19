@@ -25,6 +25,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -44,12 +46,12 @@ public class StreamsAndTasksTest extends BaseDatabaseTest {
 
     private String streamCell(final String name, final String column) {
         final ResultSet streams = engine.executeQuery("SHOW STREAMS LIKE '" + name + "'");
-        return cell(streams, soleRowWhere(streams, "name", name.toUpperCase()), column);
+        return cell(streams, soleRowWhere(streams, "name", name.toUpperCase(Locale.ROOT)), column);
     }
 
     private String taskCell(final String name, final String column) {
         final ResultSet tasks = engine.executeQuery("SHOW TASKS LIKE '" + name + "'");
-        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase()), column);
+        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase(Locale.ROOT)), column);
     }
 
     // ==================== STREAM TESTS ====================

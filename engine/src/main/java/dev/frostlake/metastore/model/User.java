@@ -16,13 +16,13 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Taggable;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -31,17 +31,12 @@ import java.util.Set;
  */
 public class User implements Taggable {
     private String name;
-    /** Database roles granted to this user, by qualified name, and the role that granted each. */
-    private final Map<String, String> databaseRoleGrantors = new LinkedHashMap<>();
     private final Map<String, String> tags = new HashMap<>();
     private String password;
     private String defaultRole;
-    private final Set<String> grantedRoles;
-    private final Map<String, Set<Privilege>> objectPrivileges;
-    private final Map<String, Map<String, Set<Privilege>>> columnPrivileges;
-    private final Map<String, String> privilegeGrantors = new HashMap<>();  // OBJTYPE:OBJNAME:PRIV -> grantor role
-    private final Map<String, String> roleGrantors = new HashMap<>();        // granted role name -> grantor role
-    private final LocalDateTime createdTime;
+    /** What this user holds: the privileges, roles and database roles granted to it, with what was recorded. */
+    private final GrantLedger grants = new GrantLedger();
+    private LocalDateTime createdTime;
     private boolean enabled;
     private String comment;
     private String loginName;
@@ -65,8 +60,17 @@ public class User implements Taggable {
     private String rsaPublicKey2Fp;
     private Instant rsaPublicKey2LastSetTime;
 
+    /** The session parameters set on the user, which the sessions the user starts run with. */
+    private final ObjectParameters parameters = new ObjectParameters();
+
+    /** The session parameters set on the user (its sessions inherit them). */
+    public ObjectParameters getParameters() {
+        return parameters;
+    }
+
     public User(final String name) {
-        this.name = name.toUpperCase();
+        // The canonical name a statement resolved: an unquoted name upper-cased, a quoted one verbatim.
+        this.name = name;
         // A user created without one takes their own name for both, so the defaults are
         // MATERIALISED here rather than substituted on read. Two behaviours depend on it: UNSET
         // DISPLAY_NAME leaves nothing behind (a read-time fallback could not tell that apart from
@@ -74,10 +78,7 @@ public class User implements Taggable {
         // and display names they had, defaults included.
         this.displayName = this.name;
         this.loginName = this.name;
-        this.grantedRoles = new HashSet<>();
-        this.objectPrivileges = new HashMap<>();
-        this.columnPrivileges = new HashMap<>();
-        this.createdTime = LocalDateTime.now();
+        this.createdTime = StatementClock.hostLocal();
         this.enabled = true;
     }
 
@@ -85,7 +86,7 @@ public class User implements Taggable {
         this(name);
         this.password = password;
         // Normalise to upper-case to match how roles are stored (CREATE and ALTER both land here).
-        this.defaultRole = defaultRole == null ? null : defaultRole.toUpperCase();
+        this.defaultRole = defaultRole == null ? null : defaultRole.toUpperCase(Locale.ROOT);
     }
 
     /** Owning role; defaults to SYSADMIN until stamped with the creating role at CREATE. */
@@ -117,53 +118,78 @@ public class User implements Taggable {
 
     public void setDefaultRole(final String defaultRole) {
         // Normalise to upper-case to match how roles are stored (CREATE and ALTER both land here).
-        this.defaultRole = defaultRole == null ? null : defaultRole.toUpperCase();
+        this.defaultRole = defaultRole == null ? null : defaultRole.toUpperCase(Locale.ROOT);
     }
 
+    /** The roles granted, as a copy. */
     public Set<String> getGrantedRoles() {
-        return grantedRoles;
+        return grants.getGrantedRoles();
     }
 
     public void grantRole(final String roleName) {
-        grantedRoles.add(roleName.toUpperCase());
+        grants.grantRole(roleName);
     }
 
+    /** Takes a role back, with the grantor and the moment recorded for its grant. */
     public void revokeRole(final String roleName) {
-        grantedRoles.remove(roleName.toUpperCase());
+        grants.revokeRole(roleName);
     }
 
     public boolean hasRole(final String roleName) {
-        return grantedRoles.contains(roleName.toUpperCase());
+        return grants.hasRole(roleName);
     }
 
     public void grantPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        Set<Privilege> granted = objectPrivileges.get(key);
-        if (granted == null) {
-            granted = new HashSet<>();
-            objectPrivileges.put(key, granted);
-        }
-        granted.add(privilege);
+        grants.grantPrivilege(objectType, objectName, privilege);
     }
 
     // ── Grantor tracking (who ran the GRANT) — parallel to the privilege/role sets ──
 
+    /** Grants a privilege, recording the role that granted it; a grant dates from when it was first made. */
     public void grantPrivilege(final String objectType, final String objectName, final Privilege privilege, final String grantor) {
-        grantPrivilege(objectType, objectName, privilege);
-        privilegeGrantors.put(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name(), grantor);
+        grants.grantPrivilege(objectType, objectName, privilege, grantor);
     }
 
+    /** The role a privilege was granted by, SYSADMIN where none was recorded. */
     public String getPrivilegeGrantor(final String objectType, final String objectName, final Privilege privilege) {
-        return privilegeGrantors.getOrDefault(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name(), "SYSADMIN");
+        return grants.getPrivilegeGrantor(objectType, objectName, privilege);
     }
 
+    /** Puts back when a privilege was granted, as a restored snapshot recorded it. */
+    public void setPrivilegeGrantTime(final String objectType, final String objectName, final Privilege privilege,
+                                      final Instant granted) {
+        grants.setPrivilegeGrantTime(objectType, objectName, privilege, granted);
+    }
+
+    /** When a privilege on an object was granted, as SHOW GRANTS reports it; null where no moment was recorded. */
+    public Instant getPrivilegeGrantTime(final String objectType, final String objectName, final Privilege privilege) {
+        return grants.getPrivilegeGrantTime(objectType, objectName, privilege);
+    }
+
+    /** The role a grant of a privilege on an object was recorded as made by, or null where none was recorded. */
+    public String recordedPrivilegeGrantor(final String objectType, final String objectName,
+                                           final Privilege privilege) {
+        return grants.recordedPrivilegeGrantor(objectType, objectName, privilege);
+    }
+
+    /** Grants a role, recording the role that granted it and the statement's own instant, which a replay restores. */
     public void grantRole(final String roleName, final String grantor) {
-        grantRole(roleName);
-        roleGrantors.put(roleName.toUpperCase(), grantor);
+        grants.grantRole(roleName, grantor);
     }
 
+    /** When a role was granted, or null for a grant with no moment recorded. */
+    public Instant getRoleGrantTime(final String roleName) {
+        return grants.getRoleGrantTime(roleName);
+    }
+
+    /** Puts back the moment a restored grant was made at, or none when the snapshot recorded no moment for it. */
+    public void restoreRoleGrantTime(final String roleName, final Instant granted) {
+        grants.restoreRoleGrantTime(roleName, granted);
+    }
+
+    /** The role a role was granted by, SYSADMIN where none was recorded. */
     public String getRoleGrantor(final String roleName) {
-        return roleGrantors.getOrDefault(roleName.toUpperCase(), "SYSADMIN");
+        return grants.getRoleGrantor(roleName);
     }
 
     /**
@@ -172,104 +198,66 @@ public class User implements Taggable {
      * SHOW GRANTS TO USER lists only explicit grants — live Snowflake shows zero rows for a fresh user.
      */
     public boolean hasExplicitRoleGrant(final String roleName) {
-        return roleGrantors.containsKey(roleName.toUpperCase());
+        return grants.hasExplicitRoleGrant(roleName);
     }
 
+    /** Records whether a privilege held on an object carries the grant option: true records it, false takes it back. */
+    public void setGrantOption(final String objectType, final String objectName, final Privilege privilege,
+                               final boolean holds) {
+        grants.setGrantOption(objectType, objectName, privilege, holds);
+    }
+
+    /** Whether a privilege held on an object carries the grant option. */
+    public boolean hasGrantOption(final String objectType, final String objectName, final Privilege privilege) {
+        return grants.hasGrantOption(objectType, objectName, privilege);
+    }
+
+    /** Takes back a privilege and everything recorded about its grant: its grantor, its moment and its grant option. */
     public void revokePrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        final Set<Privilege> privileges = objectPrivileges.get(key);
-        if (privileges != null) {
-            privileges.remove(privilege);
-            if (privileges.isEmpty()) {
-                objectPrivileges.remove(key);
-            }
-        }
+        grants.revokePrivilege(objectType, objectName, privilege);
     }
 
     public boolean hasPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        final Set<Privilege> privileges = objectPrivileges.get(key);
-        return privileges != null && privileges.contains(privilege);
+        return grants.hasPrivilege(objectType, objectName, privilege);
     }
 
     public Set<Privilege> getPrivileges(final String objectType, final String objectName) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        return objectPrivileges.getOrDefault(key, new HashSet<>());
+        return grants.getPrivileges(objectType, objectName);
     }
 
     public Map<String, Set<Privilege>> getAllPrivileges() {
-        return new HashMap<>(objectPrivileges);
+        return grants.getAllPrivileges();
+    }
+
+    /** Applies a change of recorded names to the privileges held on objects. */
+    public void remapGrants(final GrantRemap remap) {
+        grants.remapGrants(remap);
+    }
+
+    /** Takes back the privileges held on one object: all of them, or with {@code ownershipOnly} OWNERSHIP alone. */
+    public void purgeGrants(final String objectType, final String objectName, final boolean ownershipOnly) {
+        grants.purgeGrants(objectType, objectName, ownershipOnly);
     }
 
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        Map<String, Set<Privilege>> byColumn = columnPrivileges.get(key);
-        if (byColumn == null) {
-            byColumn = new HashMap<>();
-            columnPrivileges.put(key, byColumn);
-        }
-        final String upperColumn = columnName.toUpperCase();
-        Set<Privilege> granted = byColumn.get(upperColumn);
-        if (granted == null) {
-            granted = new HashSet<>();
-            byColumn.put(upperColumn, granted);
-        }
-        granted.add(privilege);
+        grants.grantColumnPrivilege(objectType, objectName, columnName, privilege);
     }
 
     public void revokeColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
-        if (columns != null) {
-            final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
-            if (privileges != null) {
-                privileges.remove(privilege);
-                if (privileges.isEmpty()) {
-                    columns.remove(columnName.toUpperCase());
-                }
-                if (columns.isEmpty()) {
-                    columnPrivileges.remove(key);
-                }
-            }
-        }
+        grants.revokeColumnPrivilege(objectType, objectName, columnName, privilege);
     }
 
+    /** Whether a column is held: a privilege on the whole object reaches every column of it. */
     public boolean hasColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
-        // First check if there's a table-level privilege (table-level grants access to all columns)
-        if (hasPrivilege(objectType, objectName, privilege)) {
-            return true;
-        }
-
-        // Then check column-level privilege
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
-        if (columns != null) {
-            final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
-            return privileges != null && privileges.contains(privilege);
-        }
-        return false;
+        return grants.hasColumnPrivilege(objectType, objectName, columnName, privilege);
     }
 
     public Set<String> getColumnsWithPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        final Set<String> result = new HashSet<>();
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
-        if (columns != null) {
-            for (final Map.Entry<String, Set<Privilege>> entry : columns.entrySet()) {
-                if (entry.getValue().contains(privilege)) {
-                    result.add(entry.getKey());
-                }
-            }
-        }
-        return result;
+        return grants.getColumnsWithPrivilege(objectType, objectName, privilege);
     }
 
     public Map<String, Map<String, Set<Privilege>>> getAllColumnPrivileges() {
-        final Map<String, Map<String, Set<Privilege>>> result = new HashMap<>();
-        for (final Map.Entry<String, Map<String, Set<Privilege>>> entry : columnPrivileges.entrySet()) {
-            result.put(entry.getKey(), new HashMap<>(entry.getValue()));
-        }
-        return result;
+        return grants.getAllColumnPrivileges();
     }
 
     /** The name this user logs in with; live falls back to the user's name when it is unset. */
@@ -459,6 +447,17 @@ public class User implements Taggable {
         return createdTime;
     }
 
+    /**
+     * Put back the time a restored user was created at.
+     *
+     * @param created the recorded creation time, or null to keep the one it has
+     */
+    public void restoreCreatedTime(final LocalDateTime created) {
+        if (created != null) {
+            this.createdTime = created;
+        }
+    }
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -476,24 +475,33 @@ public class User implements Taggable {
     }
 
     public void rename(final String newName) {
-        // Match the constructor, which upper-cases the name; a verbatim rename would
-        // otherwise leave getName() inconsistent with every freshly-created user.
-        this.name = newName.toUpperCase();
+        // The canonical name, as the constructor takes it.
+        this.name = newName;
     }
 
-    /** Grants a database role, by its qualified name, to this user. */
+    /** Grants a database role, by its qualified name. */
     public void grantDatabaseRole(final String qualifiedName, final String grantor) {
-        databaseRoleGrantors.put(qualifiedName, grantor);
+        grants.grantDatabaseRole(qualifiedName, grantor);
     }
 
-    /** Takes a database role back from this user. */
+    /** Takes a database role back. */
     public void revokeDatabaseRole(final String qualifiedName) {
-        databaseRoleGrantors.remove(qualifiedName);
+        grants.revokeDatabaseRole(qualifiedName);
     }
 
-    /** The database roles granted to this user, by qualified name, each with the role that granted it. */
+    /** The database roles granted, by qualified name, each with the role that granted it. */
     public Map<String, String> getDatabaseRoleGrants() {
-        return new LinkedHashMap<>(databaseRoleGrantors);
+        return grants.getDatabaseRoleGrants();
+    }
+
+    /** When a database role was granted, or null when it is not held. */
+    public Instant getDatabaseRoleGrantTime(final String qualifiedName) {
+        return grants.getDatabaseRoleGrantTime(qualifiedName);
+    }
+
+    /** Puts back when a database role was granted, as a restored snapshot recorded it. */
+    public void setDatabaseRoleGrantTime(final String qualifiedName, final Instant granted) {
+        grants.setDatabaseRoleGrantTime(qualifiedName, granted);
     }
 
     @Override

@@ -22,13 +22,18 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.ValueRange;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -93,9 +98,84 @@ final class ValueRangeInferencer {
         "TO_NUMBER", "TO_NUMERIC", "TO_DECIMAL", "TRY_TO_NUMBER", "TRY_TO_NUMERIC", "TRY_TO_DECIMAL"));
 
     private final ExpressionEvaluatorVisitor visitor;
+    /** How many aggregate calls the expression being read stands in. */
+    private int aggregateDepth;
 
     ValueRangeInferencer(final ExpressionEvaluatorVisitor visitor) {
         this.visitor = visitor;
+    }
+
+    /**
+     * The functions whose result is tagged as the empty interval when an argument is always NULL
+     * (live-verified, each one): the date parts, MONTHS_BETWEEN, the character codes and the byte and bit lengths,
+     * the two string distances, MOD, TRUNC and the bitwise functions. DATEDIFF, POSITION, CHARINDEX, REGEXP_COUNT,
+     * REGEXP_INSTR, ARRAY_SIZE, ARRAY_POSITION, FACTORIAL and HASH keep their declared width there.
+     */
+    private static final Set<String> EMPTY_OVER_NULL = new HashSet<>(Arrays.asList(
+        "YEAR", "QUARTER", "MONTH", "WEEK", "WEEKOFYEAR", "WEEKISO", "DAY", "DAYOFMONTH", "DAYOFWEEK", "DAYOFWEEKISO",
+        "DAYOFYEAR", "HOUR", "MINUTE", "SECOND", "YEAROFWEEK", "YEAROFWEEKISO", "EXTRACT", "DATE_PART",
+        "MONTHS_BETWEEN", "ASCII", "UNICODE", "OCTET_LENGTH", "BIT_LENGTH", "LENGTH", "LEN", "EDITDISTANCE",
+        "JAROWINKLER_SIMILARITY", "MOD", "TRUNC", "TRUNCATE", "BITAND", "BITOR", "BITXOR", "BITNOT", "BITSHIFTLEFT",
+        "BITSHIFTRIGHT"));
+
+    /**
+     * The calls that answer NULL over a NULL argument and are read through when a value is judged always NULL
+     * (live-verified, each one). REPLACE, REGEXP_SUBSTR, REGEXP_REPLACE and DATE_FROM_PARTS are not read through:
+     * a date part or a character code over one of them keeps its declared width.
+     */
+    private static final Set<String> PASSES_NULL_ON = new HashSet<>(Arrays.asList(
+        "UPPER", "LOWER", "DATEADD", "TIMEADD", "TIMESTAMPADD", "LTRIM", "RTRIM", "TRIM", "LEFT", "RIGHT", "LPAD",
+        "REVERSE", "INITCAP", "SUBSTR", "SUBSTRING", "CONCAT", "CONCAT_WS", "SPLIT_PART", "TRANSLATE", "REPEAT",
+        "TO_CHAR", "TO_VARCHAR", "TO_DATE", "TRY_TO_DATE", "TO_TIMESTAMP", "TO_TIMESTAMP_NTZ", "ADD_MONTHS",
+        "DATE_TRUNC", "TIME_SLICE", "NEXT_DAY", "PREVIOUS_DAY", "CONVERT_TIMEZONE", "LAST_DAY", "GREATEST"));
+
+    /** The fewest values KURTOSIS answers a number over. */
+    private static final long KURTOSIS_LEAST_ROWS = 4;
+
+    /**
+     * The bitwise function that is tagged by its value over literals: BITOR, which declares one digit more than
+     * its widest argument — BITOR(100, 27) is NUMBER(4,0)[SB1]. The others keep their declared width there:
+     * BITAND(123, 1) is NUMBER(3,0)[SB2], BITNOT(127) is NUMBER(3,0)[SB2] and BITSHIFTLEFT(1, 4) is [SB16]
+     * (live-verified).
+     */
+    private static final Set<String> TAGGED_BY_VALUE = new HashSet<String>(Arrays.asList("BITOR", "BIT_OR"));
+
+    /** A day whose year and whose day of the year no other date part answers: the fifth of March, 2023. */
+    private static final LocalDate TELLING_DAY = LocalDate.of(2023, 3, 5);
+
+    /** The conversions that keep the days of the date or the timestamp they are given. */
+    private static final Set<String> KEEPS_DAYS = new HashSet<String>(Arrays.asList("TO_DATE", "DATE",
+        "TO_TIMESTAMP", "TO_TIMESTAMP_NTZ"));
+
+    /** The aggregates that answer NULL over nothing but NULLs, read through the same way (live-verified). */
+    private static final Set<String> NULL_OVER_NULLS = new HashSet<>(Arrays.asList("MIN", "MAX", "ANY_VALUE"));
+
+    /**
+     * Whether an aggregate's one argument is a NULL of a text type written out, {@code MAX(NULL::VARCHAR(10))}:
+     * the aggregate over it is tagged by its type alone, where one over a column of NULLs is the empty interval
+     * (live-verified).
+     */
+    private boolean writtenNullText(final List<Expression> args) {
+        return args.size() == 1 && visitor.inferStaticType(args.get(0)) instanceof StringType
+            && ConstantRootFold.isOverLiterals(args.get(0), visitor.getFunctionRegistry());
+    }
+
+    /**
+     * The interval a projected item hands on to the relation it is a column of: {@link #infer}'s, or the empty
+     * one for an item of any type — a date, a text — that is NULL on every row, which a derived table, a common
+     * table expression, a view and a set operation carry as they carry a number's (live-verified).
+     */
+    ValueRange inferProjected(final Expression expr) {
+        final ValueRange range = infer(expr);
+        if (range != null) {
+            return range;
+        }
+        try {
+            // A date column hands on the days its table holds, for a part read from it further out.
+            return alwaysNull(expr) ? ValueRange.EMPTY : dayRange(expr);
+        } catch (final RuntimeException undetermined) {
+            return null;
+        }
     }
 
     /** The interval of {@code expr}, or null when none can be known. Never throws. */
@@ -120,6 +200,10 @@ final class ValueRangeInferencer {
         if (expr == null) {
             return null;
         }
+        final BigDecimal folded = foldedTextNumber(expr);
+        if (folded != null) {
+            return ValueRange.of(folded);
+        }
         if (expr instanceof LiteralExpression) {
             final LiteralExpression literal = (LiteralExpression) expr;
             switch (literal.getType()) {
@@ -131,9 +215,8 @@ final class ValueRangeInferencer {
                     // A text literal in arithmetic folds to the number it spells, and the tag follows
                     // that value: '5' + 1 is NUMBER(19,0)[SB1] and '5' / 2 NUMBER(24,6)[SB4] on the
                     // account, where a text COLUMN read as a number carries no interval at all.
-                    final NumericType spelled = ImpliedTextNumber.literalReading(String.valueOf(literal.getValue()));
-                    return spelled == null ? null
-                        : ValueRange.of(new BigDecimal(String.valueOf(literal.getValue()).trim()));
+                    final BigDecimal read = PlanTextNumber.value(String.valueOf(literal.getValue()));
+                    return read == null ? null : ValueRange.of(read);
                 case NULL:
                     return ValueRange.EMPTY;
                 default:
@@ -170,8 +253,26 @@ final class ValueRangeInferencer {
                 visitor.sessionVariableValue(((SessionVarExpression) expr).getVarName()));
             return held != null ? ValueRange.of(held) : null;
         }
+        if (expr instanceof ObjectAccessExpression || expr instanceof ArrayAccessExpression) {
+            // An element of a stored structured column is told by the column's statistics over every element the
+            // read can reach, whatever its subscript (live-verified: a[0] and a[5] over an ARRAY(NUMBER(38,0)) column
+            // holding 9007199254740993 are both [SB8]); any other read by its declared width.
+            return visitor.structuredLeafRange(expr);
+        }
         if (expr instanceof ColumnReferenceExpression) {
-            final ValueRange declared = visitor.declaredColumnRange((ColumnReferenceExpression) expr);
+            if (visitor.readsUntypedNull((ColumnReferenceExpression) expr)) {
+                // Nothing but an untyped NULL: the empty interval, as the bare word is.
+                return ValueRange.EMPTY;
+            }
+            final ValueRange read = visitor.declaredColumnRange((ColumnReferenceExpression) expr);
+            // A view's column is told at its declared width, except to an aggregate over it.
+            final ValueRange declared = aggregateDepth > 0 ? read
+                : visitor.heldToDeclaredWidth((ColumnReferenceExpression) expr, read);
+            if (declared == null && visitor.readsOnlyNullTexts((ColumnReferenceExpression) expr)) {
+                // A text column that holds nothing but NULLs is no value to the number read from it: the empty
+                // interval, s + 1 is NUMBER(19,5)[SB1] (live-verified).
+                return ValueRange.EMPTY;
+            }
             return declared == null && visitor.readsSequence((ColumnReferenceExpression) expr)
                 ? SequenceRead.range() : declared;
         }
@@ -192,7 +293,10 @@ final class ValueRangeInferencer {
         if (expr instanceof CastExpression) {
             final Expression converted = ((CastExpression) expr).getExpression();
             final ValueRange exact = exactOperandRange(converted);
-            return exact != null ? exact : foldedConversion(expr, Collections.singletonList(converted));
+            final ValueRange kept = exact != null ? exact
+                : foldedConversion(expr, Collections.singletonList(converted));
+            // A conversion of what is always NULL is always NULL: a NULL cast to a text and on to another.
+            return kept == null && alwaysNull(converted) ? ValueRange.EMPTY : kept;
         }
         if (expr instanceof CaseExpression) {
             // The planner prunes a branch its statistics decide: over a table whose column holds only
@@ -227,10 +331,12 @@ final class ValueRangeInferencer {
         return null;
     }
 
-    /** Whether an operand is the bare word NULL. */
-    private static boolean isBareNull(final Expression operand) {
+    /** Whether an operand is the bare word NULL, or a column that holds nothing but one. */
+    private boolean isBareNull(final Expression operand) {
         return operand instanceof LiteralExpression
-            && ((LiteralExpression) operand).getType() == LiteralType.NULL;
+            && ((LiteralExpression) operand).getType() == LiteralType.NULL
+            || operand instanceof ColumnReferenceExpression
+                && visitor.readsUntypedNull((ColumnReferenceExpression) operand);
     }
 
     /** The interval as one that may also answer NULL, or null when unknown. */
@@ -246,8 +352,11 @@ final class ValueRangeInferencer {
         }
         final ValueRange left = infer(binary.getLeft());
         final ValueRange right = infer(binary.getRight());
-        if (left != null && left.isEmpty() || right != null && right.isEmpty()) {
-            // A NULL-valued operand (a cast NULL) empties the result whatever the other side holds.
+        if (left != null && left.isEmpty() || right != null && right.isEmpty()
+                || left == null && alwaysNull(binary.getLeft(), left)
+                || right == null && alwaysNull(binary.getRight(), right)) {
+            // A NULL-valued operand (a cast NULL, TO_VARCHAR(NULL)) empties the result whatever the other side
+            // holds.
             return ValueRange.EMPTY;
         }
         if (left != null && left.isOpaqueToComputation() || right != null && right.isOpaqueToComputation()) {
@@ -310,9 +419,27 @@ final class ValueRangeInferencer {
         return over.union(under);
     }
 
+    /**
+     * The number a text the plan folds while compiling reads as — a join or a case mapping of text literals,
+     * {@code ('1.' || '50')}, {@code UPPER('1.50')} — which tags what is computed from it as the literal's does:
+     * {@code ('1.' || '50') * 1} is NUMBER(19,5)[SB4]. Null for any other operand and for a text with no number.
+     */
+    private BigDecimal foldedTextNumber(final Expression operand) {
+        if (operand instanceof LiteralExpression || operand instanceof SessionVarExpression
+                || !ConstantTextArgument.isConstant(operand, visitor)) {
+            return null;
+        }
+        try {
+            final Object folded = operand.accept(visitor);
+            return folded instanceof CharSequence ? ImpliedTextNumber.read((CharSequence) folded) : null;
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
+    }
+
     /** Whether an operand is a text (not a literal) or a VARIANT, whose numeric reading has no interval. */
     private boolean readsWithoutInterval(final Expression operand) {
-        if (ImpliedTextNumber.isTextLiteral(operand)) {
+        if (ImpliedTextNumber.isTextLiteral(operand) || foldedTextNumber(operand) != null) {
             return false;
         }
         final DataType type = visitor.inferStaticType(operand);
@@ -443,10 +570,12 @@ final class ValueRangeInferencer {
         if (args.size() != 3) {
             return null;
         }
-        if (settles(infer(args.get(0)))) {
+        final ValueRange tested = infer(args.get(0));
+        if (settles(tested)) {
             return infer(args.get(1));
         }
-        if (isBareNull(args.get(0))) {
+        if (isBareNull(args.get(0)) || tested != null && tested.isEmpty()) {
+            // What is always NULL — the bare word, a column of NULLs — leaves the third argument alone.
             return infer(args.get(2));
         }
         return unionOf(args.subList(1, 3));
@@ -474,9 +603,20 @@ final class ValueRangeInferencer {
                 return ValueRange.EMPTY;
             }
         }
+        final ValueRange folded = TAGGED_BY_VALUE.contains(call.getFunctionName().toUpperCase(Locale.ROOT))
+            ? foldedOverLiterals(call, args) : null;
+        if (folded != null) {
+            return folded;
+        }
+        // A shift count is no value the result is read through: BITSHIFTRIGHT(1, '2') keeps the declared width's
+        // [SB1] (live-verified).
+        final boolean shifts = call.getFunctionName().toUpperCase(Locale.ROOT).startsWith("BITSHIFT");
         boolean throughSixtyFourBits = false;
-        for (final Expression arg : args) {
-            final DataType type = visitor.inferStaticType(arg);
+        for (int i = 0; i < args.size(); i++) {
+            if (shifts && i == 1) {
+                continue;
+            }
+            final DataType type = visitor.inferStaticType(args.get(i));
             throughSixtyFourBits = throughSixtyFourBits || type instanceof StringType || NumericType.isApproximate(type);
         }
         final DataType declared = visitor.inferStaticType(call);
@@ -489,17 +629,111 @@ final class ValueRangeInferencer {
             .withNullable(true);
     }
 
+    /**
+     * The value of a call whose arguments are all whole numbers or texts written out, which the plan holds before
+     * a row is read: {@code BITOR(12, 10)} declares NUMBER(3,0) and is tagged by its 14, [SB1], and
+     * {@code BITOR('12', 10)} is too, where {@code BITOR(1.5, 2)} keeps its declared width (live-verified). Null
+     * when an argument is no such literal or the call does not answer a number.
+     */
+    private ValueRange foldedOverLiterals(final FunctionCallExpression call, final List<Expression> args) {
+        if (args.isEmpty()) {
+            return null;
+        }
+        for (final Expression arg : args) {
+            final Expression written = arg instanceof UnaryOperationExpression
+                ? ((UnaryOperationExpression) arg).getOperand() : arg;
+            if (!(written instanceof LiteralExpression)
+                    || ((LiteralExpression) written).getType() == LiteralType.NULL) {
+                return null;
+            }
+            final DataType type = visitor.inferStaticType(arg);
+            if (!(type instanceof StringType) && !Integer.valueOf(0).equals(exactScale(type))) {
+                return null;
+            }
+        }
+        final Object value;
+        try {
+            value = call.accept(visitor);
+        } catch (final RuntimeException refused) {
+            return null;
+        }
+        final BigDecimal exact = ValueRange.exactOf(value);
+        return exact == null ? null : ValueRange.of(exact);
+    }
+
+    /**
+     * A bitwise aggregate's interval, the bits its argument's values may set: over whole numbers from 0 to 15 it
+     * is at most 15, [SB1] whatever width it declares, and over an argument that is always NULL it is the empty
+     * interval. A FLOAT is read through a 64-bit integer, [SB8], and an argument that holds a negative number
+     * keeps the declared width (all live-verified).
+     */
+    private ValueRange bitAggregateRange(final List<Expression> args) {
+        if (args.size() != 1) {
+            return null;
+        }
+        if (NumericType.isApproximate(visitor.inferStaticType(args.get(0)))) {
+            return ValueRange.between(BigDecimal.valueOf(Long.MIN_VALUE), BigDecimal.valueOf(Long.MAX_VALUE))
+                .withNullable(true);
+        }
+        final ValueRange read = infer(args.get(0));
+        if (read == null) {
+            return null;
+        }
+        if (read.isEmpty()) {
+            return ValueRange.EMPTY;
+        }
+        if (read.getMin() == null || read.getMax() == null || read.getMin().signum() < 0) {
+            return null;
+        }
+        final BigInteger high = read.getMax().setScale(0, RoundingMode.HALF_UP).toBigInteger();
+        final BigInteger top = BigInteger.ONE.shiftLeft(high.bitLength()).subtract(BigInteger.ONE);
+        return ValueRange.between(BigDecimal.ZERO, new BigDecimal(top)).withNullable(true);
+    }
+
     private ValueRange functionRange(final FunctionCallExpression call) {
         if (call.getNameExpression() != null) {
             return null;
         }
-        final String name = call.getFunctionName().toUpperCase();
+        final boolean aggregate = visitor.getFunctionRegistry() != null
+            && visitor.getFunctionRegistry().hasAggregateFunction(call.getFunctionName().toUpperCase(Locale.ROOT));
+        if (!aggregate) {
+            return rangeOfCall(call);
+        }
+        aggregateDepth++;
+        try {
+            // An aggregate over NULLs alone answers NULL as the rows are aggregated: the plan holds no NULL for it.
+            final ValueRange range = rangeOfCall(call);
+            return range == null ? null : range.computedNull();
+        } finally {
+            aggregateDepth--;
+        }
+    }
+
+    private ValueRange rangeOfCall(final FunctionCallExpression call) {
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
         final List<Expression> args = call.getArguments();
+        if (call.getNameExpression() == null && visitor.typeInferencer().structuredGetType(name, call) != null) {
+            // A GET of a stored structured column is told as the subscript it reads as (see the access rule above).
+            return visitor.structuredLeafRange(call);
+        }
         if ((name.equals("MOD") || name.equals("DIV0") || name.equals("DIV0NULL"))
                 && !args.isEmpty() && (isBareNull(args.get(0)) || (args.size() > 1 && isBareNull(args.get(1))))) {
             // The function forms of the operators tag a bare NULL argument as the operators do — an
             // empty interval: MOD(n10_2, NULL) is [SB1] on the account.
             return ValueRange.EMPTY;
+        }
+        if (EMPTY_OVER_NULL.contains(name) && anyAlwaysNull(args)) {
+            // A value read from an argument that is always NULL is always NULL, the empty interval: YEAR(NULL::DATE)
+            // is NUMBER(4,0)[SB1] where YEAR over a date is [SB2] — see EMPTY_OVER_NULL.
+            return ValueRange.EMPTY;
+        }
+        final ValueRange foldedPart = foldedDatePart(call, name, args);
+        if (foldedPart != null) {
+            return foldedPart;
+        }
+        final ValueRange columnPart = columnDatePart(call, name, args);
+        if (columnPart != null) {
+            return columnPart;
         }
         final Expression componentRead = IntervalFunctions.componentSource(name, args);
         if (componentRead != null && IntervalCasts.isIntervalType(visitor.inferStaticType(componentRead))) {
@@ -510,6 +744,10 @@ final class ValueRangeInferencer {
             return read != null && read.isEmpty() ? ValueRange.EMPTY : null;
         }
         switch (name) {
+            case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
+                // The token is answered while the statement compiles and tagged by its value: [SB8] for a written
+                // table's, [SB1] for the 0 of one never written (live-verified).
+                return foldedOverLiterals(call, args);
             case "IFF":
                 if (args.size() != 3) {
                     return null;
@@ -582,7 +820,7 @@ final class ValueRangeInferencer {
             case "NULLIFZERO":
                 return mayBeNull(firstArgument(args));
             case "ANY_VALUE":
-                return aggregated(firstArgument(args), true);
+                return writtenNullText(args) ? null : aggregated(firstArgument(args), true);
             case "DIV0":
             case "DIV0NULL":
                 return args.size() == 2
@@ -590,6 +828,8 @@ final class ValueRangeInferencer {
             case "TO_NUMBER":
             case "TO_NUMERIC":
             case "TO_DECIMAL":
+            case "AS_NUMBER":
+            case "AS_DECIMAL":
                 return args.isEmpty() ? null : convertedRange(call, args);
             case "TRY_TO_NUMBER":
             case "TRY_TO_NUMERIC":
@@ -608,13 +848,17 @@ final class ValueRangeInferencer {
             case "AVG":
                 return aggregated(accumulated(args.isEmpty() ? null : computedFrom(args.get(0))), false);
             case "MIN":
-                final ValueRange least = firstArgument(args);
+                // One end of the argument's interval is the answer only where the statistics give it: under a
+                // grouping key or a filter each MIN may be any value the interval holds.
+                final ValueRange least = writtenNullText(args) ? null : firstArgument(args);
                 return least == null ? null : least.isEmpty() ? least
-                    : aggregated(ValueRange.of(least.getMin()).withConditionOpacityOf(least), false);
+                    : aggregated(visitor.readsWithinStatistics()
+                        ? ValueRange.of(least.getMin()).withConditionOpacityOf(least) : least, false);
             case "MAX":
-                final ValueRange greatest = firstArgument(args);
+                final ValueRange greatest = writtenNullText(args) ? null : firstArgument(args);
                 return greatest == null ? null : greatest.isEmpty() ? greatest
-                    : aggregated(ValueRange.of(greatest.getMax()).withConditionOpacityOf(greatest), false);
+                    : aggregated(visitor.readsWithinStatistics()
+                        ? ValueRange.of(greatest.getMax()).withConditionOpacityOf(greatest) : greatest, false);
             case "COUNT":
                 // Bounded by the row count only where the statistics answer it — over a star, a constant or
                 // a stored column: COUNT(c + 1) is tagged by its declared width on the account.
@@ -639,10 +883,40 @@ final class ValueRangeInferencer {
             case "BITOR":
             case "BITXOR":
             case "BITNOT":
+            case "BIT_AND":
+            case "BIT_OR":
+            case "BIT_XOR":
+            case "BIT_NOT":
             case "BITSHIFTLEFT":
             case "BITSHIFTRIGHT":
                 return bitwiseRange(call, args);
+            case "FACTORIAL":
+                // Over a whole number written out the plan holds the value: FACTORIAL(5) is [SB1], where
+                // FACTORIAL(2.5) keeps its declared width (live-verified).
+                return args.size() == 1 && Integer.valueOf(0).equals(exactScale(visitor.inferStaticType(args.get(0))))
+                    ? foldedOverLiterals(call, args) : null;
+            case "BITAND_AGG":
+            case "BITOR_AGG":
+            case "BITXOR_AGG":
+            case "BITANDAGG":
+            case "BITORAGG":
+            case "BITXORAGG":
+            case "BIT_AND_AGG":
+            case "BIT_OR_AGG":
+            case "BIT_XOR_AGG":
+            case "BIT_ANDAGG":
+            case "BIT_ORAGG":
+            case "BIT_XORAGG":
+                return bitAggregateRange(args);
+            case "REGR_COUNT":
+                // Nothing is counted over an argument that is always NULL: [SB1] over an empty table.
+                return anyAlwaysNull(args) ? ValueRange.of(BigDecimal.ZERO) : null;
+            case "KURTOSIS":
+                // NULL over fewer than four values, which a table of fewer rows cannot hold.
+                final Long held = visitor.countableRows();
+                return anyAlwaysNull(args) || held != null && held < KURTOSIS_LEAST_ROWS ? ValueRange.EMPTY : null;
             case "HASH":
+            case "HASH_AGG":
             case "SEQ8":
             case "RANDOM":
                 // A signed 64-bit integer, whatever the declared digits say: RANDOM() declares
@@ -660,6 +934,488 @@ final class ValueRangeInferencer {
                 // A SQL function's body is read as if the call were inlined — see udfCallRange.
                 return visitor.getFunctionRegistry().getFunction(name) == null ? visitor.udfCallRange(call) : null;
         }
+    }
+
+    /** Whether an argument of a call is always NULL ({@link #alwaysNull}). */
+    private boolean anyAlwaysNull(final List<Expression> args) {
+        for (final Expression arg : args) {
+            if (alwaysNull(arg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a value is NULL on every row the statement can read: the bare word, a cast of one, a variable
+     * holding NULL, a column whose statistics hold nothing but NULLs — a text or a date column as much as a number
+     * — a call that passes its NULL argument on (see {@link #PASSES_NULL_ON}), and a COALESCE of nothing else.
+     */
+    private boolean alwaysNull(final Expression value) {
+        final Boolean byShape = alwaysNullByShape(value);
+        if (byShape != null) {
+            return byShape;
+        }
+        final ValueRange range = infer(value);
+        return range != null && range.isEmpty();
+    }
+
+    /**
+     * {@link #alwaysNull} of a value whose interval is already in hand, which stands in for inferring it again:
+     * each operand of a chain of ANDs, ORs or comparisons would otherwise be inferred once more for every
+     * operator above it, and the chain would take time exponential in its length.
+     */
+    private boolean alwaysNull(final Expression value, final ValueRange inferred) {
+        final Boolean byShape = alwaysNullByShape(value);
+        if (byShape != null) {
+            return byShape;
+        }
+        return inferred != null && inferred.isEmpty();
+    }
+
+    /** Whether a value's shape alone settles {@link #alwaysNull}: TRUE or FALSE, or null when only its interval can. */
+    private Boolean alwaysNullByShape(final Expression value) {
+        if (value instanceof CastExpression) {
+            return alwaysNull(((CastExpression) value).getExpression());
+        }
+        if (value instanceof ColumnReferenceExpression) {
+            final ValueRange read = infer(value);
+            return read != null ? read.isEmpty() : visitor.carriesOnlyNulls((ColumnReferenceExpression) value)
+                || visitor.readsOnlyNulls((ColumnReferenceExpression) value);
+        }
+        if (value instanceof BinaryOperationExpression) {
+            // Arithmetic and a join of texts pass a NULL operand on: a date that is always NULL plus one is.
+            final BinaryOperationExpression operation = (BinaryOperationExpression) value;
+            final BinaryOperator operator = operation.getOperator();
+            if (operator == BinaryOperator.ADD || operator == BinaryOperator.SUBTRACT
+                    || operator == BinaryOperator.MULTIPLY || operator == BinaryOperator.DIVIDE
+                    || operator == BinaryOperator.MODULO || operator == BinaryOperator.CONCAT) {
+                return alwaysNull(operation.getLeft()) || alwaysNull(operation.getRight());
+            }
+        }
+        if (value instanceof CaseExpression) {
+            return caseIsAlwaysNull((CaseExpression) value);
+        }
+        if (value instanceof FunctionCallExpression && ((FunctionCallExpression) value).getNameExpression() == null) {
+            final FunctionCallExpression call = (FunctionCallExpression) value;
+            final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+            if (name.equals("COALESCE") || name.equals("NVL") || name.equals("IFNULL")) {
+                for (final Expression branch : call.getArguments()) {
+                    if (!alwaysNull(branch)) {
+                        return false;
+                    }
+                }
+                return !call.getArguments().isEmpty();
+            }
+            if (name.equals("NULLIF")) {
+                return !call.getArguments().isEmpty() && alwaysNull(call.getArguments().get(0));
+            }
+            if (NULL_OVER_NULLS.contains(name)) {
+                // Over a column of NULLs; an aggregate over a NULL written out is tagged by its type alone.
+                return call.getArguments().size() == 1 && alwaysNull(call.getArguments().get(0))
+                    && !ConstantRootFold.isOverLiterals(call.getArguments().get(0), visitor.getFunctionRegistry());
+            }
+            if (PASSES_NULL_ON.contains(name)) {
+                // A unit slot holds a word, never a value: DATE_TRUNC(month, d) reads no column named month.
+                final int unitSlot = DateTimeUnitSlot.positionIn(name);
+                for (int i = 0; i < call.getArguments().size(); i++) {
+                    if (i != unitSlot && alwaysNull(call.getArguments().get(i))) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether a CASE answers NULL on every row: every branch the statistics leave reachable does, a missing ELSE
+     * among them — {@code CASE WHEN FALSE THEN d END} is always NULL.
+     */
+    private boolean caseIsAlwaysNull(final CaseExpression conditional) {
+        for (final WhenClause when : conditional.getWhenClauses()) {
+            final Boolean settled = settledCondition(when.getCondition());
+            if (Boolean.FALSE.equals(settled)) {
+                continue;
+            }
+            if (!alwaysNull(when.getResult())) {
+                return false;
+            }
+            if (Boolean.TRUE.equals(settled)) {
+                return true;
+            }
+        }
+        return conditional.getElseExpression() == null || alwaysNull(conditional.getElseExpression());
+    }
+
+    /**
+     * The interval of a calendar part read from a constant date, which the plan folds to the one value it is:
+     * DAYOFYEAR over the 6th of May is 127 and tagged [SB1], where over a column it keeps its four digits' [SB2].
+     * The part is one a function names — DAYOFYEAR, MONTH — or one EXTRACT or DATE_PART is asked for, and the
+     * constant a cast of a literal, a TO_DATE over literals or a DATE_TRUNC of one:
+     * {@code EXTRACT(dayofyear FROM TO_DATE('2024-05-06'))} and {@code DAYOFYEAR(DATE_TRUNC(month,
+     * '2024-05-06'::DATE))} are [SB1]. An epoch part is folded from a constant timestamp alone — {@code
+     * DATE_PART(epoch_second, '1970-01-01 00:01:00'::TIMESTAMP_NTZ)} is [SB1] and {@code DATE_PART(epoch_second,
+     * TO_TIMESTAMP('2024-03-15 10:20:30'))} [SB4] — while {@code EXTRACT(epoch_second FROM '2024-05-06'::DATE)}
+     * keeps its [SB8] (all live-verified). Null for any other call.
+     */
+    private ValueRange foldedDatePart(final FunctionCallExpression call, final String name,
+                                      final List<Expression> args) {
+        final Expression read;
+        boolean epoch = false;
+        if (DatePartOperands.isOnePart(name) && args.size() == 1) {
+            read = args.get(0);
+        } else if ((name.equals("EXTRACT") || name.equals("DATE_PART")) && args.size() == 2) {
+            read = args.get(1);
+            final DataType declared = visitor.inferStaticType(call);
+            // A calendar part folds, which declares two digits or four; an epoch part declares more.
+            if (!(declared instanceof NumericType)) {
+                return null;
+            }
+            epoch = ((NumericType) declared).getPrecision() > 4;
+        } else {
+            return null;
+        }
+        if (epoch ? !isConstantTimestamp(read) : !isConstantDate(read)) {
+            return null;
+        }
+        final Object part;
+        try {
+            part = call.accept(visitor);
+        } catch (final RuntimeException unread) {
+            return null;
+        }
+        final BigDecimal exact = ValueRange.exactOf(part);
+        return exact == null ? null : ValueRange.of(exact);
+    }
+
+    /**
+     * The interval of a year or of a day of the year read from a DATE or TIMESTAMP_NTZ column, which the plan
+     * bounds by the least and the greatest date the column's table holds — the table's statistics, whatever the
+     * statement filters: {@code DAYOFYEAR(d)} over dates from the 10th of January to the 1st of March is [SB1], and
+     * so is {@code YEAR(d)} over years 100 to 120. A day of the year is bounded only while both dates stand in one
+     * year; a column that spans two keeps the part's whole range. MAX, MIN and ANY_VALUE of the column are read
+     * alike, and a derived relation hands the column's days on (all live-verified). Null for any other call.
+     */
+    private ValueRange columnDatePart(final FunctionCallExpression call, final String name,
+                                      final List<Expression> args) {
+        final int operandAt;
+        if (DatePartOperands.isOnePart(name) && args.size() == 1) {
+            operandAt = 0;
+        } else if ((name.equals("EXTRACT") || name.equals("DATE_PART")) && args.size() == 2) {
+            operandAt = 1;
+        } else {
+            return null;
+        }
+        final ValueRange days = dayRange(args.get(operandAt));
+        if (days == null || days.isEmpty() || days.getMin() == null || days.getMax() == null) {
+            return null;
+        }
+        final DataType declared = visitor.inferStaticType(call);
+        if (!(declared instanceof NumericType) || ((NumericType) declared).getPrecision() != 4) {
+            // Only a year and a day of the year are wide enough for the statistics to narrow.
+            return null;
+        }
+        final LocalDate least = LocalDate.ofEpochDay(days.getMin().longValue());
+        final LocalDate greatest = LocalDate.ofEpochDay(days.getMax().longValue());
+        final BigDecimal low = partOf(call, args, operandAt, least);
+        final BigDecimal high = partOf(call, args, operandAt, greatest);
+        if (low == null || high == null) {
+            return null;
+        }
+        // What the part tells is read from a day whose year and day of the year no other part answers: a year —
+        // the calendar's or a week's — grows with the date, a day of the year only within one year.
+        final BigDecimal told = partOf(call, args, operandAt, TELLING_DAY);
+        final boolean years = told != null && told.intValue() == TELLING_DAY.getYear();
+        final boolean daysOfOneYear = told != null && told.intValue() == TELLING_DAY.getDayOfYear()
+            && least.getYear() == greatest.getYear();
+        return years || daysOfOneYear ? ValueRange.between(low, high).withNullable(days.isNullable()) : null;
+    }
+
+    /**
+     * The days a date operand's values lie in: a column's; those of a MAX, MIN or ANY_VALUE over one; of a cast of
+     * one to a DATE or to a timestamp that keeps no offset of its own, and of TO_DATE and TO_TIMESTAMP of one; of
+     * a DATE moved by a whole number of days written out, by DATEADD, DATE_TRUNC or LAST_DAY; and of what
+     * COALESCE, IFF, GREATEST and LEAST choose among such operands (all live-verified).
+     */
+    private ValueRange dayRange(final Expression operand) {
+        if (operand instanceof ColumnReferenceExpression) {
+            return visitor.dayRangeOf((ColumnReferenceExpression) operand);
+        }
+        if (operand instanceof CastExpression) {
+            final CastExpression cast = (CastExpression) operand;
+            if (cast.isTryMode() || !keepsDays(visitor.inferStaticType(cast))) {
+                return null;
+            }
+            // A TIMESTAMP_TZ column's days are known once it is cast to a DATE.
+            return cast.getExpression() instanceof ColumnReferenceExpression && isDate(visitor.inferStaticType(cast))
+                ? visitor.dayRangeOf((ColumnReferenceExpression) cast.getExpression(), true)
+                : dayRange(cast.getExpression());
+        }
+        if (operand instanceof FunctionCallExpression
+                && ((FunctionCallExpression) operand).getNameExpression() == null) {
+            return dayRangeOfCall((FunctionCallExpression) operand);
+        }
+        if (operand instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression moved = (BinaryOperationExpression) operand;
+            final boolean added = moved.getOperator() == BinaryOperator.ADD;
+            if ((added || moved.getOperator() == BinaryOperator.SUBTRACT)
+                    && moved.getRight() instanceof IntervalExpression) {
+                return movedByInterval(moved);
+            }
+            if (added || moved.getOperator() == BinaryOperator.SUBTRACT) {
+                final ValueRange later = movedBy(moved.getLeft(), moved.getRight(), added);
+                return later != null || !added ? later : movedBy(moved.getRight(), moved.getLeft(), true);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The days a date or a timestamp moved by an interval reaches: its own days, each end moved — the first from its
+     * first moment and the last from its last, so a move by part of a day may carry the last into the next day.
+     * {@code YEAR(t + INTERVAL '7 years')} over timestamps of the years 100 to 120 is [SB1], {@code '8 years'} [SB2]
+     * (live-verified).
+     */
+    private ValueRange movedByInterval(final BinaryOperationExpression moved) {
+        if (!keepsDays(visitor.inferStaticType(moved.getLeft()))) {
+            return null;
+        }
+        final ValueRange base = dayRange(moved.getLeft());
+        if (base == null || base.isEmpty() || base.getMin() == null || base.getMax() == null) {
+            return base;
+        }
+        final BigDecimal least = dayReached(moved, null, -1, LocalDate.ofEpochDay(base.getMin().longValue()), true);
+        final BigDecimal greatest = dayReached(moved, null, -1, LocalDate.ofEpochDay(base.getMax().longValue()), false);
+        return least == null || greatest == null ? null
+            : ValueRange.between(least, greatest).withNullable(base.isNullable());
+    }
+
+    /** Whether an amount is a number written out, signed or not: {@code 1}, {@code -10}. */
+    private static boolean isWrittenNumber(final Expression amount) {
+        final Expression written = amount instanceof UnaryOperationExpression
+            && ((UnaryOperationExpression) amount).getOperator() == UnaryOperator.NEGATE
+            ? ((UnaryOperationExpression) amount).getOperand() : amount;
+        return written instanceof LiteralExpression && ((LiteralExpression) written).getValue() instanceof Number;
+    }
+
+    /**
+     * The day a move reaches from the first or the last moment of a day: the moved operand replaced by that moment —
+     * the left operand of an operation, or the argument at {@code operandAt} of a call — and the move read.
+     */
+    private BigDecimal dayReached(final BinaryOperationExpression operation, final FunctionCallExpression call,
+                                  final int operandAt, final LocalDate day, final boolean first) {
+        final Expression moment = new CastExpression(new LiteralExpression(day + (first ? " 00:00:00"
+            : " 23:59:59.999999999"), LiteralType.STRING), "TIMESTAMP_NTZ");
+        final Expression move;
+        if (operation != null) {
+            move = new BinaryOperationExpression(moment, operation.getOperator(), operation.getRight());
+        } else {
+            final List<Expression> arguments = new ArrayList<>(call.getArguments());
+            arguments.set(operandAt, moment);
+            move = new FunctionCallExpression(call.getFunctionName(), arguments);
+        }
+        try {
+            final Object reached = move.accept(visitor);
+            return reached instanceof LocalDateTime
+                ? BigDecimal.valueOf(((LocalDateTime) reached).toLocalDate().toEpochDay())
+                : reached instanceof LocalDate ? BigDecimal.valueOf(((LocalDate) reached).toEpochDay()) : null;
+        } catch (final RuntimeException unread) {
+            return null;
+        }
+    }
+
+    /** The days a call over date operands answers within, or null for a call that is not read through. */
+    private ValueRange dayRangeOfCall(final FunctionCallExpression read) {
+        final String name = read.getFunctionName().toUpperCase(Locale.ROOT);
+        final List<Expression> args = read.getArguments();
+        if (NULL_OVER_NULLS.contains(name) && args.size() == 1) {
+            return dayRange(args.get(0));
+        }
+        if (KEEPS_DAYS.contains(name) && args.size() == 1) {
+            return keepsDays(visitor.inferStaticType(read)) ? dayRange(args.get(0)) : null;
+        }
+        if (name.equals("COALESCE") || name.equals("NVL") || name.equals("IFNULL")) {
+            // The first operand that is never NULL ends the choice.
+            ValueRange chosen = null;
+            for (final Expression arg : args) {
+                final ValueRange days = dayRange(arg);
+                if (days == null) {
+                    return null;
+                }
+                chosen = chosen == null ? days : chosen.union(days);
+                if (!days.isEmpty() && !days.isNullable()) {
+                    return chosen.withNullable(false);
+                }
+            }
+            return chosen;
+        }
+        if (name.equals("IFF") && args.size() == 3) {
+            final Boolean settled = settledCondition(args.get(0));
+            final ValueRange then = Boolean.FALSE.equals(settled) ? null : dayRange(args.get(1));
+            final ValueRange otherwise = Boolean.TRUE.equals(settled) ? null : dayRange(args.get(2));
+            return settled != null ? settled.booleanValue() ? then : otherwise
+                : then == null || otherwise == null ? null : then.union(otherwise);
+        }
+        if ((name.equals("GREATEST") || name.equals("LEAST")) && !args.isEmpty()) {
+            return extremeDays(args, name.equals("GREATEST"));
+        }
+        final boolean adds = (name.equals("DATEADD") || name.equals("TIMEADD") || name.equals("TIMESTAMPADD"))
+            && args.size() == 3;
+        if (adds && isWrittenNumber(args.get(1)) && !isDate(visitor.inferStaticType(args.get(2)))
+                && keepsDays(visitor.inferStaticType(args.get(2)))) {
+            // A timestamp moves from the first moment of its first day and the last of its last.
+            final ValueRange base = dayRange(args.get(2));
+            if (base == null || base.isEmpty() || base.getMin() == null || base.getMax() == null) {
+                return base;
+            }
+            final BigDecimal least = dayReached(null, read, 2, LocalDate.ofEpochDay(base.getMin().longValue()), true);
+            final BigDecimal greatest = dayReached(null, read, 2, LocalDate.ofEpochDay(base.getMax().longValue()),
+                false);
+            return least == null || greatest == null ? null
+                : ValueRange.between(least, greatest).withNullable(base.isNullable());
+        }
+        final int moved = name.equals("DATEADD") && args.size() == 3 ? 2 : name.equals("DATE_TRUNC") && args.size() == 2
+            ? 1 : name.equals("LAST_DAY") && !args.isEmpty() && args.size() <= 2 ? 0 : -1;
+        if (moved < 0 || name.equals("DATEADD") && !(args.get(1) instanceof LiteralExpression)
+                || !isDate(visitor.inferStaticType(args.get(moved)))) {
+            return null;
+        }
+        // Each grows with the date it is given, so the ends of its days are the days of the column's ends.
+        final ValueRange base = dayRange(args.get(moved));
+        if (base == null || base.isEmpty() || base.getMin() == null || base.getMax() == null) {
+            return base;
+        }
+        final BigDecimal least = dayOf(read, args, moved, LocalDate.ofEpochDay(base.getMin().longValue()));
+        final BigDecimal greatest = dayOf(read, args, moved, LocalDate.ofEpochDay(base.getMax().longValue()));
+        return least == null || greatest == null ? null
+            : ValueRange.between(least, greatest).withNullable(base.isNullable());
+    }
+
+    /** The days GREATEST or LEAST answers within: the greatest, or the least, of its operands' ends. */
+    private ValueRange extremeDays(final List<Expression> args, final boolean greatest) {
+        BigDecimal low = null;
+        BigDecimal high = null;
+        boolean nullable = false;
+        for (final Expression arg : args) {
+            final ValueRange days = dayRange(arg);
+            if (days == null || days.isEmpty() || days.getMin() == null || days.getMax() == null) {
+                return null;
+            }
+            nullable |= days.isNullable();
+            low = low == null ? days.getMin() : greatest ? low.max(days.getMin()) : low.min(days.getMin());
+            high = high == null ? days.getMax() : greatest ? high.max(days.getMax()) : high.min(days.getMax());
+        }
+        return ValueRange.between(low, high).withNullable(nullable);
+    }
+
+    /** The day a call answers for one date in place of its date operand, or null when it answers no date. */
+    private BigDecimal dayOf(final FunctionCallExpression call, final List<Expression> args, final int operandAt,
+                             final LocalDate date) {
+        final List<Expression> probed = new ArrayList<>(args);
+        probed.set(operandAt, new CastExpression(new LiteralExpression(date.toString(), LiteralType.STRING), "DATE"));
+        try {
+            final Object answered = new FunctionCallExpression(call.getFunctionName(), probed).accept(visitor);
+            return answered instanceof LocalDate ? BigDecimal.valueOf(((LocalDate) answered).toEpochDay())
+                : answered instanceof LocalDateTime
+                    ? BigDecimal.valueOf(((LocalDateTime) answered).toLocalDate().toEpochDay()) : null;
+        } catch (final RuntimeException unread) {
+            return null;
+        }
+    }
+
+    /** Whether a type is a DATE or a timestamp with no offset of its own, whose days a conversion keeps. */
+    private static boolean keepsDays(final DataType type) {
+        final String kind = type instanceof DateTimeType ? SqlTypeNames.canonical(type) : null;
+        return kind != null
+            && ("DATE".equals(kind) || kind.startsWith("TIMESTAMP_NTZ") || kind.startsWith("TIMESTAMP_LTZ"));
+    }
+
+    private static boolean isDate(final DataType type) {
+        return type instanceof DateTimeType && "DATE".equals(SqlTypeNames.canonical(type));
+    }
+
+    /** The days of a DATE operand moved by the whole number of days {@code count} writes out, or null. */
+    private ValueRange movedBy(final Expression date, final Expression count, final boolean added) {
+        if (!(count instanceof LiteralExpression) || !(((LiteralExpression) count).getValue() instanceof Number)) {
+            return null;
+        }
+        final BigDecimal days = ValueRange.exactOf(((LiteralExpression) count).getValue());
+        if (days == null || days.stripTrailingZeros().scale() > 0) {
+            return null;
+        }
+        final ValueRange base = isDate(visitor.inferStaticType(date)) ? dayRange(date) : null;
+        if (base == null || base.isEmpty() || base.getMin() == null || base.getMax() == null) {
+            return base;
+        }
+        final BigDecimal by = added ? days : days.negate();
+        return ValueRange.between(base.getMin().add(by), base.getMax().add(by)).withNullable(base.isNullable());
+    }
+
+    /** What a date-part call answers for one date, the part and its spelling the call's own. */
+    private BigDecimal partOf(final FunctionCallExpression call, final List<Expression> args, final int operandAt,
+                              final LocalDate date) {
+        final List<Expression> probed = new ArrayList<>(args);
+        probed.set(operandAt, new CastExpression(new LiteralExpression(date.toString(), LiteralType.STRING), "DATE"));
+        try {
+            return ValueRange.exactOf(new FunctionCallExpression(call.getFunctionName(), probed).accept(visitor));
+        } catch (final RuntimeException unread) {
+            return null;
+        }
+    }
+
+    /** Whether a value is a timestamp the plan holds as a constant: a cast of a literal, or a conversion of one. */
+    private boolean isConstantTimestamp(final Expression value) {
+        final DataType type = visitor.inferStaticType(value);
+        if (!(type instanceof DateTimeType) || !type.getName().toUpperCase(Locale.ROOT).startsWith("TIMESTAMP")) {
+            return false;
+        }
+        if (isConstantDate(value)) {
+            return true;
+        }
+        if (!(value instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) value;
+        if (call.getNameExpression() != null || call.getArguments().isEmpty()
+                || !call.getFunctionName().toUpperCase(Locale.ROOT).startsWith("TO_TIMESTAMP")) {
+            return false;
+        }
+        for (final Expression argument : call.getArguments()) {
+            if (!(argument instanceof LiteralExpression) || isBareNull(argument)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether a value is a date the plan holds as a constant: see {@link #foldedDatePart}. */
+    private boolean isConstantDate(final Expression value) {
+        if (value instanceof CastExpression) {
+            final Expression converted = ((CastExpression) value).getExpression();
+            return converted instanceof LiteralExpression && !isBareNull(converted) || isConstantDate(converted);
+        }
+        if (!(value instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) value;
+        if (call.getNameExpression() != null) {
+            return false;
+        }
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        if (name.equals("DATE_TRUNC")) {
+            return call.getArguments().size() == 2 && isConstantDate(call.getArguments().get(1));
+        }
+        if (!name.equals("TO_DATE") || call.getArguments().isEmpty()) {
+            return false;
+        }
+        for (final Expression argument : call.getArguments()) {
+            if (!(argument instanceof LiteralExpression) || isBareNull(argument)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -700,8 +1456,36 @@ final class ValueRangeInferencer {
 
     /** A TO_NUMBER-family call's interval: its exact operand's, or the one value a constant folds to. */
     private ValueRange convertedRange(final FunctionCallExpression call, final List<Expression> args) {
+        if (readsByFormat(args)) {
+            return null;
+        }
         final ValueRange exact = exactOperandRange(args.get(0));
-        return exact != null ? exact : foldedConversion(call, args);
+        final ValueRange kept = exact != null ? exact : foldedConversion(call, args);
+        // What is always NULL converts to no number at all: TO_NUMBER over a text column of NULLs.
+        return kept == null && alwaysNull(args.get(0)) ? ValueRange.EMPTY : kept;
+    }
+
+    /**
+     * Whether a conversion into a number reads its text by a format, which the plan leaves to the row: {@code
+     * TO_NUMBER('12', '99')} and {@code TO_NUMBER('$12.50', '$99.99', 5, 2)} keep their declared widths, [SB16] and
+     * [SB4], where a format of hexadecimal digits alone is folded, {@code TRY_TO_NUMBER('12', 'xx', 5, 0)} being
+     * [SB1] (live-verified).
+     */
+    private boolean readsByFormat(final List<Expression> args) {
+        if (args.size() < 2 || !(visitor.inferStaticType(args.get(1)) instanceof StringType)) {
+            return false;
+        }
+        final Expression format = args.get(1);
+        if (!(format instanceof LiteralExpression) || ((LiteralExpression) format).getType() != LiteralType.STRING) {
+            return true;
+        }
+        final String written = String.valueOf(((LiteralExpression) format).getValue());
+        for (int i = 0; i < written.length(); i++) {
+            if (written.charAt(i) != 'X' && written.charAt(i) != 'x') {
+                return true;
+            }
+        }
+        return written.isEmpty();
     }
 
     /**
@@ -714,7 +1498,7 @@ final class ValueRangeInferencer {
      */
     private ValueRange foldedConversion(final Expression conversion, final List<Expression> operands) {
         for (final Expression operand : operands) {
-            if (!foldsAsConstant(operand)) {
+            if (!foldsAsConstant(operand) && !isPi(operand)) {
                 return null;
             }
         }
@@ -728,10 +1512,46 @@ final class ValueRangeInferencer {
             return null;
         }
         if (folded == null) {
-            return ValueRange.EMPTY;
+            // A TRY conversion of a text that spells a number too wide for the target keeps the declared width:
+            // TRY_TO_NUMBER('123456', 5, 0) is [SB4] and TRY_TO_NUMBER('1e40') [SB16], where a text spelling no
+            // number answers a NULL's [SB1] (live-verified).
+            return overflows(conversion, operands) ? null : ValueRange.EMPTY;
         }
         final BigDecimal value = ValueRange.exactOf(folded);
         return value != null ? ValueRange.of(value) : null;
+    }
+
+    /** Whether a TRY conversion into a number answered NULL over a text that spells a number. */
+    private static boolean overflows(final Expression conversion, final List<Expression> operands) {
+        if (!(conversion instanceof FunctionCallExpression) || operands.isEmpty()
+                || !(operands.get(0) instanceof LiteralExpression)
+                || ((LiteralExpression) operands.get(0)).getType() != LiteralType.STRING) {
+            return false;
+        }
+        final String name = ((FunctionCallExpression) conversion).getFunctionName();
+        if (name == null || !name.toUpperCase(Locale.ROOT).startsWith("TRY_")) {
+            return false;
+        }
+        try {
+            new BigDecimal(String.valueOf(((LiteralExpression) operands.get(0)).getValue()).trim());
+            return true;
+        } catch (final NumberFormatException noNumber) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether an operand is PI(), which the plan holds as the constant it is where a conversion reads it directly:
+     * {@code PI()::NUMBER} and {@code TO_DECIMAL(PI(), 10, 2)} are tagged by their 3 and 3.14, where
+     * {@code PI()::FLOAT::NUMBER} and {@code (-PI())::NUMBER} keep the declared width (live-verified).
+     */
+    private static boolean isPi(final Expression operand) {
+        if (!(operand instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) operand;
+        return call.getNameExpression() == null && call.getArguments().isEmpty() && !call.isStar()
+            && "PI".equalsIgnoreCase(call.getFunctionName());
     }
 
     /**
@@ -884,7 +1704,7 @@ final class ValueRangeInferencer {
     }
 
     private ValueRange windowRange(final WindowFunctionExpression window) {
-        final String name = window.getFunctionName() == null ? "" : window.getFunctionName().toUpperCase();
+        final String name = window.getFunctionName() == null ? "" : window.getFunctionName().toUpperCase(Locale.ROOT);
         final List<Expression> args = window.getArguments();
         switch (name) {
             case "SUM":
@@ -1037,7 +1857,13 @@ final class ValueRangeInferencer {
         if (predicate instanceof IsNullExpression) {
             // IFF(n IS NULL, 3000.5, n) over a column holding no NULL is tagged by n alone on the account.
             final IsNullExpression test = (IsNullExpression) predicate;
-            return settles(infer(test.getOperand())) ? Boolean.valueOf(test.isNot()) : null;
+            final ValueRange tested = infer(test.getOperand());
+            if (tested != null && tested.isEmpty()) {
+                // What is always NULL settles the test the other way: IFF(s IS NULL, s + 1, 2) over a text
+                // column of NULLs is tagged by its first branch.
+                return Boolean.valueOf(!test.isNot());
+            }
+            return settles(tested) ? Boolean.valueOf(test.isNot()) : null;
         }
         if (predicate instanceof BetweenExpression) {
             final BetweenExpression bounds = (BetweenExpression) predicate;

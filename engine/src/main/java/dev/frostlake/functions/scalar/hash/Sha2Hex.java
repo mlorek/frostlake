@@ -28,9 +28,10 @@ public class Sha2Hex extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        final int bits = Sha2DigestSize.of(args);
         if (args.get(0) == null) return null;
-        final int bits = args.size() > 1 && args.get(1) != null ? ((Number) args.get(1)).intValue() : 256;
-        return SharedFunctionHelpers.toHex(SharedFunctionHelpers.digest("SHA-" + bits, SharedFunctionHelpers.toUtf8(args.get(0))));
+        return SharedFunctionHelpers.toHex(
+            SharedFunctionHelpers.digest("SHA-" + bits, SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
     @Override
@@ -45,5 +46,11 @@ public class Sha2Hex extends BuiltInFunction {
     @Override
     public SemiStructuredRejection predicateRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    /** A BOOLEAN is no digest size: the call is refused by its argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
     }
 }

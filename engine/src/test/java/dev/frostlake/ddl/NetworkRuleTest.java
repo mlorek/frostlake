@@ -61,7 +61,8 @@ public class NetworkRuleTest extends BaseDatabaseTest {
     @Test
     public void setAndUnsetChangeTheValueListAndTheComment() {
         engine.execute("CREATE NETWORK RULE nr_b TYPE = HOST_PORT MODE = EGRESS VALUE_LIST = ('example.com')");
-        engine.execute("ALTER NETWORK RULE nr_b SET VALUE_LIST = ('a.com', 'b.com', 'c.com') COMMENT = 'x'");
+        engine.execute("ALTER NETWORK RULE nr_b SET VALUE_LIST = ('example.com', 'google.com', 'snowflake.com:443')"
+            + " COMMENT = 'x'");
         ResultSet listed = engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_B'");
         assertEquals("3", cell(listed, listed.getRows().get(0), "entries_in_valuelist"));
         assertEquals("x", cell(listed, listed.getRows().get(0), "comment"));
@@ -75,14 +76,27 @@ public class NetworkRuleTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void createOrAlterKeepsTheRuleAndRefusesANewType() {
+    public void createOrAlterTellsTheWholeRuleAndRefusesANewTypeOrMode() {
         engine.execute("CREATE NETWORK RULE nr_c TYPE = IPV4 VALUE_LIST = ('1.1.1.1') COMMENT = 'old'");
-        engine.execute("CREATE OR ALTER NETWORK RULE nr_c TYPE = IPV4 VALUE_LIST = ('2.2.2.2', '3.3.3.3')");
-        final ResultSet listed = engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_C'");
+        final ResultSet altered = engine.executeQuery(
+            "CREATE OR ALTER NETWORK RULE nr_c TYPE = IPV4 VALUE_LIST = ('2.2.2.2', '3.3.3.3')");
+        assertEquals("Statement executed successfully.", altered.getRows().get(0).getValue(0),
+            "a rule found is altered, and answers as an ALTER does");
+        ResultSet listed = engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_C'");
         assertEquals("2", cell(listed, listed.getRows().get(0), "entries_in_valuelist"));
-        assertEquals("old", cell(listed, listed.getRows().get(0), "comment"), "what the statement leaves out is kept");
-        assertTrue(refusal("CREATE OR ALTER NETWORK RULE nr_c TYPE = IPV6 VALUE_LIST = ('::1')")
-            .contains("cannot be changed"));
+        assertEquals("", cell(listed, listed.getRows().get(0), "comment"), "the comment the statement leaves out is gone");
+        engine.execute("CREATE OR ALTER NETWORK RULE nr_c TYPE = IPV4 COMMENT = 'again'");
+        listed = engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_C'");
+        assertEquals("0", cell(listed, listed.getRows().get(0), "entries_in_valuelist"), "and so is the value list");
+        assertEquals("again", cell(listed, listed.getRows().get(0), "comment"));
+        assertEquals("SQL compilation error: Property 'TYPE' cannot be changed in CREATE OR ALTER.",
+            refusal("CREATE OR ALTER NETWORK RULE nr_c TYPE = IPV6 VALUE_LIST = ('::1')"));
+        assertEquals("SQL compilation error: Property 'MODE' cannot be changed in CREATE OR ALTER.",
+            refusal("CREATE OR ALTER NETWORK RULE nr_c TYPE = IPV4 MODE = POSTGRES_INGRESS VALUE_LIST = ('1.1.1.1')"));
+        engine.execute("CREATE NETWORK RULE nr_e TYPE = HOST_PORT MODE = EGRESS VALUE_LIST = ('example.com')");
+        engine.execute("CREATE OR ALTER NETWORK RULE nr_e TYPE = HOST_PORT VALUE_LIST = ('example.com')");
+        listed = engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_E'");
+        assertEquals("EGRESS", cell(listed, listed.getRows().get(0), "mode"), "a mode left out changes nothing");
         engine.execute("CREATE OR ALTER NETWORK RULE nr_c2 TYPE = IPV6 VALUE_LIST = ('::1')");
         assertEquals(1, engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_C2'").getRows().size());
     }
@@ -91,7 +105,7 @@ public class NetworkRuleTest extends BaseDatabaseTest {
     public void createAndDropRefusals() {
         engine.execute("CREATE NETWORK RULE nr_d TYPE = IPV4 VALUE_LIST = ('1.1.1.1')");
         assertTrue(refusal("CREATE NETWORK RULE nr_d TYPE = IPV4").contains("Object 'NR_D' already exists."));
-        engine.execute("CREATE OR REPLACE NETWORK RULE nr_d TYPE = AWSVPCEID VALUE_LIST = ('vpce-1')");
+        engine.execute("CREATE OR REPLACE NETWORK RULE nr_d TYPE = AWSVPCEID VALUE_LIST = ('vpce-0fa383eb170331202')");
         assertTrue(refusal("CREATE NETWORK RULE nr_e VALUE_LIST = ('1.1.1.1')").contains("Missing option(s): [TYPE]"));
         assertEquals("The network rule type must be one of the snowflake supported network rule type.",
             refusal("CREATE NETWORK RULE nr_e TYPE = NOSUCH"));
@@ -123,11 +137,17 @@ public class NetworkRuleTest extends BaseDatabaseTest {
             .getRows().size());
         assertEquals(3, engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_P%' IN DATABASE test_db").getRows().size());
         assertEquals(3, engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_P%' IN ACCOUNT").getRows().size());
-        assertEquals(3, engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_P%'").getRows().size(),
-            "with no scope the current database is listed");
+        assertEquals(2, engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_P%'").getRows().size(),
+            "with no scope the current schema is listed");
         final ResultSet paged = engine.executeQuery("SHOW NETWORK RULES IN SCHEMA STARTS WITH 'NR_P' LIMIT 1 FROM 'NR_P1'");
         assertEquals(1, paged.getRows().size());
-        assertEquals("NR_P2", cell(paged, paged.getRows().get(0), "name"));
+        assertEquals("NR_P1", cell(paged, paged.getRows().get(0), "name"), "the page starts at the name's own row");
+        final ResultSet across = engine.executeQuery("SHOW NETWORK RULES LIKE 'NR_P%' IN DATABASE test_db LIMIT 10 FROM"
+            + " 'NR_P2'");
+        assertEquals(3, across.getRows().size(), "and runs on through the listing, schema after schema");
+        assertEquals("NR_P3", cell(across, across.getRows().get(0), "name"), "the first row at or after the name");
+        assertEquals("NR_P1", cell(across, across.getRows().get(1), "name"));
+        assertEquals("NR_P2", cell(across, across.getRows().get(2), "name"));
         assertTrue(refusal("SHOW NETWORK RULES LIMIT 0").contains("must be greater than 0"));
     }
 

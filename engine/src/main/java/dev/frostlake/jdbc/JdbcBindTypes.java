@@ -55,7 +55,8 @@ public final class JdbcBindTypes {
         if (value instanceof Boolean) {
             return "JAVA_BOOLEAN";
         }
-        if (value instanceof Timestamp || value instanceof Time || value instanceof java.util.Date) {
+        if (value instanceof Timestamp || value instanceof Time || value instanceof java.util.Date
+                || value instanceof CalendarBoundInstant) {
             return "JAVA_TIMESTAMP";
         }
         if (value instanceof byte[]) {

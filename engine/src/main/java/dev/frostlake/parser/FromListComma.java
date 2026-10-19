@@ -84,7 +84,9 @@ final class FromListComma {
         pending.push(root);
         while (!pending.isEmpty()) {
             final ParseTree node = pending.pop();
-            if (node instanceof FrostlakeParser.TableExpressionContext) {
+            // TABLE <name> holds no FROM list that was written: a comma after it is refused itself.
+            if (node instanceof FrostlakeParser.TableExpressionContext
+                    && !TableQueries.writtenAsTable(((ParserRuleContext) node).getParent())) {
                 final Token stop = ((ParserRuleContext) node).getStop();
                 if (stop != null && stop.getTokenIndex() == last.getTokenIndex()) {
                     return true;

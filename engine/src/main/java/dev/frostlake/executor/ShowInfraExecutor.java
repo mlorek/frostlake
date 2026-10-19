@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.model.ComputePool;
@@ -32,6 +33,7 @@ import dev.frostlake.types.StringType;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -47,9 +49,12 @@ final class ShowInfraExecutor {
 
 
     private final Catalog catalog;
+    /** Says whether the session sees a stage, which a listing and DESCRIBE show only then. */
+    private final DefinitionOwnership ownership;
 
-    ShowInfraExecutor(final Catalog catalog) {
+    ShowInfraExecutor(final Catalog catalog, final DefinitionOwnership ownership) {
         this.catalog = catalog;
+        this.ownership = ownership;
     }
 
     /**
@@ -63,14 +68,14 @@ final class ShowInfraExecutor {
             new ResultSetColumn("state", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
             new ResultSetColumn("size", StringType.VARCHAR),
-            new ResultSetColumn("min_cluster_count", NumericType.INTEGER),
-            new ResultSetColumn("max_cluster_count", NumericType.INTEGER),
-            new ResultSetColumn("started_clusters", NumericType.INTEGER),
-            new ResultSetColumn("running", NumericType.INTEGER),
-            new ResultSetColumn("queued", NumericType.INTEGER),
+            new ResultSetColumn("min_cluster_count", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_cluster_count", ShowResultHelpers.COUNT),
+            new ResultSetColumn("started_clusters", ShowResultHelpers.COUNT),
+            new ResultSetColumn("running", ShowResultHelpers.COUNT),
+            new ResultSetColumn("queued", ShowResultHelpers.COUNT),
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
-            new ResultSetColumn("auto_suspend", NumericType.INTEGER),
+            new ResultSetColumn("auto_suspend", ShowResultHelpers.COUNT),
             new ResultSetColumn("auto_resume", StringType.VARCHAR),
             new ResultSetColumn("available", StringType.VARCHAR),
             new ResultSetColumn("provisioning", StringType.VARCHAR),
@@ -82,18 +87,18 @@ final class ShowInfraExecutor {
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("enable_query_acceleration", StringType.VARCHAR),
-            new ResultSetColumn("query_acceleration_max_scale_factor", NumericType.INTEGER),
+            new ResultSetColumn("query_acceleration_max_scale_factor", ShowResultHelpers.COUNT),
             new ResultSetColumn("resource_monitor", StringType.VARCHAR),
-            new ResultSetColumn("actives", NumericType.INTEGER),
-            new ResultSetColumn("pendings", NumericType.INTEGER),
-            new ResultSetColumn("failed", NumericType.INTEGER),
-            new ResultSetColumn("suspended", NumericType.INTEGER),
+            new ResultSetColumn("actives", ShowResultHelpers.COUNT),
+            new ResultSetColumn("pendings", ShowResultHelpers.COUNT),
+            new ResultSetColumn("failed", ShowResultHelpers.COUNT),
+            new ResultSetColumn("suspended", ShowResultHelpers.COUNT),
             new ResultSetColumn("uuid", StringType.VARCHAR),
             new ResultSetColumn("scaling_policy", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
             new ResultSetColumn("resource_constraint", StringType.VARCHAR),
             new ResultSetColumn("generation", StringType.VARCHAR),
-            new ResultSetColumn("query_throughput_multiplier", StringType.VARCHAR),
+            new ResultSetColumn("query_throughput_multiplier", ShowResultHelpers.COUNT),
             new ResultSetColumn("max_query_performance_level", StringType.VARCHAR),
             new ResultSetColumn("disabled_reasons", StringType.VARCHAR),
             new ResultSetColumn("tables", StringType.VARCHAR)
@@ -116,11 +121,12 @@ final class ShowInfraExecutor {
                 running ? (long) wh.getMinClusterCount() : 0L,
                 0L, 0L,
                 "N",
-                wh.getName().equalsIgnoreCase(currentWarehouse) ? "Y" : "N",
+                wh.getName().equals(currentWarehouse) ? "Y" : "N",
                 wh.getAutoSuspendSeconds() == null ? null : Long.valueOf(wh.getAutoSuspendSeconds().longValue()),
                 String.valueOf(wh.isAutoResume()),
-                // The four cluster-health cells are empty strings on an idle warehouse.
-                "", "", "", "",
+                // The four cluster-health cells: all of a started warehouse's compute is available, and a
+                // suspended one tells nothing (live-verified, the leading space included).
+                running ? " 100" : "", running ? "0" : "", running ? "0" : "", running ? "0" : "",
                 created, lastChange, lastChange,
                 wh.getOwner(),
                 ShowResultHelpers.text(wh.getComment()),
@@ -167,7 +173,8 @@ final class ShowInfraExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(stageColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : ShowResultHelpers.scopeDatabaseReportedGenerically(catalog, dbName)
+                .getAllSchemas()) {
             appendStageRows(dbName, schema, rows);
         }
         return new ResultSet(stageColumns(), rows);
@@ -176,17 +183,25 @@ final class ShowInfraExecutor {
     private void appendStageRows(final String dbName, final Schema schema, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Stage stage : schema.getStages()) {
+            // Only a stage the session sees: its roles own it or hold a privilege on it, or hold MANAGE GRANTS
+            // (documented).
+            if (!ownership.sees("STAGE", schema.qualifiedName(stage.getName()), stage.getOwner())) {
+                continue;
+            }
             final String url = stage.getUrl() != null ? stage.getUrl() : "";
-            final String type = url.startsWith("s3://") || url.startsWith("azure://") || url.startsWith("gcs://")
-                ? "EXTERNAL" : "INTERNAL";
-            final String cloud = url.startsWith("s3://") ? "aws" : url.startsWith("azure://") ? "azure"
-                : url.startsWith("gcs://") ? "gcp" : null;
+            // An internal stage with server-side encryption alone is INTERNAL NO CSE; a temporary stage says so
+            // after its kind; the cloud is named in upper case (live-verified).
+            final String cloud = stage.locationCloud();
+            final boolean external = cloud != null;
+            final String type = external ? stage.isTemporary() ? "EXTERNAL TEMPORARY" : "EXTERNAL"
+                : stage.isTemporary() ? "INTERNAL TEMPORARY"
+                : "SNOWFLAKE_SSE".equalsIgnoreCase(stage.getEncryptionType()) ? "INTERNAL NO CSE" : "INTERNAL";
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(stage.getCreatedAt()),
                 stage.getName(),
                 dbName, scName,
                 url,
-                "N", "N",
+                stage.hasCredentials() ? "Y" : "N", stage.hasEncryptionKey() ? "Y" : "N",
                 stage.getOwner(),
                 ShowResultHelpers.text(stage.getComment()),
                 null, type, cloud, null, null, null,
@@ -232,16 +247,16 @@ final class ShowInfraExecutor {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("state", StringType.VARCHAR),
-            new ResultSetColumn("min_nodes", NumericType.NUMBER),
-            new ResultSetColumn("max_nodes", NumericType.NUMBER),
+            new ResultSetColumn("min_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("instance_family", StringType.VARCHAR),
-            new ResultSetColumn("num_services", NumericType.NUMBER),
-            new ResultSetColumn("num_jobs", NumericType.NUMBER),
+            new ResultSetColumn("num_services", ShowResultHelpers.COUNT),
+            new ResultSetColumn("num_jobs", ShowResultHelpers.COUNT),
             new ResultSetColumn("auto_suspend_secs", NumericType.NUMBER),
             new ResultSetColumn("auto_resume", StringType.VARCHAR),
-            new ResultSetColumn("active_nodes", NumericType.NUMBER),
-            new ResultSetColumn("idle_nodes", NumericType.NUMBER),
-            new ResultSetColumn("target_nodes", NumericType.NUMBER),
+            new ResultSetColumn("active_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("idle_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("target_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("resumed_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
@@ -264,20 +279,20 @@ final class ShowInfraExecutor {
      * inserted after application, a real account's 23-column shape.
      */
     public ResultSet describeComputePool(final String poolName) {
-        final ComputePool pool = catalog.getComputePool(poolName);
+        final ComputePool pool = catalog.getComputePoolExact(poolName);
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("state", StringType.VARCHAR),
-            new ResultSetColumn("min_nodes", NumericType.NUMBER),
-            new ResultSetColumn("max_nodes", NumericType.NUMBER),
+            new ResultSetColumn("min_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("instance_family", StringType.VARCHAR),
-            new ResultSetColumn("num_services", NumericType.NUMBER),
-            new ResultSetColumn("num_jobs", NumericType.NUMBER),
+            new ResultSetColumn("num_services", ShowResultHelpers.COUNT),
+            new ResultSetColumn("num_jobs", ShowResultHelpers.COUNT),
             new ResultSetColumn("auto_suspend_secs", NumericType.NUMBER),
             new ResultSetColumn("auto_resume", StringType.VARCHAR),
-            new ResultSetColumn("active_nodes", NumericType.NUMBER),
-            new ResultSetColumn("idle_nodes", NumericType.NUMBER),
-            new ResultSetColumn("target_nodes", NumericType.NUMBER),
+            new ResultSetColumn("active_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("idle_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("target_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("resumed_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
@@ -380,45 +395,17 @@ final class ShowInfraExecutor {
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("kind", StringType.VARCHAR)
         );
-        final Warehouse wh = catalog.getWarehouse(warehouseName);
+        final Warehouse wh = catalog.getWarehouseExact(warehouseName);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList(
             ShowResultHelpers.createdOn(wh.getCreatedAt()), wh.getName(), "WAREHOUSE")));
         return new ResultSet(columns, rows);
     }
 
-    /**
-     * The CSV file-format property tree a real account describes for a stage, in its order:
-     * property, type, default. DESC STAGE overlays the stage's own declared options on these.
-     */
-    private static final String[][] STAGE_FORMAT_PROPERTIES = {
-        {"TYPE", "String", "CSV"},
-        {"RECORD_DELIMITER", "String", "\\n"},
-        {"FIELD_DELIMITER", "String", ","},
-        {"FILE_EXTENSION", "String", ""},
-        {"SKIP_HEADER", "Integer", "0"},
-        {"PARSE_HEADER", "Boolean", "false"},
-        {"DATE_FORMAT", "String", "AUTO"},
-        {"TIME_FORMAT", "String", "AUTO"},
-        {"TIMESTAMP_FORMAT", "String", "AUTO"},
-        {"BINARY_FORMAT", "String", "HEX"},
-        {"ESCAPE", "String", "NONE"},
-        {"ESCAPE_UNENCLOSED_FIELD", "String", "\\\\"},
-        {"TRIM_SPACE", "Boolean", "false"},
-        {"FIELD_OPTIONALLY_ENCLOSED_BY", "String", "NONE"},
-        {"NULL_IF", "List", "[\\\\N]"},
-        {"COMPRESSION", "String", "AUTO"},
-        {"ERROR_ON_COLUMN_COUNT_MISMATCH", "Boolean", "true"},
-        {"VALIDATE_UTF8", "Boolean", "true"},
-        {"SKIP_BLANK_LINES", "Boolean", "false"},
-        {"REPLACE_INVALID_CHARACTERS", "Boolean", "false"},
-        {"EMPTY_FIELD_AS_NULL", "Boolean", "true"},
-        {"SKIP_BYTE_ORDER_MARK", "Boolean", "true"},
-        {"ENCODING", "String", "UTF8"},
-        {"MULTI_LINE", "Boolean", "true"},
-    };
+    /** How DESCRIBE STAGE spells the moment of a directory table's last refresh. */
+    private static final DateTimeFormatter LAST_REFRESHED = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS xx");
 
-    /** The copy-option rows of DESC STAGE, likewise property, type, default. */
+    /** The copy-option rows of DESC STAGE: property, type, default. */
     private static final String[][] STAGE_COPY_OPTION_PROPERTIES = {
         {"ON_ERROR", "String", "ABORT_STATEMENT"},
         {"SIZE_LIMIT", "Long", ""},
@@ -427,6 +414,12 @@ final class ShowInfraExecutor {
         {"ENFORCE_LENGTH", "Boolean", "true"},
         {"TRUNCATECOLUMNS", "Boolean", "false"},
         {"FORCE", "Boolean", "false"},
+    };
+
+    /** The copy options DESC STAGE lists only once they are set, after the others (live-verified). */
+    private static final String[][] STAGE_COPY_OPTION_PROPERTIES_WHEN_SET = {
+        {"MATCH_BY_COLUMN_NAME", "String", "NONE"},
+        {"LOAD_MODE", "String", "FULL_INGEST"},
     };
 
     /**
@@ -449,19 +442,29 @@ final class ShowInfraExecutor {
     ResultSet describeTableStage(final Map<String, String> written, final Map<String, String> copyOptions) {
         final List<Row> rows = new ArrayList<>();
         for (final FormatProperty property : FileFormatSurfaces.tree(written.get("TYPE"))) {
-            final String value = written.get(property.name.toUpperCase());
             // A stage's default format is CSV whichever tree is answered, so the TYPE row's default
             // column reads CSV even under a JSON format (live-verified).
             final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;
             rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
-                spelled(value, property.type, property.valueDefault), shownDefault)));
+                FileFormatSurfaces.described(property, written.get(property.name)), shownDefault)));
         }
         for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
                 spelled(copyOptions.get(property[0]), property[1], property[2]), property[2])));
         }
+        addCopyOptionsWhenSet(rows, copyOptions);
         rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String", "", "")));
         return new ResultSet(stagePropertyColumns(), rows);
+    }
+
+    /** The rows of the copy options listed only once set, each that is. */
+    private void addCopyOptionsWhenSet(final List<Row> rows, final Map<String, String> copyOptions) {
+        for (final String[] property : STAGE_COPY_OPTION_PROPERTIES_WHEN_SET) {
+            if (copyOptions.containsKey(property[0])) {
+                rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
+                    spelled(copyOptions.get(property[0]), property[1], property[2]), property[2])));
+            }
+        }
     }
 
     /** A written option's value as the listing spells it: a boolean in lower case, like every default. */
@@ -469,7 +472,11 @@ final class ShowInfraExecutor {
         if (written == null) {
             return whenUnwritten;
         }
-        return "Boolean".equals(type) ? written.toLowerCase(Locale.ROOT) : written;
+        if ("Boolean".equals(type)) {
+            return written.toLowerCase(Locale.ROOT);
+        }
+        // A quote a text holds is listed behind a backslash, as a backslash itself is.
+        return "String".equals(type) ? written.replace("\"", "\\\"") : written;
     }
 
     /** The five columns every stage-property listing answers in. */
@@ -491,8 +498,9 @@ final class ShowInfraExecutor {
             new ResultSetColumn("property_default", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
         if (table) {
-            for (final String[] property : STAGE_FORMAT_PROPERTIES) {
-                rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property[0], property[1], property[2], property[2])));
+            for (final FormatProperty property : FileFormatSurfaces.tree("CSV")) {
+                rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
+                    FileFormatSurfaces.described(property, null), property.shownDefault)));
             }
             for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
                 rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1], property[2], property[2])));
@@ -509,29 +517,51 @@ final class ShowInfraExecutor {
             new ResultSetColumn("property_type", StringType.VARCHAR),
             new ResultSetColumn("property_value", StringType.VARCHAR),
             new ResultSetColumn("property_default", StringType.VARCHAR));
-        final Stage stage = catalog.getStage(stageName);
+        // Named exactly: a quoted name in another case is another stage, which is not there (live-verified).
+        final Stage stage = catalog.getStageExact(stageName);
+        final Schema home = catalog.resolveOwningSchema(stageName);
+        if (!ownership.sees("STAGE", home.qualifiedName(stage.getName()), stage.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", home.qualifiedName(stage.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
-        for (final String[] property : STAGE_FORMAT_PROPERTIES) {
-            String value = stage.getFileFormatOptions().get(property[0]);
-            if (value == null) {
-                value = "TYPE".equals(property[0]) ? stage.getFileFormat() : property[2];
-            }
-            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property[0], property[1],
-                value, property[2])));
+        // The tree is the one of the stage's own format TYPE, as a table's stage answers its written format
+        // (live-verified): a JSON stage lists STRIP_OUTER_ARRAY and no FIELD_DELIMITER.
+        final String type = stage.getFileFormat();
+        final String formatName = stage.getFileFormatOptions().get("FORMAT_NAME");
+        if (formatName != null) {
+            // A stage that names a file format lists the name alone, as the statement wrote it; the format's
+            // own options are the format's to describe.
+            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", "FORMAT_NAME", "String",
+                formatName.replace("\"", "\\\""), "")));
+        }
+        for (final FormatProperty property : formatName != null ? new ArrayList<FormatProperty>()
+                : FileFormatSurfaces.tree(type)) {
+            final String written = "TYPE".equals(property.name) ? type
+                : stage.getFileFormatOptions().get(property.name);
+            // A stage's default format is CSV whichever tree is answered, so the TYPE row's default column
+            // reads CSV even under a JSON format.
+            final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;
+            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
+                FileFormatSurfaces.described(property, written), shownDefault)));
         }
         for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
-            String value = stage.getCopyOptions().get(property[0]);
-            if (value == null) {
-                value = property[2];
-            }
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
-                value, property[2])));
+                spelled(stage.getCopyOptions().get(property[0]), property[1], property[2]), property[2])));
         }
+        addCopyOptionsWhenSet(rows, stage.getCopyOptions());
         rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String",
             stage.getUrl() != null ? stage.getUrl() : "", "")));
+        if (stage.isDirectoryEnabled()) {
+            // Told for a directory table that is on alone: empty until its first refresh, then the moment of
+            // the last one at the session's offset (live-verified).
+            rows.add(new Row(Arrays.asList("DIRECTORY", "LAST_REFRESHED_ON", "Timestamp",
+                stage.getDirectoryRefreshed() == null ? ""
+                    : LAST_REFRESHED.format(stage.getDirectoryRefreshed().atZone(SessionZone.current())), "")));
+        }
         rows.add(new Row(Arrays.asList("DIRECTORY", "ENABLE", "Boolean",
             String.valueOf(stage.isDirectoryEnabled()), "false")));
-        rows.add(new Row(Arrays.asList("DIRECTORY", "AUTO_REFRESH", "Boolean", "false", "false")));
+        rows.add(new Row(Arrays.asList("DIRECTORY", "AUTO_REFRESH", "Boolean",
+            String.valueOf(stage.isDirectoryAutoRefresh()), "false")));
         return new ResultSet(columns, rows);
     }
 }

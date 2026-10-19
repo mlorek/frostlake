@@ -139,6 +139,9 @@ public final class JdbcBackend implements Backend {
         if (openingRole != null) {
             statement.execute("USE ROLE " + openingRole);
         }
+        // A case may take its secondary roles to read through them; the next one starts with none again, the
+        // setting the session opened with.
+        statement.execute("USE SECONDARY ROLES NONE");
         if (openingWarehouse != null) {
             statement.execute("USE WAREHOUSE " + openingWarehouse);
         }

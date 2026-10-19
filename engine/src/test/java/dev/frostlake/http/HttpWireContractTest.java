@@ -187,7 +187,7 @@ public class HttpWireContractTest {
         final JsonNode body = json(failed);
         assertFalse(body.get("success").asBoolean());
         assertTrue(body.get("errorMessage").asText().startsWith("JavaScript execution error: Uncaught"
-            + " Execution of multiple statements failed on statement \"SELECT * FROM no_such_table_at_all\""
+            + " Execution of multiple statements failed on statement \"SELECT * FROM no_such_table_at...\""
             + " (at line 1, position 10)."), failed.body());
         assertTrue(body.get("errorMessage").asText().contains("does not exist or not authorized"), failed.body());
         assertTrue(body.get("resultSets") == null || body.get("resultSets").size() == 0, failed.body());
@@ -260,7 +260,7 @@ public class HttpWireContractTest {
 
     /**
      * A TIME or TIMESTAMP column carries precision 0 and its fractional-second precision as the scale, the
-     * pair the account's own result metadata carries; a DATE carries 0 for both, and a NUMBER keeps its own.
+     * pair the account's own result metadata carries; a DATE carries neither, and a NUMBER keeps its own.
      */
     @Test
     public void aTimeOrTimestampColumnCarriesItsFractionalDigitsAsTheScale() throws Exception {
@@ -270,11 +270,16 @@ public class HttpWireContractTest {
             + " '2024-01-01'::TIMESTAMP_LTZ AS ltz, '2024-01-01 00:00:00 +01:00'::TIMESTAMP_TZ(5) AS tz5,"
             + " CURRENT_TIMESTAMP(3) AS now3, '2024-01-01'::DATE AS d, 1.5::NUMBER(5,2) AS n", id)
             .get("resultSets").get(0).get("columns");
-        final int[][] expected = {{0, 3}, {0, 0}, {0, 9}, {0, 5}, {0, 3}, {0, 0}, {5, 2}};
+        final int[][] expected = {{0, 3}, {0, 0}, {0, 9}, {0, 5}, {0, 3}, null, {5, 2}};
         for (int i = 0; i < expected.length; i++) {
+            assertFalse(columns.get(i).has("length"), columns.get(i).toString());
+            if (expected[i] == null) {
+                assertFalse(columns.get(i).has("precision"), columns.get(i).toString());
+                assertFalse(columns.get(i).has("scale"), columns.get(i).toString());
+                continue;
+            }
             assertEquals(expected[i][0], columns.get(i).get("precision").asInt(), columns.get(i).toString());
             assertEquals(expected[i][1], columns.get(i).get("scale").asInt(), columns.get(i).toString());
-            assertFalse(columns.get(i).has("length"), columns.get(i).toString());
         }
         final JsonNode createdOn = ok("SHOW SCHEMAS IN DATABASE wire_scale_db", id).get("resultSets").get(0)
             .get("columns").get(0);
@@ -282,6 +287,28 @@ public class HttpWireContractTest {
         assertEquals(0, createdOn.get("precision").asInt());
         assertEquals(3, createdOn.get("scale").asInt());
         ok("DROP DATABASE wire_scale_db", id);
+    }
+
+    /**
+     * A column whose type has no precision and no scale sends neither field, as the account's result metadata
+     * leaves both null there: text, binary, FLOAT, BOOLEAN, DATE, the semi-structured types and a NULL. A
+     * fixed-point NUMBER sends both, an integer literal included.
+     */
+    @Test
+    public void onlyATypeWithAPrecisionOrAScaleCarriesThem() throws Exception {
+        final String id = newSession();
+        final JsonNode columns = ok("SELECT 'abc'::VARCHAR(9) AS vc9, 'abc' AS lit, TO_BINARY('00', 'HEX')::BINARY(5)"
+            + " AS bin5, 1.5::FLOAT AS flt, TRUE AS bool, '2024-01-01'::DATE AS dt, PARSE_JSON('1') AS var,"
+            + " OBJECT_CONSTRUCT('a', 1) AS obj, ARRAY_CONSTRUCT(1) AS arr, NULL AS nul, 1.5::NUMBER(10,2) AS num,"
+            + " 1 AS one", id).get("resultSets").get(0).get("columns");
+        for (int i = 0; i < 10; i++) {
+            assertFalse(columns.get(i).has("precision"), columns.get(i).toString());
+            assertFalse(columns.get(i).has("scale"), columns.get(i).toString());
+        }
+        assertEquals(10, columns.get(10).get("precision").asInt());
+        assertEquals(2, columns.get(10).get("scale").asInt());
+        assertEquals(1, columns.get(11).get("precision").asInt());
+        assertEquals(0, columns.get(11).get("scale").asInt());
     }
 
     @Test

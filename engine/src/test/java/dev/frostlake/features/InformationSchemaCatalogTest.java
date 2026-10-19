@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -129,7 +130,7 @@ public class InformationSchemaCatalogTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery(
             "SELECT CATALOG_NAME FROM INFORMATION_SCHEMA.INFORMATION_SCHEMA_CATALOG_NAME");
         assertEquals(1, rs.getRowCount());
-        assertEquals("TEST_DB", String.valueOf(rs.getRows().get(0).getValue(0)).toUpperCase());
+        assertEquals("TEST_DB", String.valueOf(rs.getRows().get(0).getValue(0)).toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -261,7 +262,7 @@ public class InformationSchemaCatalogTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SELECT * FROM INFORMATION_SCHEMA." + view);
         final List<String> actual = new ArrayList<>();
         for (int i = 0; i < rs.getColumns().size(); i++) {
-            actual.add(rs.getColumns().get(i).getName().toUpperCase());
+            actual.add(rs.getColumns().get(i).getName().toUpperCase(Locale.ROOT));
         }
         assertEquals(Arrays.asList(expected), actual, view + " must carry live's column list");
     }

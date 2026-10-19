@@ -25,6 +25,9 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 /**
@@ -43,10 +46,17 @@ public class EngineConfig {
     public static final String PROP_HTTP_PORT = "http.port";
     public static final String PROP_HTTP_HOST = "http.host";
     public static final String PROP_HTTP_MAX_CONNECTIONS = "http.maxConnections";
+    public static final String PROP_HTTP_CORS_ALLOWED_ORIGINS = "http.cors.allowedOrigins";
     /** How long a {@code /api/v2} request waits for its operation before it is answered 202 Accepted. */
     public static final String PROP_HTTP_REST_SYNC_WAIT_MS = "http.rest.syncWaitMs";
     /** How long a {@code /api/v2} result handle stays fetchable after it was issued. */
     public static final String PROP_HTTP_REST_RESULT_RETENTION_MS = "http.rest.resultRetentionMs";
+    /**
+     * How long an HTTP session may sit idle before the server ends it, in minutes; 0 keeps every session until it
+     * is released. The default is Snowflake's four hours (a session policy's SESSION_IDLE_TIMEOUT_MINS defaults to
+     * 240), and a client that sets CLIENT_SESSION_KEEP_ALIVE sends heartbeats that count as activity.
+     */
+    public static final String PROP_HTTP_SESSION_IDLE_TIMEOUT_MINUTES = "http.session.idleTimeoutMinutes";
     public static final String PROP_DATABASE_DEFAULT = "database.default";
     public static final String PROP_SCHEMA_DEFAULT = "schema.default";
     public static final String PROP_ACCOUNT_ID = "account.id";
@@ -67,12 +77,17 @@ public class EngineConfig {
     public static final String PROP_DURABILITY_WAL_ENABLED = "durability.walEnabled";
     public static final String PROP_DURABILITY_WAL_FILE = "durability.walFile";
     public static final String PROP_DURABILITY_CHECKPOINT_INTERVAL = "durability.checkpointInterval";
+    public static final String PROP_DURABILITY_WAL_REPLAY_STRICT = "durability.walReplayStrict";
     public static final String PROP_PERSISTENCE_AUTO_SAVE = "persistence.autoSave";
     public static final String PROP_PERSISTENCE_SAVE_INTERVAL_SECONDS = "persistence.saveIntervalSeconds";
     public static final String PROP_LOGGING_LEVEL = "logging.level";
     public static final String PROP_TASKS_AUTOSTART = "tasks.autostart";
     public static final String PROP_QUERY_HISTORY_SIZE = "query.history.size";
     public static final String PROP_QUERY_RESULT_CACHE_SIZE = "query.result.cache.size";
+    /** How many cells (values, over every row) the results kept for RESULT_SCAN may hold together. */
+    public static final String PROP_QUERY_RESULT_CACHE_CELLS = "query.result.cache.cells";
+    /** The cell budget of the results kept for RESULT_SCAN when the configuration names none. */
+    public static final int DEFAULT_QUERY_RESULT_CACHE_CELLS = 2_000_000;
     public static final String PROP_STAGE_S3_LOCAL_ROOT = "stage.s3.localRoot";
     /** Opt-in for {@code file://} (and bare local-path) stage URLs, which a real account refuses. */
     public static final String PROP_STAGE_FILE_URL_ENABLED = "stage.file.urlEnabled";
@@ -86,6 +101,7 @@ public class EngineConfig {
     private static final int DEFAULT_MAX_CONNECTIONS = 100;
     private static final int DEFAULT_REST_SYNC_WAIT_MS = 30000;
     private static final int DEFAULT_REST_RESULT_RETENTION_MS = 3600000;
+    private static final int DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES = 240;
     private static final String DEFAULT_DATABASE = "SNOWFLAKE";
     private static final String DEFAULT_SCHEMA = "PUBLIC";
     private static final String DEFAULT_ACCOUNT_ID = "ABC12345";
@@ -114,7 +130,8 @@ public class EngineConfig {
     // default-configured engine never writes persistence files into the current working directory.
     private static final String DEFAULT_DATA_DIR = resolveDefaultDataDir();
     private static final String DEFAULT_PERSISTENCE_DIRECTORY = DEFAULT_DATA_DIR;
-    private static final String DEFAULT_WAL_FILE = DEFAULT_DATA_DIR + "/wal.log";
+    /** The write-ahead log's name inside the persisted-data directory, when no file is configured for it. */
+    private static final String WAL_FILE_NAME = "wal.log";
 
     private final Properties properties;
 
@@ -169,6 +186,7 @@ public class EngineConfig {
         properties.setProperty(PROP_HTTP_MAX_CONNECTIONS, String.valueOf(DEFAULT_MAX_CONNECTIONS));
         properties.setProperty(PROP_HTTP_REST_SYNC_WAIT_MS, String.valueOf(DEFAULT_REST_SYNC_WAIT_MS));
         properties.setProperty(PROP_HTTP_REST_RESULT_RETENTION_MS, String.valueOf(DEFAULT_REST_RESULT_RETENTION_MS));
+        properties.setProperty(PROP_HTTP_SESSION_IDLE_TIMEOUT_MINUTES, String.valueOf(DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES));
         properties.setProperty(PROP_DATABASE_DEFAULT, DEFAULT_DATABASE);
         properties.setProperty(PROP_SCHEMA_DEFAULT, DEFAULT_SCHEMA);
         properties.setProperty(PROP_ACCOUNT_ID, DEFAULT_ACCOUNT_ID);
@@ -186,14 +204,15 @@ public class EngineConfig {
         properties.setProperty(PROP_PERSISTENCE_ENABLED, "false");
         properties.setProperty(PROP_PERSISTENCE_DIRECTORY, DEFAULT_PERSISTENCE_DIRECTORY);
         properties.setProperty(PROP_DURABILITY_WAL_ENABLED, "false");
-        properties.setProperty(PROP_DURABILITY_WAL_FILE, DEFAULT_WAL_FILE);
         properties.setProperty(PROP_DURABILITY_CHECKPOINT_INTERVAL, "0");
+        properties.setProperty(PROP_DURABILITY_WAL_REPLAY_STRICT, "false");
         properties.setProperty(PROP_PERSISTENCE_AUTO_SAVE, "true");
         properties.setProperty(PROP_PERSISTENCE_SAVE_INTERVAL_SECONDS, "60");
         properties.setProperty(PROP_TASKS_AUTOSTART, "false");
         properties.setProperty(PROP_LOGGING_LEVEL, "INFO");
         properties.setProperty(PROP_QUERY_HISTORY_SIZE, "10000");
         properties.setProperty(PROP_QUERY_RESULT_CACHE_SIZE, "500");
+        properties.setProperty(PROP_QUERY_RESULT_CACHE_CELLS, String.valueOf(DEFAULT_QUERY_RESULT_CACHE_CELLS));
         properties.setProperty(PROP_STAGE_S3_LOCAL_ROOT, DEFAULT_STAGE_S3_LOCAL_ROOT);
         properties.setProperty(PROP_STAGE_S3_LOCAL_MAPPINGS, "");
         properties.setProperty(PROP_STAGE_INTERNAL_LOCAL_ROOT, DEFAULT_STAGE_INTERNAL_LOCAL_ROOT);
@@ -237,6 +256,24 @@ public class EngineConfig {
         return getProperty(PROP_HTTP_HOST, DEFAULT_HTTP_HOST);
     }
 
+    /**
+     * The origins whose pages the HTTP server answers, as {@code http.cors.allowedOrigins} lists them, a comma
+     * apart: {@code https://localhost:18443,https://sheets.example.com}. None by default — the server takes no
+     * credentials, so a page is served only when its origin is named here, and never by a wildcard.
+     *
+     * @return the origins, each as written
+     */
+    public List<String> getCorsAllowedOrigins() {
+        final List<String> origins = new ArrayList<String>();
+        final String listed = getProperty(PROP_HTTP_CORS_ALLOWED_ORIGINS, "");
+        for (final String origin : listed.split(",")) {
+            if (!origin.trim().isEmpty()) {
+                origins.add(origin.trim());
+            }
+        }
+        return origins;
+    }
+
     public int getMaxConnections() {
         return getIntProperty(PROP_HTTP_MAX_CONNECTIONS, DEFAULT_MAX_CONNECTIONS);
     }
@@ -249,6 +286,15 @@ public class EngineConfig {
     /** How long a {@code /api/v2} result handle stays fetchable after it was issued. */
     public int getRestResultRetentionMs() {
         return getIntProperty(PROP_HTTP_REST_RESULT_RETENTION_MS, DEFAULT_REST_RESULT_RETENTION_MS);
+    }
+
+    /**
+     * How long an HTTP session may sit idle before the server ends it, in minutes; 0 when sessions never idle out.
+     * A negative value keeps the default.
+     */
+    public int getSessionIdleTimeoutMinutes() {
+        final int minutes = getIntProperty(PROP_HTTP_SESSION_IDLE_TIMEOUT_MINUTES, DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES);
+        return minutes < 0 ? DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES : minutes;
     }
 
     public String getDefaultDatabase() {
@@ -270,12 +316,12 @@ public class EngineConfig {
      * is WJ64893, and SHOW ACCOUNTS reports them in separate columns.
      */
     public String getAccountName() {
-        return getProperty(PROP_ACCOUNT_NAME, getAccountId()).toUpperCase();
+        return getProperty(PROP_ACCOUNT_NAME, getAccountId()).toUpperCase(Locale.ROOT);
     }
 
     /** The organization the account belongs to, which CURRENT_ORGANIZATION_NAME() answers with. */
     public String getOrganizationName() {
-        return getProperty(PROP_ORGANIZATION_NAME, DEFAULT_ORGANIZATION_NAME).toUpperCase();
+        return getProperty(PROP_ORGANIZATION_NAME, DEFAULT_ORGANIZATION_NAME).toUpperCase(Locale.ROOT);
     }
 
     public boolean isEnforcePrimaryKey() {
@@ -342,7 +388,7 @@ public class EngineConfig {
     }
 
     public String getDefaultUser() {
-        return getProperty(PROP_DEFAULT_USER, DEFAULT_USER).toUpperCase();
+        return getProperty(PROP_DEFAULT_USER, DEFAULT_USER).toUpperCase(Locale.ROOT);
     }
 
     public boolean isInMemoryStorage() {
@@ -388,8 +434,27 @@ public class EngineConfig {
         return getBooleanProperty(PROP_DURABILITY_WAL_ENABLED, false);
     }
 
+    /**
+     * Where the write-ahead log is kept: the file {@code durability.walFile} names, else {@code wal.log} inside
+     * the persisted-data directory, so a deployment that moves {@code persistence.directory} moves its log with
+     * it.
+     *
+     * @return the log's path
+     */
     public String getWalFile() {
-        return getProperty(PROP_DURABILITY_WAL_FILE, DEFAULT_WAL_FILE);
+        final String configured = properties.getProperty(PROP_DURABILITY_WAL_FILE);
+        return configured != null && !configured.trim().isEmpty() ? configured.trim()
+            : getPersistenceDirectory() + "/" + WAL_FILE_NAME;
+    }
+
+    /**
+     * When true, an engine whose write-ahead-log recovery could not re-apply every logged transaction refuses to
+     * start, and leaves the log as it was for a look at what failed. Off by default: recovery rolls back each
+     * transaction it cannot replay, goes on with the rest, and reports what it left out through
+     * {@code DatabaseEngine.getWalReplayFailures()}.
+     */
+    public boolean isWalReplayStrict() {
+        return getBooleanProperty(PROP_DURABILITY_WAL_REPLAY_STRICT, false);
     }
 
     /**
@@ -419,6 +484,15 @@ public class EngineConfig {
     }
 
     /**
+     * How many cells the results kept for RESULT_SCAN may hold together before the oldest are let go.
+     *
+     * @return the budget
+     */
+    public long getQueryResultCacheCells() {
+        return getIntProperty(PROP_QUERY_RESULT_CACHE_CELLS, DEFAULT_QUERY_RESULT_CACHE_CELLS);
+    }
+
+    /**
      * Local filesystem base for resolving {@code s3://bucket/key} references (an unmapped key resolves to
      * {@code <root>/bucket/key}). Lets JARs that live in S3-backed stages in production be loaded from local
      * disk for local/CI testing. Defaults to {@code ~/.frostlake_stages/s3}. See {@link S3PathResolver}.
@@ -428,13 +502,25 @@ public class EngineConfig {
     }
 
     /**
-     * Local filesystem root backing the implicit internal stages — the user stage ({@code @~}) and per-table
-     * stages ({@code @%table}), which have no {@code CREATE STAGE} / URL. User stages resolve to
-     * {@code <root>/users/<user>}, table stages to {@code <root>/tables/<db.schema.table>}. Defaults to
-     * {@code ~/.frostlake_stages/internal}.
+     * Local filesystem root backing the internal stages — the user stage ({@code @~}), the per-table stages
+     * ({@code @%table}) and the named internal stages. User stages resolve to {@code <root>/users/<user>}, table
+     * stages to {@code <root>/tables/<db.schema.table>}, for an engine with a write-ahead log or snapshot persistence
+     * when a root is configured — without one, such an engine keeps the tree in {@code stages} inside its data
+     * directory; any other engine keeps the same tree in a directory of its own below the root, deleted when it shuts
+     * down. Defaults to {@code ~/.frostlake_stages/internal}.
      */
     public String getStageInternalLocalRoot() {
         return getProperty(PROP_STAGE_INTERNAL_LOCAL_ROOT, DEFAULT_STAGE_INTERNAL_LOCAL_ROOT);
+    }
+
+    /**
+     * Whether the internal stage root is the default one rather than one configured: an engine whose data outlives
+     * it then keeps its stages in {@code stages} inside its data directory.
+     *
+     * @return whether no root of its own is configured
+     */
+    public boolean isStageInternalLocalRootDefault() {
+        return DEFAULT_STAGE_INTERNAL_LOCAL_ROOT.equals(getStageInternalLocalRoot());
     }
 
     /**

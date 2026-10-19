@@ -16,13 +16,18 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.types.BooleanType;
+
 import java.time.LocalDateTime;
 import java.util.List;
 
-/** IS_TIMESTAMP_NTZ(v) — TRUE when the value is a TIMESTAMP (LTZ/TZ alias here; the engine models all as NTZ). */
-public class IsTimestampNtz extends StructuredArgumentFunction {
+/**
+ * IS_TIMESTAMP_NTZ(v) — whether a VARIANT holds a TIMESTAMP_NTZ. The three timestamp predicates each know
+ * their own flavour and no other: a TIMESTAMP_TZ held in a VARIANT is no TIMESTAMP_NTZ and no
+ * TIMESTAMP_LTZ, and a text that spells a timestamp is none of them (live-verified).
+ */
+public class IsTimestampNtz extends VariantArgumentFunction {
     public IsTimestampNtz() { super("IS_TIMESTAMP_NTZ", BooleanType.BOOLEAN); }
 
     @Override

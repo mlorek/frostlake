@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.NumericConversionException;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
 
@@ -54,6 +55,11 @@ public final class VariantNumbers {
         final JsonNode node = variant.node();
         if (node == null || node.isNull()) {
             return null;
+        }
+        if (DecfloatTextNode.holds(node)) {
+            // A DECFLOAT member converts to neither: the VARIANT of a DECFLOAT 1.5, plus 1, is
+            // "Failed to cast variant value "1.5" to REAL" (live-verified).
+            throw refusal(node, target);
         }
         final Number member = ExpressionArithmetic.variantAsNumber(variant);
         if (member != null) {

@@ -1488,15 +1488,23 @@ def _frostlake_install_snowpark():
         def __init__(self, java_session):
             self._java = java_session
 
-        def _query(self, sql, params=None):
-            if params:
-                sql = _substitute_params(sql, params)
+        def _run(self, sql):
+            # The engine answers a refusal as a value, so no host exception crosses into Python: one that
+            # does while another language's frame lies below this one trips the polyglot runtime's checks.
             try:
-                result = self._java.sql(sql)
+                outcome = self._java.attempt(sql)
             except BaseException as e:
                 # Host exceptions from the Java facade are FOREIGN objects, not python Exception
                 # subclasses; only BaseException matches them.
                 raise SnowparkSQLException(str(e))
+            if outcome.refused():
+                raise SnowparkSQLException(str(outcome.refusal()))
+            return outcome.result()
+
+        def _query(self, sql, params=None):
+            if params:
+                sql = _substitute_params(sql, params)
+            result = self._run(sql)
             names = [str(n).upper() for n in result.columnNames()]
             sql_types = [str(t) for t in result.columnTypes()]
             rows = []
@@ -1508,10 +1516,7 @@ def _frostlake_install_snowpark():
             return names, sql_types, rows
 
         def _execute(self, sql):
-            try:
-                self._java.sql(sql)
-            except BaseException as e:
-                raise SnowparkSQLException(str(e))
+            self._run(sql)
 
         def _table_exists(self, name):
             # Catalog-side probe (no SQL round-trip): a failing probe query would be logged as an

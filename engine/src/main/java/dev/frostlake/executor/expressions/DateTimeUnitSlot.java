@@ -44,13 +44,13 @@ import java.util.Locale;
  * before the unit is even looked up, with live's own spacing: a space before the bracket's close and
  * none after it.
  */
-final class DateTimeUnitSlot {
+public final class DateTimeUnitSlot {
 
     private DateTimeUnitSlot() {
     }
 
     /** The argument index that is a unit slot for {@code funcName}, or -1 when it has none. */
-    static int positionIn(final String funcName) {
+    public static int positionIn(final String funcName) {
         switch (funcName) {
             case "DATEADD": case "DATEDIFF": case "DATE_TRUNC": case "DATE_PART":
             case "TIMEADD": case "TIMEDIFF": case "TIMESTAMPADD": case "TIMESTAMPDIFF":
@@ -88,7 +88,7 @@ final class DateTimeUnitSlot {
      * Live's refusal for a slot holding something it will not read as a unit. The spacing is its own —
      * {@code [UPPER('day') ]for function DATEADD} — and is reproduced as measured.
      */
-    static String notAUnitRefusal(final String echo, final String funcName) {
+    public static String notAUnitRefusal(final String echo, final String funcName) {
         return "Date/time component [" + echo + " ]for function " + funcName
             + " needs to be an identifier or a string literal.";
     }

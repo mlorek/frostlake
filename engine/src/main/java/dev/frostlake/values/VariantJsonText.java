@@ -77,7 +77,7 @@ public final class VariantJsonText {
         // rendering for everything else. That is not an optimisation: an XML-shaped value stringifies
         // as XML rather than as its JSON model, and the display path honours JSON_INDENT — rebuilding
         // either from the tree here would quietly turn it into something else.
-        if (node == null || XmlVariants.isXmlElement(node) || !holdsFiniteDouble(node, true)) {
+        if (node == null || XmlVariants.isXmlElement(node) || !holdsFiniteDouble(node)) {
             return null;
         }
         return render(node);
@@ -87,15 +87,15 @@ public final class VariantJsonText {
      * The JSON text a client reads for a semi-structured value, or null when it holds no DOUBLE and
      * the canonical text already is that text. Every DOUBLE takes the conversion form, a whole value
      * as much as a member: live displays {@code TO_VARIANT(1.5::FLOAT)} as {@code 1.500000000000000e+00}
-     * and {@code ARRAY_CONSTRUCT(1.0::FLOAT)} as {@code [1.000000000000000e+00]}. A VECTOR keeps its own
-     * text, since no display of one inside a VARIANT has been measured.
+     * and {@code ARRAY_CONSTRUCT(1.0::FLOAT)} as {@code [1.000000000000000e+00]}. A FLOAT VECTOR inside the
+     * value displays its elements the same way (live-verified).
      *
      * @param value the value
      * @return its display JSON text, or null when that is the canonical text
      */
     public static String displayTextOf(final VariantValue value) {
         final JsonNode node = value.node();
-        if (node == null || XmlVariants.isXmlElement(node) || !holdsFiniteDouble(node, false)) {
+        if (node == null || XmlVariants.isXmlElement(node) || !holdsFiniteDouble(node)) {
             return null;
         }
         final StringBuilder out = new StringBuilder();
@@ -197,27 +197,24 @@ public final class VariantJsonText {
         return Double.toString(value);
     }
 
-    /**
-     * Whether anywhere in the document there is a value this rule would rewrite; a VECTOR counts only
-     * when {@code vectorsToo}, which the conversions pass and the display does not.
-     */
-    private static boolean holdsFiniteDouble(final JsonNode node, final boolean vectorsToo) {
+    /** Whether anywhere in the document there is a value this rule would rewrite, a FLOAT VECTOR's elements too. */
+    private static boolean holdsFiniteDouble(final JsonNode node) {
         // A VECTOR's elements are doubles wearing a fixed-point node, so the plain test cannot see
         // them — but TO_JSON spells them the same fifteen-decimal way it spells any other double.
         if (TypedVectorNode.vectorValueOf(node) != null) {
-            return vectorsToo && TypedVectorNode.vectorValueOf(node).getElementType() == VectorElementType.FLOAT;
+            return TypedVectorNode.vectorValueOf(node).getElementType() == VectorElementType.FLOAT;
         }
         if (isRewritableDouble(node)) {
             return true;
         }
         for (int i = 0; i < node.size(); i++) {
-            if (node.isArray() && holdsFiniteDouble(node.get(i), vectorsToo)) {
+            if (node.isArray() && holdsFiniteDouble(node.get(i))) {
                 return true;
             }
         }
         if (node.isObject()) {
             for (final Map.Entry<String, JsonNode> member : node.properties()) {
-                if (holdsFiniteDouble(member.getValue(), vectorsToo)) {
+                if (holdsFiniteDouble(member.getValue())) {
                     return true;
                 }
             }
@@ -246,19 +243,40 @@ public final class VariantJsonText {
      */
     public static String render(final JsonNode node) {
         final StringBuilder out = new StringBuilder();
+        append(node, out, false);
+        return out.toString();
+    }
+
+    /**
+     * The JSON text PARSE_JSON reads back as the same value: the canonical text, with every DOUBLE spelled in
+     * full and with an exponent, which is what makes a number read from text a DOUBLE again. The canonical
+     * text alone says {@code 3.5} for one, a DECIMAL to whoever reads it back, and the conversion text rounds
+     * to sixteen digits.
+     *
+     * @param value the value
+     * @return the text that re-reads as it
+     */
+    public static String rereadableTextOf(final VariantValue value) {
+        final JsonNode node = value.node();
+        if (node == null || XmlVariants.isXmlElement(node) || !holdsFiniteDouble(node)) {
+            return value.text();
+        }
+        final StringBuilder out = new StringBuilder();
         append(node, out, true);
         return out.toString();
     }
 
-    private static void append(final JsonNode node, final StringBuilder out, final boolean vectorsToo) {
+    /** A DOUBLE in full, with the exponent that keeps it one: {@code 3.5e0}, {@code 1.0E20}. */
+    private static String exactDoubleText(final double value) {
+        final String shortest = Double.toString(value);
+        return shortest.indexOf('E') >= 0 ? shortest : shortest + "e0";
+    }
+
+    private static void append(final JsonNode node, final StringBuilder out, final boolean exact) {
         final VectorValue vector = TypedVectorNode.vectorValueOf(node);
-        if (vector != null && !vectorsToo) {
-            out.append(VariantText.canonical(node));
-            return;
-        }
         if (vector != null) {
-            // The vector's own elements, each in the fifteen-decimal form — a THIRD spelling of the
-            // same number, after the six-decimal display and the sixteen-digit variant text.
+            // The vector's own elements, each in the fifteen-decimal form — a second spelling of the
+            // same number, beside the vector's own six-decimal display.
             out.append('[');
             for (int i = 0; i < vector.dimension(); i++) {
                 if (i > 0) {
@@ -267,7 +285,7 @@ public final class VariantJsonText {
                 if (vector.getElementType() == VectorElementType.INT) {
                     out.append((long) vector.element(i));
                 } else {
-                    out.append(doubleText(vector.element(i)));
+                    out.append(exact ? exactDoubleText(vector.element(i)) : doubleText(vector.element(i)));
                 }
             }
             out.append(']');
@@ -282,7 +300,7 @@ public final class VariantJsonText {
                 }
                 first = false;
                 out.append(VariantText.canonical(StringNode.valueOf(member.getKey()))).append(':');
-                append(member.getValue(), out, vectorsToo);
+                append(member.getValue(), out, exact);
             }
             out.append('}');
             return;
@@ -293,13 +311,13 @@ public final class VariantJsonText {
                 if (i > 0) {
                     out.append(',');
                 }
-                append(node.get(i), out, vectorsToo);
+                append(node.get(i), out, exact);
             }
             out.append(']');
             return;
         }
         if (isRewritableDouble(node)) {
-            out.append(doubleText(node.doubleValue()));
+            out.append(exact ? exactDoubleText(node.doubleValue()) : doubleText(node.doubleValue()));
             return;
         }
         // Every other leaf converts as it displays — including the typed scalars, whose text is their

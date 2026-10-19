@@ -27,6 +27,8 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
@@ -35,7 +37,6 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -913,7 +914,7 @@ final class SubqueryPlanPrint {
 
     /** One table of the FROM clause, {@code PUBLIC.RT AS R}, registered in the scope; null when not modelled. */
     private String relation(final FrostlakeParser.TableReferenceContext reference, final Catalog catalog) {
-        if (reference.pivotClause() != null || reference.unpivotClause() != null || reference.sampleClause() != null) {
+        if (reference.pivotClause() != null || reference.unpivotClause() != null || reference.matchRecognizeClause() != null || reference.sampleClause() != null) {
             return null;
         }
         final FrostlakeParser.TableSourceContext source = reference.tableSource();
@@ -937,6 +938,12 @@ final class SubqueryPlanPrint {
             return null;
         }
         final String[] parts = ParseTreeText.qualifiedNameParts(source.tableQualifiedName());
+        if (parts.length == 1 && "DUAL".equalsIgnoreCase(parts[0]) && isPlainName(parts[0])
+                && aliasOf(reference) == null) {
+            // DUAL is the one row of a VALUES list (live-verified: (SELECT 12 FROM DUAL) prints FROM
+            // (VALUES (null)) "VALUES").
+            return "(VALUES (" + (mode == StrictPrintMode.CONVERSION ? "NULL" : "null") + ")) \"VALUES\"";
+        }
         if (parts.length == 1 && ctes.containsKey(parts[0])) {
             final String alias = aliasOf(reference);
             return derived(ctes.get(parts[0]), alias != null ? alias : parts[0], catalog);
@@ -1276,12 +1283,16 @@ final class SubqueryPlanPrint {
     /** One select item and its name, a star expanded over the one relation; false when not modelled. */
     private boolean collectItem(final FrostlakeParser.SelectItemContext item, final List<Expression> items,
                                 final List<String> names) {
-        if (SelectItemAccessors.isStarItem(item)) {
+        // A star qualified by the one relation the query reads is that relation's star.
+        final String[] starQualifier = SelectItemAccessors.isQualifiedStarItem(item)
+            ? SelectItemAccessors.getItemQualifierParts(item) : null;
+        if (SelectItemAccessors.isStarItem(item) || starQualifier != null) {
             if (tables.size() != 1 || !SelectItemAccessors.getStarModifiers(item).isEmpty()) {
                 return false;
             }
             final String qualifier = qualifiers.iterator().next();
-            if (!isPlainName(qualifier)) {
+            if (!isPlainName(qualifier)
+                    || starQualifier != null && (starQualifier.length != 1 || !qualifier.equals(starQualifier[0]))) {
                 return false;
             }
             for (final TableColumn column : tables.get(0).getColumns()) {
@@ -1336,10 +1347,10 @@ final class SubqueryPlanPrint {
             return " GROUP BY " + String.join(", ", keys);
         }
         for (final FrostlakeParser.GroupByElementContext element : group.groupByElement()) {
-            if (element.expression() == null) {
+            if (KeyContexts.of(element) == null) {
                 return null;
             }
-            final Expression key = new ExpressionAstBuilder().visit(element.expression());
+            final Expression key = new ExpressionAstBuilder().visit(KeyContexts.of(element));
             final Integer ordinal = ordinalOf(key, names.size());
             if (ordinal != null) {
                 keys.add(names.get(ordinal.intValue() - 1));
@@ -1370,7 +1381,7 @@ final class SubqueryPlanPrint {
             printer.watchColumns(bareColumns, writtenQualifiers);
             final List<String> keys = new ArrayList<>();
             for (final FrostlakeParser.OrderItemContext item : order.orderItem()) {
-                final Expression key = new ExpressionAstBuilder().visit(item.expression());
+                final Expression key = new ExpressionAstBuilder().visit(KeyContexts.of(item));
                 final Integer ordinal = ordinalOf(key, names.size());
                 final boolean descending = item.DESC() != null;
                 final boolean nullsFirst = item.FIRST() != null || (item.LAST() == null && descending);
@@ -1486,8 +1497,8 @@ final class SubqueryPlanPrint {
     }
 
     /** The subquery's text as a SELECT statement, or null when it is not one whole statement. */
-    private static FrostlakeParser.SelectStatementContext parsed(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+    static FrostlakeParser.SelectStatementContext parsed(final String text) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
         parser.removeErrorListeners();

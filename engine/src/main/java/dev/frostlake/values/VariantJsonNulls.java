@@ -19,6 +19,7 @@ package dev.frostlake.values;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -79,6 +80,12 @@ public final class VariantJsonNulls {
         VALUE_AGGREGATES.add("ARRAY_UNIQUE_AGG");
         VALUE_AGGREGATES.add("OBJECT_AGG");
         VALUE_AGGREGATES.add("HASH_AGG");
+        // A JSON null sorts after every number for the ordering aggregates over a VARIANT, and APPROX_COUNT_DISTINCT
+        // counts it as a value of its own (live-verified).
+        VALUE_AGGREGATES.add("MEDIAN");
+        VALUE_AGGREGATES.add("PERCENTILE_CONT");
+        VALUE_AGGREGATES.add("PERCENTILE_DISC");
+        VALUE_AGGREGATES.add("APPROX_COUNT_DISTINCT");
     }
 
     private VariantJsonNulls() {
@@ -100,7 +107,7 @@ public final class VariantJsonNulls {
 
     /** Whether an aggregate of this name reads a JSON null as a value rather than as missing input. */
     public static boolean isValueAggregate(final String aggregateName) {
-        return aggregateName != null && VALUE_AGGREGATES.contains(aggregateName.toUpperCase());
+        return aggregateName != null && VALUE_AGGREGATES.contains(aggregateName.toUpperCase(Locale.ROOT));
     }
 
     /**

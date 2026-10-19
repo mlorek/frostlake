@@ -18,31 +18,44 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.FoldedValues;
 import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.IntervalCells;
+import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.conversion.BooleanWords;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ApproximateValues;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -128,7 +141,9 @@ public final class SetOperations {
      * {@code SELECT 1, True AS c UNION ALL SELECT 5, 'Y'} yields TRUE and TRUE ('Y' is a TO_BOOLEAN
      * text form), the same union over {@code 'zzz'} fails "Boolean value 'zzz' is not recognized", and
      * {@code SELECT 1, 1 AS c UNION ALL SELECT 5, 'Y'} fails "Numeric value 'Y' is not recognized".
-     * Only a STRING on the later side is converted; every other shape is left to the key coercion.
+     * A STRING on the later side is converted, and so is a number under a BOOLEAN column —
+     * {@code SELECT TRUE UNION ALL SELECT 0} answers TRUE and FALSE, and any other number TRUE; every other
+     * shape is left to the key coercion.
      *
      * <p>The leading type comes from the first branch's VALUES when it produced any, and otherwise from
      * its declared COLUMN types — an EMPTY leading branch still types the union in Snowflake
@@ -151,10 +166,22 @@ public final class SetOperations {
             List<Object> replaced = null;
             for (int i = 0; i < values.size(); i++) {
                 final Object value = values.get(i);
+                final Object leading = i < firstValues.size() ? firstValues.get(i) : null;
+                if (value instanceof Number && !(value instanceof Boolean)) {
+                    // A number under a BOOLEAN column is that BOOLEAN: zero FALSE, anything else TRUE.
+                    final boolean booleanColumn = leading != null ? leading instanceof Boolean
+                        : declaredTypeAt(leadingColumns, i) instanceof BooleanType;
+                    if (booleanColumn) {
+                        if (replaced == null) {
+                            replaced = new ArrayList<>(values);
+                        }
+                        replaced.set(i, Boolean.valueOf(isNonZero((Number) value)));
+                    }
+                    continue;
+                }
                 if (!(value instanceof CharSequence)) {
                     continue;
                 }
-                final Object leading = i < firstValues.size() ? firstValues.get(i) : null;
                 final Object coerced = leading != null
                     ? coerceStringToLeadingType(leading, value.toString())
                     : coerceStringToDeclaredType(declaredTypeAt(leadingColumns, i), value.toString());
@@ -169,6 +196,16 @@ public final class SetOperations {
             converted.add(replaced == null ? row : new Row(replaced));
         }
         return converted;
+    }
+
+    private static boolean isNonZero(final Number value) {
+        if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).signum() != 0;
+        }
+        if (value instanceof Double || value instanceof Float) {
+            return value.doubleValue() != 0.0d;
+        }
+        return value instanceof BigInteger ? ((BigInteger) value).signum() != 0 : value.longValue() != 0L;
     }
 
     /**
@@ -191,7 +228,7 @@ public final class SetOperations {
         }
         for (int col = 0; col < unified.size(); col++) {
             final DataType target = unified.get(col).getStaticType();
-            if (!isStringCoercionTarget(target)) {
+            if (!isStringCoercionTarget(target) && !isSemiStructuredTarget(target)) {
                 continue;
             }
             // A NUMERIC unified type applies to EVERY branch, not only to the string ones: live
@@ -199,7 +236,8 @@ public final class SetOperations {
             // branch's 2.50 as 2.5000 under NUMBER(12,4). The gate below used to skip the whole
             // column unless some branch was a string, so a column declared with a scale handed back
             // values that did not carry it.
-            if (!(target instanceof NumericType) && !isTimestampTarget(target)) {
+            if (!(target instanceof NumericType) && !isTimestampTarget(target) && !isZonedTimestampTarget(target)
+                    && !isLocalTimestampTarget(target) && !isSemiStructuredTarget(target)) {
                 boolean anyStringBranch = false;
                 for (final List<ResultSetColumn> columns : branchColumns) {
                     if (col < columns.size()
@@ -230,14 +268,96 @@ public final class SetOperations {
         }
     }
 
+    /**
+     * Converts the DATE arms' values of a set operation that is no UNION toward the timestamp the other arms hold, in
+     * place in {@code branchRows}: live widens a DATE beside a TIMESTAMP before it compares the rows, so {@code
+     * '2024-01-01'::DATE INTERSECT '2024-01-01 00:00:00'::TIMESTAMP_LTZ} keeps the one row, as the timestamp of its
+     * midnight, and EXCEPT drops it (live-verified). Only a column whose arms are DATEs and timestamps of one kind
+     * is touched: a widening cannot fail, so it needs none of the conversions a subtractive operator leaves undone
+     * over an empty left side.
+     *
+     * @param branchRows    the rows to convert, each list replaced row by row
+     * @param branchColumns every arm's own columns
+     */
+    public static void widenDateBranches(final List<List<Row>> branchRows,
+                                         final List<List<ResultSetColumn>> branchColumns) {
+        final int width = branchColumns.isEmpty() ? 0 : branchColumns.get(0).size();
+        for (int col = 0; col < width; col++) {
+            final DataType target = widenedTimestamp(branchColumns, col);
+            if (target == null) {
+                continue;
+            }
+            for (final List<Row> rows : branchRows) {
+                for (int r = 0; r < rows.size(); r++) {
+                    final Row row = rows.get(r);
+                    if (col < row.getValues().size() && row.getValue(col) instanceof LocalDate) {
+                        final List<Object> replaced = new ArrayList<>(row.getValues());
+                        replaced.set(col, toUnifiedColumnValue(row.getValue(col), target));
+                        rows.set(r, new Row(replaced));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The timestamp a column's DATE arms widen into: the type of its timestamp arms where every arm is a DATE or a
+     * timestamp of one kind, NTZ, LTZ or TZ, and both are there; otherwise null.
+     */
+    private static DataType widenedTimestamp(final List<List<ResultSetColumn>> branchColumns, final int col) {
+        DataType timestamp = null;
+        boolean date = false;
+        for (final List<ResultSetColumn> columns : branchColumns) {
+            final DataType type = col < columns.size() ? columns.get(col).getStaticType() : null;
+            if (!(type instanceof DateTimeType)) {
+                return null;
+            }
+            if ("DATE".equalsIgnoreCase(type.getName())) {
+                date = true;
+            } else if (isTimestampTarget(type) || isLocalTimestampTarget(type) || isZonedTimestampTarget(type)) {
+                if (timestamp != null && !timestamp.getName().equalsIgnoreCase(type.getName())) {
+                    return null;
+                }
+                timestamp = timestamp == null ? type : timestamp;
+            } else {
+                return null;
+            }
+        }
+        return date ? timestamp : null;
+    }
+
+    /**
+     * Whether the unified type is a semi-structured ARRAY or OBJECT, which a VARIANT branch's value converts into
+     * (see toUnifiedColumnValue); a structured one keeps its own rules.
+     */
+    private static boolean isSemiStructuredTarget(final DataType target) {
+        return target instanceof ArrayType && !(target instanceof StructuredArrayType)
+            || target instanceof ObjectType && !(target instanceof StructuredObjectType);
+    }
+
+    /** Whether the unified type is a TIMESTAMP_TZ, which a naive branch's value becomes at the session's offset. */
+    private static boolean isZonedTimestampTarget(final DataType target) {
+        return target instanceof DateTimeType && "TIMESTAMP_TZ".equalsIgnoreCase(target.getName());
+    }
+
+    /** Whether the unified type is a TIMESTAMP_LTZ, which a DATE branch's value becomes in the session's zone. */
+    private static boolean isLocalTimestampTarget(final DataType target) {
+        return target instanceof DateTimeType && "TIMESTAMP_LTZ".equalsIgnoreCase(target.getName());
+    }
+
     /** Whether the unified type is a naive TIMESTAMP, which a DATE branch's value widens into. */
     private static boolean isTimestampTarget(final DataType target) {
         return target instanceof DateTimeType && "TIMESTAMP_NTZ".equalsIgnoreCase(target.getName());
     }
 
-    /** Whether {@code target} is a unified type string-branch values convert INTO. */
+    /**
+     * Whether {@code target} is a unified type string-branch values convert INTO. A UUID is one, whichever arm
+     * leads: {@code <uuid> UNION ALL 'AAAAAAAA-...'} reads both rows as UUIDs, the text lower-cased, and a text
+     * arm that spells no UUID is "UUID 'abc' is invalid, ..." (live-verified).
+     */
     private static boolean isStringCoercionTarget(final DataType target) {
-        if (target instanceof NumericType) {
+        if (target instanceof NumericType || target instanceof UuidType || isZonedTimestampTarget(target)
+                || isLocalTimestampTarget(target) || target instanceof BooleanType) {
             return true;
         }
         return target instanceof DateTimeType
@@ -249,6 +369,22 @@ public final class SetOperations {
     private static Object toUnifiedColumnValue(final Object value, final DataType target) {
         if (value == null) {
             return null;
+        }
+        if (target instanceof UuidType) {
+            return value instanceof CharSequence ? FoldedValues.presented(value, target) : value;
+        }
+        // A VARIANT branch's value under an ARRAY column becomes an array as TO_ARRAY makes one, 2 reading [2],
+        // {"a":1} reading [{"a":1}] and a JSON null reading NULL, and under an OBJECT column it must hold an object:
+        // 2 is "Failed to cast variant value 2 to OBJECT" (live-verified).
+        if (isSemiStructuredTarget(target)) {
+            return value instanceof VariantValue
+                ? ValueCaster.castValue(value, target instanceof ArrayType ? "ARRAY" : "OBJECT") : value;
+        }
+        if (NumericType.isDecfloat(target)) {
+            // Every branch's value becomes a DECFLOAT exactly, a FLOAT at its binary value and a text by its digits;
+            // DECFLOAT's nominal scale of 0 rounds nothing.
+            return value instanceof Number ? Decfloats.of((Number) value, "TO_DECFLOAT")
+                : ValueCaster.castValue(value, "DECFLOAT");
         }
         if (target instanceof NumericType) {
             final NumericType numeric = (NumericType) target;
@@ -272,13 +408,7 @@ public final class SetOperations {
                 return value;
             }
             if (value instanceof CharSequence) {
-                final BigDecimal parsed;
-                try {
-                    parsed = new BigDecimal(value.toString().trim());
-                } catch (final NumberFormatException notANumber) {
-                    throw new RuntimeException("Numeric value '" + value + "' is not recognized");
-                }
-                return parsed.setScale(numeric.getScale(), RoundingMode.HALF_UP);
+                return fixedText(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
             }
             if (value instanceof Double || value instanceof Float) {
                 return value;
@@ -298,6 +428,24 @@ public final class SetOperations {
                 return scaled;
             }
             return value;
+        }
+        // A DATE branch beside a TIMESTAMP_LTZ one becomes the instant of its midnight in the session's zone, as
+        // its cast does, and so meets an equal moment of the other branch (live-verified).
+        if (isLocalTimestampTarget(target)) {
+            return value instanceof LocalDate || value instanceof LocalDateTime
+                ? FoldedValues.presented(value, target) : value;
+        }
+        // A BOOLEAN column reads a text branch's value as a cast does: 'maybe' is "Boolean value 'maybe' is not
+        // recognized" (live-verified).
+        if (target instanceof BooleanType) {
+            return value instanceof CharSequence ? FoldedValues.presented(value, target) : value;
+        }
+        // A TIMESTAMP_NTZ branch after a TIMESTAMP_TZ one takes the session's offset, as its cast does, so it
+        // meets an equal moment of the other branch (live-verified); the other order is refused while the
+        // statement compiles.
+        if (isZonedTimestampTarget(target)) {
+            return value instanceof LocalDateTime || value instanceof LocalDate
+                ? SharedFunctionHelpers.toWrittenOffsetTimestamp(value) : value;
         }
         // A DATE branch beside a TIMESTAMP one becomes a timestamp at midnight, which is the value
         // live hands back — the DATE branch of d UNION ts reads 2020-01-01T00:00 and not 2020-01-01.
@@ -361,7 +509,7 @@ public final class SetOperations {
             return NumericType.isApproximate(declared) ? toApproximateBranchValue(text) : toNumericBranchValue(text);
         }
         if (declared instanceof DateTimeType) {
-            final String name = declared.getName().toUpperCase();
+            final String name = declared.getName().toUpperCase(Locale.ROOT);
             if (name.startsWith("DATE")) {
                 return toDateBranchValue(text);
             }
@@ -374,30 +522,49 @@ public final class SetOperations {
     }
 
     private static Object toBooleanBranchValue(final String text) {
-        final String lower = text.trim().toLowerCase();
-        if (lower.equals("true") || lower.equals("t") || lower.equals("yes") || lower.equals("y")
-                || lower.equals("on") || lower.equals("1")) {
-            return Boolean.TRUE;
+        final Boolean read = BooleanWords.read(text);
+        if (read == null) {
+            throw new RuntimeException("Boolean value '" + text + "' is not recognized");
         }
-        if (lower.equals("false") || lower.equals("f") || lower.equals("no") || lower.equals("n")
-                || lower.equals("off") || lower.equals("0")) {
-            return Boolean.FALSE;
-        }
-        throw new RuntimeException("Boolean value '" + text + "' is not recognized");
+        return read;
     }
 
-    /** A string beside a FLOAT: a hexadecimal number as the double it spells (see HexDoubleText), else as beside a NUMBER. */
+    /** A string beside a FLOAT: a hexadecimal number as the double it spells (see HexDoubleText), else its number. */
     private static Object toApproximateBranchValue(final String text) {
         final Double hex = HexDoubleText.withoutExponent(text.trim(), true);
-        return hex != null ? hex : toNumericBranchValue(text);
-    }
-
-    private static Object toNumericBranchValue(final String text) {
+        if (hex != null) {
+            return hex;
+        }
         try {
             return new BigDecimal(text.trim());
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
         }
+    }
+
+    private static Object toNumericBranchValue(final String text) {
+        return fixedText(text);
+    }
+
+    /**
+     * A string read as a NUMBER beside one, refused as a comparison refuses it (live-verified): not recognized as no
+     * number, or past the 128-bit carrier, and out of range from 10^38, which no NUMBER holds - so no NUMBER column
+     * a set operation or GREATEST and LEAST answer holds a 39-digit value (see
+     * {@link NumericRangeRefusal#fixedTextRefusal}).
+     */
+    private static BigDecimal fixedText(final String text) {
+        final String trimmed = text.trim();
+        final BigDecimal parsed;
+        try {
+            parsed = new BigDecimal(trimmed);
+        } catch (final NumberFormatException notANumber) {
+            throw new RuntimeException("Numeric value '" + text + "' is not recognized");
+        }
+        final String refusal = NumericRangeRefusal.fixedTextRefusal(trimmed, parsed);
+        if (refusal != null) {
+            throw new RuntimeException(refusal);
+        }
+        return parsed;
     }
 
     private static Object toTimestampBranchValue(final String text) {
@@ -817,6 +984,10 @@ public final class SetOperations {
             // single row there, the FIRST one — where Double.equals tells them apart. Adding a positive
             // zero folds -0.0 into 0.0 and leaves every other double alone. A column that mixes a
             // double with an exact number is NUMERIC below, whose decimal key has no sign of zero.
+            // A zoned timestamp keys by its moment: two spellings of one moment are one row (live-verified).
+            if (value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
+                return ValueComparisons.canonicalGroupKeyValue(value);
+            }
             return value instanceof Double ? Double.valueOf(((Double) value).doubleValue() + 0.0) : value;
         }
         switch (coercion) {
@@ -861,14 +1032,10 @@ public final class SetOperations {
                 return value;
             case BOOLEAN:
                 if (value instanceof CharSequence) {
-                    final String text = value.toString().trim().toLowerCase();
-                    if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
-                            || text.equals("on") || text.equals("1")) {
-                        return Boolean.TRUE;
-                    }
-                    if (text.equals("false") || text.equals("f") || text.equals("no") || text.equals("n")
-                            || text.equals("off") || text.equals("0")) {
-                        return Boolean.FALSE;
+                    // A boolean's spelling converts; any other text is left as it is (see BooleanWords).
+                    final Boolean read = BooleanWords.read(value.toString());
+                    if (read != null) {
+                        return read;
                     }
                 }
                 return value;

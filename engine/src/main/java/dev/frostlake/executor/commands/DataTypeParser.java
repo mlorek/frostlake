@@ -33,6 +33,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
+import dev.frostlake.types.StructuredLeafWidths;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
@@ -104,15 +105,22 @@ public final class DataTypeParser {
             return new VectorType(vectorElem, vectorDim);
         }
         // MAP(k, v) likewise holds its key/value types in nested dataTypeName contexts, so it must be
-        // recognized before the leaf-token branches those nested types would otherwise trigger.
-        if (ctx.MAP() != null && ctx.dataTypeName().size() == 2) {
-            final DataType mapKey = nested(ctx.dataTypeName(0), null, bareStringDefault);
-            final DataType mapValue = nested(ctx.dataTypeName(1), null, bareStringDefault);
+        // recognized before the leaf-token branches those nested types would otherwise trigger. Each of the
+        // two carries its own parameters: MAP(VARCHAR(5), NUMBER(10,2)).
+        if (ctx.MAP() != null && ctx.mapKey != null && ctx.mapValue != null) {
+            final DataType mapKey = nested(ctx.mapKey, ctx.mapKeyParameters, bareStringDefault);
+            final DataType mapValue = nested(ctx.mapValue, ctx.mapValueParameters, bareStringDefault);
             IntervalTypeSpec.refuseNested(mapValue, "MAP with value type");
-            return new MapType(mapKey, mapValue);
+            return new MapType(mapKey, mapValue, ctx.NOT() != null);
         }
         if (ctx.GEOGRAPHY() != null) return GeographyType.GEOGRAPHY;
-        if (ctx.GEOMETRY() != null) return GeometryType.GEOMETRY;
+        if (ctx.GEOMETRY() != null) {
+            // The name reads with one parameter and is refused for carrying it (live-verified).
+            if (typeParams != null) {
+                throw new RuntimeException(SqlCompilationError.of("Unsupported data type 'GEOMETRY with arguments'."));
+            }
+            return GeometryType.GEOMETRY;
+        }
         if (ctx.FILE() != null) {
             // FILE takes no type parameters — live, both `FILE(10)` and `FILE()` fail with
             // "syntax error ... unexpected '('". The grammar shares `dataTypeName typeParameters?` across
@@ -137,9 +145,10 @@ public final class DataTypeParser {
                 }
                 return ArrayType.ARRAY;
             }
-            final DataType element = nested(ctx.dataTypeName(0), ctx.typeParameters(), bareStringDefault);
+            final DataType element = nested(ctx.dataTypeName(0),
+                ctx.typeParameters().isEmpty() ? null : ctx.typeParameters(0), bareStringDefault);
             IntervalTypeSpec.refuseNested(element, "Array with element type");
-            return new StructuredArrayType(element);
+            return new StructuredArrayType(element, ctx.NOT() != null);
         }
         if (ctx.OBJECT() != null) {
             // `OBJECT` (no parentheses) is the plain semi-structured type; `OBJECT()` is the ZERO-FIELD
@@ -178,9 +187,11 @@ public final class DataTypeParser {
             }
             return NumericType.NUMBER;
         }
-        // DECFLOAT (decimal floating point) is approximated by DOUBLE — the engine has no
-        // arbitrary-exponent decimal representation.
-        if (ctx.DECFLOAT() != null) return NumericType.DOUBLE;
+        // DECFLOAT, a decimal of 38 significant digits whose point floats (see values.Decfloats).
+        if (ctx.DECFLOAT() != null) {
+            DeclaredWidthRules.checkDecfloatPrecision(typeParams);
+            return NumericType.DECFLOAT;
+        }
         if (ctx.FLOAT() != null || ctx.FLOAT4() != null || ctx.FLOAT8() != null || ctx.REAL() != null) return NumericType.FLOAT;
         if (ctx.DOUBLE() != null) return NumericType.FLOAT;   // DOUBLE and DOUBLE PRECISION are FLOAT
         // The character family collapses onto two Snowflake types, VARCHAR and CHAR, and the alias only
@@ -227,9 +238,16 @@ public final class DataTypeParser {
         // order classified it as TIME. Live it is TIMESTAMP_LTZ(9).
         if (ctx.TIMESTAMP() != null) {
             DeclaredWidthRules.checkTimestampScale(typeParams);
-            return ctx.LOCAL() != null
-                ? new DateTimeType("TIMESTAMP_LTZ", precision, true)
-                : new DateTimeType("TIMESTAMP", precision, false);
+            if (ctx.LOCAL() != null) {
+                return new DateTimeType("TIMESTAMP_LTZ", precision, true);
+            }
+            // TIMESTAMP WITH TIME ZONE and TIMESTAMP WITHOUT TIME ZONE name the zoned and the zoneless type whatever
+            // TIMESTAMP_TYPE_MAPPING says (live-verified).
+            if (ctx.ZONE() != null) {
+                return ctx.WITH() != null ? new DateTimeType("TIMESTAMP_TZ", precision, true)
+                    : new DateTimeType("TIMESTAMP_NTZ", precision, false);
+            }
+            return new DateTimeType("TIMESTAMP", precision, false);
         }
         // TIME carries its declared precision like the rest of the family — DESCRIBE spells it back
         // as TIME(3) when the column said so, and TIME(9) when it did not.
@@ -306,7 +324,10 @@ public final class DataTypeParser {
      * A type in a NESTED position — a structured {@code ARRAY(...)} element, an {@code OBJECT(...)} field
      * or a {@code MAP(...)} key/value. Identical to {@link #parse} except that FILE is rejected: live
      * {@code ARRAY(FILE)}, {@code OBJECT(x FILE)} and {@code MAP(VARCHAR, FILE)} all fail with
-     * "Unsupported data type 'FILE'." even though a top-level {@code f FILE} column is accepted.
+     * "Unsupported data type 'FILE'." even though a top-level {@code f FILE} column is accepted. In a CAST
+     * target, a VARCHAR or BINARY leaf written with no width is an UNSIZED leaf ({@link StructuredLeafWidths}),
+     * which SYSTEM$TYPEOF names bare: {@code ::OBJECT(a VARCHAR)} reads {@code OBJECT(a VARCHAR)} there where a
+     * column declared the same way reads {@code OBJECT(a VARCHAR(16777216))} (live-verified).
      */
     private static DataType nested(final FrostlakeParser.DataTypeNameContext ctx,
                                    final FrostlakeParser.TypeParametersContext typeParams,
@@ -314,7 +335,9 @@ public final class DataTypeParser {
         if (ctx.FILE() != null) {
             throw new RuntimeException("SQL compilation error:\nUnsupported data type 'FILE'.");
         }
-        return parse(ctx, typeParams, bareStringDefault);
+        final DataType leaf = parse(ctx, typeParams, bareStringDefault);
+        return bareStringDefault == CAST_STRING_DEFAULT && !hasTypeLength(typeParams)
+            ? StructuredLeafWidths.unsizedCastLeaf(leaf, CAST_STRING_DEFAULT) : leaf;
     }
 
     private static boolean hasTypeLength(final FrostlakeParser.TypeParametersContext typeParams) {

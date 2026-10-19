@@ -100,7 +100,7 @@ public final class StreamResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW STREAMS" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Stream '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Stream", RelationNames.qualifiedDisplay(call, name));
         }
         return toJson(rows.get(0));
     }

@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -37,7 +38,7 @@ import java.util.stream.Stream;
  * Supports local filesystem staging for data loading and unloading operations.
  * S3 stages are simulated using local filesystem paths.
  */
-public class Stage extends SqlObject {
+public class Stage extends SqlObject implements SessionScoped {
 
     private final StageType type;
     private String url;                 // file:///path/to/dir or s3://bucket/path
@@ -87,6 +88,38 @@ public class Stage extends SqlObject {
 
     public Stage(final String name, final StageType type, final String url) {
         this(name, type, url, "CSV", false, null, null);
+    }
+
+    /**
+     * The stage as a cloned schema holds it: the same URL, file format and its options, copy options, encryption and
+     * directory setting, its owner and tags. The constructor places the copy's local directory from the URL, as it
+     * placed this one's. An external stage's copy reads the same files, so it keeps the directory table's registered
+     * files too; an internal stage's copy starts with none of this stage's files and registers none.
+     *
+     * @return the copy
+     */
+    public Stage copy() {
+        final Stage copy = new Stage(getName(), type, url, fileFormat, encryption, getComment(), s3Resolver);
+        copy.encryptionType = encryptionType;
+        copy.fileFormatOptions.putAll(fileFormatOptions);
+        copy.copyOptions.putAll(copyOptions);
+        copy.directoryEnabled = directoryEnabled;
+        copy.directoryDeclared = directoryDeclared;
+        copy.directoryAutoRefresh = directoryAutoRefresh;
+        copy.temporary = temporary;
+        copy.credentials = credentials;
+        copy.encryptionKey = encryptionKey;
+        copy.directoryRefreshed = directoryRefreshed;
+        if (url != null) {
+            for (final Map.Entry<String, List<Object>> file : directoryRegistry.entrySet()) {
+                copy.directoryRegistry.put(file.getKey(), new ArrayList<>(file.getValue()));
+            }
+        }
+        copy.setOwner(getOwner());
+        for (final Map.Entry<String, String> tag : getTagValues().entrySet()) {
+            copy.setTag(tag.getKey(), tag.getValue());
+        }
+        return copy;
     }
 
     public Stage(final String name, final StageType type, final String url, final String fileFormat,
@@ -153,6 +186,21 @@ public class Stage extends SqlObject {
         return type;
     }
 
+    /**
+     * The cloud an external stage's location is in, by its scheme in any case: {@code AZURE://…} is an Azure stage as
+     * {@code azure://…} is (live-verified).
+     *
+     * @return AWS, AZURE or GCP, or null for a location in none, an internal stage's
+     */
+    public String locationCloud() {
+        if (url == null) {
+            return null;
+        }
+        final int end = url.indexOf("://");
+        final String scheme = end < 0 ? "" : url.substring(0, end).toLowerCase(Locale.ROOT);
+        return "s3".equals(scheme) ? "AWS" : "azure".equals(scheme) ? "AZURE" : "gcs".equals(scheme) ? "GCP" : null;
+    }
+
     public String getUrl() {
         return url;
     }
@@ -172,6 +220,106 @@ public class Stage extends SqlObject {
 
     public void setEncryptionType(final String encryptionType) {
         this.encryptionType = encryptionType;
+    }
+
+    // What SHOW STAGES says of the stage beyond its location: whether it is temporary, and whether it was given
+    // credentials or an encryption key of its own.
+    private boolean temporary;
+    private boolean credentials;
+    private boolean encryptionKey;
+
+    /** Whether the stage was created TEMPORARY. */
+    @Override
+    public boolean isTemporary() {
+        return temporary;
+    }
+
+    public void setTemporary(final boolean temporary) {
+        this.temporary = temporary;
+    }
+
+    /** Whether the stage was given CREDENTIALS. */
+    public boolean hasCredentials() {
+        return credentials;
+    }
+
+    public void setCredentials(final boolean credentials) {
+        this.credentials = credentials;
+    }
+
+    /** Whether the stage's ENCRYPTION names a key: a MASTER_KEY or a KMS_KEY_ID. */
+    public boolean hasEncryptionKey() {
+        return encryptionKey;
+    }
+
+    public void setEncryptionKey(final boolean encryptionKey) {
+        this.encryptionKey = encryptionKey;
+    }
+
+    // Whether a DIRECTORY property list was ever written for the stage, at CREATE or by an ALTER … SET: a stage
+    // that never had one reports no directory flag at all, where one that had reports TRUE or FALSE.
+    private boolean directoryDeclared;
+
+    /** Whether the stage was ever given a DIRECTORY property list. */
+    public boolean isDirectoryDeclared() {
+        return directoryDeclared;
+    }
+
+    public void setDirectoryDeclared(final boolean directoryDeclared) {
+        this.directoryDeclared = directoryDeclared;
+    }
+
+    // DIRECTORY = (AUTO_REFRESH = …), kept as written.
+    private boolean directoryAutoRefresh;
+
+    /** The directory table's AUTO_REFRESH property. */
+    public boolean isDirectoryAutoRefresh() {
+        return directoryAutoRefresh;
+    }
+
+    public void setDirectoryAutoRefresh(final boolean directoryAutoRefresh) {
+        this.directoryAutoRefresh = directoryAutoRefresh;
+    }
+
+    // The id a directory refresh names the stage's files under, {@code stages/<id>/<path>}: the stage's own,
+    // the same at every refresh.
+    private String directoryId;
+
+    /** The id a directory refresh names the stage's files under, or null before one was given. */
+    public String getDirectoryId() {
+        return directoryId;
+    }
+
+    public void setDirectoryId(final String directoryId) {
+        this.directoryId = directoryId;
+    }
+
+    /**
+     * Turns the directory table on or off. Turning it off forgets the files it had registered and when it was
+     * last refreshed, so a table turned on again starts empty; turning on a table that is on changes nothing.
+     *
+     * @param enable whether the directory table is on
+     */
+    public void switchDirectory(final boolean enable) {
+        if (enable == directoryEnabled) {
+            return;
+        }
+        directoryEnabled = enable;
+        directoryRegistry.clear();
+        directoryRefreshed = null;
+    }
+
+    // When the directory table last registered the stage's files: at a CREATE that enables it and at each
+    // REFRESH, never at an ALTER that enables it.
+    private Instant directoryRefreshed;
+
+    /** When the directory table was last refreshed, or null when it never was. */
+    public Instant getDirectoryRefreshed() {
+        return directoryRefreshed;
+    }
+
+    public void setDirectoryRefreshed(final Instant directoryRefreshed) {
+        this.directoryRefreshed = directoryRefreshed;
     }
 
     public Instant getCreatedAt() {

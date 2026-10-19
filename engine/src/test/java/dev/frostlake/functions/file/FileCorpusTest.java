@@ -19,6 +19,8 @@ package dev.frostlake.functions.file;
 import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -278,7 +280,7 @@ public class FileCorpusTest extends StagedFileTestSupport {
 
     /** An FL_IS_* answer, case-folded the way every existing FlIs*Test helper folds it. */
     private String predicate(final String sql) {
-        return scalar(sql).toUpperCase();
+        return scalar(sql).toUpperCase(Locale.ROOT);
     }
 
     private String contentTypeOf(final String relativePath) {
@@ -309,7 +311,7 @@ public class FileCorpusTest extends StagedFileTestSupport {
             // account prints TRUE/FALSE, so they are folded here exactly as every existing FlIs*Test
             // helper folds them -- a display convention, not a classification difference. Columns 0-1
             // are compared verbatim: FL_GET_FILE_TYPE really is lower-case ('image', 'unknown') on both.
-            joined.append(i >= 2 ? text.toUpperCase() : text);
+            joined.append(i >= 2 ? text.toUpperCase(Locale.ROOT) : text);
         }
         return joined.toString();
     }

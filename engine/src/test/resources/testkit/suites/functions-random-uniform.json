@@ -33,13 +33,11 @@
       {"sql": "SELECT r >= 0.0 AND r < 1.0 FROM (SELECT UNIFORM(0.0::FLOAT, 1.0::FLOAT, RANDOM()) AS r)",
        "expect": {"value": "true"}}
     ]},
-    {"name": "a-constant-seed-generator-repeats-across-rows",
-     "skip": {"backends": ["snowflake"], "reason": "the RNG algorithm is Snowflake-internal"},
-     "steps": [
+    {"name": "a-seeded-generator-varies-across-rows", "steps": [
       {"sql": "CREATE TABLE t (id INTEGER)"},
       {"sql": "INSERT INTO t SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 50))"},
-      {"sql": "SELECT COUNT(DISTINCT r) FROM (SELECT UNIFORM(1, 100, RANDOM(7)) AS r FROM t)",
-       "expect": {"value": "1"}}
+      {"sql": "SELECT COUNT(DISTINCT r) > 1 FROM (SELECT UNIFORM(1, 100, RANDOM(7)) AS r FROM t)",
+       "expect": {"value": "true"}}
     ]},
     {"name": "uniform-requires-a-generator-argument", "steps": [
       {"sql": "CREATE TABLE t (id INTEGER)"},

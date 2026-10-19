@@ -29,6 +29,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.task.GraphRunGroup;
 import dev.frostlake.task.TaskGraphs;
 import dev.frostlake.task.TaskTrigger;
+import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
@@ -58,6 +59,10 @@ public final class TaskGraphRuns {
     /** How far ahead a scheduled graph run is listed. */
     private static final int LOOK_AHEAD_DAYS = 8;
     private static final String FAILED = TaskExecutionState.FAILED.name();
+    /** The width the account declares every text column of the task listings with. */
+    static final StringType TEXT = new StringType("VARCHAR", DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR);
+    /** The type the account declares their versions, run ids and attempt numbers with. */
+    static final NumericType WHOLE_NUMBER = new NumericType("NUMBER", 38, 0);
 
     /** Static helpers only. */
     private TaskGraphRuns() {
@@ -87,30 +92,33 @@ public final class TaskGraphRuns {
     }
 
     /**
-     * The RESULT_LIMIT argument: 1000 when absent.
+     * The RESULT_LIMIT argument of the task history functions (live-verified): a number of 0 to 10000, its
+     * fraction dropped; a NULL is the limit a call leaves out, a text is refused by its type and a negative
+     * number by its value.
      *
-     * @throws RuntimeException when it exceeds 10000; below one it is taken as absent
+     * @param value  the argument's value, or null when it is absent or NULL
+     * @param absent the limit a call leaves out
+     * @return the limit
+     * @throws RuntimeException when it is no number, is negative or exceeds 10000
      */
-    static int limit(final Object value, final String function) {
+    static int limit(final Object value, final int absent) {
         if (value == null) {
-            return DEFAULT_LIMIT;
+            return absent;
         }
-        final long limit;
-        try {
-            limit = value instanceof Number ? ((Number) value).longValue() : Long.parseLong(text(value).trim());
-        } catch (final NumberFormatException notNumeric) {
-            throw new RuntimeException(SqlCompilationError.of("Invalid value " + value
-                + " for argument RESULT_LIMIT of function " + function + "."));
+        if (!(value instanceof Number)) {
+            throw new RuntimeException(SqlCompilationError.of("invalid type [VARCHAR(" + text(value).length()
+                + ")] for parameter 'RESULT_LIMIT'"));
         }
-        if (limit > MAX_LIMIT) {
+        final Number number = (Number) value;
+        if (number.doubleValue() < 0) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value [" + value
+                + "] for parameter 'RESULT_LIMIT'"));
+        }
+        if (number.longValue() > MAX_LIMIT) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Value for parameter RESULT_LIMIT exceeds maximum allowable value (10,000)."));
         }
-        if (limit < 1) {
-            // A limit below one is taken as no limit given.
-            return DEFAULT_LIMIT;
-        }
-        return (int) limit;
+        return (int) number.longValue();
     }
 
     /**
@@ -119,13 +127,13 @@ public final class TaskGraphRuns {
      */
     static List<ResultSetColumn> columns(final boolean completed) {
         final List<ResultSetColumn> columns = new ArrayList<>(Arrays.asList(
-            new ResultSetColumn("ROOT_TASK_NAME", StringType.VARCHAR),
-            new ResultSetColumn("DATABASE_NAME", StringType.VARCHAR),
-            new ResultSetColumn("SCHEMA_NAME", StringType.VARCHAR),
-            new ResultSetColumn("STATE", StringType.VARCHAR),
-            new ResultSetColumn("FIRST_ERROR_TASK_NAME", StringType.VARCHAR),
-            new ResultSetColumn("FIRST_ERROR_CODE", NumericType.BIGINT),
-            new ResultSetColumn("FIRST_ERROR_MESSAGE", StringType.VARCHAR),
+            new ResultSetColumn("ROOT_TASK_NAME", TEXT),
+            new ResultSetColumn("DATABASE_NAME", TEXT),
+            new ResultSetColumn("SCHEMA_NAME", TEXT),
+            new ResultSetColumn("STATE", TEXT),
+            new ResultSetColumn("FIRST_ERROR_TASK_NAME", TEXT),
+            new ResultSetColumn("FIRST_ERROR_CODE", TEXT),
+            new ResultSetColumn("FIRST_ERROR_MESSAGE", TEXT),
             new ResultSetColumn("SCHEDULED_TIME", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("QUERY_START_TIME", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("NEXT_SCHEDULED_TIME", ShowResultHelpers.CREATED_ON)));
@@ -133,16 +141,16 @@ public final class TaskGraphRuns {
             columns.add(new ResultSetColumn("COMPLETED_TIME", ShowResultHelpers.CREATED_ON));
         }
         columns.addAll(Arrays.asList(
-            new ResultSetColumn("ROOT_TASK_ID", StringType.VARCHAR),
-            new ResultSetColumn("GRAPH_VERSION", NumericType.BIGINT),
-            new ResultSetColumn("RUN_ID", NumericType.BIGINT),
-            new ResultSetColumn("ATTEMPT_NUMBER", NumericType.BIGINT),
-            new ResultSetColumn("SCHEDULED_FROM", StringType.VARCHAR),
-            new ResultSetColumn("CONFIG", StringType.VARCHAR),
-            new ResultSetColumn("GRAPH_RUN_GROUP_ID", StringType.VARCHAR),
+            new ResultSetColumn("ROOT_TASK_ID", TEXT),
+            new ResultSetColumn("GRAPH_VERSION", WHOLE_NUMBER),
+            new ResultSetColumn("RUN_ID", WHOLE_NUMBER),
+            new ResultSetColumn("ATTEMPT_NUMBER", WHOLE_NUMBER),
+            new ResultSetColumn("SCHEDULED_FROM", TEXT),
+            new ResultSetColumn("CONFIG", TEXT),
+            new ResultSetColumn("GRAPH_RUN_GROUP_ID", TEXT),
             new ResultSetColumn("BACKFILL_INFO", new ObjectType()),
-            new ResultSetColumn("SCHEDULED_BY_USER", StringType.VARCHAR)));
-        return columns;
+            new ResultSetColumn("SCHEDULED_BY_USER", TEXT)));
+        return DeclaredColumnTypes.typed(columns);
     }
 
     /**
@@ -185,58 +193,77 @@ public final class TaskGraphRuns {
         return newestFirst(rows, 10, limit);
     }
 
+    /**
+     * One row per attempt of each graph run of the root: its first attempt, then one more for each retry, as the
+     * account counts them (live-verified). An attempt is told from its own task runs — its state, first error and
+     * completion — and a retry's SCHEDULED_TIME is its first run's, scheduled from MANUAL RETRY; every attempt keeps
+     * the graph run's RUN_ID and GRAPH_RUN_GROUP_ID. A retry's QUERY_START_TIME is when the root's run in it
+     * started, or, when the retry does not run the root, when its first run started if that run succeeded: a retry
+     * whose first run failed tells none.
+     */
     private static void addCompleted(final List<Row> rows, final Task root, final Schema schema,
                                      final boolean errorOnly) {
-        final List<TaskExecution> rootRuns = root.getExecutionHistory();
-        final List<Task> graph = TaskGraphs.descendants(schema, root, true);
-        for (int i = 0; i < rootRuns.size(); i++) {
-            final TaskExecution run = rootRuns.get(i);
+        final List<TaskExecution> graphRuns = TaskGraphs.graphRuns(root);
+        final List<Task> tasks = new ArrayList<>();
+        tasks.add(root);
+        tasks.addAll(TaskGraphs.descendants(schema, root, true));
+        for (int i = 0; i < graphRuns.size(); i++) {
+            final TaskExecution run = graphRuns.get(i);
             final LocalDateTime start = run.getStartTime();
-            final LocalDateTime until = i + 1 < rootRuns.size() ? rootRuns.get(i + 1).getStartTime() : null;
-            boolean failed = FAILED.equals(run.getState());
-            TaskExecution firstError = failed ? run : null;
-            String firstErrorTask = failed ? root.getName() : null;
-            LocalDateTime completed = run.getEndTime();
-            for (final Task task : graph) {
-                final TaskExecution last = lastRunWithin(task, start, until);
-                if (last == null) {
-                    continue;
-                }
-                if (last.getEndTime() != null && (completed == null || last.getEndTime().isAfter(completed))) {
-                    completed = last.getEndTime();
-                }
-                if (FAILED.equals(last.getState())) {
-                    failed = true;
-                    if (firstError == null || before(last, firstError)) {
-                        firstError = last;
-                        firstErrorTask = task.getName();
-                    }
-                }
+            final LocalDateTime until = i + 1 < graphRuns.size() ? graphRuns.get(i + 1).getStartTime() : null;
+            final int attempts = TaskGraphs.lastAttempt(schema, root, start, until);
+            for (int attempt = 1; attempt <= attempts; attempt++) {
+                addAttempt(rows, root, schema, tasks, run, until, attempt, errorOnly);
             }
-            if (errorOnly && !failed) {
-                continue;
-            }
-            final String state = failed ? FAILED : TaskExecutionState.SUCCEEDED.name();
-            rows.add(row(true, root, schema, state, run.getScheduledFrom(), firstErrorTask,
-                firstError == null ? null : firstError.getErrorMessage(),
-                ShowResultHelpers.createdOn(run.getScheduledTime()), ShowResultHelpers.createdOn(start),
-                ShowResultHelpers.createdOn(completed)));
         }
     }
 
-    private static TaskExecution lastRunWithin(final Task task, final LocalDateTime start,
-                                               final LocalDateTime until) {
-        TaskExecution last = null;
-        for (final TaskExecution run : task.getExecutionHistory()) {
-            final LocalDateTime began = run.getStartTime();
-            if (began == null || start == null || began.isBefore(start)) {
+    private static void addAttempt(final List<Row> rows, final Task root, final Schema schema, final List<Task> tasks,
+                                   final TaskExecution graphRun, final LocalDateTime until, final int attempt,
+                                   final boolean errorOnly) {
+        TaskExecution first = null;
+        TaskExecution rootRun = null;
+        TaskExecution firstError = null;
+        String firstErrorTask = null;
+        LocalDateTime completed = null;
+        for (final Task task : tasks) {
+            final TaskExecution last = TaskGraphs.lastRunWithin(task, graphRun.getStartTime(), until, attempt);
+            if (last == null) {
                 continue;
             }
-            if (until == null || began.isBefore(until)) {
-                last = run;
+            if (task == root) {
+                rootRun = last;
+            }
+            if (first == null || before(last, first)) {
+                first = last;
+            }
+            if (last.getEndTime() != null && (completed == null || last.getEndTime().isAfter(completed))) {
+                completed = last.getEndTime();
+            }
+            if (FAILED.equals(last.getState()) && (firstError == null || before(last, firstError))) {
+                firstError = last;
+                firstErrorTask = task.getName();
             }
         }
-        return last;
+        if (first == null || errorOnly && firstError == null) {
+            return;
+        }
+        final String state = firstError != null ? FAILED : TaskExecutionState.SUCCEEDED.name();
+        final boolean retry = attempt > 1;
+        final LocalDateTime queryStart;
+        if (!retry) {
+            queryStart = graphRun.getStartTime();
+        } else if (rootRun != null) {
+            queryStart = rootRun.getStartTime();
+        } else {
+            queryStart = FAILED.equals(first.getState()) ? null : first.getStartTime();
+        }
+        rows.add(row(true, root, schema, state,
+            retry ? TaskTrigger.MANUAL_RETRY.reported() : graphRun.getScheduledFrom(), firstErrorTask,
+            firstError == null ? null : firstError.getErrorMessage(),
+            ShowResultHelpers.createdOn(retry ? first.getScheduledTime() : graphRun.getScheduledTime()),
+            ShowResultHelpers.createdOn(queryStart), ShowResultHelpers.createdOn(completed),
+            TaskGraphs.runId(graphRun.getScheduledTime()), attempt));
     }
 
     private static boolean before(final TaskExecution a, final TaskExecution b) {
@@ -251,7 +278,14 @@ public final class TaskGraphRuns {
                            final String scheduledFrom, final String firstErrorTask, final String firstErrorMessage,
                            final OffsetDateTime scheduled, final OffsetDateTime queryStart,
                            final OffsetDateTime completed) {
-        final Long runId = scheduled == null ? null : Long.valueOf(scheduled.toInstant().toEpochMilli());
+        return row(completedShape, root, schema, state, scheduledFrom, firstErrorTask, firstErrorMessage, scheduled,
+            queryStart, completed, scheduled == null ? null : Long.valueOf(scheduled.toInstant().toEpochMilli()), 1);
+    }
+
+    private static Row row(final boolean completedShape, final Task root, final Schema schema, final String state,
+                           final String scheduledFrom, final String firstErrorTask, final String firstErrorMessage,
+                           final OffsetDateTime scheduled, final OffsetDateTime queryStart,
+                           final OffsetDateTime completed, final Long runId, final int attempt) {
         final String group = GraphRunGroup.id(root.getId(), runId);
         final OffsetDateTime next = root.isActive() && root.getSchedule() != null
             ? ShowResultHelpers.createdOn(root.getNextRunTime()) : null;
@@ -261,7 +295,7 @@ public final class TaskGraphRuns {
         if (completedShape) {
             cells.add(completed);
         }
-        cells.addAll(Arrays.<Object>asList(root.getId(), Long.valueOf(1L), runId, Long.valueOf(1L), scheduledFrom,
+        cells.addAll(Arrays.<Object>asList(root.getId(), Long.valueOf(1L), runId, Long.valueOf(attempt), scheduledFrom,
             null, group, null, null));
         return new Row(cells);
     }

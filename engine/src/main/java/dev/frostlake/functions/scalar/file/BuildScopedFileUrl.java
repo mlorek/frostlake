@@ -100,7 +100,7 @@ public class BuildScopedFileUrl extends StageUrlFunction {
 
     /** A query-id-shaped segment, the same for every call of the statement running. */
     private static String statementQueryId() {
-        final Instant start = StatementClock.statementStart();
+        final Instant start = StatementClock.observedStatementStart();
         if (start == null) {
             return UUID.randomUUID().toString();
         }

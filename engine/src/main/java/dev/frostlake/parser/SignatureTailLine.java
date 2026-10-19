@@ -97,26 +97,127 @@ public final class SignatureTailLine {
      */
     private static void requireSignatureReading(final FrostlakeParser.SqlScriptContext script, final String sql,
                                                 final SyntaxErrorListener listener) {
+        requireStatementReadings(script, sql);
         final SignatureRecovery reading = SignatureRecovery.of(script, sql);
-        final List<Token> faults = reading == null ? null : reading.faults();
-        if (faults == null || faults.isEmpty() || faultBefore(listener, reading.open())) {
+        final List<String> lines = reading == null ? null : reading.lines();
+        if (lines == null || faultBefore(listener, reading.open())) {
             return;
         }
-        final List<String> lines = new ArrayList<>();
-        for (final Token token : faults) {
-            lines.add(SyntaxErrorListener.sentence(token));
+        if (lines.isEmpty()) {
+            // The account reads the statement whole. Where this grammar does not — a stage reference of the account's
+            // own spelling, a backticked name — the properties are judged as the account judges them.
+            final String refused = listener.hasErrors() ? reading.propertyRefusal() : null;
+            if (refused != null) {
+                throw new RuntimeException(SqlCompilationError.of(refused));
+            }
+            return;
         }
         throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
     }
 
-    /** Whether the parse refused something before {@code open}, or refused its text at the lexer. */
+    /**
+     * Refuse a script of several statements in which a DROP's or a DESCRIBE's signature is faulty: each such
+     * statement with the lines the account reports for it, read on its own, and every other statement with its own
+     * lines, as if the faulty ones were not there — {@code DESCRIBE TABLE t ((a)); SELECT 1 x y} is the '(', the ')'
+     * and the y (live-verified).
+     */
+    private static void requireStatementReadings(final FrostlakeParser.SqlScriptContext script, final String sql) {
+        final List<String> lines = new ArrayList<>();
+        // The lines of one reading keep the order the account reports them in: only statements are put in order.
+        final List<int[]> places = new ArrayList<>();
+        char[] text = null;
+        for (final SignatureRecovery reading : SignatureRecovery.ofStatements(script, sql)) {
+            final List<String> faults = reading.lines();
+            if (faults == null || faults.isEmpty()) {
+                continue;
+            }
+            lines.addAll(faults);
+            final int[] opens = LeadingCommentOffset.rebase(reading.open().getLine(),
+                reading.open().getCharPositionInLine());
+            for (int i = 0; i < faults.size(); i++) {
+                places.add(opens);
+            }
+            if (reading.readsABlockStatement()) {
+                if (reading.givesConstructUp() && reading.last().getType() == FrostlakeLexer.SEMI) {
+                    final List<Token> spoken = BlockReadOn.spoken(sql);
+                    final int semicolon = BlockReadOn.indexAt(spoken, reading.last().getStartIndex());
+                    if (semicolon >= 0) {
+                        lines.addAll(BlockReadOn.linesAfter(spoken, semicolon));
+                    }
+                } else if (reading.nameDueAtItsEnd()) {
+                    // A name due at the ';' reads the next statement's first word as that name.
+                    final List<Token> spoken = BlockReadOn.spoken(sql);
+                    final int semicolon = BlockReadOn.indexAt(spoken, reading.last().getStartIndex());
+                    if (semicolon >= 0) {
+                        lines.addAll(SignatureRecovery.namedPastItsEnd(spoken, semicolon));
+                    }
+                }
+                // A block is refused for its first faulty statement.
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
+            }
+            if (text == null) {
+                text = sql.toCharArray();
+            }
+            // A statement whose own end was refused takes the rest of the text with it.
+            final int stop = reading.readsNoFurther() ? text.length - 1 : reading.last().getStopIndex();
+            for (int i = reading.ownStatement().getStart().getStartIndex(); i <= stop && i < text.length; i++) {
+                if (text[i] != '\n') {
+                    text[i] = ' ';
+                }
+            }
+            if (reading.readsNoFurther()) {
+                break;
+            }
+        }
+        if (lines.isEmpty()) {
+            return;
+        }
+        if (SignatureRecovery.holdsAStatement(new String(text))) {
+            for (final String line : SyntaxErrorListener.linesReportedFor(new String(text), true)) {
+                lines.add(line);
+                places.add(SyntaxErrorListener.sentenceCoordinates(line));
+            }
+        }
+        final List<String> ordered = new ArrayList<>();
+        final List<int[]> orderedAt = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            final int[] at = places.get(i);
+            int place = ordered.size();
+            while (at != null && place > 0) {
+                final int[] earlier = orderedAt.get(place - 1);
+                if (earlier == null || !before(at, earlier)) {
+                    break;
+                }
+                place--;
+            }
+            ordered.add(place, lines.get(i));
+            orderedAt.add(place, at);
+        }
+        throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", ordered)), ordered, sql);
+    }
+
+    /**
+     * Whether the parse refused something before {@code open}. A text this lexer refuses is reported by a line that
+     * names no token: the reading has placed that refusal at or after the signature, so only a token refused before
+     * it counts.
+     */
     private static boolean faultBefore(final SyntaxErrorListener listener, final Token open) {
         final String first = listener.firstReportedLine();
         if (first == null) {
             return false;
         }
-        final int[] at = first.startsWith("syntax error") ? SyntaxErrorListener.sentenceCoordinates(first) : null;
-        return at == null || before(at, LeadingCommentOffset.rebase(open.getLine(), open.getCharPositionInLine()));
+        final int[] opens = LeadingCommentOffset.rebase(open.getLine(), open.getCharPositionInLine());
+        if (first.startsWith("syntax error")) {
+            final int[] at = SyntaxErrorListener.sentenceCoordinates(first);
+            return at == null || before(at, opens);
+        }
+        for (final String line : listener.reportedSyntaxLines()) {
+            final int[] at = line.startsWith("syntax error") ? SyntaxErrorListener.sentenceCoordinates(line) : null;
+            if (at != null && before(at, opens)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

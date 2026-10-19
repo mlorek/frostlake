@@ -37,10 +37,20 @@ public final class SessionZone {
 
     private static final ThreadLocal<ZoneId> PINNED = new ThreadLocal<ZoneId>();
 
+    /**
+     * The zone names the account knows that the JDK's zone list leaves out, each beside the zone it means: the
+     * three fixed-offset abbreviations, the old name of Asia/Taipei, the zone database's placeholder and its two
+     * signed names of GMT.
+     */
+    private static final String[][] LEGACY_ZONES = {{"EST", "-05:00"}, {"MST", "-07:00"}, {"HST", "-10:00"},
+        {"ROC", "Asia/Taipei"}, {"Factory", "UTC"}, {"GMT+0", "Etc/GMT+0"}, {"GMT-0", "Etc/GMT-0"}};
+    /** A family of names the JDK keeps that the account does not. */
+    private static final String UNKNOWN_FAMILY = "SystemV/";
+
     private SessionZone() {
     }
 
-    /** The session's zone, or UTC when nothing is pinned. */
+    /** The session's zone, or UTC, the zone the account sets ({@link AccountParameters}), when nothing is pinned. */
     public static ZoneId current() {
         final ZoneId pinned = PINNED.get();
         return pinned != null ? pinned : ZoneOffset.UTC;
@@ -66,12 +76,58 @@ public final class SessionZone {
         }
     }
 
+    /**
+     * Whether the account knows a time zone by this name (live-verified). The name is a zone's own, matched
+     * exactly: {@code UTC}, {@code Europe/Warsaw}, {@code Etc/GMT+2}, {@code US/Pacific} and the old names the
+     * zone database still links are known - {@code GMT+0} and {@code GMT-0} among them - while {@code utc}, an
+     * offset ({@code +02:00}, {@code GMT+2}, {@code Z}) and an abbreviation outside the four the database keeps
+     * ({@code PST}) are not.
+     *
+     * @param name the name as the parameter would hold it
+     * @return whether a TIMEZONE parameter takes it
+     */
+    public static boolean knows(final String name) {
+        if (name == null) {
+            return false;
+        }
+        for (final String[] legacy : LEGACY_ZONES) {
+            if (legacy[0].equals(name)) {
+                return true;
+            }
+        }
+        return !name.startsWith(UNKNOWN_FAMILY) && ZoneId.getAvailableZoneIds().contains(name);
+    }
+
+    /**
+     * The zone the account knows by this name.
+     *
+     * @param name a zone's name, matched exactly as {@link #knows} matches it
+     * @return the zone, or null when the account knows none by that name
+     */
+    public static ZoneId named(final String name) {
+        if (!knows(name)) {
+            return null;
+        }
+        for (final String[] legacy : LEGACY_ZONES) {
+            if (legacy[0].equals(name)) {
+                return ZoneId.of(legacy[1]);
+            }
+        }
+        return ZoneId.of(name);
+    }
+
     private static ZoneId resolve(final Object zoneName) {
         if (zoneName == null) {
             return ZoneOffset.UTC;
         }
+        final String name = zoneName.toString().trim();
         try {
-            return ZoneId.of(zoneName.toString().trim());
+            for (final String[] legacy : LEGACY_ZONES) {
+                if (legacy[0].equals(name)) {
+                    return ZoneId.of(legacy[1]);
+                }
+            }
+            return ZoneId.of(name);
         } catch (final RuntimeException unusable) {
             return ZoneOffset.UTC;
         }

@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.InformationSchemaGuard;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
@@ -48,8 +50,16 @@ public class DMLCommandHandler implements CommandHandler {
         return queryExecutor;
     }
 
+    /** One of INFORMATION_SCHEMA's views takes no rows and gives none up (live-verified). */
+    private void refuseSystemView(final FrostlakeParser.ObjectNameContext target) {
+        if (target != null && target.qualifiedName() != null) {
+            InformationSchemaGuard.refuseWrite(catalog, ParseTreeText.qualifiedNameParts(target.qualifiedName()));
+        }
+    }
+
     public Object handleInsertStatement(final FrostlakeParser.InsertStatementContext ctx) {
         // Delegate to QueryExecutor which has the full INSERT logic
+        refuseSystemView(ctx.objectName());
         return queryExecutor.executeInsertFromContext(ctx);
     }
 
@@ -60,11 +70,13 @@ public class DMLCommandHandler implements CommandHandler {
 
     public Object handleUpdateStatement(final FrostlakeParser.UpdateStatementContext ctx) {
         // Delegate to QueryExecutor which has the full UPDATE logic
+        refuseSystemView(ctx.objectName());
         return queryExecutor.executeUpdateFromContext(ctx);
     }
 
     public Object handleDeleteStatement(final FrostlakeParser.DeleteStatementContext ctx) {
         // Delegate to QueryExecutor which has the full DELETE logic
+        refuseSystemView(ctx.objectName());
         return queryExecutor.executeDeleteFromContext(ctx);
     }
 

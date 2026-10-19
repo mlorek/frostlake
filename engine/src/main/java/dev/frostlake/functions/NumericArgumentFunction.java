@@ -96,4 +96,10 @@ public abstract class NumericArgumentFunction extends BuiltInFunction {
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
+
+    /** A UUID reads as no number, and is refused in every position (live-verified). */
+    @Override
+    public SemiStructuredRejection uuidRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

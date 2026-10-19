@@ -86,4 +86,9 @@ final class CorrelationScope {
     boolean resolvesBare(final String name) {
         return opaque || columns.contains(name) || aliases.contains(name);
     }
+
+    /** Whether a bare name is known to be this SELECT's: a column of a relation whose columns are known, or an alias. */
+    boolean holdsBare(final String name) {
+        return columns.contains(name) || aliases.contains(name);
+    }
 }

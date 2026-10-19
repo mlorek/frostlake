@@ -35,7 +35,7 @@
     ]},
     {"name": "an-unknown-argument-name-is-refused", "steps": [
       {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
-      {"sql": "SELECT sub_it(a => 10, z => 3)", "expect": {"error": {"messageContains": "Unknown argument name 'z' for function SUB_IT"}}}
+      {"sql": "SELECT sub_it(a => 10, z => 3)", "expect": {"error": {"messageContains": "named arguments [A, Z] do not match any signature for function SUB_IT"}}}
     ]}
   ]
 }

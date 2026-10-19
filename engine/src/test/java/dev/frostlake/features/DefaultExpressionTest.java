@@ -21,6 +21,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -37,7 +39,7 @@ public class DefaultExpressionTest extends BaseDatabaseTest {
     private void assertDefaultContains(final String table, final String column, final String fragment) {
         final String cellText = describeCell(table, column, "default");
         assertNotNull(cellText, column + " should carry a default");
-        assertTrue(cellText.toUpperCase().contains(fragment.toUpperCase()),
+        assertTrue(cellText.toUpperCase(Locale.ROOT).contains(fragment.toUpperCase(Locale.ROOT)),
             column + "'s default cell reads: " + cellText);
     }
 

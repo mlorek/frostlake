@@ -25,8 +25,29 @@ package dev.frostlake.types;
  */
 public class StructuredArrayType extends ArrayType {
 
+    private static final long serialVersionUID = -6686069312781865868L;
+
+    /** Whether the element is declared NOT NULL: {@code ARRAY(INT NOT NULL)}. */
+    private final boolean elementNotNull;
+
     public StructuredArrayType(final DataType elementType) {
+        this(elementType, false);
+    }
+
+    /**
+     * An ARRAY of a structured type's element.
+     *
+     * @param elementType    the element's type
+     * @param elementNotNull whether the element is declared NOT NULL
+     */
+    public StructuredArrayType(final DataType elementType, final boolean elementNotNull) {
         super(elementType);
+        this.elementNotNull = elementNotNull;
+    }
+
+    /** Whether the element is declared NOT NULL. */
+    public boolean isElementNotNull() {
+        return elementNotNull;
     }
 
     @Override

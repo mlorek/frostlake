@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.StringType;
 
@@ -57,7 +58,8 @@ public class UuidString extends BuiltInFunction {
             return namedUuid(args.get(0).toString(),
                 args.get(1) == null ? "" : args.get(1).toString());
         }
-        return UUID.randomUUID().toString();
+        // Drawn from the statement's own stream, so the write-ahead log's replay draws the same one.
+        return StatementTokens.randomUuid();
     }
 
     /** Live's wording when the namespace is not a UUID, NULL or malformed alike. */

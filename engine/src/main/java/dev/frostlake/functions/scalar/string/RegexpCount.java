@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.CodePointText;
 
@@ -42,10 +43,15 @@ public class RegexpCount extends TextArgumentFunction {
         if (args.get(0) == null || args.get(1) == null) {
             return 0L;
         }
-        final String subject = args.get(0).toString();
-        final String pattern = args.get(1).toString();
-        final int position = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
-        final String parameters = args.size() > 3 && args.get(3) != null ? args.get(3).toString() : null;
+        final String subject = SharedFunctionHelpers.textOf(args.get(0));
+        final String pattern = SharedFunctionHelpers.textOf(args.get(1));
+        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
+        final String parameters = args.size() > 3 && args.get(3) != null
+            ? SharedFunctionHelpers.textOf(args.get(3)) : null;
+        RegexpHelper.requirePosition(position);
+        if (RegexpHelper.matchesNothing(pattern, parameters)) {
+            return 0L;
+        }
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);

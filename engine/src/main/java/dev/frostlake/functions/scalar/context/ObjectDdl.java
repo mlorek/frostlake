@@ -18,9 +18,12 @@ package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.FormatProperty;
+import dev.frostlake.executor.SessionParameterCatalog;
+import dev.frostlake.executor.SessionParameterRow;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AppObject;
@@ -37,6 +40,7 @@ import dev.frostlake.metastore.model.SecurityObject;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.SecurityPropertySpec;
 import dev.frostlake.metastore.model.SecurityPropertySpecs;
+import dev.frostlake.metastore.model.SecurityPropertyType;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamType;
 import dev.frostlake.metastore.model.Tag;
@@ -46,7 +50,10 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * GET_DDL's text for the schema objects that are neither relations nor routines: tags, file formats, streams,
@@ -62,6 +69,15 @@ final class ObjectDdl {
         "USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE", "SUSPEND_TASK_AFTER_NUM_FAILURES", "USER_TASK_TIMEOUT_MS",
         "TASK_AUTO_RETRY_ATTEMPTS"};
 
+    /** The MFA, PAT and workload identity settings an authentication policy's DDL spells, at their defaults. */
+    private static final String AUTHENTICATION_POLICY_SETTINGS = """
+        MFA_POLICY=(ENFORCE_MFA_ON_EXTERNAL_AUTHENTICATION='NONE',ALLOWED_METHODS=('ALL')) \
+        PAT_POLICY=(DEFAULT_EXPIRY_IN_DAYS=15,REQUIRE_ROLE_RESTRICTION_FOR_PERSON_USERS=false,\
+        NETWORK_POLICY_EVALUATION=ENFORCED_REQUIRED,REQUIRE_ROLE_RESTRICTION_FOR_SERVICE_USERS=true,\
+        MAX_EXPIRY_IN_DAYS=365,BLOCKED_ROLES_LIST=()) \
+        WORKLOAD_IDENTITY_POLICY=(ALLOWED_AWS_PARTITIONS=('ALL'),ALLOWED_OIDC_ISSUERS=('ALL'),\
+        ALLOWED_PROVIDERS=('ALL'),ALLOWED_AZURE_ISSUERS=('ALL'),ALLOWED_AWS_ACCOUNTS=('ALL'))""";
+
     private ObjectDdl() {
     }
 
@@ -75,8 +91,9 @@ final class ObjectDdl {
     static String tag(final Tag tag, final String name) {
         final StringBuilder sb = new StringBuilder("create or replace tag ").append(name).append(' ');
         if (tag.hasAllowedValues()) {
-            sb.append(" allowed_values  ");
+            // A list that holds no value is still written: " allowed_values " and nothing after it.
             final List<String> values = tag.getAllowedValues();
+            sb.append(values.isEmpty() ? " allowed_values" : " allowed_values  ");
             for (int i = 0; i < values.size(); i++) {
                 sb.append(i > 0 ? " , " : "").append(quoted(values.get(i)));
             }
@@ -130,7 +147,7 @@ final class ObjectDdl {
             return null;
         }
         if ("Boolean".equals(property.type)) {
-            return written.equalsIgnoreCase(property.shownDefault) ? null : written.toUpperCase();
+            return written.equalsIgnoreCase(property.shownDefault) ? null : written.toUpperCase(Locale.ROOT);
         }
         if ("Integer".equals(property.type)) {
             return sameNumber(written, property.shownDefault) ? null : written.trim();
@@ -139,7 +156,7 @@ final class ObjectDdl {
         if (escaped.equals(property.shownDefault)) {
             return null;
         }
-        return "COMPRESSION".equals(property.name) ? written.toUpperCase() : "'" + escaped + "'";
+        return "COMPRESSION".equals(property.name) ? written.toUpperCase(Locale.ROOT) : "'" + escaped + "'";
     }
 
     /**
@@ -232,7 +249,20 @@ final class ObjectDdl {
      * stream.
      */
     static String stream(final Stream stream, final String name) {
-        final String source = stream.getSourceTableName() == null ? ""
+        return stream(stream, name, null);
+    }
+
+    /**
+     * As {@link #stream(Stream, String)}, for a table stream whose table is gone: its source is the table's full
+     * name quoted as one identifier, {@code on table "DB.S.RAW"}, and a stream lost in a clone's is
+     * {@code on table CLONED_FROM_STREAM_WITH_DROPPED_SOURCE} (live-verified).
+     *
+     * @param goneSource the full name of the stream's table when it is gone, or null
+     */
+    static String stream(final Stream stream, final String name, final String goneSource) {
+        final String source = stream.isLostInClone() ? StreamSources.LOST_SOURCE
+            : goneSource != null ? "\"" + goneSource + "\""
+            : stream.getSourceTableName() == null ? ""
             : SqlIdentifiers.spellCanonicalEscaped(QualifiedName.parse(stream.getSourceTableName()).last());
         final String kind = stream.getSourceType() == null ? "TABLE" : stream.getSourceType().name();
         final StringBuilder sb = new StringBuilder("create or replace stream ").append(name);
@@ -276,13 +306,26 @@ final class ObjectDdl {
     // ─────────────────────────── TASK ───────────────────────────
 
     /**
-     * {@code create or replace task T}, then one tab-indented line each for the warehouse, the schedule, the
+     * {@code create or replace task T}, its tags and its contacts each on a line of their own, then one
+     * tab-indented line each for the
+     * warehouse, the schedule, the
      * CONFIG (its text as written, a backslash and a single quote each doubled), the task parameters set on the
      * task, the COMMENT, overlapping execution, the predecessors (always fully qualified), the WHEN condition, and
      * last {@code as} and the body.
      */
-    static String task(final Task task, final Schema schema, final String name) {
+    static String task(final Task task, final Schema schema, final String name, final String tags) {
         final StringBuilder sb = new StringBuilder("create or replace task ").append(name).append('\n');
+        if (!tags.isEmpty()) {
+            sb.append(" WITH TAG (").append(tags).append(")\n");
+        }
+        if (!task.getContacts().isEmpty()) {
+            final StringBuilder contacts = new StringBuilder();
+            for (final Map.Entry<String, String> contact : task.getContacts().entrySet()) {
+                contacts.append(contacts.length() > 0 ? ", " : "").append(contact.getKey()).append('=')
+                    .append(contact.getValue());
+            }
+            sb.append(" WITH CONTACT (").append(contacts).append(")\n");
+        }
         if (task.getWarehouse() != null) {
             sb.append("\twarehouse=").append(task.getWarehouse()).append('\n');
         }
@@ -296,6 +339,16 @@ final class ObjectDdl {
             if (task.isParameterSetOnTask(parameter)) {
                 sb.append('\t').append(parameter).append('=').append(taskParameterValue(task, parameter)).append('\n');
             }
+        }
+        // The session parameters set on the task follow, each on its own line, in the order the account keeps them:
+        // a hash order of their names, not the order they were set (live-verified).
+        final Map<String, String> sessionParameters = new HashMap<String, String>();
+        for (final Map.Entry<String, String> parameter : task.getSessionParameters().entrySet()) {
+            sessionParameters.put(parameter.getKey(), parameter.getValue());
+        }
+        for (final Map.Entry<String, String> parameter : sessionParameters.entrySet()) {
+            sb.append('\t').append(parameter.getKey()).append('=')
+                .append(sessionParameterValue(parameter.getKey(), parameter.getValue())).append('\n');
         }
         if (hasText(task.getComment())) {
             sb.append("\tCOMMENT=").append(quoted(task.getComment())).append('\n');
@@ -328,6 +381,19 @@ final class ObjectDdl {
             default:
                 return String.valueOf(task.getTaskAutoRetryAttempts());
         }
+    }
+
+    /**
+     * A task's session parameter as its DDL writes it: a text between single quotes, as it was set and not escaped,
+     * a boolean in lower case, a number bare (live-verified).
+     */
+    private static String sessionParameterValue(final String name, final String value) {
+        final SessionParameterRow row = SessionParameterCatalog.find(name);
+        final String type = row == null ? "STRING" : row.getType();
+        if ("BOOLEAN".equals(type)) {
+            return value.toLowerCase(Locale.ROOT);
+        }
+        return "NUMBER".equals(type) ? value : "'" + value + "'";
     }
 
     /** A predecessor as the account names one: database, schema and task, completed from the task's own schema. */
@@ -363,43 +429,49 @@ final class ObjectDdl {
 
     /** {@code create or replace masking policy P as (V VARCHAR) \nreturns VARCHAR ->\nbody\n;}. */
     static String maskingPolicy(final MaskingPolicy policy, final String name) {
-        final String returns = policy.getReturnDataType() != null
-            ? SqlTypeNames.routineType(policy.getReturnDataType()) : policyTypeName(policy.getReturnType());
+        final String returns = policy.getReturnSpelling() != null ? policy.getReturnSpelling()
+            : policy.getReturnDataType() != null ? SqlTypeNames.routineType(policy.getReturnDataType())
+            : policyTypeName(policy.getReturnType());
         return policyDdl("masking policy", name, policySignature(policy.getParameters()), returns,
-            policy.getBody(), policy.getComment());
+            policy.getBody(), policy.getComment(), policy.isExemptOtherPolicies());
     }
 
     /** {@code create or replace row access policy P as (A VARCHAR) \nreturns BOOLEAN ->\nbody\n;}. */
     static String rowAccessPolicy(final RowAccessPolicy policy, final String name) {
         return policyDdl("row access policy", name, policySignature(policy.getParameters()), "BOOLEAN",
-            policy.getBody(), policy.getComment());
+            policy.getBody(), policy.getComment(), policy.isExemptOtherPolicies());
     }
 
     static String aggregationPolicy(final AggregationPolicy policy, final String name) {
         return policyDdl("aggregation policy", name, "()", "AGGREGATION_CONSTRAINT", policy.getBody(),
-            policy.getComment());
+            policy.getComment(), false);
     }
 
     static String projectionPolicy(final ProjectionPolicy policy, final String name) {
         return policyDdl("projection policy", name, "()", "PROJECTION_CONSTRAINT", policy.getBody(),
-            policy.getComment());
+            policy.getComment(), false);
     }
 
     static String joinPolicy(final JoinPolicy policy, final String name) {
-        return policyDdl("join policy", name, "()", "JOIN_CONSTRAINT", policy.getBody(), policy.getComment());
+        return policyDdl("join policy", name, "()", "JOIN_CONSTRAINT", policy.getBody(), policy.getComment(), false);
     }
 
     /**
      * The shape every expression policy shares: the signature followed by a space and a line break, the RETURNS
-     * line ending in the arrow, the body as written, the COMMENT on a line of its own, and the semicolon last.
+     * line ending in the arrow, the body as written, the COMMENT on a line of its own, EXEMPT_OTHER_POLICIES=TRUE
+     * on the next where it is set - FALSE is not written - and the semicolon last (live-verified).
      */
     private static String policyDdl(final String kind, final String name, final String signature,
-                                    final String returns, final String body, final String comment) {
+                                    final String returns, final String body, final String comment,
+                                    final boolean exempt) {
         final StringBuilder sb = new StringBuilder("create or replace ").append(kind).append(' ').append(name)
             .append(" as ").append(signature).append(" \nreturns ").append(returns).append(" ->\n")
             .append(body == null ? "" : body.trim()).append('\n');
         if (hasText(comment)) {
             sb.append("COMMENT=").append(quoted(comment)).append('\n');
+        }
+        if (exempt) {
+            sb.append("EXEMPT_OTHER_POLICIES=TRUE\n");
         }
         return sb.append(';').toString();
     }
@@ -425,7 +497,7 @@ final class ObjectDdl {
         if (typeName == null) {
             return "VARCHAR";
         }
-        final String upper = typeName.toUpperCase();
+        final String upper = typeName.toUpperCase(Locale.ROOT);
         return "STRING".equals(upper) || "TEXT".equals(upper) ? "VARCHAR" : upper;
     }
 
@@ -441,6 +513,74 @@ final class ObjectDdl {
             }
             final Object value = policy.getProperty(spec.getName());
             sb.append(spec.getName()).append('=').append(value == null ? spec.getDefaultValue() : value).append(' ');
+        }
+        return sb.append(';').toString();
+    }
+
+    /**
+     * {@code create or replace session policy P SESSION_IDLE_TIMEOUT_MINS=240 … ALLOWED_SECONDARY_ROLES=('ALL')
+     * BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL ;} — every property but the comment, each
+     * followed by a space, its default where the policy set none, a role list in parentheses and the agent scope
+     * quoted (live-verified).
+     */
+    static String sessionPolicy(final SecurityObject policy, final String name) {
+        final StringBuilder sb = new StringBuilder("create or replace session policy ").append(name).append(' ');
+        for (final SecurityPropertySpec spec : SecurityPropertySpecs.of(SecurityObjectKind.SESSION_POLICY)) {
+            if ("COMMENT".equals(spec.getName())) {
+                continue;
+            }
+            sb.append(spec.getName()).append('=');
+            if (spec.getType() == SecurityPropertyType.TEXT_LIST) {
+                final List<String> roles = policy.list(spec.getName());
+                sb.append('(');
+                for (int i = 0; i < roles.size(); i++) {
+                    sb.append(i > 0 ? ", " : "").append(quoted(roles.get(i)));
+                }
+                sb.append(')');
+            } else if (spec.getType() == SecurityPropertyType.SESSION_SCOPE) {
+                final Object value = policy.getProperty(spec.getName());
+                sb.append(value == null ? "NULL" : quoted(value.toString()));
+            } else {
+                final Object value = policy.getProperty(spec.getName());
+                sb.append(value == null ? spec.getDefaultValue() : value);
+            }
+            sb.append(' ');
+        }
+        return sb.append(';').toString();
+    }
+
+    /**
+     * {@code create or replace authentication policy P AUTHENTICATION_METHODS=('ALL') CLIENT_TYPES=('ALL')
+     * CLIENT_POLICY=() SECURITY_INTEGRATIONS=('ALL') MFA_ENROLLMENT=OPTIONAL MFA_POLICY=(…) PAT_POLICY=(…)
+     * WORKLOAD_IDENTITY_POLICY=(…) COMMENT='c' ;} — every setting, a list's items joined by a bare comma, the client,
+     * MFA, PAT and workload identity ones as their defaults, and the comment only when there is one (live-verified).
+     */
+    static String authenticationPolicy(final SecurityObject policy, final String name) {
+        final StringBuilder sb = new StringBuilder("create or replace authentication policy ").append(name).append(' ');
+        for (final SecurityPropertySpec spec : SecurityPropertySpecs.of(SecurityObjectKind.AUTHENTICATION_POLICY)) {
+            if ("COMMENT".equals(spec.getName())) {
+                continue;
+            }
+            sb.append(spec.getName()).append('=');
+            if (spec.getType() == SecurityPropertyType.CHOICE || spec.getType() == SecurityPropertyType.TEXT) {
+                final Object value = policy.getProperty(spec.getName());
+                sb.append(value == null ? spec.getDefaultValue() : value);
+            } else {
+                final List<String> items = policy.list(spec.getName());
+                sb.append('(');
+                for (int i = 0; i < items.size(); i++) {
+                    sb.append(i > 0 ? "," : "").append(quoted(items.get(i)));
+                }
+                sb.append(')');
+            }
+            sb.append(' ');
+            if ("CLIENT_TYPES".equals(spec.getName())) {
+                sb.append("CLIENT_POLICY=() ");
+            }
+        }
+        sb.append(AUTHENTICATION_POLICY_SETTINGS).append(' ');
+        if (policy.getComment() != null) {
+            sb.append("COMMENT=").append(quoted(policy.getComment())).append(' ');
         }
         return sb.append(';').toString();
     }

@@ -18,6 +18,7 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Map;
 
 /** A service or a job service, as a snapshot holds it. */
 public class ContainerServiceSnapshot implements Serializable {
@@ -94,4 +95,7 @@ public class ContainerServiceSnapshot implements Serializable {
 
     /** When it was last suspended, or null. */
     public Instant suspendedOn;
+
+    /** The tags set on it, key to value. Null in a snapshot written before they were kept, and when it has none. */
+    public Map<String, String> tags;
 }

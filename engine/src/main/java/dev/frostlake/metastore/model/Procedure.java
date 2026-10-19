@@ -22,7 +22,7 @@ import dev.frostlake.types.DataType;
 import java.util.ArrayList;
 import java.util.List;
 
-public class Procedure extends SqlObject {
+public class Procedure extends SqlObject implements Routine {
 
     private final List<Parameter> parameters;
     private final DataType returnType;
@@ -33,11 +33,13 @@ public class Procedure extends SqlObject {
     private final List<String> packages;
     private ExecuteAs executeAs = ExecuteAs.OWNER;
     private List<String> imports = new ArrayList<>();
+    private RoutineEnvironment environment = new RoutineEnvironment();
     // Declared RETURNS TABLE(col TYPE, ...) columns — name the result of a CALL / TABLE(proc()) source.
     private List<Parameter> returnColumns = new ArrayList<>();
     // RETURNS TABLE, with or without columns: RETURNS TABLE () declares a table of whatever the body returns.
     private boolean returnsTable = false;
     private boolean temporary = false;
+    private boolean secure = false;
     private NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
     private Volatility volatility = Volatility.VOLATILE;
 
@@ -47,9 +49,37 @@ public class Procedure extends SqlObject {
      * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
      * it models the lifetime and not the isolation.
      */
+    @Override
     public boolean isTemporary() { return temporary; }
 
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }
+
+    /** Whether the procedure was created SECURE, which nothing but replacing it changes. */
+    public boolean isSecure() { return secure; }
+
+    /**
+     * Whether the RETURNS type was written with its width: a text or a binary written {@code VARCHAR(16777216)}
+     * is spelled so where one written bare is spelled bare. Null for a routine restored from a snapshot that
+     * did not tell.
+     */
+    private Boolean returnSized;
+
+    @Override
+    public Boolean getReturnSized() { return returnSized; }
+    public void setReturnSized(final Boolean returnSized) { this.returnSized = returnSized; }
+
+    /** Whether the RETURNS type was written NOT NULL, which DESCRIBE PROCEDURE's returns row tells. */
+    private boolean returnNotNull;
+
+    public boolean isReturnNotNull() {
+        return returnNotNull;
+    }
+
+    public void setReturnNotNull(final boolean returnNotNull) {
+        this.returnNotNull = returnNotNull;
+    }
+
+    public void setSecure(final boolean secure) { this.secure = secure; }
 
     public Procedure(final String name, final List<Parameter> parameters,
                     final DataType returnType, final String body) {
@@ -74,6 +104,7 @@ public class Procedure extends SqlObject {
         this.packages = packages != null ? new ArrayList<>(packages) : new ArrayList<>();
     }
 
+    @Override
     public List<Parameter> getReturnColumns() {
         return new ArrayList<>(returnColumns);
     }
@@ -83,6 +114,7 @@ public class Procedure extends SqlObject {
     }
 
     /** Whether the procedure declares RETURNS TABLE — with columns, or none at all. */
+    @Override
     public boolean returnsTable() {
         return returnsTable;
     }
@@ -91,10 +123,12 @@ public class Procedure extends SqlObject {
         this.returnsTable = returnsTable;
     }
 
+    @Override
     public List<Parameter> getParameters() {
         return new ArrayList<>(parameters);
     }
 
+    @Override
     public DataType getReturnType() {
         return returnType;
     }
@@ -125,11 +159,24 @@ public class Procedure extends SqlObject {
         return new ArrayList<>(packages);
     }
 
+    /** What the routine is given to run with: repository, target path, integrations and secrets. */
+    public RoutineEnvironment getEnvironment() { return environment; }
+
+    /** Records what the routine is given to run with. */
+    public void setEnvironment(final RoutineEnvironment environment) {
+        this.environment = environment == null ? new RoutineEnvironment() : environment;
+    }
+
     public List<String> getImports() { return new ArrayList<>(imports); }
     public void setImports(final List<String> imports) { this.imports = imports != null ? new ArrayList<>(imports) : new ArrayList<>(); }
 
     public String getExecuteAs() {
-        return executeAs.name();
+        return executeAs.sqlText();
+    }
+
+    /** Whether the procedure runs with its caller's privileges: EXECUTE AS CALLER or RESTRICTED CALLER. */
+    public boolean runsWithCallersRights() {
+        return executeAs.isCallersRights();
     }
 
     /**

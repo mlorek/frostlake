@@ -111,20 +111,20 @@
       {"sql": "CREATE TABLE dml_src (v INTEGER)"},
       {"sql": "INSERT INTO dml_src VALUES (1), (2), (3)"},
       {"sql": "CREATE FUNCTION f_dml() RETURNS INT AS $$ BEGIN INSERT INTO dml_src VALUES (99); RETURN 1; END $$",
-       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: INSERT"}}},
       {"sql": "CREATE FUNCTION f_upd() RETURNS INT AS $$ BEGIN UPDATE dml_src SET v = 0; RETURN 1; END $$",
-       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: UPDATE"}}},
       {"sql": "CREATE FUNCTION f_ddl() RETURNS INT AS $$ BEGIN CREATE TABLE zz (a INT); RETURN 1; END $$",
-       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: CREATE_TABLE"}}},
       {"sql": "SELECT COUNT(*) FROM dml_src", "expect": {"value": "3"}}
     ]},
     {"name": "arbitrary-sql-in-a-function-body-is-rejected", "steps": [
       {"sql": "CREATE FUNCTION f_select() RETURNS INT AS $$ BEGIN SELECT 1; RETURN 2; END $$",
-       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: SELECT"}}},
       {"sql": "CREATE FUNCTION f_exec() RETURNS INT AS $$ BEGIN EXECUTE IMMEDIATE 'SELECT 1'; RETURN 1; END $$",
-       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: UNKNOWN"}}},
       {"sql": "CREATE FUNCTION f_call() RETURNS INT AS $$ BEGIN CALL some_proc(); RETURN 1; END $$",
-       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}}
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: SELECT"}}}
     ]},
     {"name": "select-into-in-a-function-body-is-rejected", "steps": [
       {"sql": "CREATE TABLE into_src (v INTEGER)"},

@@ -19,7 +19,9 @@ package dev.frostlake.functions.table;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -42,9 +44,15 @@ public class CurrentTaskGraphsFunction extends TableFunction {
         // Validated in execute.
     }
 
+    /** The listing's columns are fixed, so a query over it is planned with their types before any row is read. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return TaskGraphRuns.columns(false);
+    }
+
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
-        final int limit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), "CURRENT_TASK_GRAPHS");
+        final int limit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), TaskGraphRuns.DEFAULT_LIMIT);
         final String rootTaskName = TaskGraphRuns.text(namedArgs.get("ROOT_TASK_NAME"));
         return new ResultSet(TaskGraphRuns.columns(false), TaskGraphRuns.current(catalog, rootTaskName, limit));
     }

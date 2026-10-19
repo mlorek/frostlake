@@ -117,10 +117,10 @@ public final class IntervalTypeSpec {
         if (integers == 0) {
             throw new RuntimeException(SqlCompilationError.of(unexpected(typeParams.RPAREN().getSymbol())));
         }
-        if (typeParams.COMMA() == null) {
+        if (typeParams.COMMA().isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of(unexpected(typeParams.LPAREN().getSymbol())));
         }
-        throw new RuntimeException(SqlCompilationError.of(unexpected(typeParams.COMMA().getSymbol()) + "\n"
+        throw new RuntimeException(SqlCompilationError.of(unexpected(typeParams.COMMA(0).getSymbol()) + "\n"
             + unexpected(typeParams.RPAREN().getSymbol())));
     }
 

@@ -18,6 +18,8 @@ package dev.frostlake.functions.file;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -32,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class FlIsDocumentTest extends FileFunctionTestSupport {
 
     private String isDocument(final String contentType) {
-        return scalar("SELECT FL_IS_DOCUMENT(" + fileOf(contentType) + ")").toUpperCase();
+        return scalar("SELECT FL_IS_DOCUMENT(" + fileOf(contentType) + ")").toUpperCase(Locale.ROOT);
     }
 
     /** Live: every {@code text/*} content type measured TRUE, enumerated. */
@@ -90,7 +92,7 @@ public class FlIsDocumentTest extends FileFunctionTestSupport {
      */
     @Test
     public void nullFileIsFalseNotNull() {
-        assertEquals("FALSE", scalar("SELECT FL_IS_DOCUMENT(NULL)").toUpperCase());
-        assertEquals("FALSE", scalar("SELECT FL_IS_DOCUMENT(TO_FILE(NULL))").toUpperCase());
+        assertEquals("FALSE", scalar("SELECT FL_IS_DOCUMENT(NULL)").toUpperCase(Locale.ROOT));
+        assertEquals("FALSE", scalar("SELECT FL_IS_DOCUMENT(TO_FILE(NULL))").toUpperCase(Locale.ROOT));
     }
 }

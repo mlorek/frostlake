@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -67,13 +69,13 @@ public class SessionVariableSourceTest extends BaseDatabaseTest {
     @Test
     public void aBranchTheFoldDoesNotTakeNeverFailsIt() {
         engine.execute("SET x = IFF(TRUE, 1, 1/0)");
-        assertEquals("true", answer("SELECT $x = 1").toLowerCase());
+        assertEquals("true", answer("SELECT $x = 1").toLowerCase(Locale.ROOT));
         engine.execute("SET x = CASE WHEN TRUE THEN 2 ELSE 1/0 END");
-        assertEquals("true", answer("SELECT $x = 2").toLowerCase());
+        assertEquals("true", answer("SELECT $x = 2").toLowerCase(Locale.ROOT));
         engine.execute("SET x = COALESCE(3, 1/0)");
-        assertEquals("true", answer("SELECT $x = 3").toLowerCase());
+        assertEquals("true", answer("SELECT $x = 3").toLowerCase(Locale.ROOT));
         engine.execute("SET x = TRY_TO_NUMBER('x') + 1");
-        assertEquals("null", answer("SELECT TO_VARCHAR($x)").toLowerCase());
+        assertEquals("null", answer("SELECT TO_VARCHAR($x)").toLowerCase(Locale.ROOT));
         engine.execute("SET x = TRY_CAST('abc' AS BINARY)");
         assertEquals("null", String.valueOf(engine.executeQuery("SELECT $x").getRows().get(0).getValue(0)));
     }

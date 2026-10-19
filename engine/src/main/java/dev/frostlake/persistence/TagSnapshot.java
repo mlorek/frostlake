@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,7 +26,17 @@ public class TagSnapshot implements Serializable {
     private static final long serialVersionUID = 1L;
 
     public String name;
+    /** The tag's identity, under which objects keep their assignments; null on snapshots written before it. */
+    public String id;
     public List<String> allowedValues = new ArrayList<>();
+    /** Whether the tag has an ALLOWED_VALUES list, which tells an emptied list from none. */
+    public boolean allowedValuesListed;
     public String comment;
     public String owner;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
+    /** PROPAGATE ({@code ON_DEPENDENCY} ...), or null when the tag does not propagate (and on older snapshots). */
+    public String propagate;
+    /** ON_CONFLICT (a string or {@code ALLOWED_VALUES_SEQUENCE}), or null when unset (and on older snapshots). */
+    public String onConflict;
 }

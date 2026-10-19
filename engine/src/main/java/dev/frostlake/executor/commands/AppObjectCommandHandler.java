@@ -22,11 +22,15 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StagePrefix;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AppObject;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.AppObjectStore;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
@@ -51,6 +55,9 @@ public class AppObjectCommandHandler {
     /** Why a notebook cannot run: it names no query warehouse. */
     private static final String NO_QUERY_WAREHOUSE =
         "To execute the notebook, set the Query warehouse and the Notebook warehouse / Compute pool.";
+
+    /** The main file a Streamlit app runs when its statement names none. */
+    private static final String DEFAULT_MAIN_FILE = "streamlit_app.py";
 
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
@@ -101,7 +108,7 @@ public class AppObjectCommandHandler {
             return execute(existing(kind, nameCtx, false));
         }
         if (ctx.DROP() != null) {
-            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null);
+            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null, ctx.dropBehavior());
         }
         if (ctx.UNDROP() != null) {
             return undrop(kind, nameCtx);
@@ -179,6 +186,15 @@ public class AppObjectCommandHandler {
                     actions.checkSecrets(option.appSecretList(), true);
                 }
             }
+            if (ctx.FROM() != null) {
+                String mainFile = DEFAULT_MAIN_FILE;
+                for (final FrostlakeParser.StreamlitOptionContext option : ctx.streamlitOption()) {
+                    if (option.MAIN_FILE() != null) {
+                        mainFile = literal(option.STRING_LITERAL(0));
+                    }
+                }
+                requireStreamlitSource(literal(ctx.STRING_LITERAL()), mainFile);
+            }
             final AppObject object = startCreate(kind, nameCtx, ctx.or_replace() != null,
                 ctx.if_not_exists() != null);
             if (object == null) {
@@ -195,7 +211,7 @@ public class AppObjectCommandHandler {
             return null;
         }
         if (ctx.DROP() != null) {
-            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null);
+            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null, ctx.dropBehavior());
         }
         if (ctx.UNDROP() != null) {
             return undrop(kind, nameCtx);
@@ -235,6 +251,52 @@ public class AppObjectCommandHandler {
             }
         }
         return null;
+    }
+
+    /**
+     * Judge the location a Streamlit app is created FROM. The app copies the location's files as it is created, so
+     * the location names a stage, a named one that exists, and the app's main file is among the files under it;
+     * a ROOT_LOCATION is taken as written and never looked at (live-verified).
+     *
+     * @param from     the location as written
+     * @param mainFile the app's main file, relative to the location
+     */
+    private void requireStreamlitSource(final String from, final String mainFile) {
+        if (StatementClock.isReplay()) {
+            // A replayed statement was judged when it first ran, against the files the stage held then.
+            return;
+        }
+        if (!from.startsWith("@")) {
+            throw new RuntimeException(SqlCompilationError.of("invalid URL prefix found in: '" + from + "'"));
+        }
+        final String reference = from.substring(1);
+        final int slash = reference.indexOf('/');
+        final String stage = slash >= 0 ? reference.substring(0, slash) : reference;
+        if (stage.startsWith("~")) {
+            throw new RuntimeException(SqlCompilationError.inline(
+                "Copy files not support stage kind: 'USER' for stage '~'."));
+        }
+        if (stage.startsWith("%")) {
+            throw new RuntimeException(SqlCompilationError.inline("Copy files not support stage kind: 'TABLE' for stage '"
+                + SqlIdentifiers.canonicalText(QualifiedName.parse(stage.substring(1)).last()) + "'."));
+        }
+        final String stageName = SqlIdentifiers.canonicalText(QualifiedName.parse(stage).last());
+        final Schema schema = catalog.resolveOwningSchema(SqlIdentifiers.canonicalText(stage));
+        if (schema == null || !schema.hasStageExact(stageName)) {
+            throw new RuntimeException("The specified stage " + stageName + " does not exist or the current role"
+                + " does not have access. Owner of the Streamlit must have at least READ on the specified stage.");
+        }
+        // The stage is read by its name as the catalog holds it, whichever way the location spells it.
+        final StagePrefix files = queryExecutor.resolveStagePrefix("@" + SqlIdentifiers.canonicalText(stage)
+            + (slash >= 0 ? reference.substring(slash) : ""));
+        if (files == null || files.getRoot() == null) {
+            return;
+        }
+        final String path = slash >= 0 ? reference.substring(slash + 1) : "";
+        final String folder = path.isEmpty() || path.endsWith("/") ? path : path + "/";
+        if (!files.occupied(folder + mainFile)) {
+            throw new RuntimeException(SqlCompilationError.of("Missing MAIN_FILE."));
+        }
     }
 
     private void applyNotebookOption(final AppObject object, final FrostlakeParser.NotebookOptionContext option) {
@@ -293,6 +355,7 @@ public class AppObjectCommandHandler {
                                   final boolean orReplace, final boolean ifNotExists) {
         final String name = nameOf(nameCtx);
         final Schema schema = schemaOf(nameCtx);
+        queryExecutor.requireCreatePrivilege(Privilege.valueOf("CREATE_" + kind.name()), schema);
         final AppObjectStore store = schema.getAppObjects();
         if (store.get(kind, name) != null) {
             if (ifNotExists) {
@@ -328,16 +391,20 @@ public class AppObjectCommandHandler {
 
     /**
      * DROP: the name resolves as any object's does — a missing database or schema is refused, IF EXISTS or not —
-     * and a missing object is forgiven by IF EXISTS alone. CASCADE and RESTRICT change nothing.
+     * and a missing object is forgiven by IF EXISTS alone. CASCADE and RESTRICT change nothing; a PURGE is refused
+     * once the name has resolved (see {@link DropPurge}).
      */
     private Object drop(final AppObjectKind kind, final FrostlakeParser.DropInstanceNameContext instance,
-                        final boolean ifExists) {
+                        final boolean ifExists, final FrostlakeParser.DropBehaviorContext behavior) {
         final String[] parts = instance.objectName() != null
             ? queryExecutor.resolveObjectNameParts(instance.objectName())
             : SqlIdentifiers.canonicalTextParts(instance.getText());
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String name = parts[parts.length - 1];
         final AppObject object = schema.getAppObjects().get(kind, name);
+        if (DropPurge.written(behavior) && (ifExists || object != null)) {
+            throw DropPurge.refusal(parts);
+        }
         if (object == null) {
             if (ifExists) {
                 ConditionalDdlOutcome.dropSkipped();
@@ -377,15 +444,18 @@ public class AppObjectCommandHandler {
                         final FrostlakeParser.QualifiedNameContext toCtx) {
         final Schema from = schemaOf(fromCtx);
         final Schema to = schemaOf(toCtx);
+        to.requireCreatable(Privilege.valueOf("CREATE_" + object.getKind().name()));
         final String newName = nameOf(toCtx);
         if (to.getAppObjects().get(object.getKind(), newName) != null) {
             throw alreadyExists(newName);
         }
+        final String grantedBefore = from.qualifiedName(object.getName());
         from.getAppObjects().remove(object.getKind(), object.getName());
         object.setName(newName);
         object.setDatabaseName(to.getDatabaseName());
         object.setSchemaName(to.getName());
         to.getAppObjects().put(object);
+        GrantNames.renamed(catalog, object.getKind().name(), grantedBefore, to.qualifiedName(newName));
     }
 
     private Schema schemaOf(final FrostlakeParser.QualifiedNameContext nameCtx) {
@@ -403,7 +473,7 @@ public class AppObjectCommandHandler {
      */
     private String queryWarehouse(final FrostlakeParser.IdentifierContext name) {
         final String warehouse = SqlIdentifiers.canonical(name);
-        if (!catalog.hasWarehouse(warehouse)) {
+        if (!catalog.hasWarehouseExact(warehouse)) {
             throw new RuntimeException("The specified warehouse " + warehouse + " does not exist or the current role "
                 + "does not have access. Owner of the Streamlit must have at least USAGE on the specified warehouse.");
         }

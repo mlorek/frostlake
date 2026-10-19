@@ -195,7 +195,7 @@ public final class TaskResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final RestRow row = row(call, name);
         if (row == null) {
-            throw RestException.notFound("Task '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Task", RelationNames.qualifiedDisplay(call, name));
         }
         return toJson(row);
     }

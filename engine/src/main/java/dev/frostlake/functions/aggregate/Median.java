@@ -48,4 +48,9 @@ public class Median extends AggregateFunction {
         return SemiStructuredRejection.INCOMPATIBLE_TYPES;
     }
 
+    /** A VECTOR is refused as a semi-structured value is (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return semiStructuredRejection(position);
+    }
 }

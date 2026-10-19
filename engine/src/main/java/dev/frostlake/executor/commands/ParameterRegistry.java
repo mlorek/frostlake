@@ -31,10 +31,11 @@ import java.util.Set;
  * The parameter names a real account knows, per scope — captured from the account's own
  * {@code SHOW PARAMETERS} listings (resources under {@code dev/frostlake/parameters/}) — and the
  * refusals an unknown name earns (live-verified): a session name answers
- * {@code invalid parameter '<NAME>'} for SET and UNSET alike, an object property answers
- * {@code invalid property '<NAME>' for '<KIND>'}. The registry is the ACCOUNT's list, not the
- * engine's implemented subset, so a real parameter the engine merely ignores is never refused;
- * names are spelled as written — unquoted upper-folds, quoted keeps its quotes.
+ * {@code invalid parameter '<name>'} for SET and UNSET alike, the name exactly as written
+ * ({@code nosuch} stays lower-case), an object property answers
+ * {@code invalid property '<NAME>' for '<KIND>'}, where an unquoted name upper-folds and a quoted one
+ * keeps its quotes. The registry is the ACCOUNT's list, not the engine's implemented subset, so a
+ * real parameter the engine merely ignores is never refused.
  */
 final class ParameterRegistry {
 
@@ -52,6 +53,7 @@ final class ParameterRegistry {
         // (live-verified: both SET and UNSET are accepted).
         TABLE.add("ENABLE_SCHEMA_EVOLUTION");
         TABLE.add("ERROR_LOGGING");
+        TABLE.add("ROW_TIMESTAMP");
     }
 
     private ParameterRegistry() {

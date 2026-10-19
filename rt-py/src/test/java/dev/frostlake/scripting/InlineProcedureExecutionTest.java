@@ -63,6 +63,7 @@ public class InlineProcedureExecutionTest extends BaseDatabaseTest {
             CREATE OR REPLACE PROCEDURE java_proc()
             RETURNS STRING
             LANGUAGE JAVA
+            PACKAGES = ('com.snowflake:snowpark:latest')
             HANDLER = 'P.run'
             AS $$
             import com.snowflake.snowpark_java.Row;

@@ -25,10 +25,13 @@ public final class IcebergTableMetadata {
 
     /** The catalog of a Snowflake-managed Iceberg table. */
     public static final String SNOWFLAKE_CATALOG = "SNOWFLAKE";
+    /** The external volume of a table kept in Snowflake-managed storage. */
+    public static final String MANAGED_VOLUME = "SNOWFLAKE_MANAGED";
 
     private String externalVolume;
     private String catalog = SNOWFLAKE_CATALOG;
     private String baseLocation;
+    private boolean baseLocationSpelled;
     private String catalogSync;
     private String storageSerializationPolicy = "OPTIMIZED";
     private String catalogTableName;
@@ -41,6 +44,7 @@ public final class IcebergTableMetadata {
         copy.externalVolume = externalVolume;
         copy.catalog = catalog;
         copy.baseLocation = baseLocation;
+        copy.baseLocationSpelled = baseLocationSpelled;
         copy.catalogSync = catalogSync;
         copy.storageSerializationPolicy = storageSerializationPolicy;
         copy.catalogTableName = catalogTableName;
@@ -82,6 +86,19 @@ public final class IcebergTableMetadata {
     /** Sets the base location. */
     public void setBaseLocation(final String baseLocation) {
         this.baseLocation = baseLocation;
+    }
+
+    /**
+     * Whether GET_DDL spells the base location of a table in Snowflake-managed storage: a clone's, which is its
+     * source's (live-verified). A table there made any other way spells none.
+     */
+    public boolean isBaseLocationSpelled() {
+        return baseLocationSpelled;
+    }
+
+    /** Sets whether GET_DDL spells the base location of a table in Snowflake-managed storage. */
+    public void setBaseLocationSpelled(final boolean baseLocationSpelled) {
+        this.baseLocationSpelled = baseLocationSpelled;
     }
 
     /** The catalog integration the table syncs to, or null. */

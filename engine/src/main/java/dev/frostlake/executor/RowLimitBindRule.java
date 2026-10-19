@@ -28,7 +28,8 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * A LIMIT, OFFSET or FETCH count written as a bind ({@code LIMIT :n}) that nothing binds. Inside a scripting block
  * the block's variable is spelled into the text before the statement is parsed, so a bind still standing in the
  * parse tree outside a block is a client bind that was never supplied: refused while compiling as
- * {@code Bind variable :n not set.} at the colon, whether or not a row reaches it.
+ * {@code Bind variable :n not set.} at the colon, whether or not a row reaches it. A positional bind ({@code LIMIT ?})
+ * is one no block's variable sets: it is refused as {@code Bind variable ? not set.} at the mark, in a block too.
  *
  * <p>It ranks after the query's own names in every clause, a join condition's too, and after the ORDER BY position,
  * and ahead of everything else: the names inside the query's subqueries, an unknown function, an argument count or
@@ -47,20 +48,26 @@ final class RowLimitBindRule {
      */
     static void reject(final FrostlakeParser.SelectStatementContext statement, final QueryExecutor executor) {
         final ProceduralExecutor procedural = executor.getProceduralExecutor();
-        if (procedural != null && procedural.isExecutingBlock()) {
-            return;
-        }
-        rejectIn(statement.limitClause(), procedural);
-        rejectIn(statement.fetchClause(), procedural);
+        final boolean block = procedural != null && procedural.isExecutingBlock();
+        rejectIn(statement.limitClause(), procedural, block);
+        rejectIn(statement.fetchClause(), procedural, block);
     }
 
-    private static void rejectIn(final ParserRuleContext clause, final ProceduralExecutor procedural) {
+    private static void rejectIn(final ParserRuleContext clause, final ProceduralExecutor procedural,
+                                 final boolean block) {
         if (clause == null) {
             return;
         }
-        for (int i = 0; i + 1 < clause.getChildCount(); i++) {
+        for (int i = 0; i < clause.getChildCount(); i++) {
             final ParseTree child = clause.getChild(i);
-            if (!(child instanceof TerminalNode)
+            if (child instanceof TerminalNode
+                    && ((TerminalNode) child).getSymbol().getType() == FrostlakeParser.QUESTION) {
+                final Token mark = ((TerminalNode) child).getSymbol();
+                final SourcePosition at = ExpressionSource.place(mark.getLine(), mark.getCharPositionInLine());
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    "Bind variable ? not set."));
+            }
+            if (block || i + 1 >= clause.getChildCount() || !(child instanceof TerminalNode)
                     || ((TerminalNode) child).getSymbol().getType() != FrostlakeParser.COLON) {
                 continue;
             }

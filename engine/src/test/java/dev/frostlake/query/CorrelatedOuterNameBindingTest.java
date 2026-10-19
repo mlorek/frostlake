@@ -23,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -64,7 +66,7 @@ public class CorrelatedOuterNameBindingTest extends BaseDatabaseTest {
                 answer.append(String.valueOf(row.getValue(i)));
             }
         }
-        return answer.toString().toLowerCase();
+        return answer.toString().toLowerCase(Locale.ROOT);
     }
 
     private void assertCells(final String[][] cells) {

@@ -16,11 +16,16 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.procedural.AsyncStatement;
+import dev.frostlake.executor.procedural.AwaitStatement;
 import dev.frostlake.executor.procedural.BaseExpression;
 import dev.frostlake.executor.procedural.CallStatement;
 import dev.frostlake.executor.procedural.CaseStatement;
+import dev.frostlake.executor.procedural.DeclareStatement;
+import dev.frostlake.executor.procedural.EvaluateStatement;
 import dev.frostlake.executor.procedural.ExecuteImmediateExpression;
 import dev.frostlake.executor.procedural.ForStatement;
+import dev.frostlake.executor.procedural.FunctionCallExpression;
 import dev.frostlake.executor.procedural.IfCondition;
 import dev.frostlake.executor.procedural.IfStatement;
 import dev.frostlake.executor.procedural.LiteralExpression;
@@ -36,12 +41,15 @@ import dev.frostlake.executor.procedural.Statement;
 import dev.frostlake.executor.procedural.StatementType;
 import dev.frostlake.executor.procedural.WhenClause;
 import dev.frostlake.executor.procedural.WhileStatement;
+import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Builds the procedural-statement hierarchy (ProceduralBlock / IfStatement / CaseStatement /
@@ -71,16 +79,45 @@ public class ProceduralBlockBuilder {
     }
 
     /**
+     * A logging statement, {@code SYSTEM$LOG_INFO('message');}. A name of that family that names no logging
+     * statement is refused, in the account's own words for it (live-verified).
+     *
+     * @param ctx the statement
+     * @return the statement that evaluates its arguments and logs them
+     */
+    Statement buildLogging(final FrostlakeParser.SystemCallStatementContext ctx) {
+        final String name = ctx.SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT);
+        if (!SystemFunctionNames.isLoggingStatement(name)) {
+            throw new RuntimeException(SystemFunctionNames.unknownLoggingStatement(name));
+        }
+        final List<BaseExpression> arguments = new ArrayList<>();
+        for (final FrostlakeParser.ExpressionContext argument : ctx.expression()) {
+            arguments.add(visitor.buildExpression(argument));
+        }
+        final Statement statement = new EvaluateStatement(new FunctionCallExpression(name, arguments));
+        statement.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+        return statement;
+    }
+
+    /**
      * Build a Statement from ANTLR statement context
      */
     private Statement buildStatement(final FrostlakeParser.StatementContext ctx) {
         final Statement statement = buildStatementOf(ctx);
         if (statement != null) {
             // Every statement carries where it stands, so an error escaping the block can name the
-            // statement that failed ("… on line L at position P"), as live does.
-            statement.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+            // statement that failed ("… on line L at position P"), as live does. An assignment of a CALL's answer
+            // stands where its CALL does: the CALL is the statement that runs (live-verified).
+            final Token at = assignedCall(ctx) == null ? ctx.getStart() : assignedCall(ctx).getStart();
+            statement.setSourcePosition(at.getLine(), at.getCharPositionInLine());
         }
         return statement;
+    }
+
+    /** The CALL whose answer the statement assigns to a variable, {@code x := (CALL p())}, or null. */
+    private static FrostlakeParser.CallStatementContext assignedCall(final FrostlakeParser.StatementContext ctx) {
+        return ctx.proceduralStatement() == null || ctx.proceduralStatement().assignmentStatement() == null ? null
+            : ctx.proceduralStatement().assignmentStatement().callStatement();
     }
 
     private Statement buildStatementOf(final FrostlakeParser.StatementContext ctx) {
@@ -153,9 +190,9 @@ public class ProceduralBlockBuilder {
         }
 
         if (ctx.raiseStatement() != null) {
-            if (ctx.raiseStatement().identifier() != null && ctx.raiseStatement().STRING_LITERAL() == null) {
+            if (ctx.raiseStatement().variableName() != null && ctx.raiseStatement().STRING_LITERAL() == null) {
                 // RAISE exception_name - must be a user-defined exception
-                final String name = visitor.getText(ctx.raiseStatement().identifier());
+                final String name = visitor.getText(ctx.raiseStatement().variableName());
                 // Check if it's a user-defined exception
                 if (visitor.getProceduralExecutor().hasException(name)) {
                     final RaiseStatement raise = new RaiseStatement(name);
@@ -172,64 +209,45 @@ public class ProceduralBlockBuilder {
                 final BaseExpression message = new LiteralExpression(msg);
                 return new RaiseStatement(message);
             } else {
-                // RAISE without arguments
-                final BaseExpression message = new LiteralExpression("Error raised");
-                return new RaiseStatement(message);
+                // RAISE without arguments: the exception being handled, raised again.
+                return RaiseStatement.again();
             }
         }
 
+        if (ctx.systemCallStatement() != null) {
+            return buildLogging(ctx.systemCallStatement());
+        }
+        if (ctx.callIntoStatement() != null) {
+            // CALL ... INTO :variable runs the CALL as a bare one runs, and assigns the value the procedure
+            // returns to the variable.
+            final FrostlakeParser.CallStatementContext call = ctx.callIntoStatement().callStatement();
+            final String target = visitor.getText(
+                ctx.callIntoStatement().intoTargetList().intoTarget(0).variableName());
+            return new CallStatement(visitor.getOriginalText(call), target);
+        }
         if (ctx.callStatement() != null && ctx.callStatement().systemFunctionName() != null) {
             // A CALL of a SYSTEM$ function runs as the statement it is written as.
             return new SqlStatement(visitor.getOriginalText(ctx.callStatement()));
         }
         if (ctx.callStatement() != null) {
-            // The CALL is re-issued as SQL, so its name travels quoted, part by part: the canonical name
-            // then reads back as itself, and "procCase" is not folded to PROCCASE on the way.
-            final StringBuilder procName = new StringBuilder();
-            for (final String part : ParseTreeText.qualifiedNameParts(ctx.callStatement().qualifiedName())) {
-                procName.append(procName.length() > 0 ? "." : "").append('"').append(part.replace("\"", "\"\""))
-                    .append('"');
-            }
-            final List<BaseExpression> arguments = new ArrayList<>();
-            final List<String> argumentNames = new ArrayList<>();
-            if (ctx.callStatement().callArguments() != null) {
-                for (final FrostlakeParser.CallArgumentContext argCtx :
-                     ctx.callStatement().callArguments().callArgument()) {
-                    if (argCtx.namedArgument() != null) {
-                        if (argCtx.namedArgument().expression() == null) {
-                            throw new RuntimeException(
-                                "A bare subquery CALL argument is not supported; parenthesize it: (SELECT ...)");
-                        }
-                        arguments.add(visitor.buildExpression(argCtx.namedArgument().expression()));
-                        argumentNames.add(visitor.getText(argCtx.namedArgument().identifier()));
-                    } else {
-                        arguments.add(visitor.buildExpression(argCtx.expression()));
-                        argumentNames.add(null);
-                    }
-                }
-            }
-            return new CallStatement(procName.toString(), arguments, argumentNames);
+            // A procedure's CALL runs as the statement it is written as too, its :names bound from the block.
+            return new CallStatement(visitor.getOriginalText(ctx.callStatement()), null);
         }
 
         if (ctx.asyncStatement() != null) {
-            // ASYNC (<stmt>) — the engine is single-threaded, so run the wrapped statement synchronously.
-            final FrostlakeParser.AsyncStatementContext async = ctx.asyncStatement();
-            final String innerSql = async.dmlStatement() != null
-                ? visitor.getOriginalText(async.dmlStatement())
-                : visitor.getOriginalText(async.callStatement());
-            return new SqlStatement(innerSql);
+            return buildAsyncStatement(ctx.asyncStatement());
         }
 
         if (ctx.awaitStatement() != null) {
-            // AWAIT [ALL | <name>] — the ASYNC statements already ran synchronously, so this is a no-op.
-            return null;
+            return buildAwaitStatement(ctx.awaitStatement());
         }
 
         if (ctx.assignmentStatement() != null) {
             final FrostlakeParser.AssignmentStatementContext aCtx = ctx.assignmentStatement();
-            final String varName = visitor.getText(aCtx.identifier());
+            final String varName = visitor.getText(aCtx.assignedName());
             if (aCtx.callStatement() != null) {
-                return new SqlStatement(visitor.getOriginalText(ctx));
+                // The CALL keeps its :names as written, each judged by its variable's declared type.
+                return new SqlStatement(visitor.getOriginalText(ctx), false, true);
             }
             if (aCtx.executeImmediateStatement() != null) {
                 // rs := (EXECUTE IMMEDIATE :stmt [USING (...)]) — build the deferred dynamic-SQL
@@ -252,7 +270,12 @@ public class ProceduralBlockBuilder {
 
         if (ctx.letStatement() != null) {
             final FrostlakeParser.LetStatementContext lCtx = ctx.letStatement();
-            final String varName = visitor.getText(lCtx.identifier());
+            final String varName = visitor.getText(lCtx.variableName());
+            if (lCtx.booleanExpr() == null && lCtx.dataTypeName() != null) {
+                // A type and no value declares the variable NULL of its type (live-verified).
+                return new DeclareStatement(varName, null,
+                    visitor.parseDataType(lCtx.dataTypeName(), lCtx.typeParameters()));
+            }
             if (lCtx.booleanExpr() != null) {
                 // An untyped LET's initialiser is judged while the block compiles; a typed one when it is reached.
                 final BaseExpression expr = lCtx.dataTypeName() == null ? visitor.buildExpression(lCtx.booleanExpr())
@@ -269,10 +292,23 @@ public class ProceduralBlockBuilder {
         // All other procedural statements: execute as raw SQL via the visitor
         final String rawSql = visitor.getOriginalText(ctx);
         if (rawSql != null && !rawSql.isBlank()) {
-            return new SqlStatement(rawSql, ctx.selectIntoStatement() != null);
+            return ctx.beginEndBlock() != null ? SqlStatement.ofNestedBlock(rawSql)
+                : new SqlStatement(rawSql, ctx.selectIntoStatement() != null);
         }
 
         return null;
+    }
+
+    /** ASYNC (<statement>): a job of the statement, which runs when it is awaited. */
+    Statement buildAsyncStatement(final FrostlakeParser.AsyncStatementContext ctx) {
+        final FrostlakeParser.ResultSetSourceContext job = ctx.asyncJob().resultSetSource();
+        return new AsyncStatement(visitor.resultSetInitializerText(job), job.getStart().getLine(),
+            job.getStart().getCharPositionInLine());
+    }
+
+    /** AWAIT ALL, or AWAIT of one RESULTSET. */
+    Statement buildAwaitStatement(final FrostlakeParser.AwaitStatementContext ctx) {
+        return new AwaitStatement(ctx.identifier() == null ? null : visitor.getText(ctx.identifier()));
     }
 
     Statement buildIfStatement(final FrostlakeParser.IfStatementContext ctx) {
@@ -345,19 +381,29 @@ public class ProceduralBlockBuilder {
 
     Statement buildForStatement(final FrostlakeParser.ForStatementContext ctx) {
         // The identifier is the loop variable; a trailing loopLabel, if any, is the loop's label.
-        final String varName = visitor.getText(ctx.identifier());
+        final String varName = visitor.getText(ctx.variableName());
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final ForStatement stmt;
         if (ctx.TO() != null) {
-            // FOR i IN [REVERSE] start TO end DO … — integer range.
-            final BaseExpression start = visitor.buildExpression(ctx.expression(0));
-            final BaseExpression end = visitor.buildExpression(ctx.expression(1));
+            // FOR i IN [REVERSE] start TO end DO … — integer range. Each bound is judged as it is reached, and its
+            // fault placed where the bound is written, at its first parenthesis when it has one (live-verified).
+            final BaseExpression start = bound(ctx.expression(0));
+            final BaseExpression end = bound(ctx.expression(1));
             stmt = new ForStatement(varName, start, end, ctx.REVERSE() != null, block);
         } else {
             stmt = new ForStatement(varName, visitor.buildExpression(ctx.expression(0)), block);
         }
         applyTrailingLabel(stmt, ctx.loopLabel());
         return stmt;
+    }
+
+    /** A range FOR's bound: judged when it is reached, and placed at its first token. */
+    private BaseExpression bound(final FrostlakeParser.ExpressionContext written) {
+        final BaseExpression built = judged(visitor.buildExpression(written), written);
+        if (built != null) {
+            built.setSourcePosition(written.getStart().getLine(), written.getStart().getCharPositionInLine());
+        }
+        return built;
     }
 
     Statement buildRepeatStatement(final FrostlakeParser.RepeatStatementContext ctx) {
@@ -393,8 +439,14 @@ public class ProceduralBlockBuilder {
         if (ctx.booleanExpr() == null) {
             return new ReturnStatement(null);
         }
-        // A value may be a NOT, an AND or an OR, which returns a BOOLEAN.
-        final ReturnStatement ret = new ReturnStatement(judged(visitor.buildExpression(ctx.booleanExpr()), ctx.booleanExpr()));
+        // A value may be a NOT, an AND or an OR, which returns a BOOLEAN. Its fault is placed where the value is
+        // written, at its first parenthesis when it has one: RETURN (ABS(1, 2)) at the ( (live-verified).
+        final BaseExpression value = judged(visitor.buildExpression(ctx.booleanExpr()), ctx.booleanExpr());
+        if (value != null) {
+            value.setSourcePosition(ctx.booleanExpr().getStart().getLine(),
+                ctx.booleanExpr().getStart().getCharPositionInLine());
+        }
+        final ReturnStatement ret = new ReturnStatement(value);
         // The value read as SQL too, from the same parse tree: it types the result column whenever the
         // RETURN keeps the expression's own type.
         ret.setSqlExpression(DeclarationTypes.sqlExpression(ctx.booleanExpr()));

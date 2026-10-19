@@ -58,7 +58,12 @@ public class RestDynamicTableTest extends BaseRestTest {
         assertEquals("DT_WH", table.path("warehouse").asString());
         assertEquals("FULL", table.path("refresh_mode").asString());
         assertEquals("SELECT id, label FROM dt_db.s1.base", table.path("query").asString());
-        assertEquals("id", table.path("cluster_by").get(0).asString());
+        assertEquals("ID", table.path("cluster_by").get(0).asString());
+        assertEquals("(id)", table.path("cluster_by_raw").asString());
+        assertEquals("ON_SCHEDULE", table.path("initialize").asString());
+        assertEquals(2, table.path("data_retention_time_in_days").asInt());
+        assertEquals("OFF", table.path("log_level").asString());
+        assertFalse(table.path("row_timestamp").asBoolean(true));
         assertEquals("rest", table.path("comment").asString());
         assertEquals("RUNNING", table.path("scheduling_state").asString());
         assertTrue(table.path("automatic_clustering").asBoolean());
@@ -88,8 +93,10 @@ public class RestDynamicTableTest extends BaseRestTest {
         ok(post(DTS, "{\"name\":\"dt_down\",\"target_lag\":{\"type\":\"DOWNSTREAM\"},\"warehouse\":\"dt_wh\","
             + "\"query\":\"SELECT id FROM dt_db.s1.base\",\"columns\":[{\"name\":\"ident\"}]}"));
         assertEquals("DOWNSTREAM", ok(get(DTS + "/dt_down")).path("target_lag").path("type").asString());
-        error(400, post(DTS, "{\"name\":\"dt_nolag\",\"warehouse\":\"dt_wh\",\"query\":\"SELECT 1 AS one\"}"));
-        error(400, post(DTS, "{\"name\":\"dt_nowh\",\"target_lag\":{\"type\":\"DOWNSTREAM\"},\"query\":\"SELECT 1 AS one\"}"));
+        error(400, post(DTS, "{\"name\":\"dt_nolag\",\"warehouse\":\"dt_wh\","
+            + "\"query\":\"SELECT id FROM dt_db.s1.base\"}"));
+        error(400, post(DTS, "{\"name\":\"dt_nowh\",\"target_lag\":{\"type\":\"DOWNSTREAM\"},"
+            + "\"query\":\"SELECT id FROM dt_db.s1.base\"}"));
         error(501, post(DTS, body("dt_frozen", ",\"frozen_where\":\"id > 1\"")));
         error(501, post(DTS, body("dt_typed", ",\"columns\":[{\"name\":\"i\",\"datatype\":\"INT\"}]")));
     }
@@ -122,7 +129,7 @@ public class RestDynamicTableTest extends BaseRestTest {
         assertEquals("DOWNSTREAM", copy.path("target_lag").path("type").asString());
         assertEquals("SUSPENDED", copy.path("scheduling_state").asString());
         ok(post(DTS, "{\"name\":\"dt_other\",\"target_lag\":{\"type\":\"DOWNSTREAM\"},\"warehouse\":\"dt_wh\","
-            + "\"query\":\"SELECT 1 AS one\",\"comment\":\"other\"}"));
+            + "\"query\":\"SELECT id FROM dt_db.s1.base\",\"comment\":\"other\"}"));
         ok(post(DTS + "/dt_src:swap-with?targetName=dt_other", null));
         assertEquals("other", ok(get(DTS + "/dt_src")).path("comment").asString());
         assertEquals("source", ok(get(DTS + "/dt_other")).path("comment").asString());

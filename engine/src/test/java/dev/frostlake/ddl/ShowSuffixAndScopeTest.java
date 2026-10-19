@@ -26,6 +26,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -153,8 +154,8 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
         assertEquals(1, rs.getRowCount());
         final Row row = rs.getRows().get(0);
         assertEquals("FK_CHILD", String.valueOf(row.getValue(rs.getColumnIndex("fk_table_name"))));
-        assertEquals("PID", String.valueOf(row.getValue(rs.getColumnIndex("fk_column_name"))).toUpperCase());
-        assertTrue(String.valueOf(row.getValue(rs.getColumnIndex("pk_table_name"))).toUpperCase().contains("FK_PARENT"));
+        assertEquals("PID", String.valueOf(row.getValue(rs.getColumnIndex("fk_column_name"))).toUpperCase(Locale.ROOT));
+        assertTrue(String.valueOf(row.getValue(rs.getColumnIndex("pk_table_name"))).toUpperCase(Locale.ROOT).contains("FK_PARENT"));
         // Scope-less and account-wide forms include the same key.
         assertTrue(engine.executeQuery("SHOW IMPORTED KEYS").getRowCount() >= 1);
         assertTrue(engine.executeQuery("SHOW IMPORTED KEYS IN ACCOUNT").getRowCount() >= 1);
@@ -193,7 +194,7 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
         assertEquals(1, viewCols.getRowCount());
         // Read by NAME: SHOW COLUMNS leads with table_name/schema_name in Snowflake's shape.
         assertEquals("VC", String.valueOf(
-            viewCols.getRows().get(0).getValue(viewCols.getColumnIndex("column_name"))).toUpperCase());
+            viewCols.getRows().get(0).getValue(viewCols.getColumnIndex("column_name"))).toUpperCase(Locale.ROOT));
     }
 
     /** The refusal an APPLICATION / APPLICATION PACKAGE / CLASS scope earns, full-message. */

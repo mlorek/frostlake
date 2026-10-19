@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.CodePointText;
 
@@ -36,19 +37,32 @@ public class RegexpReplace extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) {
             return null;
         }
-        final String subject = args.get(0).toString();
-        final String pattern = args.get(1) == null ? "" : args.get(1).toString();
-        final String replacement = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : "";
-        final int position = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 1;
-        final int occurrence = args.size() > 4 && args.get(4) != null ? ((Number) args.get(4)).intValue() : 0;
-        final String parameters = args.size() > 5 && args.get(5) != null ? args.get(5).toString() : null;
+        final String subject = SharedFunctionHelpers.textOf(args.get(0));
+        final String pattern = args.get(1) == null ? "" : SharedFunctionHelpers.textOf(args.get(1));
+        final String replacement = args.size() > 2 && args.get(2) != null
+            ? SharedFunctionHelpers.textOf(args.get(2)) : "";
+        final int position = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
+        final int occurrence = args.size() > 4 && args.get(4) != null ? wholeNumber(args.get(4)) : 0;
+        final String parameters = args.size() > 5 && args.get(5) != null
+            ? SharedFunctionHelpers.textOf(args.get(5)) : null;
+        RegexpHelper.requirePosition(position);
+        RegexpHelper.requireOccurrenceOrAll(occurrence);
+        if (RegexpHelper.matchesNothing(pattern, parameters)) {
+            return subject;
+        }
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);
-        if (start >= CodePointText.length(subject)) {
+        // A position right past the end still reads the empty text there, which a pattern may match:
+        // REGEXP_REPLACE('', 'a*', '-') is '-' (live-verified).
+        if (start > CodePointText.length(subject)) {
             return subject;
         }
         final String prefix = CodePointText.slice(subject, 0, start);
@@ -60,7 +74,11 @@ public class RegexpReplace extends TextArgumentFunction {
         while (matcher.find()) {
             count++;
             if (occurrence == 0 || count == occurrence) {
-                matcher.appendReplacement(sb, javaReplacement);
+                try {
+                    matcher.appendReplacement(sb, javaReplacement);
+                } catch (final IndexOutOfBoundsException noSuchGroup) {
+                    throw RegexpHelper.missingReplacementGroup(pattern, replacement);
+                }
                 if (occurrence != 0) {
                     break;
                 }

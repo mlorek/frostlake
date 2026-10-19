@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.values.VariantJsonNulls;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -43,21 +44,43 @@ public class MedianAccumulator implements AggregateFunction.Accumulator, Approxi
         this.coercedArgument = coerced;
     }
 
+    /** The JSON nulls of a VARIANT argument, each sorting after every number (see AggregateNumerics). */
+    private int jsonNulls;
+
+    /** One of them, handed back when a place they take is picked. */
+    private Object jsonNull;
+
     @Override
     public void accumulate(final Object v) {
-        if (v != null) values.add(v);
+        if (VariantJsonNulls.isJsonNull(v)) {
+            jsonNulls++;
+            jsonNull = v;
+        } else if (v != null) {
+            values.add(v);
+        }
     }
 
     @Override
     public Object getResult() {
         return coercedArgument
-            ? AggregateNumerics.medianOverCoerced(values)
-            : AggregateNumerics.median(values, approximateArgument);
+            ? AggregateNumerics.medianOverCoerced(values, jsonNulls)
+            : AggregateNumerics.percentileCont(values, 0.5d, approximateArgument, jsonNulls);
     }
 
     @Override
-    public void reset() { values.clear(); }
+    public void reset() {
+        values.clear();
+        jsonNulls = 0;
+        jsonNull = null;
+    }
 
     @Override
-    public void merge(final AggregateFunction.Accumulator other) { values.addAll(((MedianAccumulator) other).values); }
+    public void merge(final AggregateFunction.Accumulator other) {
+        final MedianAccumulator merged = (MedianAccumulator) other;
+        values.addAll(merged.values);
+        jsonNulls += merged.jsonNulls;
+        if (merged.jsonNull != null) {
+            jsonNull = merged.jsonNull;
+        }
+    }
 }

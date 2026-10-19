@@ -23,6 +23,7 @@ import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Catalog-aware SQL behind the {@code java.sql.DatabaseMetaData} object-listing calls, shared by
@@ -101,7 +102,7 @@ final class JdbcMetadataQueries {
      */
     private static final String SQL_TYPE_EXPRESSION =
         "CASE WHEN DATA_TYPE = 'NUMBER' AND NUMERIC_SCALE = 0 THEN " + Types.BIGINT
-        + " WHEN DATA_TYPE = 'NUMBER' THEN " + Types.DECIMAL
+        + " WHEN DATA_TYPE IN ('NUMBER', 'DECFLOAT') THEN " + Types.DECIMAL
         + " WHEN DATA_TYPE = 'FLOAT' THEN " + Types.DOUBLE
         + " WHEN DATA_TYPE = 'BOOLEAN' THEN " + Types.BOOLEAN
         + " WHEN DATA_TYPE = 'DATE' THEN " + Types.DATE
@@ -124,9 +125,13 @@ final class JdbcMetadataQueries {
         + " WHEN DATA_TYPE = 'TIMESTAMP_TZ' THEN 'TIMESTAMPTZ'"
         + " ELSE DATA_TYPE END";
 
-    /** Precision for exact numerics, declared length for character and binary, 0 for everything else. */
+    /**
+     * Precision for exact numerics — 38 for a DECFLOAT, whose catalog row carries none (live-verified) — declared
+     * length for character and binary, 0 for everything else.
+     */
     private static final String COLUMN_SIZE_EXPRESSION =
         "CASE WHEN DATA_TYPE = 'NUMBER' THEN NUMERIC_PRECISION"
+        + " WHEN DATA_TYPE = 'DECFLOAT' THEN 38"
         + " WHEN DATA_TYPE = 'TEXT' THEN CHARACTER_MAXIMUM_LENGTH"
         + " WHEN DATA_TYPE = 'BINARY' THEN PARSE_JSON(SHOWN_TYPE):length::INTEGER"
         + " ELSE 0 END";
@@ -483,7 +488,7 @@ final class JdbcMetadataQueries {
             if (i > 0) {
                 sql.append(", ");
             }
-            sql.append('\'').append(values.get(i).toUpperCase().replace("'", "''")).append('\'');
+            sql.append('\'').append(values.get(i).toUpperCase(Locale.ROOT).replace("'", "''")).append('\'');
         }
         sql.append(')');
     }
@@ -560,7 +565,7 @@ final class JdbcMetadataQueries {
             return;
         }
         sql.append(" AND UPPER(").append(column).append(") LIKE '")
-            .append(pattern.toUpperCase().replace("'", "''")).append("'");
+            .append(pattern.toUpperCase(Locale.ROOT).replace("'", "''")).append("'");
     }
 
     /** An exact-name argument as an equality filter, skipping the "match all" cases (null, empty). */
@@ -569,7 +574,7 @@ final class JdbcMetadataQueries {
             return;
         }
         sql.append(" AND UPPER(").append(column).append(") = '")
-            .append(value.toUpperCase().replace("'", "''")).append("'");
+            .append(value.toUpperCase(Locale.ROOT).replace("'", "''")).append("'");
     }
 
     /**
@@ -593,7 +598,7 @@ final class JdbcMetadataQueries {
             if (i > 0) {
                 sql.append(", ");
             }
-            final String type = types[i] == null ? "" : types[i].toUpperCase();
+            final String type = types[i] == null ? "" : types[i].toUpperCase(Locale.ROOT);
             sql.append("'").append(type.replace("'", "''")).append("'");
         }
         if (types.length == 0) {

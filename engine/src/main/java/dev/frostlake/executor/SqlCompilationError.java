@@ -203,6 +203,11 @@ public final class SqlCompilationError {
         return PREFIX + " conflicting values for copy option '" + name + "'\n";
     }
 
+    /** A copy option a stage does not take, named as written — laid out like {@link #conflictingCopyOption}. */
+    public static String invalidCopyOption(final String written) {
+        return PREFIX + " invalid copy option '" + written + "'\n";
+    }
+
     /**
      * A column carrying more than one DEFAULT / AUTOINCREMENT / IDENTITY. Its shape is a third one
      * again — a space AFTER the colon, then the newline, and the sentence ends in a period.
@@ -268,12 +273,14 @@ public final class SqlCompilationError {
     /**
      * The sentence live gives when a SHOW cannot reach its scope — for the kinds that do not name what
      * was missing. Measured across all three scope forms ({@code IN SCHEMA db.missing},
-     * {@code IN SCHEMA missing}, {@code IN DATABASE missing}): TABLES, VIEWS, STAGES, FILE FORMATS and
-     * DYNAMIC TABLES answer exactly this, while PIPES, STREAMS, TASKS, SEQUENCES, TAGS, the two policy
-     * kinds, CORTEX SEARCH SERVICES, PROCEDURES, FUNCTIONS and COLUMNS name the missing schema or
-     * database instead. Which one a kind uses is a property of the kind, not of the scope form. Every
-     * USE that resolves nothing — a database, a schema, a role, a quoted name in the wrong case — answers
-     * it too.
+     * {@code IN SCHEMA missing}, {@code IN DATABASE missing}): TABLES and its EVENT, ICEBERG, EXTERNAL,
+     * HYBRID and DYNAMIC flavours, VIEWS, OBJECTS, STAGES, FILE FORMATS, NETWORK RULES, NOTEBOOKS,
+     * STREAMLITS and MODELS answer exactly this, and so does SCHEMAS IN DATABASE; while PIPES, STREAMS,
+     * TASKS, ALERTS, SEQUENCES, TAGS, SECRETS, CONTACTS, MATERIALIZED VIEWS, every policy kind, CORTEX
+     * SEARCH SERVICES, IMAGE REPOSITORIES, SERVICES, PROCEDURES, FUNCTIONS, DATABASE ROLES, COLUMNS and
+     * the key listings name the missing schema or database instead. Which one a kind uses is a property
+     * of the kind, not of the scope form. Every USE that resolves nothing — a database, a schema, a role,
+     * a quoted name in the wrong case — answers it too.
      */
     public static String objectDoesNotExist() {
         return of("Object does not exist, or operation cannot be performed.");
@@ -294,8 +301,13 @@ public final class SqlCompilationError {
         // when the whole path is named, where an ordinary upper-case name stays bare. A quote the
         // name holds is doubled for a table alone: Table '"n""o"' beside View, Sequence, Schema,
         // Database and Object '"n"o"'.
-        return doesNotExistAsSpelled(kind, "Table".equals(kind) ? SqlIdentifiers.spellAlreadyCanonicalPathEscaped(name)
-            : SqlIdentifiers.spellAlreadyCanonicalPath(name));
+        return doesNotExistAsSpelled(kind, spelledForRefusal(kind, name));
+    }
+
+    /** A refused name as {@link #doesNotExist} spells it: part by part, a quote it holds doubled for a table alone. */
+    private static String spelledForRefusal(final String kind, final String name) {
+        return "Table".equals(kind) ? SqlIdentifiers.spellAlreadyCanonicalPathEscaped(name)
+            : SqlIdentifiers.spellAlreadyCanonicalPath(name);
     }
 
     /**
@@ -316,14 +328,15 @@ public final class SqlCompilationError {
      * the column of a RENAME COLUMN or a COMMENT ON COLUMN, the constraint of an ALTER CONSTRAINT, a search
      * analyzer, a table stage named with four parts, a data metric function that is not a system one. An UNDROP
      * ACCOUNT of a missing account uses it too: live refuses that in other words altogether, and a hint would only
-     * add a sentence live never gives.
+     * add a sentence live never gives. So does a POLICY_REFERENCES REF_ENTITY_NAME that names no table, although a
+     * table is a securable object (live-verified).
      *
      * @param kind the kind noun, as the sentence opens with it
      * @param name the canonical name
      * @return the message as the driver hands it to a client
      */
     public static String doesNotExistWithoutHint(final String kind, final String name) {
-        return of(kind + " '" + SqlIdentifiers.spellAlreadyCanonicalPath(name) + "' does not exist or not authorized.");
+        return of(kind + " '" + spelledForRefusal(kind, name) + "' does not exist or not authorized.");
     }
 
     /**

@@ -32,6 +32,8 @@ public class SchemaSnapshot implements Serializable {
     public String name;
     public String comment;
     public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
     public List<TableSnapshot> tables = new ArrayList<>();
     public List<ViewSnapshot> views = new ArrayList<>();
     // Added after the initial release. Old catalog.dat files predate these fields, so deserialization
@@ -75,4 +77,6 @@ public class SchemaSnapshot implements Serializable {
     // above, which is the tags the schema DEFINES. Null in a snapshot written before they were
     // recorded, which reads back as a schema carrying none.
     public Map<String, String> tagValues;
+    // The owning role. Null on snapshots written before it was saved, which restore the default owner.
+    public String owner;
 }

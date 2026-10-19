@@ -27,7 +27,7 @@ public class Bitxor extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        return BitwiseOperand.whole(args.get(0)) ^ BitwiseOperand.whole(args.get(1));
+        return BitwiseOperand.result(BitwiseOperand.wide(args.get(0)).xor(BitwiseOperand.wide(args.get(1))));
     }
 
     @Override

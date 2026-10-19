@@ -20,6 +20,7 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
@@ -56,16 +57,15 @@ public final class LikeMatcher {
     }
 
     /**
-     * The text a LIKE operand is matched as: a DATE, TIME or timestamp by its display text, the text
-     * {@code ||} gives it — live, {@code ts LIKE '% %'} is TRUE over {@code 2020-01-01 10:00:00.000}, and
-     * {@code TIME(9)} matches {@code '10:00:00'} exactly. Anything else by its ordinary text.
+     * The text a LIKE operand is matched as, the text {@code ||} gives it: a DATE, TIME or timestamp by its display
+     * text — live, {@code ts LIKE '% %'} is TRUE over {@code 2020-01-01 10:00:00.000}, and {@code TIME(9)} matches
+     * {@code '10:00:00'} exactly — and a number by its digits in place, {@code 0.0000001 LIKE '%E%'} being FALSE.
      *
      * @param value the operand, not NULL
      * @return the text matched
      */
     public static String likeText(final Object value) {
-        return SharedFunctionHelpers.isNativeTemporal(value) ? SharedFunctionHelpers.textOf(value)
-            : value.toString();
+        return value instanceof String ? (String) value : SharedFunctionHelpers.textOf(value);
     }
 
     /**
@@ -90,7 +90,7 @@ public final class LikeMatcher {
         final String written = likeText(pattern);
         final boolean matches;
         if (caseInsensitive) {
-            matches = matchesInFull(subject.toLowerCase(), written.toLowerCase(), escape);
+            matches = matchesInFull(subject.toLowerCase(Locale.ROOT), written.toLowerCase(Locale.ROOT), escape);
         } else {
             final Boolean simple = matchesSimply(subject, written, escape);
             matches = simple != null ? simple.booleanValue() : matchesInFull(subject, written, escape);
@@ -131,14 +131,14 @@ public final class LikeMatcher {
             return Boolean.TRUE;
         }
         if (caseInsensitive) {
-            final String folded = subject.toLowerCase();
+            final String folded = subject.toLowerCase(Locale.ROOT);
             for (final String pattern : patterns) {
                 if (pattern != null) {
-                    compiled(pattern.toLowerCase(), escape);
+                    compiled(pattern.toLowerCase(Locale.ROOT), escape);
                 }
             }
             for (final String pattern : patterns) {
-                if (pattern != null && matchesInFull(folded, pattern.toLowerCase(), escape)) {
+                if (pattern != null && matchesInFull(folded, pattern.toLowerCase(Locale.ROOT), escape)) {
                     return Boolean.TRUE;
                 }
             }

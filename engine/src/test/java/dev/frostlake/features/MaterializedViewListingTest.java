@@ -90,6 +90,16 @@ public class MaterializedViewListingTest extends BaseDatabaseTest {
         assertEquals("VIEW|VIEW|VIEW|TABLE", column("SHOW OBJECTS " + scope(), "kind"));
     }
 
+    /** SHOW OBJECTS counts the rows a materialized view materialized, as SHOW MATERIALIZED VIEWS does. */
+    @Test
+    public void showObjectsCountsTheMaterializedRows() {
+        engine.execute("CREATE OR REPLACE TABLE zt (x INT, y INT)");
+        engine.execute("INSERT INTO zt VALUES (1, 1), (2, 2)");
+        engine.execute("CREATE OR REPLACE MATERIALIZED VIEW a_mv AS SELECT x FROM zt");
+        assertEquals("2", column("SHOW OBJECTS LIKE 'A_MV' " + scope(), "rows"));
+        assertEquals("2", column("SHOW MATERIALIZED VIEWS LIKE 'A_MV' " + scope(), "rows"));
+    }
+
     /** SHOW TABLES leaves it out; SHOW MATERIALIZED VIEWS lists it alone. */
     @Test
     public void theKindSpecificListingsStaySeparate() {

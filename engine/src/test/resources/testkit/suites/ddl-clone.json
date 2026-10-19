@@ -187,12 +187,12 @@
       {"sql": "DROP DATABASE IF EXISTS fn_tgt"}
     ]},
     {"name": "clone-keeps-non-sql-procedure-language",
-     "skip": {"backends": ["snowflake"], "reason": "an inline Java handler needs PACKAGES = ('com.snowflake:snowpark:latest') on the account (Java test had the same assumption)"},
+     "skip": {"backends": ["snowflake"], "reason": "a Java procedure's CALL through a cloned database is not live-verified"},
      "steps": [
       {"sql": "CREATE DATABASE pr_src"},
       {"sql": "USE DATABASE pr_src"},
       {"sql": "CREATE SCHEMA utils"},
-      {"sql": "CREATE OR REPLACE PROCEDURE pr_src.utils.java_proc()\nRETURNS VARCHAR\nLANGUAGE JAVA\nHANDLER='CloneProc.run'\nAS\n$$\npublic class CloneProc {\n  public String run(com.snowflake.snowpark_java.Session session) {\n    return \"java-ok\";\n  }\n}\n$$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE pr_src.utils.java_proc()\nRETURNS VARCHAR\nLANGUAGE JAVA\nPACKAGES = ('com.snowflake:snowpark:latest')\nHANDLER='CloneProc.run'\nAS\n$$\npublic class CloneProc {\n  public String run(com.snowflake.snowpark_java.Session session) {\n    return \"java-ok\";\n  }\n}\n$$"},
       {"sql": "CREATE DATABASE pr_tgt CLONE pr_src"},
       {"sql": "CALL pr_tgt.utils.java_proc()", "expect": {"value": "java-ok"}},
       {"sql": "USE DATABASE test_db"},

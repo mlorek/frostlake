@@ -18,13 +18,14 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.scalar.math.BitwiseOperand;
 import dev.frostlake.values.VariantValue;
 
-import java.math.BigDecimal;
+import java.math.BigInteger;
 
 /** Accumulator for {@link BitAndAgg}. */
 public class BitAndAccumulator implements AggregateFunction.Accumulator {
-    private long result = -1L;
+    private BigInteger result = BigInteger.ONE.negate();
     private boolean hasValue = false;
 
     @Override
@@ -33,17 +34,16 @@ public class BitAndAccumulator implements AggregateFunction.Accumulator {
         hasValue = true;
         // A VARIANT member reads as its number, a boolean as 1 / 0; anything else fails the cast to
         // FIXED, as live's integer aggregates say (BITOR_AGG over {"x":1}).
-        result &= (v instanceof VariantValue
-            ? VariantNumbers.numberOf((VariantValue) v, VariantNumbers.FIXED).longValue()
-            : new BigDecimal(v.toString()).longValue());
+        result = result.and(BitAggregateOperand.of(v instanceof VariantValue
+            ? VariantNumbers.numberOf((VariantValue) v, VariantNumbers.FIXED) : v));
     }
 
     @Override
-    public Object getResult() { return hasValue ? result : null; }
+    public Object getResult() { return hasValue ? BitwiseOperand.result(result) : null; }
 
     @Override
     public void reset() {
-        result = -1L;
+        result = BigInteger.ONE.negate();
         hasValue = false;
     }
 
@@ -52,7 +52,7 @@ public class BitAndAccumulator implements AggregateFunction.Accumulator {
         final BitAndAccumulator o = (BitAndAccumulator) other;
         if (o.hasValue) {
             hasValue = true;
-            result &= o.result;
+            result = result.and(o.result);
         }
     }
 }

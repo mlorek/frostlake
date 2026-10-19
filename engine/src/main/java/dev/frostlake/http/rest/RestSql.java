@@ -35,7 +35,8 @@ import java.util.Locale;
  * <p>The engine carries no Snowflake error numbers, so the status and the {@code code} come from the refusal's
  * family, recognised by its sentence: an object that does not exist is {@code 404} with {@code 002003}, one that
  * already exists {@code 409} with {@code 002002}, a syntax error {@code 400} with {@code 001003}, missing
- * privileges {@code 403} with {@code 003001}. Any other refusal of the statement is a {@code 400} without a code.
+ * privileges {@code 403} with {@code 003001}, a recluster action on a table that is not clustered {@code 401} with
+ * {@code 003205} (live-verified). Any other refusal of the statement is a {@code 400} without a code.
  * The message is the statement's own, as the account relays it: see {@link #message}.
  */
 public final class RestSql {
@@ -66,7 +67,14 @@ public final class RestSql {
     public static final String CODE_NON_ROOT_TASK = "091435";
     /** The account's code for a tag conflict rule the tag does not take. */
     public static final String CODE_ON_CONFLICT = "391892";
+    /** The account's code for an ALTER ICEBERG TABLE action the table's kind does not take. */
+    public static final String CODE_ICEBERG_TABLE_KIND = "091352";
+    /** The account's code for a recluster action on a table without a clustering key, which it answers 401. */
+    public static final String CODE_NOT_CLUSTERED = "003205";
     /** The prefix a compilation error's message starts with. */
+    /** A statement that needs a current database the session does not have. */
+    public static final String CODE_NO_CURRENT_DATABASE = "090105";
+
     public static final String COMPILATION_ERROR = "SQL compilation error:";
 
     private final ConcurrentDatabaseEngine engine;
@@ -187,6 +195,9 @@ public final class RestSql {
             return new RestException(500, "Internal error", null);
         }
         final String relayed = message(message);
+        if (message.contains("This session does not have a current database")) {
+            return new RestException(400, relayed, CODE_NO_CURRENT_DATABASE);
+        }
         if (message.contains("does not exist or not authorized") || message.contains("does not exist")) {
             return new RestException(404, relayed, CODE_DOES_NOT_EXIST);
         }
@@ -225,6 +236,12 @@ public final class RestSql {
         }
         if (message.startsWith("Invalid on_conflict strategy")) {
             return new RestException(400, relayed, CODE_ON_CONFLICT);
+        }
+        if (message.contains("ALTER command failed. The provided table must be an Iceberg table")) {
+            return new RestException(400, relayed, CODE_ICEBERG_TABLE_KIND);
+        }
+        if (message.contains("' is not clustered")) {
+            return new RestException(401, relayed, CODE_NOT_CLUSTERED);
         }
         return new RestException(400, relayed, null);
     }

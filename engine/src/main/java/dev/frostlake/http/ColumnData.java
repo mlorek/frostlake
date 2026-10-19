@@ -24,11 +24,15 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 public class ColumnData {
     private String name;
     private String dataType;
-    // A fixed-point NUMBER's precision; 0 for every other type.
-    private int precision;
+    // A fixed-point NUMBER's precision, and 0 beside the scale of a time, a timestamp or an interval. Absent
+    // for every type that has none, as the account's own result metadata leaves it null there: text, binary,
+    // FLOAT, BOOLEAN, DATE and the semi-structured types.
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Integer precision;
     // A fixed-point NUMBER's scale, an interval's field code, or a time or timestamp's fractional-second
-    // precision (see ResultSetData); 0 for every other type.
-    private int scale;
+    // precision (see ResultSetData). Absent for every other type, like the precision.
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Integer scale;
     // Whether the column is KNOWN to accept NULL. A Boolean rather than a boolean so ABSENT stays
     // distinguishable from false: a server that predates this field sends neither, and the client
     // must read that as unknown rather than as "not nullable". Every driver reads this object by
@@ -64,20 +68,30 @@ public class ColumnData {
         this.nullable = nullable;
     }
 
-    public int getPrecision() {
+    public Integer getPrecision() {
         return precision;
     }
 
-    public void setPrecision(final int precision) {
+    public void setPrecision(final Integer precision) {
         this.precision = precision;
     }
 
-    public int getScale() {
+    public Integer getScale() {
         return scale;
     }
 
-    public void setScale(final int scale) {
+    public void setScale(final Integer scale) {
         this.scale = scale;
+    }
+
+    /** The precision as a driver's metadata reports it: 0 when the column has none. */
+    public int precisionOrZero() {
+        return precision == null ? 0 : precision.intValue();
+    }
+
+    /** The scale as a driver's metadata reports it: 0 when the column has none. */
+    public int scaleOrZero() {
+        return scale == null ? 0 : scale.intValue();
     }
 
     public Integer getLength() {

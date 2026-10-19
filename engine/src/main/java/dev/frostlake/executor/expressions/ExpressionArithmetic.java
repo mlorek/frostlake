@@ -20,6 +20,7 @@ import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.conversion.BooleanWords;
 import dev.frostlake.functions.scalar.datetime.DateShiftAmount;
 import dev.frostlake.functions.scalar.datetime.ZonedTimestampShift;
 import dev.frostlake.values.ApproximateValues;
@@ -144,6 +145,13 @@ public final class ExpressionArithmetic {
         if (left instanceof CharSequence && right instanceof CharSequence) {
             return new Number[] {Double.valueOf(leftNumber.doubleValue()), Double.valueOf(rightNumber.doubleValue())};
         }
+        final Object text = left instanceof CharSequence ? left : right;
+        final Number number = text == left ? rightNumber : leftNumber;
+        final Number spelled = text == left ? leftNumber : rightNumber;
+        if (!ApproximateValues.isApproximate(number) && spelled instanceof BigDecimal) {
+            // Beside an exact number the text converts to one (see NumericRangeRefusal.fixedTextRefusal).
+            requireFixedText(text, (BigDecimal) spelled);
+        }
         return new Number[] {leftNumber, rightNumber};
     }
 
@@ -212,9 +220,11 @@ public final class ExpressionArithmetic {
         // the relationship-loader idiom), a number as zero/non-zero. An unrecognized string is
         // FALSE here (Snowflake raises; the engine stays lenient as elsewhere).
         if (value instanceof String) {
-            final String text = ((String) value).trim().toLowerCase();
-            return text.equals("true") || text.equals("t") || text.equals("yes")
-                || text.equals("y") || text.equals("on") || text.equals("1");
+            return Boolean.TRUE.equals(BooleanWords.read((String) value));
+        }
+        // A FLOAT is true when it is not zero, NaN included: NOT 'nan'::FLOAT is FALSE (live-verified).
+        if (value instanceof Double || value instanceof Float) {
+            return ((Number) value).doubleValue() != 0.0;
         }
         if (value instanceof Number) {
             return new BigDecimal(value.toString()).compareTo(BigDecimal.ZERO) != 0;
@@ -256,16 +266,11 @@ public final class ExpressionArithmetic {
             return VariantBooleans.convert((VariantValue) value);
         }
         if (value instanceof String) {
-            final String text = ((String) value).trim().toLowerCase();
-            if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
-                    || text.equals("on") || text.equals("1")) {
-                return Boolean.TRUE;
+            final Boolean read = BooleanWords.read((String) value);
+            if (read == null) {
+                throw new RuntimeException("Boolean value '" + value + "' is not recognized");
             }
-            if (text.equals("false") || text.equals("f") || text.equals("no") || text.equals("n")
-                    || text.equals("off") || text.equals("0")) {
-                return Boolean.FALSE;
-            }
-            throw new RuntimeException("Boolean value '" + value + "' is not recognized");
+            return read;
         }
         return Boolean.valueOf(isTrue(value));
     }
@@ -322,9 +327,13 @@ public final class ExpressionArithmetic {
         if (ZonedTimestampShift.isZoned(left) && right instanceof IntervalValue) {
             return applyZonedInterval(left, (IntervalValue) right, 1);
         }
+        if (left instanceof LocalTime && right instanceof IntervalValue) {
+            return applyTimeInterval((LocalTime) left, (IntervalValue) right, 1);
+        }
         // Date/time addition (commutative): temporal + integer (days) or temporal + INTERVAL. Normalize so
         // `temporal` is the DATE/TIMESTAMP operand and `other` is the integer/interval being added.
-        final Object temporal = asTemporal(left) != null ? left : (asTemporal(right) != null ? right : null);
+        final Object temporal = temporalBeside(left, right) != null ? left
+            : temporalBeside(right, left) != null ? right : null;
         if (temporal != null) {
             final Object other = temporal == left ? right : left;
             if (other instanceof IntervalValue) {
@@ -421,9 +430,12 @@ public final class ExpressionArithmetic {
         if (ZonedTimestampShift.isZoned(left) && right instanceof IntervalValue) {
             return applyZonedInterval(left, (IntervalValue) right, -1);
         }
+        if (left instanceof LocalTime && right instanceof IntervalValue) {
+            return applyTimeInterval((LocalTime) left, (IntervalValue) right, -1);
+        }
         // Date/time subtraction (NOT commutative — the left operand must be the DATE/TIMESTAMP):
         // temporal - integer (days), temporal - INTERVAL, or temporal - temporal (difference in days).
-        final LocalDateTime leftTemporal = asTemporal(left);
+        final LocalDateTime leftTemporal = temporalBeside(left, right);
         if (leftTemporal != null) {
             if (right instanceof IntervalValue) {
                 return applyInterval(left, (IntervalValue) right, -1);
@@ -452,6 +464,15 @@ public final class ExpressionArithmetic {
             return subtract(subtractCoerced[0], subtractCoerced[1]);
         }
         throw unreadableOperand(left, right, "Cannot subtract: " + left + " - " + right);
+    }
+
+    /**
+     * A temporal operand as the arithmetic reads it beside {@code other}: a DATE or a TIMESTAMP, or a text that spells
+     * one beside an INTERVAL or a temporal. Beside a number a text is read as the number it is not —
+     * {@code '2024-01-15' + 1} is "Numeric value '2024-01-15' is not recognized" (live-verified).
+     */
+    private static LocalDateTime temporalBeside(final Object operand, final Object other) {
+        return operand instanceof String && other instanceof Number ? null : asTemporal(operand);
     }
 
     /**
@@ -577,6 +598,9 @@ public final class ExpressionArithmetic {
         if (value instanceof LocalDate) {
             return "DATE";
         }
+        if (value instanceof LocalTime) {
+            return "TIME(9)";
+        }
         if (value instanceof LocalDateTime) {
             return "TIMESTAMP_NTZ(9)";
         }
@@ -587,6 +611,63 @@ public final class ExpressionArithmetic {
             return "TIMESTAMP_TZ(9)";
         }
         return null;
+    }
+
+    /**
+     * A TIME moved by an INTERVAL, one part after another in written order, around the clock: 23:30 plus an hour is
+     * 00:30 and 25 hours are one. A part of a day or longer is no part of a time (see {@link #timeComponentRefusal};
+     * the statement's typing refuses it first, while it compiles).
+     *
+     * @param time     the time
+     * @param interval the interval, its parts chained through {@link IntervalValue#getRest()}
+     * @param sign     1 to add, -1 to subtract
+     * @return the moved time
+     */
+    private static LocalTime applyTimeInterval(final LocalTime time, final IntervalValue interval, final int sign) {
+        LocalTime moved = time;
+        for (IntervalValue part = interval; part != null; part = part.getRest()) {
+            requireCountable(part, sign);
+            final long amount = sign * part.getValueAsLong();
+            switch (part.getUnit()) {
+                case HOUR:
+                    moved = moved.plusHours(amount);
+                    break;
+                case MINUTE:
+                    moved = moved.plusMinutes(amount);
+                    break;
+                case SECOND:
+                    moved = moved.plusSeconds(amount);
+                    break;
+                case MILLISECOND:
+                    moved = moved.plusNanos(amount * 1_000_000L);
+                    break;
+                case MICROSECOND:
+                    moved = moved.plusNanos(amount * 1_000L);
+                    break;
+                case NANOSECOND:
+                    moved = moved.plusNanos(amount);
+                    break;
+                default:
+                    throw timeComponentRefusal(part.getUnit(), part.getRest() == null, sign > 0);
+            }
+        }
+        return moved;
+    }
+
+    /**
+     * The refusal of an interval part a TIME cannot move by — a day or longer — on one line, as the account words it:
+     * the last part is applied by the operator itself and named so, an earlier one by DATEADD — {@code t + INTERVAL
+     * '1 day, 2 hours'} names DATEADD and {@code t + INTERVAL '2 hours, 1 day'} the {@code +} (live-verified).
+     *
+     * @param unit     the part's unit
+     * @param lastPart whether it is the interval's last part
+     * @param adds     whether the operator adds
+     * @return the refusal
+     */
+    static RuntimeException timeComponentRefusal(final IntervalUnit unit, final boolean lastPart, final boolean adds) {
+        return new RuntimeException(SqlCompilationError.inline("['" + unit.name()
+            + "'] is not a valid date/time component for function " + (lastPart ? adds ? "+" : "-" : "DATEADD")
+            + " and type TIME(9)."));
     }
 
     private static Object applyIntervalPart(final Object temporal, final IntervalValue interval, final int sign) {
@@ -1117,6 +1198,10 @@ public final class ExpressionArithmetic {
 
     /** A temporal as the instant it names, a naive one read in the session's zone; null if not temporal. */
     private static Instant sessionInstant(final Object v) {
+        // A raw instant, as an INFORMATION_SCHEMA time once was, is already the instant it names.
+        if (v instanceof Instant) {
+            return (Instant) v;
+        }
         if (v instanceof OffsetDateTime) {
             return ((OffsetDateTime) v).toInstant();
         }
@@ -1200,18 +1285,47 @@ public final class ExpressionArithmetic {
         if (text == null) {
             return null;
         }
+        final BigDecimal leftValue;
+        final BigDecimal rightValue;
         try {
-            return new BigDecimal(left.toString().trim()).compareTo(new BigDecimal(right.toString().trim()));
+            leftValue = new BigDecimal(left.toString().trim());
+            rightValue = new BigDecimal(right.toString().trim());
         } catch (final NumberFormatException notANumericString) {
-            // Against a FLOAT the text converts to FLOAT, where a hexadecimal number reads too.
+            // Against a FLOAT the text converts to FLOAT, as a cast to FLOAT reads it: a hexadecimal number, a
+            // type suffix and the words inf, -inf and NaN read too - 1.5::FLOAT = '1.5d' is TRUE (live-verified).
             final Object number = text == right ? left : right;
-            final Number asFloat = ApproximateValues.isApproximate(number) ? floatText(text) : null;
+            Number asFloat = null;
+            if (ApproximateValues.isApproximate(number)) {
+                try {
+                    asFloat = ApproximateValues.written(text);
+                } catch (final RuntimeException spellsNoNumber) {
+                    asFloat = null;
+                }
+            }
             if (asFloat != null) {
                 return text == right
                     ? ApproximateValues.compare(((Number) left).doubleValue(), asFloat.doubleValue())
                     : ApproximateValues.compare(asFloat.doubleValue(), ((Number) right).doubleValue());
             }
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
+        }
+        if (!ApproximateValues.isApproximate(text == right ? left : right)) {
+            // Beside an exact number the text converts to one (see NumericRangeRefusal.fixedTextRefusal).
+            requireFixedText(text, text == right ? rightValue : leftValue);
+        }
+        return leftValue.compareTo(rightValue);
+    }
+
+    /**
+     * Refuse a text that converts to no NUMBER where it stands beside one.
+     *
+     * @param text  the text as written
+     * @param value the value it spells
+     */
+    private static void requireFixedText(final Object text, final BigDecimal value) {
+        final String refusal = NumericRangeRefusal.fixedTextRefusal(text.toString().trim(), value);
+        if (refusal != null) {
+            throw new RuntimeException(refusal);
         }
     }
 

@@ -1,26 +1,26 @@
 {
   "suite": "query-explain",
-  "description": "EXPLAIN returns the plan in the account's tabular shape - ten columns: step, id, parentOperators, operation, objects, alias, expressions, partitionsTotal, partitionsAssigned, bytesAssigned - with a GlobalStats row first and then one row per operator, each naming its parent. A full SELECT lays out Result / Limit / Sort / Aggregate / Filter / TableScan in that order, a join adds a Join step over one TableScan per side, a scan names its table fully qualified, and EXPLAIN USING TABULAR is the default shape spelled out. Every test skips snowflake: the operators, expressions and partition statistics are Frostlake's own - the account plans with its optimizer and its storage's real partition counts.",
+  "description": "EXPLAIN returns the plan in the account's tabular shape - ten columns: step, id, parentOperators, operation, objects, alias, expressions, partitionsTotal, partitionsAssigned, bytesAssigned - with a GlobalStats row first and then one row per operator, each naming its parent. A full SELECT lays out Result / SortWithLimit / Aggregate / Filter / TableScan in that order, an equality join is an InnerJoin over the scan of one side and a JoinFilter over the other's, a scan names its table fully qualified with the partitions it reads, and EXPLAIN USING TABULAR is the default shape spelled out. Every test skips snowflake: the tables here are empty, which the account's optimizer answers with a single Generator, and it spells the expressions its own way.",
   "tags": ["query", "converted"],
   "tests": [
     {"name": "explain-of-a-select-shows-its-operators",
-     "skip": {"backends": ["snowflake"], "reason": "asserts Frostlake's operators and expressions (TableScan / Filter / Aggregate / ...); the account plans the same query with its own optimizer, operator names and partition statistics."},
+     "skip": {"backends": ["snowflake"], "reason": "the table is empty, which the account's optimizer answers with a single Generator, and it spells the expressions its own way."},
      "steps": [
       {"sql": "CREATE TABLE t (id INTEGER, region VARCHAR, amount INTEGER)"},
-      {"sql": "EXPLAIN SELECT region, SUM(amount) FROM t WHERE id > 0 GROUP BY region ORDER BY region LIMIT 5", "expect": {"rows": [[null,null,null,"GlobalStats",null,null,null,0,0,0],[1,0,null,"Result",null,null,"region, SUM(amount)",null,null,null],[1,1,"[0]","Limit",null,null,null,null,null,null],[1,2,"[1]","Sort",null,null,"ORDER BY region",null,null,null],[1,3,"[2]","Aggregate",null,null,"GROUP BY region",null,null,null],[1,4,"[3]","Filter",null,null,"id > 0",null,null,null],[1,5,"[4]","TableScan","TEST_DB.TEST_SCHEMA.T",null,null,null,null,null]], "ordered": true}}
+      {"sql": "EXPLAIN SELECT region, SUM(amount) FROM t WHERE id > 0 GROUP BY region ORDER BY region LIMIT 5", "expect": {"rows": [[null,null,null,"GlobalStats",null,null,null,0,0,0],[1,0,null,"Result",null,null,"region, SUM(amount)",null,null,null],[1,1,"[0]","SortWithLimit",null,null,"ORDER BY region",null,null,null],[1,2,"[1]","Aggregate",null,null,"GROUP BY region",null,null,null],[1,3,"[2]","Filter",null,null,"id > 0",null,null,null],[1,4,"[3]","TableScan","TEST_DB.TEST_SCHEMA.T",null,null,0,0,0]], "ordered": true}}
     ]},
     {"name": "explain-of-a-join-shows-the-join",
-     "skip": {"backends": ["snowflake"], "reason": "asserts Frostlake's operators and expressions; the account plans the same query with its own optimizer, operator names and partition statistics."},
+     "skip": {"backends": ["snowflake"], "reason": "the tables are empty, which the account's optimizer answers with a single Generator, and it spells the expressions its own way."},
      "steps": [
       {"sql": "CREATE TABLE a (id INTEGER)"},
       {"sql": "CREATE TABLE b (id INTEGER)"},
-      {"sql": "EXPLAIN SELECT * FROM a JOIN b ON a.id = b.id", "expect": {"rows": [[null,null,null,"GlobalStats",null,null,null,0,0,0],[1,0,null,"Result",null,null,"*",null,null,null],[1,1,"[0]","Join",null,null,null,null,null,null],[1,2,"[1]","TableScan","TEST_DB.TEST_SCHEMA.A",null,null,null,null,null],[1,3,"[1]","TableScan","TEST_DB.TEST_SCHEMA.B",null,null,null,null,null]], "ordered": true}}
+      {"sql": "EXPLAIN SELECT * FROM a JOIN b ON a.id = b.id", "expect": {"rows": [[null,null,null,"GlobalStats",null,null,null,0,0,0],[1,0,null,"Result",null,null,"*",null,null,null],[1,1,"[0]","InnerJoin",null,null,null,null,null,null],[1,2,"[1]","TableScan","TEST_DB.TEST_SCHEMA.B",null,null,0,0,0],[1,3,"[1]","JoinFilter",null,null,null,null,null,null],[1,4,"[3]","TableScan","TEST_DB.TEST_SCHEMA.A",null,null,0,0,0]], "ordered": true}}
     ]},
     {"name": "explain-using-tabular",
-     "skip": {"backends": ["snowflake"], "reason": "asserts Frostlake's operators and expressions; the account plans the same query with its own optimizer, operator names and partition statistics."},
+     "skip": {"backends": ["snowflake"], "reason": "the tables are empty, which the account's optimizer answers with a single Generator."},
      "steps": [
       {"sql": "CREATE TABLE t2 (id INTEGER)"},
-      {"sql": "EXPLAIN USING TABULAR SELECT * FROM t2", "expect": {"rows": [[null,null,null,"GlobalStats",null,null,null,0,0,0],[1,0,null,"Result",null,null,"*",null,null,null],[1,1,"[0]","TableScan","TEST_DB.TEST_SCHEMA.T2",null,null,null,null,null]], "ordered": true}}
+      {"sql": "EXPLAIN USING TABULAR SELECT * FROM t2", "expect": {"rows": [[null,null,null,"GlobalStats",null,null,null,0,0,0],[1,0,null,"Result",null,null,"T2.ID",null,null,null],[1,1,"[0]","TableScan","TEST_DB.TEST_SCHEMA.T2",null,"ID",0,0,0]], "ordered": true}}
     ]}
   ]
 }

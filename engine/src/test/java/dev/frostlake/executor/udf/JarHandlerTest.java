@@ -23,6 +23,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -40,6 +41,7 @@ import javax.tools.ToolProvider;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -219,6 +221,49 @@ public class JarHandlerTest {
             engine.executeQuery("SELECT arr_join('-', ARRAY_CONSTRUCT('a', 'b'))").getRows().get(0).getValue(0).toString());
         assertEquals("none",
             engine.executeQuery("SELECT arr_join('-')").getRows().get(0).getValue(0).toString());
+    }
+
+    @Test
+    public void aTableFunctionsClassHandlerIsFoundInItsJar() throws Exception {
+        // A table function's HANDLER names a class alone, which the JAR is searched for whole as the function is
+        // created: a packaged class is no class and method pair.
+        final Path out = Files.createDirectories(workDir.resolve("tableOut"));
+        Files.createDirectories(out.resolve("pkg"));
+        writeSource(out, "pkg/TableFn.java", """
+            package pkg;
+            public class TableFn {
+                public static class OutputRow {
+                    public int n;
+                    public OutputRow(int n) { this.n = n; }
+                }
+                public static Class getOutputClass() { return OutputRow.class; }
+                public java.util.stream.Stream<OutputRow> process(int x) {
+                    return java.util.stream.Stream.of(new OutputRow(x), new OutputRow(x + 1));
+                }
+            }
+            """);
+        compileAll(out, System.getProperty("java.class.path"), "pkg/TableFn.java");
+        final Path jar = jarClassesIn(out, workDir.resolve("table-handler.jar"));
+
+        engine.execute("CREATE FUNCTION tf(x INT) RETURNS TABLE (n INT) LANGUAGE JAVA "
+            + "IMPORTS = ('" + jar + "') HANDLER = 'pkg.TableFn'");
+        final ResultSet rs = engine.executeQuery("SELECT n FROM TABLE(tf(5)) ORDER BY n");
+        assertEquals("5", rs.getRows().get(0).getValue(0).toString());
+        assertEquals("6", rs.getRows().get(1).getValue(0).toString());
+    }
+
+    @Test
+    public void aHandlerClassTheJarDoesNotHoldIsRefusedAtCreate() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE FUNCTION j_none(n VARCHAR) RETURNS VARCHAR LANGUAGE JAVA "
+                    + "IMPORTS = ('" + javaJar + "') HANDLER = 'Nope.greet'");
+            }
+        });
+        assertTrue(refused.getMessage().contains("java.lang.ClassNotFoundException: Nope"), refused.getMessage());
+        assertTrue(refused.getMessage().endsWith(" in function J_NONE with handler Nope.greet"),
+            refused.getMessage());
     }
 
     private static void compileAll(final Path srcDir, final String classpath, final String... files) throws IOException {

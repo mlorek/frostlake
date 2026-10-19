@@ -24,6 +24,7 @@ import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 
@@ -76,7 +77,7 @@ final class FromlessOrderBy {
     private void judge(final List<ResultSetColumn> columns) {
         final List<ParserRuleContext> keys = new ArrayList<>();
         for (final FrostlakeParser.OrderItemContext item : statement.orderByClause().orderItem()) {
-            keys.add(item.expression());
+            keys.add(KeyContexts.of(item));
         }
         final FromlessSelectScope published = new FromlessSelectScope();
         final List<TableColumn> publishedColumns = new ArrayList<>();

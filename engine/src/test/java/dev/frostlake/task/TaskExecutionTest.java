@@ -27,6 +27,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -182,7 +183,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
 
     private Task taskModel(final String name) {
         return engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA")
-            .getTask(name.toUpperCase());
+            .getTask(name.toUpperCase(Locale.ROOT));
     }
 
     // A daily cron arms for the next midnight in its own zone — a calendar instant, not an interval

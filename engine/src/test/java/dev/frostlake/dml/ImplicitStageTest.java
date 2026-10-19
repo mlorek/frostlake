@@ -100,9 +100,10 @@ public class ImplicitStageTest {
 
         engine.executeQuery("COPY INTO @~/out FROM src FILE_FORMAT = (TYPE = CSV)");
 
-        // @~ resolves under <internalRoot>/users/<user>/...
-        assertTrue(internalRoot.resolve("users").toFile().isDirectory(),
-            "user stage should write beneath <root>/users/<user>");
+        // @~ resolves under <the engine's own root below internalRoot>/users/<user>/...
+        final Path user = engine.getExecutor().resolveCopyBaseDir("@~");
+        assertTrue(user.startsWith(internalRoot) && "users".equals(user.getParent().getFileName().toString())
+            && user.toFile().isDirectory(), "user stage should write beneath <root>/users/<user>");
     }
 
     @Test
@@ -114,9 +115,9 @@ public class ImplicitStageTest {
         final ResultSet unload = engine.executeQuery("COPY INTO @%t FROM t FILE_FORMAT = (TYPE = CSV)");
         assertEquals(3, ((Number) unload.getRows().get(0).getValue(0)).intValue());
 
-        engine.execute("CREATE TABLE t2 (id INTEGER, name VARCHAR)");
-        engine.execute("COPY INTO t2 FROM @%t FILE_FORMAT = (TYPE = CSV)");
-        assertEquals(3, count("t2"));
+        // A table's stage loads into that table alone, so the round trip ends where it began.
+        engine.execute("COPY INTO t FROM @%t FILE_FORMAT = (TYPE = CSV)");
+        assertEquals(6, count("t"));
     }
 
     @Test
@@ -126,9 +127,10 @@ public class ImplicitStageTest {
 
         engine.executeQuery("COPY INTO @%billing FROM billing FILE_FORMAT = (TYPE = CSV)");
 
-        // Table stage resolves under <internalRoot>/tables/<db.schema.table>/...
-        assertTrue(internalRoot.resolve("tables").toFile().isDirectory(),
-            "table stage should write beneath <root>/tables/<fq-table>");
+        // Table stage resolves under <the engine's own root below internalRoot>/tables/<db.schema.table>/...
+        final Path table = engine.getExecutor().resolveCopyBaseDir("@%billing");
+        assertTrue(table.startsWith(internalRoot) && "tables".equals(table.getParent().getFileName().toString())
+            && table.toFile().isDirectory(), "table stage should write beneath <root>/tables/<fq-table>");
     }
 
     @Test
@@ -143,12 +145,12 @@ public class ImplicitStageTest {
         engine.executeQuery("COPY INTO @%b FROM b FILE_FORMAT = (TYPE = CSV)");
 
         engine.execute("CREATE TABLE from_user (id INTEGER)");
-        engine.execute("CREATE TABLE from_table (id INTEGER)");
         engine.execute("COPY INTO from_user FROM @~ FILE_FORMAT = (TYPE = CSV)");
-        engine.execute("COPY INTO from_table FROM @%b FILE_FORMAT = (TYPE = CSV)");
+        // b's own stage holds b's one row, and loads into b alone.
+        engine.execute("COPY INTO b FROM @%b FILE_FORMAT = (TYPE = CSV)");
 
         assertEquals(2, count("from_user"));
-        assertEquals(1, count("from_table"));
+        assertEquals(2, count("b"));
     }
 
     /**

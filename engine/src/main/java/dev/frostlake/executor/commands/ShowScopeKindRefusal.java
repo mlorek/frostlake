@@ -44,7 +44,9 @@ import org.antlr.v4.runtime.Token;
  *   SHOW VIEWS IN TABLE [t]                  … of type VIEW in TABLE — every schema-level listing but COLUMNS
  *                                            and KEYS, a HYBRID one naming KEY VALUE TABLE
  *   SHOW TABLES IN ORGANIZATION | CONNECTION y         Must specify the full search path starting from database for Y
- *   SHOW PRIMARY KEYS IN VIEW y              the same full-search-path sentence; alone, IN VIEW lists as IN TABLE
+ *   SHOW PRIMARY KEYS IN VIEW y              the same full-search-path sentence; alone, IN VIEW lists as IN TABLE;
+ *                                            SHOW CHANNELS alike
+ *   SHOW APPLICATIONS IN APPLICATION a       Cannot show objects of type APPLICATION on APPLICATION.
  *   SHOW TABLES IN FAILOVER GROUP [g]        … of type TABLE in FAILOVER GROUP (REPLICATION GROUP alike)
  *   SHOW TABLES IN COMPUTE POOL p            … of type Table in Compute pool — the kinds spelled as words
  *   SHOW TABLES IN APPLICATION PACKAGE       syntax error at the end: the package needs its name (COMPUTE POOL alike)
@@ -63,7 +65,8 @@ import org.antlr.v4.runtime.Token;
  *   SHOW FUNCTIONS IN SERVICE s              Service '&lt;DB&gt;.&lt;SCHEMA&gt;.S' does not exist or not authorized.
  *   SHOW ROLES IN CLASS c                    Object type or Class 'C' does not exist or not authorized.
  *   SHOW DATABASES IN [ACCOUNT] x            Object does not exist, or operation cannot be performed.
- *   SHOW COMPUTE POOLS IN [ACCOUNT] x        Account 'X' does not exist or not authorized.
+ *   SHOW COMPUTE POOLS IN [ACCOUNT] x        Account 'X' does not exist or not authorized. SHARES, CONNECTIONS
+ *                                            and the replication and failover groups alike
  * </pre>
  *
  * <p>Which answer a listing gives to an APPLICATION, CLASS or SERVICE scope is its own fact ({@link ShowListing}).
@@ -89,10 +92,10 @@ final class ShowScopeKindRefusal {
                 throw cannotShow(listing, container);
             }
         }
-        if (ctx.TABLE() != null && !listing.isAccountLevel() && listing != ShowListing.COLUMNS
-                && listing != ShowListing.KEYS && listing != ShowListing.SCHEMAS) {
-            // A TABLE holds only columns and keys: every other schema-level listing refuses the scope by its
-            // shape, before the table — named or not — is looked up.
+        if (ctx.TABLE() != null && !listing.isAccountLevel() && !listing.takesTableScope()
+                && listing != ShowListing.SCHEMAS) {
+            // A TABLE holds only columns, keys, indexes and channels: every other schema-level listing refuses
+            // the scope by its shape, before the table — named or not — is looked up.
             final String type = ctx.MODELS() != null ? "MODEL" : listing.objectType();
             if (type != null) {
                 throw cannotShow(type, "TABLE");
@@ -105,7 +108,12 @@ final class ShowScopeKindRefusal {
         if (kind.needsName() && ctx.showInstanceName().showScopeName() == null) {
             throw new RuntimeException(SqlCompilationError.of(lineAfter(ctx, ctx.showInstanceName().showKindWord)));
         }
-        if (kind == ShowScopeKind.VIEW && listing == ShowListing.KEYS) {
+        if (kind == ShowScopeKind.APPLICATION && listing == ShowListing.APPLICATIONS) {
+            // The one listing that names its own kind as the scope, in a sentence of its own.
+            throw new RuntimeException(SqlCompilationError.inline(
+                "Cannot show objects of type APPLICATION on APPLICATION."));
+        }
+        if (kind == ShowScopeKind.VIEW && (listing == ShowListing.KEYS || listing == ShowListing.CHANNELS)) {
             if (ctx.showInstanceName() != null) {
                 throw fullSearchPath(ctx, queryExecutor);
             }
@@ -202,7 +210,7 @@ final class ShowScopeKindRefusal {
         return cannotShow(listing.objectType(), scope);
     }
 
-    private static RuntimeException cannotShow(final String objectType, final String scope) {
+    static RuntimeException cannotShow(final String objectType, final String scope) {
         return new RuntimeException(SqlCompilationError.of("Unsupported statement type 'Cannot show objects of type "
             + objectType + " in " + scope + "'."));
     }
@@ -262,13 +270,14 @@ final class ShowScopeKindRefusal {
     }
 
     /**
-     * An account-level listing scoped by anything but a bare {@code IN ACCOUNT}: compute pools name the account the
-     * scope's last part would be, the other listings answer that no object exists.
+     * An account-level listing scoped by anything but a bare {@code IN ACCOUNT}: compute pools, shares, connections
+     * and the replication and failover groups name the account the scope's last part would be, the other listings
+     * answer that no object exists.
      */
     private static RuntimeException missingAccountScope(final FrostlakeParser.ShowStatementContext ctx,
                                                         final ShowListing listing,
                                                         final QueryExecutor queryExecutor) {
-        if (listing != ShowListing.COMPUTE_POOLS) {
+        if (!listing.namesMissingAccount()) {
             return new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
         final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());

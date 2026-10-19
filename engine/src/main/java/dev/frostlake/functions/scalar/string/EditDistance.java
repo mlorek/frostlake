@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.CodePointText;
 
@@ -45,8 +46,8 @@ public class EditDistance extends TextArgumentFunction {
         if (args.size() > 2 && args.get(2) == null) return null;
         final Long maximum = args.size() > 2 ? maximumOf(args.get(2)) : null;
         // Over characters: a supplementary character is one edit, not two (live-verified).
-        final int[] a = CodePointText.codePoints(args.get(0).toString());
-        final int[] b = CodePointText.codePoints(args.get(1).toString());
+        final int[] a = CodePointText.codePoints(SharedFunctionHelpers.textOf(args.get(0)));
+        final int[] b = CodePointText.codePoints(SharedFunctionHelpers.textOf(args.get(1)));
         final int[][] dp = new int[a.length + 1][b.length + 1];
         for (int i = 0; i <= a.length; i++) dp[i][0] = i;
         for (int j = 0; j <= b.length; j++) dp[0][j] = j;

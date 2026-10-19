@@ -34,10 +34,28 @@ public class ExternalVolume extends SqlObject {
     private boolean allowWrites = true;
     private final List<Map<String, PropertyValue>> storageLocations = new ArrayList<>();
     private Instant droppedOn;
+    private String identitySeed;
 
     /** @param name the volume's canonical name */
     public ExternalVolume(final String name) {
         this(name, StatementClock.instant());
+        final Instant start = StatementClock.observedStatementStart();
+        final Instant made = start != null ? start : getCreatedTime();
+        this.identitySeed = made.getEpochSecond() + "." + made.getNano();
+    }
+
+    /**
+     * What this creation's generated identity is made from: the start of the statement that made it, which no
+     * other statement shares and a replayed log brings back. Null for one restored from a snapshot written before
+     * it was kept.
+     */
+    public String getIdentitySeed() {
+        return identitySeed;
+    }
+
+    /** Restores the seed a snapshot kept. */
+    public void setIdentitySeed(final String identitySeed) {
+        this.identitySeed = identitySeed;
     }
 
     /**

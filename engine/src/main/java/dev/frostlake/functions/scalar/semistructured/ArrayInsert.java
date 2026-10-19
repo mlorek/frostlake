@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -37,11 +38,12 @@ public class ArrayInsert extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         if (args.get(1) == null) return null;
         final int n = src.size();
-        final int pos = ((Number) args.get(1)).intValue();
+        // A position is read as the whole number it gives, a fraction rounded: 0.6 is 1 (see wholeNumber).
+        final int pos = wholeNumber(args.get(1));
         // Live: ARRAY_INSERT([1], 4, 9) is [1,undefined,undefined,undefined,9] — both the
         // inserted SQL NULL and the padding are VARIANT `undefined`, whose TYPEOF is SQL NULL.
         final JsonNode element = ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, args.get(2));
@@ -81,5 +83,16 @@ public class ArrayInsert extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        if (position == 1) {
+            return ArrayArgumentKind.WHOLE_NUMBER;
+        }
+        return null;
     }
 }

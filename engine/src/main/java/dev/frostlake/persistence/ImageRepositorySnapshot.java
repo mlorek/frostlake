@@ -17,6 +17,7 @@ package dev.frostlake.persistence;
 
 import java.io.Serializable;
 import java.time.Instant;
+import java.util.Map;
 
 /** An image repository, as a snapshot holds it. */
 public class ImageRepositorySnapshot implements Serializable {
@@ -36,4 +37,7 @@ public class ImageRepositorySnapshot implements Serializable {
 
     /** When it was created. Null in a snapshot written before it was kept, which restores as the moment of the restore. */
     public Instant createdOn;
+
+    /** The tags set on it, key to value. Null in a snapshot written before they were kept, and when it has none. */
+    public Map<String, String> tags;
 }

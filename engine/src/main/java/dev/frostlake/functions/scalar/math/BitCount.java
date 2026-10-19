@@ -17,8 +17,8 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
-import java.math.BigDecimal;
 import java.util.List;
 
 /** BITCOUNT(n) — the number of set bits in the integer value. */
@@ -28,7 +28,7 @@ public class BitCount extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        return (long) new BigDecimal(args.get(0).toString()).toBigInteger().bitCount();
+        return (long) SharedFunctionHelpers.numberArgument(args.get(0)).toBigInteger().bitCount();
     }
 
     @Override

@@ -40,6 +40,10 @@ public class ResultSetColumn {
     // accepts NULL (live-verified). A boolean alone cannot tell "nullable because we looked" from
     // "nullable because we did not".
     private final boolean nullabilityKnown;
+    // Whether the projection's expression can answer NULL, worked out from the expression itself, or null where
+    // nothing worked it out. Only a JavaScript procedure's result set tells it (isColumnNullable); the JDBC and
+    // INFORMATION_SCHEMA answers keep the two fields above.
+    private final Boolean derivedNullable;
     // The interval the column's values lie in, propagated from the projection the way the account
     // propagates statistics, or null when none is known. Read only by the storage tag SYSTEM$TYPEOF
     // prints through a derived relation; never by a value path.
@@ -52,6 +56,10 @@ public class ResultSetColumn {
     // stamps it from the expression it projects, so a derived relation, a view and a CTAS all carry the
     // collation out to whoever reads the column next.
     private final String collation;
+    // Whether that collation was NAMED by a COLLATE in the query that produced the column, or by one a
+    // derived relation, a view or a set operation carried out: a named collation outranks a column's
+    // declared one wherever the two meet, through any number of query blocks.
+    private final boolean collationExplicit;
     // Whether the projection is a number or boolean constant wrapped into a VARIANT, or a column carrying
     // one out of a derived relation — the value a cast to a sized VARCHAR converts unchecked. Read only by
     // that cast, through a derived relation or a scalar subquery built from this result set.
@@ -59,6 +67,14 @@ public class ResultSetColumn {
     // Whether the projection is a double live's compiler folds, or a column carrying one out of a derived
     // relation — which TO_VARIANT wraps keeping its FLOAT origin. Read only by that wrap.
     private final boolean foldedDouble;
+    // The projection policy whose column this column's values come from, or null: a projection of the column, of
+    // an expression over it, or of a derived relation's column that carries one. A derived relation, a CTE and a
+    // view built from this result set carry it, so the query that finally projects the values is judged by it.
+    private final String projectionPolicyName;
+    // Whether the projection is the word NULL cast to a text type, or a column carrying one out of a derived
+    // relation — which an exact number beside it reads as the bare word. Read only by the type rules that fold
+    // such a NULL, through a derived relation built from this result set.
+    private final boolean nullText;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -97,14 +113,28 @@ public class ResultSetColumn {
                            final boolean nullabilityKnown, final ValueRange valueRange,
                            final DataType spelledNumber) {
         this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, null,
-            false, false);
+            false, false, false, null, false);
     }
 
     private ResultSetColumn(final String name, final DataType dataType, final String tableName,
                             final DataType staticType, final boolean nullable,
                             final boolean nullabilityKnown, final ValueRange valueRange,
                             final DataType spelledNumber, final String collation,
-                            final boolean uncheckedConstant, final boolean foldedDouble) {
+                            final boolean uncheckedConstant, final boolean foldedDouble,
+                            final boolean collationExplicit, final String projectionPolicyName,
+                            final boolean nullText) {
+        this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, collation,
+            uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName, nullText, null);
+    }
+
+    private ResultSetColumn(final String name, final DataType dataType, final String tableName,
+                            final DataType staticType, final boolean nullable,
+                            final boolean nullabilityKnown, final ValueRange valueRange,
+                            final DataType spelledNumber, final String collation,
+                            final boolean uncheckedConstant, final boolean foldedDouble,
+                            final boolean collationExplicit, final String projectionPolicyName,
+                            final boolean nullText, final Boolean derivedNullable) {
+        this.derivedNullable = derivedNullable;
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -116,6 +146,9 @@ public class ResultSetColumn {
         this.collation = collation;
         this.uncheckedConstant = uncheckedConstant;
         this.foldedDouble = foldedDouble;
+        this.collationExplicit = collationExplicit;
+        this.projectionPolicyName = projectionPolicyName;
+        this.nullText = nullText;
     }
 
     /**
@@ -126,8 +159,52 @@ public class ResultSetColumn {
      * @return a copy of this column carrying it
      */
     public ResultSetColumn withCollation(final String spec) {
+        return withCollation(spec, false);
+    }
+
+    /**
+     * This column carrying a collation at the level it is held: one a COLLATE named outranks a column's
+     * declared one, and keeps that rank in the relation built from this result set.
+     *
+     * @param spec     the collation specification, lower-cased
+     * @param explicit whether a COLLATE named it
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withCollation(final String spec, final boolean explicit) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble);
+            valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, spec != null && explicit,
+            projectionPolicyName, nullText, derivedNullable);
+    }
+
+    /**
+     * This column carrying whether its expression can answer NULL (see {@link #getDerivedNullable}).
+     *
+     * @param derived whether it can
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withDerivedNullable(final boolean derived) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, Boolean.valueOf(derived));
+    }
+
+    /**
+     * Whether the projection's expression can answer NULL, worked out from the expression itself — what a
+     * JavaScript procedure's result set tells as {@code isColumnNullable} — or null where nothing worked it out.
+     *
+     * @return whether it can, or null
+     */
+    public Boolean getDerivedNullable() {
+        return derivedNullable;
+    }
+
+    /**
+     * Whether a COLLATE named this column's collation (see {@link #withCollation(String, boolean)}).
+     *
+     * @return true for a named collation
+     */
+    public boolean isCollationExplicit() {
+        return collationExplicit;
     }
 
     /**
@@ -138,7 +215,8 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withUncheckedConstant() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, true, foldedDouble);
+            valueRange, spelledNumber, collation, true, foldedDouble, collationExplicit, projectionPolicyName,
+            nullText, derivedNullable);
     }
 
     /**
@@ -149,7 +227,51 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withFoldedDouble() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, uncheckedConstant, true);
+            valueRange, spelledNumber, collation, uncheckedConstant, true, collationExplicit, projectionPolicyName,
+            nullText, derivedNullable);
+    }
+
+    /**
+     * This column marked as projecting the word NULL cast to a text type, which an exact number beside it reads as
+     * the bare word through the derived relation built from this result set.
+     *
+     * @return a copy of this column so marked
+     */
+    public ResultSetColumn withNullText() {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, true, derivedNullable);
+    }
+
+    /**
+     * Whether this column projects the word NULL cast to a text type (see {@link #withNullText}).
+     *
+     * @return true for such a column
+     */
+    public boolean isNullText() {
+        return nullText;
+    }
+
+    /**
+     * This column carrying the projection policy its values come under (see {@link #getProjectionPolicyName}).
+     *
+     * @param policyName the policy, fully qualified
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withProjectionPolicy(final String policyName) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, policyName,
+            nullText, derivedNullable);
+    }
+
+    /**
+     * The projection policy whose column this column's values come from: a projection of that column, of an
+     * expression over it, or of a derived relation's column carrying one. Null for a column no policy restricts.
+     *
+     * @return the policy, fully qualified, or null
+     */
+    public String getProjectionPolicyName() {
+        return projectionPolicyName;
     }
 
     /**

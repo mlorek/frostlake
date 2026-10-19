@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.conversion;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.UuidType;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
@@ -53,7 +54,7 @@ public class ToUuid extends BuiltInFunction {
             throw new RuntimeException("UUID '" + input + "' is invalid, expected format is "
                 + "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (8-4-4-4-12 hexadecimal digits with hyphens)");
         }
-        return input.toLowerCase();
+        return input.toLowerCase(Locale.ROOT);
     }
 
     @Override

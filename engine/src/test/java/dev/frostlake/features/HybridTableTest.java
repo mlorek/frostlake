@@ -27,8 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * {@code CREATE HYBRID TABLE} (Snowflake's OLTP row-store table type) parses and is created as an ordinary
- * table — Frostlake does not model hybrid storage, so the {@code HYBRID} keyword is accepted and ignored.
- * Defaults, NOT NULL and the PRIMARY KEY constraint are kept, and the table is fully usable.
+ * table that holds its keys — Frostlake does not model hybrid storage. Defaults, NOT NULL and the PRIMARY KEY
+ * constraint are kept, and the table is fully usable; one declared without a PRIMARY KEY is refused.
  */
 public class HybridTableTest extends BaseDatabaseTest {
 
@@ -83,7 +83,7 @@ public class HybridTableTest extends BaseDatabaseTest {
     @Test
     public void showHybridTablesListsOnlyHybridTables() {
         Assumptions.assumeFalse(isLiveSnowflake(), HYBRID_UNAVAILABLE);
-        engine.execute("CREATE HYBRID TABLE hyb (a INT)");
+        engine.execute("CREATE HYBRID TABLE hyb (a INT PRIMARY KEY)");
         engine.execute("CREATE TABLE plain (a INT)");
 
         // The hybrid listing has NINE columns of its own and no `kind` among them — a hybrid table is
@@ -96,7 +96,7 @@ public class HybridTableTest extends BaseDatabaseTest {
     @Test
     public void showTablesReportsHybridKind() {
         Assumptions.assumeFalse(isLiveSnowflake(), HYBRID_UNAVAILABLE);
-        engine.execute("CREATE HYBRID TABLE hyb (a INT)");
+        engine.execute("CREATE HYBRID TABLE hyb (a INT PRIMARY KEY)");
         engine.execute("CREATE TABLE plain (a INT)");
 
         final ResultSet rs = engine.executeQuery("SHOW TABLES");

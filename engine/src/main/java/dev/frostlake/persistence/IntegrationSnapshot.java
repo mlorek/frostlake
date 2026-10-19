@@ -47,4 +47,7 @@ public class IntegrationSnapshot implements Serializable {
 
     /** When it was created. Null in a snapshot written before it was kept, which restores as the moment of the restore. */
     public Instant createdOn;
+
+    /** What its generated identity is made from. Null in a snapshot written before it was kept. */
+    public String identitySeed;
 }

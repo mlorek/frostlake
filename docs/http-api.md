@@ -21,6 +21,8 @@ Request:
 | `sessionId` | optional: the session to run in (see *Sessions*) |
 | `requireSession` | optional, default `true`: a `sessionId` naming no live session is refused (404) and nothing runs. `false` starts a fresh session under that id instead (see *Sessions*) |
 | `multiStatementCount` | optional: how many statements this request holds. The account's driver sends the count with the statement, and the server refuses a request whose statement count differs. `0` means any number. A request that omits the field inherits the session's `MULTI_STATEMENT_COUNT`, which starts at 1. |
+| `readOnly` | optional: `true` asks for the request to run only if it changes nothing. Every statement of it must then be a query, a `SHOW`, a `DESCRIBE` or an `EXPLAIN`, and none may reach a write another way; otherwise the request is refused and nothing runs (see *Read-only requests*). A session opened read-only answers for a request that omits the field |
+| `queryTimeout` | optional: the client's query timeout in seconds. A statement still running when it is up is canceled, `SQL execution canceled`, as a cancel cancels it (see *Canceling a statement*). `0`, or a field left out, sets none; the session's `STATEMENT_TIMEOUT_IN_SECONDS` bounds every statement either way. |
 | `autoCommit` | optional: the client's autocommit mode. The session's `AUTOCOMMIT` setting follows it whenever it changes — the first value a session receives, and each later value that differs from the one before it — and the statement then runs under it, as it would after `ALTER SESSION SET AUTOCOMMIT`. A request that omits the field, or repeats the value it last sent, leaves the setting as it stands, so an `ALTER SESSION SET AUTOCOMMIT` run in between stays in force. |
 
 Response:
@@ -40,6 +42,19 @@ Response:
 
 Decide success from the body's `success`: a SQL error is an answer, not a transport failure.
 
+Every answer to a request that ran in a session — a failed statement's included — carries `namespace`, where the
+session stands once the request has run and as whom: `{"database": "TEST_DB", "schema": "PUBLIC", "user": "…"}`,
+each name as the catalog holds it, the database or schema null when the session has none, and the user as
+`CURRENT_USER()` names it. A `USE`, a `CREATE SCHEMA` or a procedure may have moved the session; the account reports
+where its session stands with every statement, and a driver's `getCatalog`, `getSchema` and `getUserName` answer
+with it. A session created with `POST /api/sessions` reports it too. An answer that concerns no session's statement
+leaves it out.
+
+A failed statement's answer carries `sqlState` and `errorCode` where the account's are known, and leaves them out
+otherwise. Today that is a canceled statement: `57014` with `604` for a cancel or a query timeout, and with `630`
+for the session's `STATEMENT_TIMEOUT_IN_SECONDS` (`Statement reached its statement or warehouse timeout of 1
+second(s) and was canceled.`).
+
 A `sql` that holds no statement — empty, blank, a lone `;` or only comments — is a statement like any other and
 fails as the account fails it: 200 with `success: false` and `SQL compilation error:` / `Empty SQL statement.`, in a session.
 
@@ -51,7 +66,9 @@ not count here either: a trailing `;`, an empty statement, a `;` inside a string
 or a `$$…$$` body, and a scripting block counts as one statement. The text is compiled before it is
 counted, as the account compiles it: a text that will not parse is refused with its syntax error whatever its
 count, in whichever statement the fault lies, while a fault found only when a statement runs leaves the count
-refusal to answer.
+refusal to answer. **The count is the parser's own** — the statements the text runs as — so a text cannot count
+as one statement and run as two: `SELECT 1 AS a$$b; DELETE FROM t` is two (the `$$` is part of a name), and so
+is a statement after a line comment that a carriage return ends.
 
 The text of an `EXECUTE IMMEDIATE` is counted the same way, before any of it runs: against the request's
 `multiStatementCount` when the request sends one, else against the session's `MULTI_STATEMENT_COUNT` — and
@@ -62,8 +79,8 @@ execution` = `Multiple statements executed successfully.`, in its place. An `EXE
 not counted, and answers with its last statement's result alone.
 
 When one statement of such a request fails, the answer **names the statement that failed**, as the account names
-it: its own text, the line it starts on, and its column within that line — counted from zero — with the
-statement's own error carried inside.
+it: its own text — the first thirty characters of it, followed by `...`, when it is longer — the line it starts
+on, and its column within that line — counted from zero — with the statement's own error carried inside.
 
 ```
 JavaScript execution error: Uncaught Execution of multiple statements failed on statement
@@ -71,6 +88,15 @@ JavaScript execution error: Uncaught Execution of multiple statements failed on 
 SQL compilation error:
 Object 'NOWHERE' does not exist or not authorized. in SYSTEM$MULTISTMT at …
 ```
+
+What the statements before the failing one changed **stays**: each statement of an `EXECUTE IMMEDIATE` text of
+several is a statement of its own and commits at its own end — even inside a transaction the caller has open,
+whose `ROLLBACK` undoes only what the caller changed around the text; a transaction the text opens itself is the
+text's to end. The places inside the text are the text's own: as it is written when the request hands the text
+over itself (`EXECUTE IMMEDIATE $$/* c */ SELECT nosuch$$` is refused at position 15), and with a comment that
+opens it not counted when a scripting block runs it — a statement of its own there, placed as a request is
+(position 7). The sentence that names a failing statement follows the same rule, and quotes the statement
+without a comment that closes it.
 
 There are **no partial result sets**: `resultSets` is empty however far the script got, which is what the account
 answers too — a client cannot read the results of the statements that did run. A statement sent on its own fails
@@ -81,18 +107,24 @@ of it runs, with an ordinary syntax error naming no statement.
 
 ```json
 {"columns": [{"name": "I", "dataType": "NUMBER", "precision": 38, "scale": 0, "nullable": true},
-             {"name": "S", "dataType": "VARCHAR", "precision": 0, "scale": 0, "nullable": true, "length": 9},
+             {"name": "S", "dataType": "VARCHAR", "nullable": true, "length": 9},
              {"name": "T", "dataType": "TIMESTAMP_NTZ", "precision": 0, "scale": 3, "nullable": true}],
  "rows": [[1, "a", "2024-01-01 00:00:00.000"], [2, "b", null]], "rowCount": 2, "updateCount": -1,
  "jdbcUpdateCount": -1}
 ```
 
-`precision` and `scale` describe a fixed-point NUMBER. A TIME or TIMESTAMP column — TIMESTAMP_NTZ,
+`precision` and `scale` describe a fixed-point NUMBER. One fixed-point column is named `DECIMAL` instead: the
+size a file transfer answers — a GET's `size`, a PUT's `source_size` and `target_size` — which is `DECIMAL` with
+precision 10 and scale 0, the type Snowflake's own drivers give the column of a result they build themselves; a
+client reads it as it reads a NUMBER. A TIME or TIMESTAMP column — TIMESTAMP_NTZ,
 TIMESTAMP_LTZ and TIMESTAMP_TZ alike — sends `precision` 0 and its fractional-second precision as `scale`, as
 the account's own result metadata does, and Snowflake's drivers report that number as the column's scale:
 `TIME(3)` sends 3, `TIMESTAMP_NTZ(0)` 0, a bare `TIMESTAMP_LTZ` and `CURRENT_TIMESTAMP` 9, `CURRENT_TIMESTAMP(3)`
 3, and a SHOW command's `created_on` 3. A server that predates these digits sends 0 for every time and timestamp
-column. Every other type sends 0 for both, DATE included, except an interval (below). `length` is sent for
+column. Every other type **omits both fields**, as the account's own result metadata leaves them null there —
+text, binary, FLOAT, BOOLEAN, DATE, VARIANT, OBJECT, ARRAY, VECTOR and an untyped NULL — except an interval
+(below); a client reports such a column's precision and scale as unknown, or as 0 where its API has no way to
+say so. A server before 0.3.0 sends 0 for both instead, which reads the same. `length` is sent for
 a text (VARCHAR) or binary (BINARY) column only: its length in characters or bytes, the number Snowflake's own
 driver reports as the column's precision and display size. `VARCHAR(9)` sends 9, a table's bare `VARCHAR`
 16777216, a cast to bare `VARCHAR` 134217728, a table's bare `BINARY` 8388608, and a binary the plan never sized
@@ -118,7 +150,10 @@ result as rows, as it used to.
 
 Cells cross as JSON values: numbers as numbers, BOOLEAN as a JSON boolean, VARIANT / OBJECT / ARRAY as their
 JSON text, BINARY as upper-case hex text, VECTOR as its text (`[1.000000,2.000000,3.000000]`, an INT
-vector `[1,2,3]`), and temporal values as text:
+vector `[1,2,3]`), a DECFLOAT as a JSON **string** of its text (`"1.5"`,
+`"3.3333333333333333333333333333333333333e-1"`, `"1.23e7002"` — every one of its 38 digits kept for a client whose
+JSON numbers are doubles, read back as a decimal the way Snowflake's drivers read the type; its column sends
+`precision` 38 and `scale` 0), and temporal values as text:
 
 | type | wire text |
 |---|---|
@@ -168,10 +203,40 @@ sixteen-byte kind answers the numeric getters (`getLong` and the narrower ones w
 java.sql.Type: 50006`); the type codes are 50006 and 50005. A client with no interval type of its own may
 simply hand the digits back.
 
+## Read-only requests
+
+A client whose statements must change nothing says so, and the server judges it — from the parse of the text, not
+from how it begins. A request with `"readOnly": true`, and every request of a session opened with
+`"readOnly": true`, runs only when each statement of it is a query, a `SHOW`, a `DESCRIBE` or an `EXPLAIN` and
+none reaches a write another way. Otherwise it is refused before anything runs — 200, `success: false` — in a
+sentence that says why (the account has no such switch, so the words are Frostlake's):
+
+| request | refusal |
+|---|---|
+| a statement of another kind — a DML, a DDL, `CALL`, a block, `SET`, `USE`, a transaction statement — alone or among queries | `Read-only request: a statement that begins with DELETE may write. Only a query, SHOW, DESCRIBE and EXPLAIN run.` |
+| a query that reads a sequence's `NEXTVAL`, however it is spelled | `Read-only request: NEXTVAL moves a sequence.` |
+| a query that calls `TO_QUERY`, whose text may be a `CALL` | `Read-only request: TO_QUERY may run a procedure.` |
+| a query that calls a system function that acts — ending a session or a transaction, cancelling a query, setting a task's return value, resuming a task's dependents | `Read-only request: SYSTEM$ABORT_SESSION may act on the server.` |
+
+`USE` and `SET` are refused with the rest: they change the session, and a read-only request leaves it as it was.
+A text that does not parse is refused for its syntax, as any request is.
+
+A stored procedure called in a FROM clause runs — `SELECT * FROM TABLE(p())` is a query — and is held to the same
+rule as it runs: its statements may read and may not write (see "What a procedure called in a FROM clause may
+run" in `functions.md`). What a read-only request reaches while it runs is checked there too, so a statement that
+is none of the four is refused wherever a procedure's body or an `EXECUTE IMMEDIATE` text holds it.
+
+The server uses the same judgement to choose its lock: a request that only reads runs beside other readers, and
+anything else alone.
+
 ## Sessions
 
 A session holds the current database and schema, session variables, `ALTER SESSION` settings and an open
-transaction. It lives until it is released or has been idle for 30 minutes.
+transaction. It lives until it is released or has been idle for `http.session.idleTimeoutMinutes` minutes: 240 by
+default, Snowflake's four hours (a session policy's `SESSION_IDLE_TIMEOUT_MINS` defaults to the same), and 0 keeps
+every session until it is released. Any request that names the session counts as activity, a heartbeat included.
+The idle sweep runs a quarter of the timeout apart, at least a second and at most five minutes, so a session ends
+within that much of reaching its timeout. Ending one rolls back a transaction it left open.
 
 - A request without `sessionId` runs in a new session; the response's `sessionId` names it, and `newSession` is
   `true`.
@@ -187,6 +252,9 @@ transaction. It lives until it is released or has been idle for 30 minutes.
   still started a fresh session for an unknown id unless `requireSession: true` was set, so a client that relies
   on the refusal sends `requireSession: true` explicitly once it has seen `newSession`: every such server
   refuses then.
+- `SYSTEM$ABORT_SESSION(<CURRENT_SESSION() of a session>)` ends that session as `DELETE /api/sessions/{id}`
+  does, once the request that called it is answered: its open transaction is rolled back, and its next
+  request is refused (404). A session may abort itself; the request still answers.
 
 ### `POST /api/sessions`
 
@@ -194,8 +262,11 @@ Starts a session. The optional body names where it starts, each name an identifi
 written in SQL — a bare name folds to upper case, a double-quoted one keeps its case:
 
 ```json
-{"database": "\"my db\"", "schema": "PUBLIC"}
+{"database": "\"my db\"", "schema": "PUBLIC", "readOnly": true}
 ```
+
+`readOnly: true` opens the session **read-only**: once it is placed in its database and schema, every request in
+it is held to the read-only rule, whatever the request itself says (see *Read-only requests*).
 
 It answers `{"success": true, "sessionId": "…", "newSession": true, …}`. When the database or schema selects
 nothing, it answers `{"success": false, "errorMessage": "…", "sessionId": null}` and leaves no session behind.
@@ -204,6 +275,38 @@ nothing, it answers `{"success": false, "errorMessage": "…", "sessionId": null
 
 Releases a session, rolling back a transaction it left open: 200 `{"success": true, …}`, or 404
 `{"success": false, …}` when the id names no live session.
+
+### `POST /api/sessions/{id}/heartbeat`
+
+Marks the session as in use, which puts off its idle timeout; nothing runs. It answers 200
+`{"success": true, "sessionId": "…", …}`, or 404 `{"success": false, …}` when the id names no live session.
+
+### `POST /api/sessions/{id}/cancel`
+
+Cancels the statement the session is running: it ends with `SQL execution canceled` (`sqlState` `57014`,
+`errorCode` `604`), and the session runs its next statement as usual. The cancel never waits for the statement it
+cancels. It answers 200 `{"success": true, "sessionId": "…", …}` whether or not a statement was running, or 404
+`{"success": false, …}` when the id names no live session.
+
+### Canceling a statement
+
+Frostlake's JDBC driver ends a statement the way the account's driver does: `Statement.setQueryTimeout(n)` sends
+`queryTimeout` with each statement, and `Statement.cancel()` from another thread sends the cancel above. Either way
+the driver raises `SQL execution canceled` with SQLSTATE `57014` and code `604`, and a statement the session's
+`STATEMENT_TIMEOUT_IN_SECONDS` ended with `57014` and `630`.
+
+### Keeping a session alive
+
+A session that sets `CLIENT_SESSION_KEEP_ALIVE = TRUE` with `ALTER SESSION` reports it on every `/api/execute`
+answer, as `clientSessionKeepAlive`, and so does its `CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY`, as
+`clientSessionKeepAliveHeartbeatFrequency`. Each is absent while the session has not set it.
+
+Frostlake's JDBC driver keeps a session alive the way the account's drivers do. With `CLIENT_SESSION_KEEP_ALIVE` on,
+it sends a heartbeat every `CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY` seconds (3600 by default, kept within
+the 900 to 3600 Snowflake documents), so the session outlives the idle timeout for as long as the connection is
+open. The connection's properties or URL turn it on (`CLIENT_SESSION_KEEP_ALIVE=true`, any case), and so does the
+session's own `ALTER SESSION`, which takes precedence once it sets the parameter. Closing the connection stops the
+heartbeat, and a session the server no longer holds stops it too.
 
 ### `GET /api/sessions`
 
@@ -231,6 +334,30 @@ answers as an object store does, `Content-Type: application/xml`,
 
 A token is signed with a key the process draws at start-up, so a presigned or scoped URL does not outlive the
 process that issued it. See the stage functions in `docs/functions.md`.
+
+## What a request is held to
+
+Nothing is authenticated, and a page open in a browser on the server's machine reaches whatever that machine
+reaches. So before any handler runs, a request is refused for the three things only a browser's page gets wrong:
+
+| check | refused as | rule |
+|---|---|---|
+| `Host` | `421` | A server bound to the loopback interface (the default, `http.host=localhost`) answers to `localhost`, `127.0.0.1`, `[::1]` and the configured `http.host`, with any port. Another name is one pointed at the machine from outside. A server bound to any other address checks no name. |
+| `Origin` | `403` | A request that names an origin — every request a page sends across origins, and every `POST` — is served only for an origin listed in `http.cors.allowedOrigins`. A request without the header is no page's: a driver, `curl`. |
+| `Content-Type` | `415` | A body sent to `/api/execute` or `/api/sessions` has to be declared `application/json` (parameters such as `; charset=utf-8` allowed). |
+
+Each refusal is `{"error": "…"}`. Every driver sends `application/json`, no `Origin` and the host it connects to,
+so none of them is affected; a client that reaches a loopback server under another name sets `http.host` to it.
+
+### Browser pages (CORS)
+
+`http.cors.allowedOrigins` lists the origins whose pages may call the API, a comma apart
+(`https://localhost:18443,https://sheets.example.com`); it is empty by default and takes no wildcard. For a listed
+origin every answer carries `Access-Control-Allow-Origin: <that origin>` and `Vary: Origin`, and a preflight
+`OPTIONS` is answered `204` with `Access-Control-Allow-Methods: GET, POST, PUT, DELETE`,
+`Access-Control-Allow-Headers` (the headers the preflight asks for, `Content-Type` otherwise) and
+`Access-Control-Max-Age: 600`. An `OPTIONS` without an origin is answered as any other verb an endpoint does not
+serve.
 
 ## Transport
 

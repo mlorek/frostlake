@@ -133,7 +133,11 @@ public class RestApiTest extends BaseRestTest {
     @Test
     public void aMissingObjectIs404WithTheStatementsSentenceInLowerCase() throws Exception {
         final HttpResponse<String> response = get("/api/v2/warehouses/API_No_Such_WH");
-        assertEquals("\nwarehouse 'api_no_such_wh' does not exist or not authorized.", error(404, response));
+        final String message = error(404, response);
+        assertTrue(message.startsWith(
+            "\nwarehouse 'api_no_such_wh' does not exist or not authorized. your primary role "), message);
+        assertTrue(message.endsWith(" must have at least one privilege granted on warehouse api_no_such_wh."),
+            message);
         assertEquals("002003", json(response).path("code").asString());
         assertEquals("002003", json(response).path("error_code").asString());
     }

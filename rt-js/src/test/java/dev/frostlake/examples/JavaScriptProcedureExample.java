@@ -206,10 +206,10 @@ public final class JavaScriptProcedureExample {
 
                     if (rs.next()) {
                         return {
-                            firstName: rs.getColumnValue('first_name'),
-                            lastName: rs.getColumnValue('last_name'),
-                            salary: rs.getColumnValue('salary'),
-                            fullName: rs.getColumnValue('first_name') + ' ' + rs.getColumnValue('last_name')
+                            firstName: rs.getColumnValue('FIRST_NAME'),
+                            lastName: rs.getColumnValue('LAST_NAME'),
+                            salary: rs.getColumnValue('SALARY'),
+                            fullName: rs.getColumnValue('FIRST_NAME') + ' ' + rs.getColumnValue('LAST_NAME')
                         };
                     }
                     return null;
@@ -292,8 +292,8 @@ public final class JavaScriptProcedureExample {
                     const values = [];
                     while (rs.next()) {
                         values.push({
-                            name: rs.getColumnValue('name'),
-                            value: rs.getColumnValue('value')
+                            name: rs.getColumnValue('NAME'),
+                            value: rs.getColumnValue('VALUE')
                         });
                     }
 

@@ -16,25 +16,36 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.ColumnTypeFamilies;
 import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.DmlWriteTarget;
+import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ProjectionSlot;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.TransientRetentionLimit;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CloneReferences;
 import dev.frostlake.metastore.FutureGrants;
+import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.HybridKeys;
+import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.TableShadows;
 import dev.frostlake.metastore.model.CheckConstraint;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
@@ -44,17 +55,19 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.TableStorage;
+import dev.frostlake.storage.TableVersion;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BinaryWidthSpelling;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
-import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
-import dev.frostlake.values.VariantValue;
+import dev.frostlake.types.StructuredLeafWidths;
 
 import org.antlr.v4.runtime.CharStream;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -126,15 +139,23 @@ public class CreateTableHandler implements CommandHandler {
         // cross-session temporary table for either spelling to mean.
         final boolean isTemporary = ctx.TEMPORARY() != null || ctx.TEMP() != null || ctx.VOLATILE() != null;
         // CREATE HYBRID TABLE is accepted and stored as an ordinary table; the flag is kept only so
-        // SHOW HYBRID TABLES and the reported kind reflect the declaration.
+        // SHOW HYBRID TABLES and the reported kind reflect the declaration. Its INDEX <name> (…) [INCLUDE (…)]
+        // clauses parse (the hybridIndex element of the column list) and are not kept: a secondary index
+        // changes how a hybrid table is read, never what a query over it returns.
         final boolean isHybrid = ctx.HYBRID() != null;
         final boolean orReplace = ctx.or_replace() != null;
+        boolean copyGrants = false;
+        for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+            copyGrants = copyGrants || tail.copyGrants() != null;
+        }
 
         // Where the table goes, once resolved: however the create ends, the temporary and permanent tables
         // of its name are settled there again (TableShadows).
         Schema createdIn = null;
         String createdInDatabase = null;
         String createdName = null;
+        // The replaced table's privileges COPY GRANTS keeps, set aside under this name while the new table is made.
+        String grantsSetAside = null;
         try {
             final Schema schema;
             final String tableName;
@@ -159,12 +180,25 @@ public class CreateTableHandler implements CommandHandler {
                 throw new RuntimeException("Invalid table name: " + qualifiedName);
             }
 
-            ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, ContainerType.SCHEMA, schema.getName());
-            // Replacing a table needs OWNERSHIP of it; a temporary table takes a permanent one's name
-            // without replacing it.
+            // A name another kind of relation holds is refused before anything is asked of the session, with OR
+            // REPLACE and IF NOT EXISTS alike (live-verified).
+            schema.rejectNameHeldByOtherKind(tableName, RelationKind.TABLE, isTemporary);
+            // Replacing a table needs OWNERSHIP of it, asked ahead of the privilege to create one; a temporary
+            // table takes a permanent one's name without replacing it.
             if (orReplace && !isTemporary) {
                 queryExecutor.requireOwnership("TABLE", parts, null);
             }
+            // A temporary table needs no privilege on the schema it is named in, and a plain CREATE of a name a
+            // table already holds is refused for the name ahead of the privilege (live-verified, both).
+            if (isTemporary || !orReplace && !ifNotExists && schema.hasTable(tableName)) {
+                schema.requireCreatable(Privilege.CREATE_TABLE);
+            } else {
+                ddl.checkCreatePrivilege(isHybrid ? Privilege.CREATE_HYBRID_TABLE : Privilege.CREATE_TABLE, schema);
+            }
+            // Every table in a transient schema or database is transient (documented), TRANSIENT written or not
+            // (a schema in a transient database is itself transient). A temporary table stays temporary and a
+            // hybrid table hybrid.
+            final boolean transientTable = isTransient || (!isTemporary && !isHybrid && schema.isTransientObject());
 
             // CTAS evaluates its source BEFORE any OR REPLACE drop: Snowflake's replace is an atomic
             // swap, so CREATE OR REPLACE TABLE t AS SELECT ... FROM t reads the OLD table — and a
@@ -192,6 +226,7 @@ public class CreateTableHandler implements CommandHandler {
                 }
                 if (ctx.columnList() == null && ctx.columnListOptional() == null) {
                     rejectUnnamedCtasColumns(ctx.selectStatement());
+                    DuplicateColumnNames.rejectIn(ctasSnapshot);
                 }
                 rejectWrongColumnCount(ctx, ctasSnapshot);
                 if (ctx.columnList() != null) {
@@ -202,19 +237,36 @@ public class CreateTableHandler implements CommandHandler {
             // CLONE and LIKE read their source before anything changes, so a temporary table that takes
             // its source's name copies the permanent table it is about to hide (live-verified).
             final String copySourceName = ctx.CLONE() != null || ctx.LIKE() != null
-                ? getText(ctx.qualifiedName(0)) : null;
+                ? queryExecutor.searchPathQualified(getText(ctx.qualifiedName(0))) : null;
             final Table copySource = copySourceName == null ? null
                 : catalog.resolveTableAsWritten(copySourceName, "Object", ctx.CLONE() != null ? "CLONE" : "DUPLICATE");
-            final List<Row> cloneRows = ctx.CLONE() == null ? null : new ArrayList<Row>(queryExecutor.getStorageEngine()
-                .getTableStorage(ddl.resolveFullyQualifiedName(copySourceName)).scan());
+            if (copySource != null) {
+                // A clone reads the table, so it asks for SELECT; LIKE reads only its shape, and asks for any
+                // privilege on it at all (live-verified).
+                queryExecutor.requirePrivilege(ctx.CLONE() != null ? Privilege.SELECT : null, "TABLE", copySourceName);
+            }
+            if (ctx.CLONE() != null && copySource != null && copySource.isEventTable()) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Invalid operation Cannot clone from an event table."));
+            }
+            // AT | BEFORE reads the source as of the point, refused as a SELECT at that point is: its shape then and
+            // its rows in that shape.
+            final TableStorage copySourceStorage = ctx.CLONE() == null ? null
+                : queryExecutor.getStorageEngine().getTableStorage(ddl.resolveFullyQualifiedName(copySourceName));
+            final TableVersion cloneVersion = ctx.CLONE() == null || ctx.timeTravelClause() == null ? null
+                : queryExecutor.versionAtClonePoint(copySource, copySourceStorage,
+                    queryExecutor.clonePoint(ctx.timeTravelClause(), copySource));
+            final List<Row> cloneRows = ctx.CLONE() == null ? null : cloneVersion != null
+                ? cloneVersion.getRows() : new ArrayList<Row>(copySourceStorage.scan());
 
             // CREATE OR ALTER over a table that is already there brings it to the written shape and keeps
             // its rows, where CREATE OR REPLACE would drop it; a name nothing holds is created as usual.
             if (ctx.or_alter() != null && ctx.columnList() != null) {
-                final Table standing = schema.hasTable(tableName) ? schema.getTable(tableName) : null;
+                final Table standing = schema.tableExact(tableName);
                 if (standing != null) {
                     final String standingKey = QualifiedName.key(databaseName, schema.getName(), tableName);
-                    CreateOrAlterTable.apply(standing, columnParser.parseColumnList(ctx.columnList()),
+                    CreateOrAlterTable.apply(standing,
+                        columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null),
                         queryExecutor.getStorageEngine().getTableStorage(standingKey), queryExecutor,
                         standingKey);
                     final List<FrostlakeParser.CommentClauseContext> alteredComments = tailComments(ctx);
@@ -226,7 +278,7 @@ public class CreateTableHandler implements CommandHandler {
                     }
                     final List<String> alteredKeys = extractClusterKeys(ctx);
                     if (!alteredKeys.isEmpty()) {
-                        standing.setClusterKeys(alteredKeys);
+                        standing.setClusterKeys(alteredKeys, clusterByText(ctx));
                     }
                     InlineTags.applyFrom(standing, ctx.tableTailOption(), queryExecutor);
                     ConditionalDdlOutcome.alteredInPlace();
@@ -241,14 +293,37 @@ public class CreateTableHandler implements CommandHandler {
             createdName = tableName;
             TableShadows.stepAside(schema, queryExecutor.getStorageEngine(), databaseName, tableName, isTemporary);
 
+            // An event table is replaced by CREATE OR REPLACE EVENT TABLE alone (live-verified).
+            if (orReplace && schema.tableExact(tableName) != null && schema.tableExact(tableName).isEventTable()) {
+                throw new RuntimeException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(schema.tableExact(tableName).getName())
+                    + "' already exists as EVENT_TABLE"));
+            }
+
             // Handle OR REPLACE - drop table if it exists
             if (orReplace) {
                 try {
-                    final Table existingTable = schema.getTable(tableName);
+                    // The table of exactly this name: T replaces no "t" (live keeps both).
+                    final Table existingTable = schema.tableExact(tableName);
                     if (existingTable != null) {
+                        // A replaced table loses the foreign keys other tables hold on it, as a dropped one does.
+                        new ForeignKeyDependents(catalog).release(databaseName, schema, existingTable);
+                        if (copyGrants) {
+                            // OR REPLACE ... COPY GRANTS: every privilege but OWNERSHIP passes to the new table.
+                            grantsSetAside = schema.qualifiedName(existingTable.getName());
+                            GrantNames.setAside(catalog, "TABLE", grantsSetAside);
+                        }
                         schema.dropTable(tableName);
+                        if (!existingTable.isTemporary()) {
+                            MaterializedViewValidity.baseTableDropped(catalog, databaseName, schema.getName(),
+                                existingTable.getName());
+                        }
                         final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
-                        queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                        // Another session's open transaction that wrote the replaced table commits into it, never
+                        // into the new one, which stays as the CREATE left it (live-verified).
+                        if (queryExecutor.getTransactionManager().setAsideIfWritten(fullyQualifiedName) == null) {
+                            queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                        }
                         // Discard buffered writes for the replaced table so pre-replace rows from this same
                         // transaction aren't flushed to (or resurrected in) the new table's storage at commit.
                         queryExecutor.getTransactionManager().discardBufferedWritesFor(fullyQualifiedName);
@@ -272,41 +347,43 @@ public class CreateTableHandler implements CommandHandler {
                 // CLONE (live-verified).
                 final String sourceTableName = copySourceName;
                 final Table sourceTable = copySource;
-
-                // A transient table cannot become a permanent one by cloning (live-verified). The
-                // other three combinations are all legal: transient→transient, permanent→transient
-                // and permanent→permanent.
-                if (sourceTable.isTransient() && !isTransient && !isTemporary) {
-                    throw new RuntimeException(SqlCompilationError.of(
-                        "Transient object cannot be cloned to a permanent object."));
+                IcebergTables.requireCloneOfSameKind(ctx, sourceTable);
+                // A clone keeps its source's clustering: a key written beside it is refused (live-verified).
+                for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+                    if (tail.clusterByClause() != null) {
+                        throw new RuntimeException("Invalid clustering key "
+                            + firstKeyText(tail.clusterByClause()) + "\n");
+                    }
                 }
 
-                final List<TableColumn> clonedColumns = new ArrayList<>();
-                for (final TableColumn col : sourceTable.getColumns()) {
-                    final TableColumn clonedCol = new TableColumn(
-                        col.getName(),
-                        col.getDataType(),
-                        col.isNullable(),
-                        col.getDefaultValue(),
-                        col.isPrimaryKey(),
-                        col.isUnique(),
-                        col.isAutoIncrement()
-                    );
-                    clonedCol.setComment(col.getComment());
-                    clonedCol.setCollation(col.getCollation());
-                    // A clone keeps each column's POSITION, gaps and all: cloning a table whose
-                    // second column was dropped answers 1, 3, 5, not 1, 2, 3 (live-verified).
-                    clonedCol.setOrdinalPosition(col.getOrdinalPosition());
-                    clonedColumns.add(clonedCol);
+                // Neither a temporary nor a transient table becomes a permanent one by cloning; each refusal is
+                // one line, with no break after the colon (live-verified). Every other combination is legal, and
+                // the clone is of the kind its statement writes, or its schema makes it.
+                if (sourceTable.isTemporary() && !transientTable && !isTemporary) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX
+                        + " Temp table cannot be cloned to a permanent table; clone to a transient table instead.");
+                }
+                if (sourceTable.isTransient() && !transientTable && !isTemporary) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX
+                        + " Transient object cannot be cloned to a permanent object.");
                 }
 
-                // If TEMPORARY/TRANSIENT is explicitly specified, use that; otherwise inherit from source
-                final boolean tableIsTemporary = isTemporary ? isTemporary : sourceTable.isTemporary();
-                final boolean tableIsTransient = isTransient ? isTransient : sourceTable.isTransient();
-                table = new Table(tableName, clonedColumns, tableIsTemporary, tableIsTransient);
-                // …and the source's high-water mark, so the next column added to the clone does not
-                // reuse a number the source had already spent.
-                table.setHighestOrdinal(sourceTable.getHighestOrdinal());
+                // The clone is what its statement says it is: a TRANSIENT clone of a temporary table is
+                // transient, a TEMPORARY clone of a transient one temporary (live-verified). It takes the whole
+                // definition: policies, tags, constraints and their names, IDENTITY where its sequence stands,
+                // search optimization and the table's settings. A clone keeps each column's POSITION, gaps and
+                // all: cloning a table whose second column was dropped answers 1, 3, 5, not 1, 2, 3
+                // (live-verified), and the high-water mark, so the next column added does not reuse a number.
+                table = sourceTable.copyAs(tableName, isTemporary, transientTable && !isTemporary);
+                // As of a point, the columns are the ones the source had then (documented).
+                if (cloneVersion != null && cloneVersion.reshapes(sourceTable)) {
+                    table.restructureAsOf(cloneVersion.getStructure());
+                }
+                // Nothing is cloned with it, so its foreign keys and sequence defaults keep naming the source's
+                // objects from wherever the clone lands (CloneReferences).
+                final String[] sourcePath = QualifiedName.parse(ddl.resolveFullyQualifiedName(sourceTableName)).parts();
+                CloneReferences.keepForTableClone(table, new String[] {sourcePath[0], sourcePath[1]},
+                    new String[] {schema.getDatabaseName(), schema.getName()});
 
                 // Extract comment from either position (after table name or at end)
                 // If specified, override the cloned comment
@@ -320,18 +397,20 @@ public class CreateTableHandler implements CommandHandler {
                 }
                 if (comment != null) {
                     table.setComment(comment);
-                } else {
-                    table.setComment(sourceTable.getComment());
                 }
 
-                table.setClusterKeys(sourceTable.getClusterKeys());
+                // The clone keeps the clustering key with automatic clustering suspended (documented).
+                if (!table.getClusterKeys().isEmpty()) {
+                    table.setReclusterSuspended(true);
+                }
                 table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -354,25 +433,11 @@ public class CreateTableHandler implements CommandHandler {
                 final String sourceTableName = copySourceName;
                 final Table sourceTable = copySource;
 
-                final List<TableColumn> likeColumns = new ArrayList<>();
-                for (final TableColumn col : sourceTable.getColumns()) {
-                    final TableColumn likeCol = new TableColumn(
-                        col.getName(),
-                        col.getDataType(),
-                        col.isNullable(),
-                        col.getDefaultValue(),
-                        col.isPrimaryKey(),
-                        col.isUnique(),
-                        col.isAutoIncrement()
-                    );
-                    likeCol.setComment(col.getComment());
-                    likeCol.setCollation(col.getCollation());
-                    likeColumns.add(likeCol);
-                }
-
-                final boolean tableIsTemporary = isTemporary ? isTemporary : sourceTable.isTemporary();
-                final boolean tableIsTransient = isTransient ? isTransient : sourceTable.isTransient();
-                table = new Table(tableName, likeColumns, tableIsTemporary, tableIsTransient);
+                // LIKE copies the columns and never the kind: a table made LIKE a temporary or a transient
+                // one is permanent unless its own statement, or its schema, says otherwise (live-verified).
+                // Column names, types, defaults (IDENTITY's definition included) and constraints, the clustering
+                // keys and the tags; no policy is set on the new table (Table.likeCopy).
+                table = sourceTable.likeCopy(tableName, isTemporary, transientTable);
 
                 String comment = null;
                 final List<FrostlakeParser.CommentClauseContext> comments = tailComments(ctx);
@@ -386,14 +451,14 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                table.setClusterKeys(sourceTable.getClusterKeys());
                 table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -418,7 +483,7 @@ public class CreateTableHandler implements CommandHandler {
                 // With neither, the SELECT's result columns define both names and types.
                 final List<TableColumn> columns;
                 if (ctx.columnList() != null) {
-                    columns = columnParser.parseColumnList(ctx.columnList());
+                    columns = columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null);
                 } else {
                     final List<String> providedNames = new ArrayList<>();
                     if (ctx.columnListOptional() != null) {
@@ -433,8 +498,10 @@ public class CreateTableHandler implements CommandHandler {
                     for (final ResultSetColumn rsCol : resultSet.getColumns()) {
                         final String colName = ctasColIdx < providedNames.size()
                             ? providedNames.get(ctasColIdx) : rsCol.getName();
-                        final TableColumn ctasColumn = new TableColumn(colName,
-                            ctasColumnType(rsCol, resultSet, ctasColIdx), true, null, false, false, false);
+                        final DataType ctasType = ctasColumnType(rsCol, resultSet, ctasColIdx);
+                        final TableColumn ctasColumn = new TableColumn(colName, ctx.ICEBERG() != null
+                            ? IcebergColumnTypes.selected(ctasType, colName) : ctasType, true, null, false, false,
+                            false);
                         // A collated result column makes a collated table column: the created table
                         // compares, sorts and groups it under the collation the SELECT settled on.
                         ctasColumn.setCollation(rsCol.getCollation());
@@ -445,7 +512,7 @@ public class CreateTableHandler implements CommandHandler {
 
                 // Determine if table should be temporary/transient
                 final boolean tableIsTemporary = isTemporary || isTransient;
-                table = new Table(tableName, columns, isTemporary, isTransient);
+                table = new Table(tableName, columns, isTemporary, transientTable);
                 applyTableConstraints(ctx.columnList(), table);
 
                 // Extract comment from either position
@@ -466,16 +533,17 @@ public class CreateTableHandler implements CommandHandler {
                 ClusterKeyValidation.requireResolvable(clusterExpressions(ctx), table);
                 final List<String> clusterKeys = extractClusterKeys(ctx);
                 if (!clusterKeys.isEmpty()) {
-                    table.setClusterKeys(clusterKeys);
+                    table.setClusterKeys(clusterKeys, clusterByText(ctx));
                 }
 
                 table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -495,7 +563,7 @@ public class CreateTableHandler implements CommandHandler {
                 // are written into them strictly, as an INSERT writes, inside the CTAS envelope.
                 final String envelopeName = ((parts.length == 3
                         ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
-                    + databaseName + "." + schema.getName() + "." + tableName).toUpperCase();
+                    + databaseName + "." + schema.getName() + "." + tableName).toUpperCase(Locale.ROOT);
                 for (final Row resultRow : resultSet.getRows()) {
                     final Row typedRow = new Row(new ArrayList<>(resultRow.getValues()));
                     if (ctx.columnList() != null) {
@@ -505,6 +573,9 @@ public class CreateTableHandler implements CommandHandler {
                     }
                     queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).insert(typedRow);
                 }
+                // The statement wrote the table, a query that held no row too (live-verified: its change token is
+                // no longer 0).
+                table.markDmlRan(StatementClock.commitInstant());
 
                 // Table created + populated: now consume any stream the source SELECT read.
                 queryExecutor.consumeCtasStreams();
@@ -513,15 +584,25 @@ public class CreateTableHandler implements CommandHandler {
                 // A body-less CREATE TABLE (only tail options like TAG / CLUSTER BY) makes an empty
                 // table — lenient acceptance; columns arrive later via ALTER TABLE ... ADD.
                 final List<TableColumn> columns = ctx.columnList() != null
-                    ? columnParser.parseColumnList(ctx.columnList()) : new ArrayList<>();
+                    ? columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null) : new ArrayList<>();
                 final List<ForeignKeyConstraint> foreignKeys = ctx.columnList() != null
                     ? columnParser.parseForeignKeys(ctx.columnList()) : new ArrayList<>();
-                table = new Table(tableName, columns, isTemporary, isTransient);
+                table = new Table(tableName, columns, isTemporary, transientTable);
                 applyTableConstraints(ctx.columnList(), table);
 
                 // Add foreign key constraints (final metadata only, final not enforced)
                 for (final ForeignKeyConstraint fk : foreignKeys) {
                     table.addForeignKey(fk);
+                }
+                if (ctx.columnList() != null) {
+                    // Every key's parent has to be there, a key the account leaves out included; a kept key
+                    // has to point at a key of its parent.
+                    for (final String parent : columnParser.leftOutForeignKeyParents(ctx.columnList())) {
+                        if (!QualifiedName.parse(parent).last().equalsIgnoreCase(tableName)) {
+                            ForeignKeyTargets.requireParent(catalog, parent);
+                        }
+                    }
+                    ForeignKeyTargets.settle(catalog, schema, table);
                 }
 
                 // Extract comment from either position (after table name or at end)
@@ -543,16 +624,19 @@ public class CreateTableHandler implements CommandHandler {
                 ClusterKeyValidation.requireResolvable(clusterExpressions(ctx), table);
                 final List<String> clusterKeys = extractClusterKeys(ctx);
                 if (!clusterKeys.isEmpty()) {
-                    table.setClusterKeys(clusterKeys);
+                    table.setClusterKeys(clusterKeys, clusterByText(ctx));
                 }
 
                 table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
+                DefaultDdlCollation.apply(table, table.getColumns(), schema, catalog);
+                MaskedArguments.requireNotMaskedAndConditional(catalog, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -564,9 +648,17 @@ public class CreateTableHandler implements CommandHandler {
 
                 logger.trace("Created table: {}", qualifiedName);
             }
+            if (copyGrants && copySourceName != null) {
+                // CLONE or LIKE ... COPY GRANTS: the source's privileges but OWNERSHIP are the new table's too.
+                GrantNames.copied(catalog, "TABLE", GrantNames.of(catalog, "TABLE", copySourceName),
+                    schema.qualifiedName(tableName));
+            }
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, qualifiedName);
+            ddl.handleIfNotExists(ifNotExists, DDLCommandHandler.namedAsWritten(e, parts), qualifiedName);
         } finally {
+            if (grantsSetAside != null) {
+                GrantNames.takeBack(catalog, "TABLE", grantsSetAside, true);
+            }
             if (createdIn != null) {
                 TableShadows.settle(createdIn, queryExecutor.getStorageEngine(), createdInDatabase, createdName);
             }
@@ -575,15 +667,13 @@ public class CreateTableHandler implements CommandHandler {
     }
 
     /**
-     * A new table starts with an empty table stage and no COPY load history, both kept under its name —
-     * unless a table of the same name is hidden beneath it or above it, whose files and history those are.
+     * A new table starts with an empty table stage and no COPY load history. Both are its own: a table of the
+     * other persistence hidden beneath it or above it under the same name keeps its files and its history.
      */
     private void resetTableStage(final Schema schema, final String tableName, final String fullyQualifiedName) {
-        if (schema.shadowedTable(tableName) != null) {
-            return;
-        }
+        final Table created = schema.tableExact(tableName);
         queryExecutor.resetInternalTableStageDir(fullyQualifiedName);
-        queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
+        queryExecutor.resetCopyLoadHistory(fullyQualifiedName, created != null && created.isTemporary());
     }
 
     /**
@@ -596,11 +686,19 @@ public class CreateTableHandler implements CommandHandler {
         if (columnList == null) {
             return;
         }
+        ColumnDefinitionParser.requireConstraintColumns(columnList);
         ColumnDefinitionParser.rejectDuplicateTableConstraints(table.getName(), columnList);
+        ColumnDefinitionParser.rejectDuplicateConstraintNames(table.getName(), columnList);
         table.setPrimaryKeyConstraintName(columnParser.parsePrimaryKeyConstraintName(columnList));
+        table.orderPrimaryKey(columnParser.parsePrimaryKeyColumns(columnList));
+        table.setPrimaryKeyRely(columnParser.parsePrimaryKeyRely(columnList));
         for (final UniqueConstraint unique : columnParser.parseUniqueConstraints(columnList)) {
             table.addUniqueConstraint(unique);
         }
+        columnParser.markOwnUniqueColumns(columnList, table);
+        columnParser.applyInlineConstraintNames(columnList, table);
+        // A UNIQUE over the primary key's columns in its order is the primary key's (live-verified).
+        table.absorbUniqueKeysIntoPrimaryKey();
         final List<String> columnNames = new ArrayList<>();
         for (final TableColumn column : table.getColumns()) {
             columnNames.add(column.getName());
@@ -680,7 +778,7 @@ public class CreateTableHandler implements CommandHandler {
         if (column == null) {
             return failed;
         }
-        return DmlWriteTarget.failedOnColumn(qualifiedName.toUpperCase(), column.toUpperCase(),
+        return DmlWriteTarget.failedOnColumn(qualifiedName.toUpperCase(Locale.ROOT), column.toUpperCase(Locale.ROOT),
             failed);
     }
 
@@ -701,7 +799,7 @@ public class CreateTableHandler implements CommandHandler {
             return ctx.columnListOptional().namePart(slot).getText();
         }
         if (ctx.columnList() != null) {
-            final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList());
+            final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null);
             return slot < declared.size() ? declared.get(slot).getName() : null;
         }
         if (ctx.selectStatement() == null || ctx.selectStatement().selectOperand().size() != 1) {
@@ -726,7 +824,7 @@ public class CreateTableHandler implements CommandHandler {
         if (snapshot == null) {
             return;
         }
-        final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList());
+        final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null);
         for (int i = 0; i < declared.size() && i < snapshot.getColumns().size(); i++) {
             ColumnTypeFamilies.rejectIncompatible(declared.get(i).getDataType(),
                 snapshot.getColumns().get(i).getStaticType());
@@ -742,7 +840,7 @@ public class CreateTableHandler implements CommandHandler {
         if (ctx.columnListOptional() != null) {
             declared = ctx.columnListOptional().namePart().size();
         } else if (ctx.columnList() != null) {
-            declared = columnParser.parseColumnList(ctx.columnList()).size();
+            declared = columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null).size();
         } else {
             return;
         }
@@ -804,7 +902,8 @@ public class CreateTableHandler implements CommandHandler {
                 ? new BinaryType(binary.getMaxLength(), binary.isFixed()) : binary.atColumnWidth();
         }
         if (!(declared instanceof StringType)) {
-            return declared;
+            // A structured value's leaves a cast wrote with no width are sized as a column holds them.
+            return StructuredLeafWidths.stored(declared);
         }
         // A ZERO width is a query's way of saying nothing was named — a bare NULL select item, or a
         // conditional every branch of which is one. No stored column may hold it (live refuses
@@ -815,10 +914,11 @@ public class CreateTableHandler implements CommandHandler {
         if (((StringType) declared).getMaxLength() == 0 && !declaresZeroWidth(rsCol.getStaticType())) {
             return StringType.VARCHAR;
         }
-        // The UNKNOWN length is an EXPRESSION'S width, and it clamps to the 16MB storage default the
-        // moment it becomes a column — a CTAS over UPPER(NULL) stores VARCHAR(16777216) live, while
-        // SYSTEM$TYPEOF over the same expression says VARCHAR(134217728).
-        if (((StringType) declared).getMaxLength() == DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR) {
+        // A width past the 16MB storage default is an EXPRESSION'S, or a column's that declared it, and it
+        // clamps to the default the moment it becomes a column — a CTAS over UPPER(NULL) stores
+        // VARCHAR(16777216) live, while SYSTEM$TYPEOF over the same expression says VARCHAR(134217728), and so
+        // does one over a column declared VARCHAR(16777217) (live-verified).
+        if (((StringType) declared).getMaxLength() > StringType.VARCHAR.getMaxLength()) {
             return StringType.VARCHAR;
         }
         // A measured numeric STATIC — a literal's own (p,s), a set operation's supertype fold, a
@@ -896,7 +996,7 @@ public class CreateTableHandler implements CommandHandler {
         }
         final List<String> clusterKeys = extractClusterKeys(ctx);
         if (!clusterKeys.isEmpty()) {
-            table.setClusterKeys(clusterKeys);
+            table.setClusterKeys(clusterKeys, clusterByText(ctx));
         }
         InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
         applyChangeTracking(ctx, table);
@@ -928,12 +1028,20 @@ public class CreateTableHandler implements CommandHandler {
             if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(key)
                     && valueText.matches("[0-9]+")) {
                 TransientRetentionLimit.requireWithinAccountLimit(valueText);
+                // A transient table keeps a day at most, as its transient containers do.
+                TransientRetentionLimit.requireWithinTransientLimit(table.isTransient(), valueText);
                 table.setDataRetentionTimeInDays(Integer.valueOf(valueText));
             }
             if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equalsIgnoreCase(key)
                     && valueText.matches("[0-9]+") && Long.parseLong(valueText) > 90L) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "Exceeds maximum allowable extension time (90)."));
+            }
+            // The two a table lists as its own in SHOW PARAMETERS IN TABLE.
+            if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equalsIgnoreCase(key) && valueText.matches("[0-9]+")) {
+                table.setMaxDataExtensionTimeInDays(Integer.valueOf(valueText));
+            } else if ("DEFAULT_DDL_COLLATION".equalsIgnoreCase(key) && tail.copyOptionValue().STRING_LITERAL() != null) {
+                table.setDefaultDdlCollation(SqlStringLiterals.decode(valueText));
             }
             if ("CHANGE_TRACKING".equalsIgnoreCase(key)) {
                 table.setChangeTracking("TRUE".equalsIgnoreCase(valueText));
@@ -966,11 +1074,12 @@ public class CreateTableHandler implements CommandHandler {
                 continue;
             }
             final String written = getText(tail.aggregationPolicyClause().qualifiedName());
-            if (catalog.findAggregationPolicy(written) == null) {
+            // The policy of exactly that name, recorded so (live-verified).
+            if (catalog.findAggregationPolicyExact(written) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
-                    catalog.qualifiedObjectName(written)));
+                    catalog.qualifiedExactName(written)));
             }
-            table.setAggregationPolicyName(catalog.qualifiedObjectName(written));
+            table.setAggregationPolicyName(catalog.qualifiedExactName(written));
             final List<String> entityKey = new ArrayList<>();
             if (tail.aggregationPolicyClause().identifierList() != null) {
                 for (final FrostlakeParser.IdentifierContext id
@@ -1001,8 +1110,9 @@ public class CreateTableHandler implements CommandHandler {
                 }
                 policyCols.add(colName);
             }
-            RowAccessPolicyAttachment.check(policy, table, table.getName(), written, policyCols);
-            table.setRowAccessPolicyName(written.toUpperCase());
+            RowAccessPolicyAttachment.check(catalog, policy, table, table.getName(), written, policyCols, true);
+            // Recorded in full, as every policy attachment is (see PolicyReferences).
+            table.setRowAccessPolicyName(catalog.qualifiedExactName(written));
             table.setRowAccessPolicyColumns(policyCols);
         }
     }
@@ -1044,14 +1154,15 @@ public class CreateTableHandler implements CommandHandler {
     }
 
     private static List<String> extractClusterKeys(final FrostlakeParser.CreateStatementContext ctx) {
-        final List<String> clusterKeys = new ArrayList<>();
         final List<FrostlakeParser.ClusterByClauseContext> clauses = tailClusterBy(ctx);
-        if (!clauses.isEmpty()) {
-            for (final FrostlakeParser.ExpressionContext exprCtx : clauses.get(0).expressionList().expression()) {
-                clusterKeys.add(exprCtx.getText());
-            }
-        }
-        return clusterKeys;
+        return clauses.isEmpty() ? new ArrayList<String>() : ClusteringKeySpelling.keys(clauses.get(0).expressionList());
+    }
+
+    /** The applied CLUSTER BY clause's text after its keywords, as written; null when the statement has none. */
+    private static String clusterByText(final FrostlakeParser.CreateStatementContext ctx) {
+        final List<FrostlakeParser.ClusterByClauseContext> clauses = tailClusterBy(ctx);
+        return clauses.isEmpty() ? null
+            : ClusteringKeySpelling.written(clauses.get(0).clusterKeyOrder(), clauses.get(0).expressionList());
     }
 
 
@@ -1059,23 +1170,57 @@ public class CreateTableHandler implements CommandHandler {
      * CREATE TABLE ... USING TEMPLATE: the query answers one ARRAY of column descriptions — objects carrying
      * COLUMN_NAME, TYPE and NULLABLE, the shape {@code ARRAY_AGG(OBJECT_CONSTRUCT(*))} gives the rows of
      * INFER_SCHEMA — and the table is created with those columns, in that order, each name as written, and with
-     * the rest of the statement as written. A query that answers no array, or an empty one, is refused as
-     * {@code Invalid template: template must be a non-null JSON array}, and a description short of one of the
-     * three keys as {@code Invalid template: TYPE field is missing in {"COLUMN_NAME":"a"}}, the keys checked in
-     * that order and the description quoted as JSON.
+     * the rest of the statement as written. The query is written in parentheses and reads INFER_SCHEMA as the
+     * first relation of its FROM clause: one that reads something else there is refused before it runs, as a
+     * query with no table function or as one whose table function is not INFER_SCHEMA (live-verified). A query
+     * that answers several rows is refused as {@code Invalid template: Exactly 1 template is expected. Found: 3},
+     * one row of several columns as {@code Invalid template: The sub-query must SELECT a single scalar value},
+     * one that answers no array, or an empty one, as {@code Invalid template: template must be a non-null JSON
+     * array}, and a description short of one of the three keys as {@code Invalid template: TYPE field is missing
+     * in {"COLUMN_NAME":"a"}}, the keys checked in that order and the description quoted as JSON. A text answer
+     * is read as JSON ({@link TemplateAnswer}).
      */
     private Object createFromTemplate(final FrostlakeParser.CreateStatementContext ctx) {
         final CharStream input = ctx.start.getInputStream();
         final FrostlakeParser.SelectStatementContext query = ctx.selectStatement();
-        if (!callsTableFunction(query)) {
+        if (parenthesized(query) == null) {
+            final Token first = query.getStart();
+            final int[] shown = LeadingCommentOffset.rebase(first.getLine(), first.getCharPositionInLine());
+            throw new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
+                + shown[1] + " unexpected '" + first.getText() + "'."));
+        }
+        final FrostlakeParser.TableSourceContext source = firstSource(query);
+        if (source == null || !isTableFunction(source)) {
             throw new RuntimeException("Unsupported feature 'Table function must be used in the TEMPLATE sub-query'.");
         }
-        final List<ResultSet> results = queryExecutor.execute(
-            input.getText(Interval.of(query.start.getStartIndex(), query.stop.getStopIndex())));
+        if (!readsInferSchema(source)) {
+            throw new RuntimeException(
+                "Unsupported feature 'INFER_SCHEMA function must be used in the TEMPLATE sub-query'.");
+        }
+        // The template query and the CREATE written from it are this statement's own work: neither takes a query ID
+        // or a history row of its own.
+        // A refusal of the query tells its place in the statement, not in the query's own text.
+        final List<ResultSet> results;
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(query.getStart().getLine(), query.getStart().getCharPositionInLine()));
+        try {
+            results = queryExecutor.executeUnrecorded(
+                input.getText(Interval.of(query.start.getStartIndex(), query.stop.getStopIndex())));
+        } finally {
+            ExpressionSource.end(displaced);
+        }
         final ResultSet template = results.isEmpty() ? null : results.get(results.size() - 1);
+        if (template != null && template.getRows().size() > 1) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid template: Exactly 1 template is expected. Found: "
+                + template.getRows().size() + "\n"));
+        }
+        if (template != null && template.getColumns().size() > 1) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Invalid template: The sub-query must SELECT a single scalar value\n"));
+        }
         final Object cell = template == null || template.getRows().isEmpty() || template.getColumns().isEmpty()
             ? null : template.getRows().get(0).getValue(0);
-        final JsonNode descriptions = cell instanceof VariantValue ? ((VariantValue) cell).node() : null;
+        final JsonNode descriptions = TemplateAnswer.descriptions(cell);
         if (descriptions == null || !descriptions.isArray() || descriptions.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Invalid template: template must be a non-null JSON array\n"));
@@ -1111,25 +1256,61 @@ public class CreateTableHandler implements CommandHandler {
         final String head = input.getText(Interval.of(ctx.start.getStartIndex(), usingStart - 1)).trim();
         final String tail = ctx.stop.getStopIndex() > queryStop
             ? input.getText(Interval.of(queryStop + 1, ctx.stop.getStopIndex())) : "";
-        queryExecutor.execute(head + " (" + String.join(", ", columns) + ")" + tail);
+        queryExecutor.executeUnrecorded(head + " (" + String.join(", ", columns) + ")" + tail);
         return null;
     }
 
-    /** Whether the subtree reads a table function: a {@code TABLE(...)} source or a table-function expression. */
-    private static boolean callsTableFunction(final ParseTree node) {
-        if (node instanceof FrostlakeParser.TableFunctionExprContext) {
-            return true;
+    /** The query a parenthesized statement holds — one operand in parentheses and nothing beside it — or null. */
+    private static FrostlakeParser.SelectStatementContext parenthesized(
+            final FrostlakeParser.SelectStatementContext statement) {
+        if (statement.withClause() != null || statement.selectOperand().size() != 1
+                || statement.orderByClause() != null || statement.limitClause() != null
+                || statement.fetchClause() != null) {
+            return null;
         }
-        if (node instanceof FrostlakeParser.TableSourceContext
-                && ((FrostlakeParser.TableSourceContext) node).TABLE() != null) {
-            return true;
+        return statement.selectOperand(0).selectStatement();
+    }
+
+    /**
+     * The first relation a template query's FROM clause reads, or null when the query is no single SELECT with a
+     * FROM clause: a set operation, or a SELECT of constants.
+     */
+    private static FrostlakeParser.TableSourceContext firstSource(final FrostlakeParser.SelectStatementContext query) {
+        FrostlakeParser.SelectStatementContext inner = query;
+        while (inner.selectOperand().size() == 1 && inner.selectOperand(0).selectStatement() != null) {
+            inner = inner.selectOperand(0).selectStatement();
+        }
+        if (inner.selectOperand().size() != 1 || inner.selectOperand(0).selectClause() == null) {
+            return null;
+        }
+        final FrostlakeParser.TableExpressionContext from = inner.selectOperand(0).selectClause().tableExpression();
+        return from == null ? null : from.tableReference(0).tableSource();
+    }
+
+    /** Whether a relation is a table function: a {@code TABLE(...)} source, FLATTEN, or a bare table-function call. */
+    private static boolean isTableFunction(final FrostlakeParser.TableSourceContext source) {
+        return source.TABLE() != null || source.FLATTEN() != null || source.tableFunctionExpr() != null;
+    }
+
+    /** Whether a {@code TABLE(...)} relation calls INFER_SCHEMA. */
+    private static boolean readsInferSchema(final FrostlakeParser.TableSourceContext source) {
+        final FrostlakeParser.FunctionNameContext called = source.TABLE() == null ? null
+            : firstFunctionName(source.expression());
+        return called != null && "INFER_SCHEMA".equalsIgnoreCase(called.getText());
+    }
+
+    /** The name of the outermost call under a tree: the first function name met, or null. */
+    private static FrostlakeParser.FunctionNameContext firstFunctionName(final ParseTree node) {
+        if (node instanceof FrostlakeParser.FunctionNameContext) {
+            return (FrostlakeParser.FunctionNameContext) node;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (callsTableFunction(node.getChild(i))) {
-                return true;
+            final FrostlakeParser.FunctionNameContext found = firstFunctionName(node.getChild(i));
+            if (found != null) {
+                return found;
             }
         }
-        return false;
+        return null;
     }
 
     /** A column description's field, its name matched case-insensitively. */
@@ -1143,5 +1324,14 @@ public class CreateTableHandler implements CommandHandler {
             }
         }
         return null;
+    }
+
+    /** A clustering key's first expression as the refusal names it: a bare column by its upper-cased name. */
+    private static String firstKeyText(final FrostlakeParser.ClusterByClauseContext clause) {
+        final FrostlakeParser.ExpressionContext first = clause.expressionList().expression(0);
+        return first instanceof FrostlakeParser.QualifiedNameExprContext
+            ? String.join(".", ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) first).qualifiedName()))
+            : ParseTreeText.getOriginalText(first).toUpperCase(Locale.ROOT);
     }
 }

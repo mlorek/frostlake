@@ -34,12 +34,14 @@ public class Getbit extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        final long value = ((Number) args.get(0)).longValue();
-        final int position = ((Number) args.get(1)).intValue();
+        // The bits of all 128, as the shifts that set them keep them (live-verified).
+        final BigInteger value = BitwiseOperand.wide(args.get(0));
+        // A bit's place is read as the whole number it gives, a fraction rounded (live-verified).
+        final int position = wholeNumber(args.get(1));
         if (position < 0) {
             throw new RuntimeException("GETBIT bit_position must be non-negative: " + position);
         }
-        return BigInteger.valueOf(value).testBit(position) ? 1L : 0L;
+        return value.testBit(position) ? 1L : 0L;
     }
 
     @Override

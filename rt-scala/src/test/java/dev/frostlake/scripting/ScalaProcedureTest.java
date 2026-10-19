@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -110,7 +112,7 @@ public class ScalaProcedureTest {
         assertNotNull(proc);
         assertEquals("SCALA", proc.getLanguage());
         assertEquals(1, proc.getParameters().size());
-        assertEquals("name", proc.getParameters().get(0).getName().toLowerCase());
+        assertEquals("name", proc.getParameters().get(0).getName().toLowerCase(Locale.ROOT));
         logger.info("Scala procedure with parameter created");
     }
 

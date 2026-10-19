@@ -8,7 +8,7 @@
      "steps": [
       {"sql": "CREATE SCHEMA io"},
       {"sql": "USE SCHEMA io"},
-      {"sql": "CREATE OR REPLACE PROCEDURE make_session() RETURNS VARCHAR LANGUAGE JAVA HANDLER='MakeSession.run' AS $$\nimport com.snowflake.snowpark_java.Session;\nimport java.util.HashMap;\nimport java.util.Map;\n\npublic class MakeSession {\n  public String run(Session session) {\n    Map<String, String> cfg = new HashMap<>();\n    Session other = Session.builder().configs(cfg).create();\n    return \"should not reach here\";\n  }\n}\n$$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE make_session() RETURNS VARCHAR LANGUAGE JAVA PACKAGES = ('com.snowflake:snowpark:latest') HANDLER='MakeSession.run' AS $$\nimport com.snowflake.snowpark_java.Session;\nimport java.util.HashMap;\nimport java.util.Map;\n\npublic class MakeSession {\n  public String run(Session session) {\n    Map<String, String> cfg = new HashMap<>();\n    Session other = Session.builder().configs(cfg).create();\n    return \"should not reach here\";\n  }\n}\n$$"},
       {"sql": "CALL make_session()", "expect": {"error": {"messageContains": "session"}}}
     ]},
     {"name": "jdbc-connection-access-is-rejected",
@@ -16,7 +16,7 @@
      "steps": [
       {"sql": "CREATE SCHEMA io"},
       {"sql": "USE SCHEMA io"},
-      {"sql": "CREATE OR REPLACE PROCEDURE grab_conn() RETURNS VARCHAR LANGUAGE JAVA HANDLER='GrabConn.run' AS $$\nimport com.snowflake.snowpark_java.Session;\nimport java.sql.Connection;\n\npublic class GrabConn {\n  public String run(Session session) {\n    Connection c = session.jdbcConnection();\n    return \"should not reach here\";\n  }\n}\n$$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE grab_conn() RETURNS VARCHAR LANGUAGE JAVA PACKAGES = ('com.snowflake:snowpark:latest') HANDLER='GrabConn.run' AS $$\nimport com.snowflake.snowpark_java.Session;\nimport java.sql.Connection;\n\npublic class GrabConn {\n  public String run(Session session) {\n    Connection c = session.jdbcConnection();\n    return \"should not reach here\";\n  }\n}\n$$"},
       {"sql": "CALL grab_conn()", "expect": {"error": {"messageContains": "jdbcConnection"}}}
     ]},
     {"name": "ordinary-session-sql-still-works", "steps": [
@@ -25,7 +25,7 @@
       {"sql": "INSERT INTO nums VALUES (1), (2), (3)"},
       {"sql": "CREATE SCHEMA io"},
       {"sql": "USE SCHEMA io"},
-      {"sql": "CREATE OR REPLACE PROCEDURE count_nums() RETURNS VARCHAR LANGUAGE JAVA HANDLER='CountNums.run' AS $$\nimport com.snowflake.snowpark_java.DataFrame;\nimport com.snowflake.snowpark_java.Row;\nimport com.snowflake.snowpark_java.Session;\n\npublic class CountNums {\n  public String run(Session session) {\n    DataFrame df = session.sql(\"SELECT COUNT(*) AS CNT FROM public.nums\");\n    Row[] rows = df.collect();\n    return \"count=\" + rows[0].getLong(0);\n  }\n}\n$$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE count_nums() RETURNS VARCHAR LANGUAGE JAVA PACKAGES = ('com.snowflake:snowpark:latest') HANDLER='CountNums.run' AS $$\nimport com.snowflake.snowpark_java.DataFrame;\nimport com.snowflake.snowpark_java.Row;\nimport com.snowflake.snowpark_java.Session;\n\npublic class CountNums {\n  public String run(Session session) {\n    DataFrame df = session.sql(\"SELECT COUNT(*) AS CNT FROM public.nums\");\n    Row[] rows = df.collect();\n    return \"count=\" + rows[0].getLong(0);\n  }\n}\n$$"},
       {"sql": "CALL count_nums()", "expect": {"value": "count=3"}}
     ]}
   ]

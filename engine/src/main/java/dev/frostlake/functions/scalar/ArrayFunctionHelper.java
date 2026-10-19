@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.FloatOriginNode;
 import dev.frostlake.values.TypedScalarNode;
@@ -27,6 +28,7 @@ import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
 
+import tools.jackson.core.StreamWriteFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
@@ -53,7 +55,11 @@ public final class ArrayFunctionHelper {
     private ArrayFunctionHelper() {
     }
 
-    public static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
+    /** Reads a fraction as a decimal, and writes a decimal with its digits in place: 0.0000001, not 1E-7. */
+    public static final ObjectMapper MAPPER = JsonMapper.builder()
+        .enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+        .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+        .build();
 
     /** Parse a value to JsonNode. Returns null if unparseable. */
     public static JsonNode parseNode(final Object value) {
@@ -75,6 +81,40 @@ public final class ArrayFunctionHelper {
             return null;
         }
         return (node != null && node.isArray()) ? (ArrayNode) node : null;
+    }
+
+    /**
+     * The array an ARRAY argument reads on the row: an array as itself, and a VARIANT that holds no array as a
+     * one-element array of what it holds. {@code ARRAY_SLICE(TO_VARIANT('abc'), 0, 1)} is {@code ["abc"]},
+     * {@code ARRAY_CONTAINS(1::VARIANT, TO_VARIANT(1))} TRUE and {@code ARRAY_SLICE(PARSE_JSON('{"a":1}'), 0, 1)}
+     * {@code [{"a":1}]} (live-verified). The functions that refuse such a VARIANT read it with {@link #requireArray}.
+     *
+     * @param value the argument
+     * @return the array, or null for a SQL NULL, a JSON null, a VECTOR or any other value
+     */
+    public static ArrayNode parseArrayOrSingle(final Object value) {
+        final ArrayNode array = parseArray(value);
+        return array != null ? array : singleOf(value);
+    }
+
+    /**
+     * A one-element array of what a VARIANT holds when it holds no array (see {@link #parseArrayOrSingle}).
+     *
+     * @param value the argument
+     * @return the array, or null for any other value
+     */
+    public static ArrayNode singleOf(final Object value) {
+        if (!(value instanceof VariantValue)) {
+            return null;
+        }
+        final JsonNode held = ((VariantValue) value).node();
+        if (held == null || held.isArray() || held.isNull() || VariantUndefined.isUndefined(held)
+                || TypedVectorNode.vectorValueOf(held) != null) {
+            return null;
+        }
+        final ArrayNode single = MAPPER.createArrayNode();
+        single.add(held);
+        return single;
     }
 
     /**
@@ -188,12 +228,14 @@ public final class ArrayFunctionHelper {
      * never equals it (ARRAY_DISTINCT keeps both, ARRAYS_OVERLAP finds no overlap — live-verified).
      */
     public static String elementKey(final JsonNode element) {
-        return UuidTextNode.anywhereIn(element) ? "U:" + VariantOrder.comparisonKey(element) : element.toString();
+        return UuidTextNode.anywhereIn(element) || DecfloatTextNode.anywhereIn(element)
+            ? "U:" + VariantOrder.comparisonKey(element) : element.toString();
     }
 
     public static boolean nodesEqual(final JsonNode a, final JsonNode b) {
         // A UUID prints as the string of its text and never equals it, which only the variant key tells.
-        if (UuidTextNode.anywhereIn(a) || UuidTextNode.anywhereIn(b)) {
+        if (UuidTextNode.anywhereIn(a) || UuidTextNode.anywhereIn(b)
+                || DecfloatTextNode.anywhereIn(a) || DecfloatTextNode.anywhereIn(b)) {
             return VariantOrder.comparisonKey(a).equals(VariantOrder.comparisonKey(b));
         }
         if (a.equals(b)) {
@@ -254,6 +296,8 @@ public final class ArrayFunctionHelper {
         if (typed != null) return typed;
         // A UUID has no value of its own beyond its text, so it stays the VARIANT that remembers it.
         if (UuidTextNode.holds(node)) return VariantValue.ofNode(node);
+        // So does a DECFLOAT: TYPEOF(ARRAY_CONSTRUCT(CAST(1.5 AS DECFLOAT))[0]) is DECFLOAT (live-verified).
+        if (DecfloatTextNode.holds(node)) return VariantValue.ofNode(node);
         if (node.isTextual()) return node.asText();
         if (node.isBoolean()) return node.asBoolean();
         if (node.isLong() || node.isInt()) return node.asLong();

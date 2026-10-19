@@ -16,6 +16,7 @@
 
 package dev.frostlake.config;
 
+import dev.frostlake.executor.StagePathSegments;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,11 +81,28 @@ public class S3PathResolver {
 
         if (bestPrefix != null) {
             final String rest = stripLeadingSlash(s3Url.substring(bestPrefix.length()));
-            return rest.isEmpty() ? bestDir : bestDir.resolve(rest);
+            return rest.isEmpty() ? bestDir : within(bestDir, rest);
         }
 
         final String rest = s3Url.substring(S3_SCHEME.length());   // bucket/key
-        return rest.isEmpty() ? localRoot : localRoot.resolve(rest);
+        return rest.isEmpty() ? localRoot : within(localRoot, rest);
+    }
+
+    /**
+     * An S3 key under its local stand-in. A key is a flat name: {@code ..} is two characters of it and a leading
+     * slash an empty segment, never a step up or an absolute path, so every segment is escaped as an internal stage
+     * path's is and nothing the URL spells reaches outside {@code base}.
+     *
+     * @param base the root or mapping directory
+     * @param key  the bucket and key, slash-separated
+     * @return the local path, inside {@code base}
+     */
+    private static Path within(final Path base, final String key) {
+        final Path resolved = StagePathSegments.resolve(base, key);
+        if (!resolved.normalize().startsWith(base.normalize())) {
+            throw new IllegalArgumentException("S3 location reaches outside its local root: " + key);
+        }
+        return resolved;
     }
 
     private static Map<String, Path> parseMappings(final String raw) {

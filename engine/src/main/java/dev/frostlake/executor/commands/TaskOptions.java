@@ -21,6 +21,7 @@ import dev.frostlake.task.CronSchedule;
 import dev.frostlake.task.IntervalSchedule;
 
 import java.time.ZonedDateTime;
+import java.util.Locale;
 
 /**
  * The serverless-task option rules, shared by CREATE TASK and ALTER TASK … SET.
@@ -80,7 +81,7 @@ final class TaskOptions {
      */
     static void requireValidSchedule(final String schedule) {
         final String trimmed = schedule == null ? "" : schedule.trim();
-        final String upper = trimmed.toUpperCase();
+        final String upper = trimmed.toUpperCase(Locale.ROOT);
         if (upper.contains("CRON")) {
             final CronSchedule cron = CronSchedule.parse(trimmed);
             if (cron.nextFireAfter(ZonedDateTime.now(cron.zone())) == null) {
@@ -110,10 +111,10 @@ final class TaskOptions {
         final StringBuilder qualified = new StringBuilder();
         if (schema != null) {
             if (schema.getDatabaseName() != null) {
-                qualified.append(schema.getDatabaseName().toUpperCase()).append('.');
+                qualified.append(schema.getDatabaseName().toUpperCase(Locale.ROOT)).append('.');
             }
-            qualified.append(schema.getName().toUpperCase()).append('.');
+            qualified.append(schema.getName().toUpperCase(Locale.ROOT)).append('.');
         }
-        return qualified.append(taskName.toUpperCase()).toString();
+        return qualified.append(taskName.toUpperCase(Locale.ROOT)).toString();
     }
 }

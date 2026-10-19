@@ -17,11 +17,14 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.operators.ResultSetProvider;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.RefreshMode;
 import dev.frostlake.metastore.model.Schema;
@@ -45,6 +48,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * SHOW / DESCRIBE handlers for the data-pipeline object family: streams, tasks, pipes, sequences and
@@ -63,8 +67,20 @@ final class ShowPipelineExecutor {
 
     private final Catalog catalog;
 
-    ShowPipelineExecutor(final Catalog catalog) {
+    /** Says which objects the session sees: a listing carries no other. */
+    private final DefinitionOwnership ownership;
+
+    ShowPipelineExecutor(final Catalog catalog, final DefinitionOwnership ownership) {
         this.catalog = catalog;
+        this.ownership = ownership;
+    }
+
+    /**
+     * Whether a listing carries an object of a schema: only one the session sees — its roles own it or hold a
+     * privilege on it, or hold MANAGE GRANTS, which sees every object (documented).
+     */
+    private boolean seen(final String objectType, final Schema schema, final String name, final String owner) {
+        return ownership.sees(objectType, schema.qualifiedName(name), owner);
     }
 
     /** SHOW STREAMS IN ACCOUNT: every database's streams, in database order. */
@@ -83,16 +99,12 @@ final class ShowPipelineExecutor {
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> allRows = new ArrayList<>();
         List<ResultSetColumn> columns = null;
-        try {
-            final Database db = catalog.getDatabase(dbName);
-            for (final Schema schema : db.getAllSchemas()) {
-                if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
-                final ResultSet rs = showStreams(dbName, schema.getName());
-                if (columns == null) columns = rs.getColumns();
-                allRows.addAll(rs.getRows());
-            }
-        } catch (final Exception e) {
-            throw new RuntimeException("Failed to show streams in database " + dbName + ": " + e.getMessage(), e);
+        final Database db = catalog.databaseExact(dbName);
+        for (final Schema schema : db.getAllSchemas()) {
+            if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
+            final ResultSet rs = showStreams(dbName, schema.getName());
+            if (columns == null) columns = rs.getColumns();
+            allRows.addAll(rs.getRows());
         }
         if (columns == null) {
             columns = showStreams(null, null).getColumns();
@@ -118,7 +130,8 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("type", StringType.VARCHAR),
             new ResultSetColumn("stale", StringType.VARCHAR),
             new ResultSetColumn("mode", StringType.VARCHAR),
-            new ResultSetColumn("stale_after", StringType.VARCHAR),
+            // A timestamp like created_on, not text: TIMESTAMP_LTZ(3) (live-verified).
+            new ResultSetColumn("stale_after", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("invalid_reason", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR)
         );
@@ -126,22 +139,32 @@ final class ShowPipelineExecutor {
             ? databaseNameOverride
             : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
-        for (final Stream stream : catalog.getDatabase(dbName).getSchema(scName).getStreams()) {
+        final Schema home = catalog.databaseExact(dbName).schemaExact(scName);
+        for (final Stream stream : home.getStreams()) {
+            if (!seen("STREAM", home, stream.getName(), stream.getOwner())) {
+                continue;
+            }
+            final boolean stale = stale(home, stream);
+            final String source = qualifiedSourceName(dbName, scName, stream.getSourceTableName());
+            // A table stream whose table is gone names none, and a stale stream has no time it goes stale after
+            // (live-verified).
+            final boolean tableGone = stream.getSourceType() == StreamSourceType.TABLE
+                && StreamSources.sourceOf(catalog, home, stream) == null;
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(stream.getCreatedAt()),
                 stream.getName(),
                 dbName, scName,
                 stream.getOwner(),
                 ShowResultHelpers.text(stream.getComment()),
-                qualifiedSourceName(dbName, scName, stream.getSourceTableName()),
+                tableGone ? TABLE_GONE : source,
                 sourceTypeText(stream),
-                qualifiedSourceName(dbName, scName, stream.getSourceTableName()),
+                baseTablesText(stream, source, tableGone),
                 "DELTA",
-                stream.isStale() ? "true" : "false",
+                stale ? "true" : "false",
                 stream.getStreamType() == StreamType.APPEND_ONLY ? "APPEND_ONLY" : "DEFAULT",
-                ShowResultHelpers.createdOn(staleAfter(stream)),
+                stale ? null : ShowResultHelpers.createdOn(staleAfter(stream)),
                 "N/A",
                 ShowResultHelpers.OWNER_ROLE_TYPE
             )));
@@ -158,10 +181,13 @@ final class ShowPipelineExecutor {
             ? databaseNameOverride
             : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
-        for (final Task task : catalog.getDatabase(dbName).getSchema(scName).getTasks()) {
-            rows.add(taskRow(task, dbName, scName));
+        final Schema home = catalog.databaseExact(dbName).schemaExact(scName);
+        for (final Task task : home.getTasks()) {
+            if (seen("TASK", home, task.getName(), task.getOwner())) {
+                rows.add(taskRow(task, dbName, scName));
+            }
         }
         return new ResultSet(taskColumns(), rows);
     }
@@ -219,7 +245,7 @@ final class ShowPipelineExecutor {
             // The predecessors column lists them by name; task_relations keeps them as they were added.
             VariantValue.of(predecessorsJson(task, dbName, scName, true)),
             // Live spells the task state in lower case: started / suspended.
-            task.getState() != null ? task.getState().toString().toLowerCase() : null,
+            task.getState() != null ? task.getState().toString().toLowerCase(Locale.ROOT) : null,
             task.getSqlStatement(),
             task.getCondition(),
             // A child task carries no overlap setting of its own; live prints the text "null" there.
@@ -251,7 +277,7 @@ final class ShowPipelineExecutor {
                 .append(qualifiedSourceName(dbName, scName, task.getFinalizedRootTask())).append("\",");
         }
         json.append("\"Predecessors\":").append(predecessorsJson(task, dbName, scName, false));
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+        final Schema schema = catalog.databaseExact(dbName).schemaExact(scName);
         final Task finalizer = schema == null || task.isFinalizer() ? null : TaskGraphs.finalizerOf(schema, task);
         if (finalizer != null) {
             json.append(",\"FinalizerTask\":\"")
@@ -299,16 +325,12 @@ final class ShowPipelineExecutor {
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> allRows = new ArrayList<>();
         List<ResultSetColumn> columns = null;
-        try {
-            final Database db = catalog.getDatabase(dbName);
-            for (final Schema schema : db.getAllSchemas()) {
-                if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
-                final ResultSet rs = showTasks(dbName, schema.getName());
-                if (columns == null) columns = rs.getColumns();
-                allRows.addAll(rs.getRows());
-            }
-        } catch (final Exception e) {
-            throw new RuntimeException("Failed to show tasks in database " + dbName + ": " + e.getMessage(), e);
+        final Database db = catalog.databaseExact(dbName);
+        for (final Schema schema : db.getAllSchemas()) {
+            if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
+            final ResultSet rs = showTasks(dbName, schema.getName());
+            if (columns == null) columns = rs.getColumns();
+            allRows.addAll(rs.getRows());
         }
         if (columns == null) {
             final ResultSet empty = showTasks(null);
@@ -320,9 +342,9 @@ final class ShowPipelineExecutor {
     public ResultSet showPipes(final String schemaName, final String like) {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
-        appendPipeRows(dbName, catalog.getDatabase(dbName).getSchema(scName), like, rows);
+        appendPipeRows(dbName, catalog.databaseExact(dbName).schemaExact(scName), like, rows);
         return new ResultSet(pipeColumns(), rows);
     }
 
@@ -342,7 +364,7 @@ final class ShowPipelineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendPipeRows(dbName, schema, like, rows);
         }
         return new ResultSet(pipeColumns(), rows);
@@ -351,7 +373,8 @@ final class ShowPipelineExecutor {
     private void appendPipeRows(final String dbName, final Schema schema, final String like, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Pipe pipe : schema.getPipes()) {
-            if (like != null && !matchesLike(pipe.getName(), like)) {
+            if (like != null && !matchesLike(pipe.getName(), like)
+                    || !seen("PIPE", schema, pipe.getName(), pipe.getOwner())) {
                 continue;
             }
             rows.add(new Row(Arrays.asList(
@@ -394,11 +417,55 @@ final class ShowPipelineExecutor {
     }
 
     /** Live reports a stream's source with its database and schema, even for a same-schema table. */
-    private String qualifiedSourceName(final String dbName, final String scName, final String source) {
-        if (source == null || source.indexOf('.') >= 0) {
-            return source;
+    /** What SHOW STREAMS lists for a table stream whose table is gone, as its table and its base tables. */
+    private static final String TABLE_GONE = "No privilege or table dropped";
+
+    /**
+     * The tables a stream reads, as SHOW STREAMS lists them: a table stream's table, and the tables a view stream's
+     * view reads rather than the view itself, or how many of them are gone, as for a table stream lost in a clone
+     * (live-verified).
+     */
+    private String baseTablesText(final Stream stream, final String source, final boolean tableGone) {
+        if (stream.isLostInClone()) {
+            return "1 inaccessible table(s)";
         }
-        return dbName + "." + scName + "." + source;
+        if (tableGone) {
+            return TABLE_GONE;
+        }
+        if (stream.getSourceType() == StreamSourceType.VIEW) {
+            final int missing = StreamSources.missingBaseCount(catalog, stream);
+            if (missing > 0) {
+                return missing + " inaccessible table(s)";
+            }
+            final List<String> bases = StreamSources.baseTableFullNames(catalog, stream);
+            if (bases != null) {
+                return String.join(",", bases);
+            }
+        }
+        return source;
+    }
+
+    private String qualifiedSourceName(final String dbName, final String scName, final String source) {
+        if (source == null) {
+            return null;
+        }
+        final String[] parts = QualifiedName.parse(source).parts();
+        if (parts.length == 2) {
+            return dbName + "." + source;
+        }
+        return parts.length == 1 ? dbName + "." + scName + "." + source : source;
+    }
+
+    /**
+     * Whether a stream is stale: recorded so, a table stream whose table is gone (dropped or replaced by CREATE OR
+     * REPLACE), or a view stream any of whose view's tables is. Snowflake documents that recreating the source
+     * "makes any stream on the table or view stale", and that recreating or dropping any of a view's underlying
+     * tables does too.
+     */
+    private boolean stale(final Schema home, final Stream stream) {
+        return stream.isStale() || (stream.getSourceType() == StreamSourceType.TABLE
+            && StreamSources.sourceOf(catalog, home, stream) == null)
+            || StreamSources.missingBaseOf(catalog, stream) != null;
     }
 
     /** Live capitalises the source kind as words (Table, View, Stage, Dynamic Table), not as the enum constant. */
@@ -410,7 +477,7 @@ final class ShowPipelineExecutor {
             return "Dynamic Table";
         }
         final String name = stream.getSourceType().name();
-        return name.charAt(0) + name.substring(1).toLowerCase();
+        return name.charAt(0) + name.substring(1).toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -432,9 +499,9 @@ final class ShowPipelineExecutor {
     public ResultSet showSequences(final String schemaName) {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
-        appendSequenceRows(dbName, catalog.getDatabase(dbName).getSchema(scName), rows);
+        appendSequenceRows(dbName, catalog.databaseExact(dbName).schemaExact(scName), rows);
         return new ResultSet(sequenceColumns(), rows);
     }
 
@@ -454,7 +521,7 @@ final class ShowPipelineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendSequenceRows(dbName, schema, rows);
         }
         return new ResultSet(sequenceColumns(), rows);
@@ -462,6 +529,9 @@ final class ShowPipelineExecutor {
 
     private void appendSequenceRows(final String databaseName, final Schema schema, final List<Row> rows) {
         for (final Sequence seq : schema.getSequences()) {
+            if (!seen("SEQUENCE", schema, seq.getName(), seq.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 seq.getName(),
                 databaseName,
@@ -488,8 +558,8 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("next_value", NumericType.BIGINT),
-            new ResultSetColumn("interval", NumericType.BIGINT),
+            new ResultSetColumn("next_value", NumericType.NUMBER),
+            new ResultSetColumn("interval", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
@@ -498,66 +568,74 @@ final class ShowPipelineExecutor {
         );
     }
 
-    public ResultSet describeStream(final String streamName) {
-        final List<Row> rows = new ArrayList<>();
-        final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
-        );
-
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+    /**
+     * DESCRIBE STREAM returns the stream's SHOW STREAMS row, as the documentation gives the two commands one set of
+     * columns, stale_after's timestamp included.
+     */
+    public ResultSet describeStream(final SchemaObjectName written) {
+        final Schema schema = written.schema();
+        final String streamName = written.name();
+        if (!schema.hasStreamExact(streamName)) {
+            if (schema.hasTable(streamName) || schema.hasView(streamName) || schema.hasMaterializedView(streamName)
+                    || schema.hasDynamicTable(streamName)) {
+                // A schema's relations and its streams share one namespace, so the name reaches an object, of
+                // another kind (live-verified).
+                throw new RuntimeException(SqlCompilationError.of("Invalid object type: 'STREAM'"));
+            }
+            // A missing stream is named as the statement wrote it, bare or in full, where a task, a pipe and a
+            // sequence are always named in full (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream",
+                written.isQualified() ? written.fullName() : streamName));
+        }
         final Stream stream = schema.getStream(streamName);
 
-        rows.add(new Row(Arrays.asList("name", stream.getName())));
-        rows.add(new Row(Arrays.asList("table_name", stream.getSourceTableName())));
-        rows.add(new Row(Arrays.asList("type", stream.getStreamType().toString())));
-
-        return new ResultSet(columns, rows);
+        final ResultSet listed = showStreams(written.database().getName(), schema.getName());
+        final List<Row> rows = new ArrayList<>();
+        for (final Row row : listed.getRows()) {
+            if (stream.getName().equals(row.getValue(1))) {
+                rows.add(row);
+            }
+        }
+        return new ResultSet(listed.getColumns(), rows);
     }
 
     /** DESCRIBE TASK returns the task's SHOW TASKS row — live gives the two commands one shape. */
-    public ResultSet describeTask(final String taskName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        final Task task = schema.getTask(taskName);
-        if (task == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", taskName));
-        }
+    public ResultSet describeTask(final SchemaObjectName written) {
+        final Schema schema = written.schema();
+        // Named exactly: a quoted name in another case is another task, which is not there (live-verified).
+        final Task task = schema.getTaskExact(written.name());
         final List<Row> rows = new ArrayList<>();
-        rows.add(taskRow(task, dbName, scName));
+        rows.add(taskRow(task, written.database().getName(), schema.getName()));
         return new ResultSet(taskColumns(), rows);
     }
 
     /** DESCRIBE PIPE returns the pipe's SHOW PIPES row — live gives the two commands one shape. */
-    public ResultSet describePipe(final String pipeName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+    public ResultSet describePipe(final SchemaObjectName written) {
+        final String pipeName = written.name();
+        final Schema schema = written.schema();
         final List<Row> rows = new ArrayList<>();
-        appendPipeRows(dbName, schema, null, rows);
+        appendPipeRows(written.database().getName(), schema, null, rows);
         final List<Row> matching = new ArrayList<>();
         for (final Row row : rows) {
-            if (pipeName.equalsIgnoreCase(String.valueOf(row.getValue(1)))) {
+            // Named exactly: a quoted name in another case is another pipe, which is not there (live-verified).
+            if (pipeName.equals(String.valueOf(row.getValue(1)))) {
                 matching.add(row);
             }
         }
         if (matching.isEmpty()) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", pipeName));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", written.fullName()));
         }
         return new ResultSet(pipeColumns(), matching);
     }
 
-    public ResultSet describeSequence(final String sequenceName) {
+    public ResultSet describeSequence(final SchemaObjectName written) {
         // Snowflake DESC SEQUENCE returns a single columnar row, not property/value rows (live-verified).
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("next_value", NumericType.BIGINT),
-            new ResultSetColumn("interval", NumericType.BIGINT),
+            new ResultSetColumn("next_value", NumericType.NUMBER),
+            new ResultSetColumn("interval", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
@@ -565,10 +643,9 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("ordered", StringType.VARCHAR)
         );
 
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        final Sequence sequence = schema.getSequence(sequenceName);
+        final String dbName = written.database().getName();
+        final String scName = written.schema().getName();
+        final Sequence sequence = written.schema().getSequenceExact(written.name());
 
         final List<Row> rows = new ArrayList<>();
         // The same ten cells SHOW SEQUENCES prints for the one sequence — the creation instant and
@@ -605,15 +682,8 @@ final class ShowPipelineExecutor {
     }
 
     private Schema resolveShowSchema(final String schemaName) {
-        if (schemaName != null) {
-            return catalog.resolveSchema(schemaName);
-        }
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        if (dbName == null || scName == null) {
-            throw new RuntimeException("No database or schema selected");
-        }
-        return catalog.getDatabase(dbName).getSchema(scName);
+        return schemaName != null ? catalog.resolveSchema(schemaName)
+            : ShowResultHelpers.resolveDescribeSchema(catalog);
     }
 
     /** SHOW CORTEX SEARCH SERVICES IN ACCOUNT: every database's services, in database order. */
@@ -633,15 +703,15 @@ final class ShowPipelineExecutor {
             throw new RuntimeException("No database specified");
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendCortexSearchServiceRows(schema, like, rows);
         }
         return new ResultSet(cortexSearchServiceColumns(), rows);
     }
 
     /** DESCRIBE CORTEX SEARCH SERVICE — the one service, in the SHOW shape. */
-    public ResultSet describeCortexSearchService(final String serviceName) {
-        final CortexSearchService service = catalog.resolveCortexSearchService(serviceName);
+    public ResultSet describeCortexSearchService(final String[] serviceParts) {
+        final CortexSearchService service = catalog.resolveCortexSearchService(serviceParts);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(cortexSearchServiceRow(service)));
         return new ResultSet(cortexSearchServiceColumns(), rows);
@@ -673,9 +743,9 @@ final class ShowPipelineExecutor {
             service.isIndexingSuspended() ? "SUSPENDED" : "ACTIVE",
             service.isServingSuspended() ? "SUSPENDED" : "RUNNING",
             Long.valueOf(0L),
-            nameArrayText(new ArrayList<String>()),
+            nameArrayText(service.getPrimaryKeyColumns()),
             Long.valueOf(0L),
-            null,
+            service.getAutoSuspend() == null ? null : Long.valueOf(service.getAutoSuspend().longValue()),
             "AUTO",
             nameArrayText(new ArrayList<String>())
         );
@@ -712,10 +782,10 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("embedding_model", StringType.VARCHAR),
             new ResultSetColumn("indexing_state", StringType.VARCHAR),
             new ResultSetColumn("serving_state", StringType.VARCHAR),
-            new ResultSetColumn("source_data_num_rows", NumericType.BIGINT),
+            new ResultSetColumn("source_data_num_rows", NumericType.NUMBER),
             new ResultSetColumn("primary_key_columns", StringType.VARCHAR),
-            new ResultSetColumn("scoring_profile_count", NumericType.BIGINT),
-            new ResultSetColumn("auto_suspend", StringType.VARCHAR),
+            new ResultSetColumn("scoring_profile_count", ShowResultHelpers.COUNT),
+            new ResultSetColumn("auto_suspend", ShowResultHelpers.COUNT),
             new ResultSetColumn("refresh_mode", StringType.VARCHAR),
             new ResultSetColumn("vector_indexes", StringType.VARCHAR)
         );
@@ -724,7 +794,7 @@ final class ShowPipelineExecutor {
     public ResultSet showDynamicTables(final String schemaName) {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
         appendDynamicTableRows(dbName, ShowResultHelpers.scopeSchemaReportedGenerically(catalog, dbName, scName), rows);
         return new ResultSet(dynamicTableColumns(), rows);
@@ -746,7 +816,8 @@ final class ShowPipelineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : ShowResultHelpers.scopeDatabaseReportedGenerically(catalog, dbName)
+                .getAllSchemas()) {
             appendDynamicTableRows(dbName, schema, rows);
         }
         return new ResultSet(dynamicTableColumns(), rows);
@@ -755,11 +826,15 @@ final class ShowPipelineExecutor {
     private void appendDynamicTableRows(final String dbName, final Schema schema, final List<Row> rows) {
         final String scName = schema.getName();
         for (final DynamicTable dt : schema.getDynamicTables()) {
+            if (!seen("DYNAMIC_TABLE", schema, dt.getName(), dt.getOwner())) {
+                continue;
+            }
             final List<String> clusterKeys = dt.getClusterKeys();
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(dt.getCreatedTime()),
                 dt.getName(), dbName, scName,
-                clusterKeys.isEmpty() ? "" : "LINEAR(" + String.join(", ", clusterKeys) + ")", 0L, 0L,
+                clusterKeys.isEmpty() ? "" : "LINEAR(" + String.join(", ", clusterKeys) + ")",
+                dt.getRefreshedRows(), 0L,
                 dt.getOwner(),
                 dt.getTargetLag(),
                 resolvedRefreshMode(dt),
@@ -811,8 +886,8 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("cluster_by", StringType.VARCHAR),
-            new ResultSetColumn("rows", NumericType.BIGINT),
-            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("rows", NumericType.NUMBER),
+            new ResultSetColumn("bytes", NumericType.NUMBER),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("target_lag", StringType.VARCHAR),
             new ResultSetColumn("refresh_mode", StringType.VARCHAR),
@@ -851,19 +926,24 @@ final class ShowPipelineExecutor {
         final String[] parts = QualifiedName.parse(tableName).parts();
         final String dbName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
         final String scName = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
-        catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(parts[parts.length - 1]);
+        final List<DynamicTableColumn> declared = catalog.databaseExact(dbName).schemaExact(scName)
+            .getDynamicTable(parts[parts.length - 1]).getDeclaredColumns();
 
         final List<ResultSetColumn> columns = ShowRelationalExecutor.describeColumns();
         final List<Row> rows = new ArrayList<>();
-        for (final ResultSetColumn column : projection.getResultSet().getColumns()) {
+        final List<ResultSetColumn> projected = projection.getResultSet().getColumns();
+        for (int i = 0; i < projected.size(); i++) {
+            final ResultSetColumn column = projected.get(i);
             final DataType type = column.getStaticType() != null ? column.getStaticType() : column.getDataType();
+            // A column the table declares keeps the name and the comment it was declared with.
+            final DynamicTableColumn own = i < declared.size() ? declared.get(i) : null;
             rows.add(new Row(Arrays.asList(
-                column.getName().toUpperCase(),
+                own != null ? own.getName() : column.getName().toUpperCase(Locale.ROOT),
                 SqlTypeNames.columnMetadata(type),
                 "COLUMN",
                 "Y",
                 null, "N", "N",
-                null, null, null, null, null, null
+                null, null, own != null ? own.getComment() : null, null, null, null
             )));
         }
         return new ResultSet(columns, rows);

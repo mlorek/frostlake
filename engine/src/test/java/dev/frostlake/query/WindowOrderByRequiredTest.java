@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -71,7 +73,7 @@ public class WindowOrderByRequiredTest extends BaseDatabaseTest {
     /** The name in the brackets is the function's own, on all eleven. */
     private String required(final String call) {
         return "SQL compilation error: Window function type ["
-            + call.substring(0, call.indexOf('(')).toUpperCase()
+            + call.substring(0, call.indexOf('(')).toUpperCase(Locale.ROOT)
             + "] requires ORDER BY in window specification.";
     }
 

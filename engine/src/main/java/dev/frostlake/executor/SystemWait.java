@@ -27,9 +27,10 @@ import java.util.Locale;
  * "waited 0 seconds", "waited 1 seconds", "waited 2 milliseconds", "waited 0 hours" (live-verified).
  *
  * <p>The amount is a whole number: a FLOAT or a numeric text is rounded half away from zero ('1.5' and 1.5::FLOAT
- * wait 2, '-1.5' answers -2), and a text that is no number is refused while the call compiles. The account also
- * refuses, "needs to be constant", an amount its planner does not fold to a constant — a column, an expression
- * over one, a scaled NUMBER such as 1.5 — which this engine does not model: it waits the amount rounded.
+ * wait 2, '-1.5' answers -2), and a text that is no number is refused while the call compiles. An amount or a unit
+ * that reads a row — a column, an expression over one, a query over a table — is refused, "needs to be constant",
+ * before any wait, and so is a NUMBER written with a fraction, computed or cast: the amount is a whole number the
+ * plan need not compute.
  *
  * <p>The unit is SECONDS unless written, and is one of DAYS, HOURS, MINUTES, SECONDS, MILLISECONDS, MICROSECONDS
  * and NANOSECONDS spelled exactly so — 'seconds' or ' SECONDS ' is refused, in live's own unfilled sentence. A NULL
@@ -43,6 +44,9 @@ public final class SystemWait {
 
     /** The longest the engine actually sleeps, in nanoseconds. */
     private static final long LONGEST_SLEEP_NANOS = 30_000_000_000L;
+
+    /** The longest the wait sleeps between two looks at its statement's timeout and cancel. */
+    private static final long SLICE_NANOS = 50_000_000L;
 
     /** The unit a call that names none waits in. */
     private static final String DEFAULT_UNIT = "SECONDS";
@@ -85,13 +89,21 @@ public final class SystemWait {
         final long unitsInLongestSleep = LONGEST_SLEEP_NANOS / nanosPerUnit;
         final long nanos = amount <= 0 ? 0L
             : amount > unitsInLongestSleep ? LONGEST_SLEEP_NANOS : amount * nanosPerUnit;
-        if (nanos > 0) {
+        // The wait is slept in slices, so its statement's timeout or cancel ends it where it stands.
+        final long until = System.nanoTime() + nanos;
+        long left = nanos;
+        while (left > 0) {
+            StatementCancellation.check();
+            final long slice = Math.min(left, SLICE_NANOS);
             try {
-                Thread.sleep(nanos / 1_000_000L, (int) (nanos % 1_000_000L));
+                Thread.sleep(slice / 1_000_000L, (int) (slice % 1_000_000L));
             } catch (final InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+                break;
             }
+            left = until - System.nanoTime();
         }
+        StatementCancellation.check();
         return "waited " + amount + " " + unit.toLowerCase(Locale.ROOT);
     }
 

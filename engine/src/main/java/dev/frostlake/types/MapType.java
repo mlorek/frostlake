@@ -28,13 +28,34 @@ package dev.frostlake.types;
  */
 public class MapType extends DataType {
 
+    private static final long serialVersionUID = 603756653626794834L;
+
     private final DataType keyType;
     private final DataType valueType;
+    /** Whether the value is declared NOT NULL: {@code MAP(VARCHAR, NUMBER NOT NULL)}. */
+    private final boolean valueNotNull;
 
     public MapType(final DataType keyType, final DataType valueType) {
+        this(keyType, valueType, false);
+    }
+
+    /**
+     * A MAP of these key and value types.
+     *
+     * @param keyType      the key's type
+     * @param valueType    the value's type
+     * @param valueNotNull whether the value is declared NOT NULL
+     */
+    public MapType(final DataType keyType, final DataType valueType, final boolean valueNotNull) {
         super("MAP", TypeCategory.SEMI_STRUCTURED);
         this.keyType = keyType;
         this.valueType = valueType;
+        this.valueNotNull = valueNotNull;
+    }
+
+    /** Whether the value is declared NOT NULL. */
+    public boolean isValueNotNull() {
+        return valueNotNull;
     }
 
     public DataType getKeyType() {

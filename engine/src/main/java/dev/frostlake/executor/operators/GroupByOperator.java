@@ -21,12 +21,17 @@ import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.SortKeyRole;
+import dev.frostlake.executor.expressions.VolatileCalls;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -63,6 +68,13 @@ public class GroupByOperator implements Operator {
     // The collation each group key compares under, parallel to groupByExpressions (null entries where a
     // key has none). See collateKeys.
     private List<CollationSpec> keyCollations;
+    // The select item each group key names, parallel to groupByExpressions (-1 where it names none). See
+    // bindKeyItems.
+    private List<Integer> keyItems;
+    // The values the WHERE computed for the aliases it read, and the alias each group key names, parallel to
+    // groupByExpressions (null where it names none). See readWhereAliasValues.
+    private WhereAliasValues whereAliasValues;
+    private List<String> keyAliases;
 
     /**
      * Create an explicit GROUP BY operator.
@@ -122,6 +134,34 @@ public class GroupByOperator implements Operator {
      */
     public void collateKeys(final List<CollationSpec> collations) {
         this.keyCollations = collations;
+    }
+
+    /**
+     * The select item each group key names — by its alias or its position, or by being that item under GROUP BY
+     * ALL. Such an item shows the value its group was formed by when the key answers anew each time it is
+     * computed (RANDOM(), UNIFORM(…, RANDOM()), UUID_STRING(), a sequence's NEXTVAL): computed again for the
+     * group it would show a key none of its rows had. A key that writes the item's expression out again is a
+     * call of its own, and the item is computed for the group as any other (both live-verified).
+     *
+     * @param items one entry per group-by expression, the expanded select-list index it names or -1
+     */
+    public void bindKeyItems(final List<Integer> items) {
+        this.keyItems = items;
+    }
+
+    /**
+     * The values the WHERE computed for the select aliases it read, which a key naming such an alias reads instead
+     * of computing the item again. Over a single relation the account computes an aliased item once for a row, so a
+     * volatile key forms its groups by the values the WHERE tested: {@code SELECT UNIFORM(1, 4, RANDOM()) AS r,
+     * COUNT(*) FROM g WHERE r > 1 GROUP BY r} forms the groups 2, 3 and 4 alone, by the alias, the position or GROUP
+     * BY ALL alike (live-verified).
+     *
+     * @param values  the values the WHERE kept for its rows
+     * @param aliases one entry per group-by expression, the upper-cased alias of the item it names, or null
+     */
+    public void readWhereAliasValues(final WhereAliasValues values, final List<String> aliases) {
+        this.whereAliasValues = values;
+        this.keyAliases = aliases;
     }
 
     /**
@@ -230,7 +270,7 @@ public class GroupByOperator implements Operator {
                 lateralAliasSink.putAll(outerBindings);
             }
             for (final String alias : nullAliasNames) {
-                lateralAliasSink.put(alias.toUpperCase(), null);
+                lateralAliasSink.put(alias.toUpperCase(Locale.ROOT), null);
             }
         }
     }
@@ -242,7 +282,7 @@ public class GroupByOperator implements Operator {
         }
         final String alias = lateralAliasNames.get(index);
         if (alias != null) {
-            lateralAliasSink.put(alias.toUpperCase(), value);
+            lateralAliasSink.put(alias.toUpperCase(Locale.ROOT), value);
         }
     }
 
@@ -298,11 +338,18 @@ public class GroupByOperator implements Operator {
 
         final List<Object> resultValues = new ArrayList<>();
 
-        beginGroupAliases();
-        for (int i = 0; i < selectExpressions.size(); i++) {
-            final Object value = evaluateAggregate(i, input);
-            resultValues.add(value);
-            publishGroupAlias(i, value);
+        // The one group is the input in scan order, so a row's place in it is its place in the scan: no positions of
+        // a grouping this one is nested in apply.
+        final Map<Row, Long> displacedScan = RowOrdinal.beginScan(null);
+        try {
+            beginGroupAliases();
+            for (int i = 0; i < selectExpressions.size(); i++) {
+                final Object value = evaluateAggregate(i, input);
+                resultValues.add(value);
+                publishGroupAlias(i, value);
+            }
+        } finally {
+            RowOrdinal.endScan(displacedScan);
         }
 
         logger.debug("Implicit grouping: {} rows -> 1 row with {} values",
@@ -327,16 +374,69 @@ public class GroupByOperator implements Operator {
             parsedGroupBy.add(ExpressionEvaluator.parse(e));
         }
         final Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
+        // The key values each group was formed by, as its first row computed them, kept when an item reports a
+        // key that answers anew each time it is computed (see bindKeyItems).
+        final int[] volatileKeys = volatileKeysOfItems(parsedGroupBy);
+        boolean keepsFormedBy = false;
+        for (final int key : volatileKeys) {
+            keepsFormedBy = keepsFormedBy || key >= 0;
+        }
+        final Map<List<Object>, List<Object>> formedBy = new HashMap<>();
+        // Where each input row stood, kept when an item aggregates a SEQ call: live numbers it by the scan the
+        // grouping read, not by the row's place in its group (see RowOrdinal.beginScan).
+        final Map<Row, Long> positions = itemsReadRowPlace() ? new IdentityHashMap<Row, Long>() : null;
 
-        for (final Row row : input) {
-            final List<Object> groupKey = buildGroupKey(row, parsedGroupBy);
+        for (int rowIndex = 0; rowIndex < input.size(); rowIndex++) {
+            final Row row = input.get(rowIndex);
+            if (positions != null && !positions.containsKey(row)) {
+                positions.put(row, Long.valueOf(rowIndex));
+            }
+            final List<Object> computed = keepsFormedBy ? new ArrayList<>(parsedGroupBy.size()) : null;
+            // The keys number the rows the grouping is handed, so a SEQ call in a key reads each row's place.
+            final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
+            final List<Object> groupKey;
+            try {
+                groupKey = buildGroupKey(row, parsedGroupBy, computed);
+            } finally {
+                RowOrdinal.end(displacedOrdinal);
+            }
             List<Row> bucket = groups.get(groupKey);
             if (bucket == null) {
                 bucket = new ArrayList<>();
                 groups.put(groupKey, bucket);
+                if (keepsFormedBy) {
+                    formedBy.put(groupKey, computed);
+                }
             }
             bucket.add(row);
         }
+        // The grouping's own positions, or none: a grouping nested in another reads no position of the other's.
+        final Map<Row, Long> displacedScan = RowOrdinal.beginScan(positions);
+        try {
+            return groupedRows(input, parsedGroupBy, groups, formedBy, volatileKeys);
+        } finally {
+            RowOrdinal.endScan(displacedScan);
+        }
+    }
+
+    /** Whether a select item calls SEQ1, SEQ2, SEQ4 or SEQ8, which read the row's place. */
+    private boolean itemsReadRowPlace() {
+        for (final String item : selectExpressions) {
+            try {
+                if (VolatileCalls.readsRowPlace(ExpressionEvaluator.parse(item))) {
+                    return true;
+                }
+            } catch (final RuntimeException unparsed) {
+                // An item the expression parser does not take alone reads no SEQ this walk could find.
+            }
+        }
+        return false;
+    }
+
+    /** The rows of the groups formed, an aggregation policy's remainder group included. */
+    private List<Row> groupedRows(final List<Row> input, final List<Expression> parsedGroupBy,
+                                  final Map<List<Object>, List<Row>> groups,
+                                  final Map<List<Object>, List<Object>> formedBy, final int[] volatileKeys) {
 
         logger.debug("Grouped {} rows into {} groups", input.size(), groups.size());
 
@@ -362,12 +462,17 @@ public class GroupByOperator implements Operator {
 
             beginGroupAliases();
             for (int i = 0; i < selectExpressions.size(); i++) {
-                Object value = evaluateAggregate(i, groupRows);
-                // A collated key's group holds values that differ in text, so the one the group REPORTS
-                // is settled by the collation's own rule rather than by whichever row came first.
-                final int keyIndex = collatedKeyIndexOf(i);
-                if (keyIndex >= 0) {
-                    value = reportedKeyValue(groupRows, parsedGroupBy.get(keyIndex));
+                Object value;
+                if (volatileKeys[i] >= 0) {
+                    value = formedBy.get(entry.getKey()).get(volatileKeys[i]);
+                } else {
+                    value = evaluateAggregate(i, groupRows);
+                    // A collated key's group holds values that differ in text, so the one the group REPORTS
+                    // is settled by the collation's own rule rather than by whichever row came first.
+                    final int keyIndex = collatedKeyIndexOf(i);
+                    if (keyIndex >= 0) {
+                        value = reportedKeyValue(groupRows, parsedGroupBy.get(keyIndex));
+                    }
                 }
                 resultValues.add(value);
                 publishGroupAlias(i, value);
@@ -408,7 +513,8 @@ public class GroupByOperator implements Operator {
      * the per-row {@code StringBuilder}/{@code toString} of the old string key — and avoiding its
      * collisions (e.g. a literal "NULL" string vs an actual NULL).
      */
-    private List<Object> buildGroupKey(final Row row, final List<Expression> parsedGroupBy) {
+    private List<Object> buildGroupKey(final Row row, final List<Expression> parsedGroupBy,
+                                       final List<Object> computed) {
         if (columnEvaluator == null) {
             throw new IllegalStateException("No column evaluator provided for GROUP BY");
         }
@@ -418,12 +524,36 @@ public class GroupByOperator implements Operator {
         for (int i = 0; i < parsedGroupBy.size(); i++) {
             // A key that cannot be evaluated fails the query, as it does on the account — it used to
             // collect every such row under one error key and answer.
-            key.add(CollatedKey.of(
-                ValueComparisons.canonicalGroupKeyValue(columnEvaluator.evaluate(parsedGroupBy.get(i), row)),
-                keyCollation(i)));
+            final String alias = keyAliases == null || i >= keyAliases.size() ? null : keyAliases.get(i);
+            final Object value = alias != null && whereAliasValues != null && whereAliasValues.holds(row, alias)
+                ? whereAliasValues.valueOf(row, alias) : columnEvaluator.evaluate(parsedGroupBy.get(i), row);
+            if (computed != null) {
+                computed.add(value);
+            }
+            key.add(CollatedKey.of(ValueComparisons.canonicalGroupKeyValue(value), keyCollation(i)));
         }
 
         return key;
+    }
+
+    /**
+     * For each select item, the group key it names when that key answers anew each time it is computed, or -1:
+     * such an item reports the value its group was formed by (see bindKeyItems). A key that answers alike each
+     * time is computed again as it always was.
+     */
+    private int[] volatileKeysOfItems(final List<Expression> parsedGroupBy) {
+        final int[] keys = new int[selectExpressions.size()];
+        Arrays.fill(keys, -1);
+        if (keyItems == null) {
+            return keys;
+        }
+        for (int k = 0; k < keyItems.size() && k < parsedGroupBy.size(); k++) {
+            final int item = keyItems.get(k).intValue();
+            if (item >= 0 && item < keys.length && keys[item] < 0 && VolatileCalls.writes(parsedGroupBy.get(k))) {
+                keys[item] = k;
+            }
+        }
+        return keys;
     }
 
     /** The collation the group key at {@code index} compares under, or null when it carries none. */

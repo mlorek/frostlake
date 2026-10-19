@@ -47,6 +47,24 @@ public class ResultSet {
         this(columns, new ArrayList<>());
     }
 
+    /**
+     * This result with rows of its own: each row a copy, so a caller that changes one changes nothing the engine
+     * holds — the table a row was read from, its time-travel versions, or the result RESULT_SCAN reads back.
+     *
+     * @return the copy, its counts and statistics as this result's
+     */
+    public ResultSet detachedCopy() {
+        final List<Row> copied = new ArrayList<>(rows.size());
+        for (final Row row : rows) {
+            copied.add(row.copy());
+        }
+        final ResultSet copy = new ResultSet(columns, copied);
+        copy.updateCount = updateCount;
+        copy.jdbcUpdateCount = jdbcUpdateCount;
+        copy.relationStatistics = relationStatistics;
+        return copy;
+    }
+
     public List<ResultSetColumn> getColumns() {
         return columns;
     }

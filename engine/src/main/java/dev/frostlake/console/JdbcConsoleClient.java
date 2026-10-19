@@ -41,6 +41,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import org.jline.reader.EndOfFileException;
@@ -256,7 +257,7 @@ public class JdbcConsoleClient {
     }
 
     private void handleMetaCommand(final String command) {
-        final String cmd = command.toLowerCase().trim();
+        final String cmd = command.toLowerCase(Locale.ROOT).trim();
 
         if (cmd.equals("!quit") || cmd.equals("!exit") || cmd.equals("\\q") || cmd.equals("\\quit")) {
             running = false;

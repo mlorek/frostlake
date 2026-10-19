@@ -62,6 +62,30 @@ public interface UdfLanguageRuntime {
     ResultSet executeTableFunction(Function function, List<Object> arguments);
 
     /**
+     * Run a table function's handler over one partition of its input: the handler is made once, reads each
+     * row in turn, and is then told the partition is through. Languages without table functions throw.
+     *
+     * @param function the function
+     * @param rows     the partition's rows, each the function's arguments
+     * @return the rows the handler wrote for each input row and once the partition was through
+     */
+    default TablePartitionRows executeTablePartition(final Function function, final List<List<Object>> rows) {
+        throw new RuntimeException(language().name() + " table functions are not supported");
+    }
+
+    /**
+     * Run an aggregate function's handler over one group: it reads each of the group's rows in turn and then
+     * answers the group's value. Languages without aggregate functions refuse, as creating one does.
+     *
+     * @param function the function
+     * @param rows     the group's rows, each the function's arguments; at least one
+     * @return the group's value
+     */
+    default Object executeAggregate(final Function function, final List<List<Object>> rows) {
+        throw new RuntimeException("Aggregate functions not supported for language '" + language().name() + "'.");
+    }
+
+    /**
      * Compile a FUNCTION's body at CREATE time, throwing if the routine could never run — live-verified,
      * a Python, Java or Scala function whose body will not compile, or whose HANDLER is not in it, is
      * refused by CREATE rather than by the first call.
@@ -82,5 +106,14 @@ public interface UdfLanguageRuntime {
      * sharing the function's implementation.
      */
     default void compileProcedure(final Procedure procedure) {
+    }
+
+    /**
+     * An outermost statement on this thread has ended: what the routines it ran left in state the language shares
+     * between calls on the thread - an interpreter's built-in names, its environment, the modules the runtime itself
+     * provides - is put back as it was, so that nothing one statement's routines changed there reaches the next
+     * statement, whichever engine runs it. The default is a no-op, for a language that shares no such state.
+     */
+    default void statementEnded() {
     }
 }

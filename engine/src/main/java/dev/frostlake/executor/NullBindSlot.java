@@ -302,6 +302,16 @@ final class NullBindSlot {
         return false;
     }
 
+    /**
+     * The upper-case name of the call the bind is a whole argument of, or null when it is none: an operand, or an
+     * item of a bracket that is no call's.
+     *
+     * @return the call's name, or null
+     */
+    String wholeArgumentOf() {
+        return isWholeItem() ? callName() : null;
+    }
+
     /** Whether the bind is a whole item of a bracketed list: after its '(' or a comma, before a comma or its ')'. */
     private boolean isWholeItem() {
         final int before = type(first - 1);

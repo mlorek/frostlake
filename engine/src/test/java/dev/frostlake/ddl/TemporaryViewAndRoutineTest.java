@@ -27,6 +27,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -152,7 +154,7 @@ public class TemporaryViewAndRoutineTest extends BaseDatabaseTest {
         assertEquals(1, rs.getRowCount());
         final int textColumn = rs.getColumnIndex("text");
         final String text = String.valueOf(rs.getRows().get(0).getValue(textColumn));
-        assertTrue(text.toUpperCase().contains("TEMPORARY"),
+        assertTrue(text.toUpperCase(Locale.ROOT).contains("TEMPORARY"),
             "SHOW VIEWS text should repeat the CREATE as typed, was: " + text);
     }
 

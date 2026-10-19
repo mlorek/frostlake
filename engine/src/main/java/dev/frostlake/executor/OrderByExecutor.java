@@ -35,6 +35,7 @@ import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import java.util.ArrayList;
@@ -42,6 +43,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -69,6 +71,15 @@ final class OrderByExecutor {
      */
     Operator planOrderBy(final Table table, final FrostlakeParser.SelectStatementContext ctx,
                          final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        if (ctx.orderByClause().ALL() != null) {
+            // The only FROM-shaped rows ORDER BY ALL reaches are a bare star's, which are the columns it answers.
+            return new StageOperator("ORDER BY[ALL]") {
+                @Override
+                protected List<Row> apply(final List<Row> rows) {
+                    return orderByAfterGroupBy(rows, ctx, null, table, aliasToTable);
+                }
+            };
+        }
         // Parse order items
         final List<String> orderColumns = new ArrayList<>();
         final List<Boolean> ascending = new ArrayList<>();
@@ -76,22 +87,31 @@ final class OrderByExecutor {
         // Where each key written as itself begins, so a refusal its evaluation raises is placed in the statement.
         final List<SourcePosition> keyOrigins = new ArrayList<>();
 
+        final OrderKeyOutputNames outputNames = outputNames(ctx, table, aliasToTable, allTables);
+        // A position counting to a star's column that shares its name with another is read from that column's
+        // slot of the row, as the projection reads it: its name would read the first of the two.
+        final List<Integer> starSlots = starSlotsOfFirstOperand(ctx, table, aliasToTable, allTables);
+        final List<Integer> presetSlots = new ArrayList<>();
+        for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
+            final long position = OrdinalLiteral.positionOf(ParseTreeText.getOriginalText(KeyContexts.of(item)));
+            presetSlots.add(Integer.valueOf(position == OrdinalLiteral.NOT_AN_ORDINAL || starSlots == null
+                || position < 1 || position > starSlots.size() ? -1 : starSlots.get((int) position - 1).intValue()));
+        }
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
             // Resolve the ORDER BY key to text we can evaluate per row: a positional ordinal → the N-th
-            // SELECT expression; a SELECT alias → that item's expression; otherwise the key as written (a
-            // column name, or an arbitrary expression that resolveOrderValue evaluates against the row).
+            // SELECT expression; a name the SELECT list gives an output column → that column's expression,
+            // wherever the name stands in the key; otherwise the key as written (a column name, or an
+            // arbitrary expression that resolveOrderValue evaluates against the row).
             // The key text must come from getOriginalText, NOT getText: the latter concatenates tokens
             // with no whitespace, so a key needing separators — `x IS NOT NULL` → `xISNOTNULL`,
             // `CAST(x AS NUMBER)` → `CAST(xASNUMBER)` — collapsed into an unparseable identifier and
             // failed to resolve. (Only the ordinal DETECTION needs the bare text, and digits are
             // unaffected by spacing.)
-            String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx,
-                table, aliasToTable);
-            colName = resolveOrderAlias(colName, ctx, table, aliasToTable);
+            final String colName = resolveOrderKey(item, ctx, table, aliasToTable, outputNames);
             orderColumns.add(colName);
-            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
-                ? new SourcePosition(item.expression().getStart().getLine(),
-                    item.expression().getStart().getCharPositionInLine())
+            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(KeyContexts.of(item)))
+                ? new SourcePosition(KeyContexts.of(item).getStart().getLine(),
+                    KeyContexts.of(item).getStart().getCharPositionInLine())
                 : null);
             ascending.add(item.DESC() == null); // Default is ASC
             nullsFirst.add(ValueComparisons.nullsFirstFlag(item));
@@ -124,6 +144,12 @@ final class OrderByExecutor {
                 // fresh evaluator per row-and-key on the expression path).
                 final int[] keyKind = new int[keyCount];
                 final int[] keyIndex = new int[keyCount];
+                for (int i = 0; i < keyCount; i++) {
+                    if (presetSlots.get(i).intValue() >= 0) {
+                        keyKind[i] = 2;
+                        keyIndex[i] = presetSlots.get(i).intValue();
+                    }
+                }
                 final ExpressionEvaluator[] keyEvaluator = new ExpressionEvaluator[keyCount];
                 // A key that carries a collation sorts under it, not by code point.
                 final CollationSpec[] keyRules = keyCollations(orderColumns, table, aliasToTable, allTables);
@@ -273,7 +299,7 @@ final class OrderByExecutor {
         for (final FrostlakeParser.SelectItemContext item : selectItems) {
             final String produced = producedColumnName(item);
             if (produced != null) {
-                outputNames.add(produced.toUpperCase());
+                outputNames.add(produced.toUpperCase(Locale.ROOT));
             }
         }
         // A refusal's echo prints a bare name as the OUTPUT column when it names one: an alias, an
@@ -281,46 +307,46 @@ final class OrderByExecutor {
         // SELECT i, SELECT eo.i or SELECT *, and ABS(EO.I, 1) beside SELECT i AS a (live-verified).
         final Set<String> echoedBare = new HashSet<>();
         for (final String alias : executor.selectItemAliasNames(firstClause)) {
-            echoedBare.add(alias.toUpperCase());
+            echoedBare.add(alias.toUpperCase(Locale.ROOT));
         }
         for (final FrostlakeParser.SelectItemContext item : selectItems) {
             final String produced = producedColumnName(item);
             if (produced != null && SelectItemAccessors.getItemAlias(item) == null) {
-                echoedBare.add(produced.toUpperCase());
+                echoedBare.add(produced.toUpperCase(Locale.ROOT));
             }
             if (SelectItemAccessors.isStarItem(item) || SelectItemAccessors.isQualifiedStarItem(item)) {
                 for (final StarColumn column : executor.starItemColumns(item, table, aliasToTable)) {
-                    echoedBare.add(column.getOutputName().toUpperCase());
+                    echoedBare.add(column.getOutputName().toUpperCase(Locale.ROOT));
                     if (column.isReplaced()) {
                         // A REPLACE'd column keeps the source column's name while carrying an
                         // expression of its own, so the name is an OUTPUT name here — even where the
                         // source column it shadows is ambiguous across the join.
-                        outputNames.add(column.getOutputName().toUpperCase());
+                        outputNames.add(column.getOutputName().toUpperCase(Locale.ROOT));
                     }
                 }
             }
         }
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
+            final String asWritten = ParseTreeText.getOriginalText(KeyContexts.of(item)).trim();
             if (OrdinalLiteral.positionOf(asWritten) != OrdinalLiteral.NOT_AN_ORDINAL) {
                 // A POSITION, never a name: the range check owns it, and it runs right after this one.
                 // Matching it as a key instead reached the number reader with a value no int holds and
                 // threw its raw complaint in place of the ordinal sentence.
                 continue;
             }
-            if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) >= 0) {
                 continue;
             }
-            if (outputNames.contains(asWritten.toUpperCase())) {
+            if (outputNames.contains(asWritten.toUpperCase(Locale.ROOT))) {
                 continue;
             }
             if (namesOnly) {
                 executor.validateClauseColumnScope(asWritten, table, aliasToTable, allTables, outputNames,
-                    item.expression());
+                    KeyContexts.of(item));
                 continue;
             }
             executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
-                item.expression(), echoedBare);
+                KeyContexts.of(item), echoedBare);
         }
     }
 
@@ -388,15 +414,26 @@ final class OrderByExecutor {
     }
 
     /**
-     * What a key's failed evaluation raises: a fault a relation deferred, or anything a subquery in the key
-     * raised, as it is; otherwise the key as an identifier nothing resolves.
+     * What a key's failed evaluation raises: a fault a relation deferred, anything a subquery in the key raised, and a
+     * value the key cannot compute for the row — a conversion, a division by zero, a date or a JSON text it cannot
+     * read — as it is, the error the expression raises anywhere else (live-verified); only a key that reaches no
+     * column is an identifier nothing resolves. Its names were judged while the statement was planned.
      */
     private static RuntimeException unresolvableKey(final String colName, final Exception failure,
                                                     final boolean holdsSubquery) {
         if (DeferredFault.isHeld(failure) || (holdsSubquery && failure instanceof RuntimeException)) {
             return (RuntimeException) failure;
         }
+        if (failure instanceof RuntimeException && !reachesNoColumn(failure)) {
+            return (RuntimeException) failure;
+        }
         return new RuntimeException(SqlCompilationError.invalidIdentifier(colName), failure);
+    }
+
+    /** Whether a failure is a name that reached no column of the row. */
+    static boolean reachesNoColumn(final Exception failure) {
+        final String message = failure.getMessage();
+        return message == null || message.startsWith("Column not found");
     }
 
     /**
@@ -472,57 +509,26 @@ final class OrderByExecutor {
         }
     }
 
-    /** ORDER BY by a SELECT alias → that item's expression text, so it can be evaluated per row. */
-    private String resolveOrderAlias(final String text, final FrostlakeParser.SelectStatementContext ctx,
-                                     final Table table, final Map<String, Table> aliasToTable) {
+    /** The output names of the statement's select list, as its ORDER BY keys read them. */
+    OrderKeyOutputNames outputNames(final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                                    final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
         final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
             ? firstOp.selectClause()
             : firstOp.selectStatement().selectOperand(0).selectClause();
-        for (final FrostlakeParser.SelectItemContext item : firstClause.selectList().selectItem()) {
-            // CANONICAL and EXACT: the alias arrives folded already, so comparing it case-insensitively
-            // to the key AS WRITTEN let an unquoted key answer to a quoted alias — live resolves
-            // `SELECT a AS "x" … ORDER BY x` to nothing at all.
-            if (SelectItemAccessors.getItemAlias(item) != null
-                    && (SelectItemAccessors.getItemAlias(item))
-                        .equals(SqlIdentifiers.canonicalText(text))) {
-                final ParserRuleContext e = SelectItemAccessors.getItemExpression(item);
-                if (e != null) {
-                    return ParseTreeText.getOriginalText(e);
-                }
-            }
-        }
-        return resolveStarOutputName(text, firstClause, table, aliasToTable);
+        return new OrderKeyOutputNames(executor, firstClause, table, aliasToTable, allTables);
     }
 
     /**
-     * ORDER BY by the OUTPUT name of a star's column, where the star's REPLACE or RENAME gave that column
-     * an expression of its own: {@code SELECT * REPLACE (id * -1 AS id) … ORDER BY id} sorts by the
-     * REPLACED value, and {@code SELECT * RENAME (id AS k) … ORDER BY k} sorts by the renamed column —
-     * each exactly as a written alias would. The star's output name wins over a source column of the same
-     * name, and over an ambiguous one across a join, since it names an output rather than a relation.
-     * A column the star passes through unchanged is not answered here, so it resolves against the
-     * relation as before; a qualified key ({@code ORDER BY fz.id}) names the source column and is left
-     * alone, as live leaves it.
+     * One ORDER BY key as the text the source rows evaluate: a position is the expression of the output column
+     * it counts to, and a name the select list gives an output column is that column's expression.
      */
-    private String resolveStarOutputName(final String text, final FrostlakeParser.SelectClauseContext clause,
-                                         final Table table, final Map<String, Table> aliasToTable) {
-        final String wanted = SqlIdentifiers.canonicalText(text);
-        if (table == null || wanted == null) {
-            return text;
-        }
-        for (final FrostlakeParser.SelectItemContext item : clause.selectList().selectItem()) {
-            if (SelectItemAccessors.getStarModifiers(item).isEmpty()
-                    || SelectItemAccessors.isObjectStarItem(item)) {
-                continue;
-            }
-            for (final StarColumn column : executor.starItemColumns(item, table, aliasToTable)) {
-                if ((column.isReplaced() || column.isRenamed()) && column.getOutputName().equals(wanted)) {
-                    return column.getExpression();
-                }
-            }
-        }
-        return text;
+    private String resolveOrderKey(final FrostlakeParser.OrderItemContext item,
+                                   final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                                   final Map<String, Table> aliasToTable, final OrderKeyOutputNames outputNames) {
+        final String written = ParseTreeText.getOriginalText(KeyContexts.of(item));
+        final String positioned = resolveOrderOrdinal(written, ctx, table, aliasToTable);
+        return positioned.equals(written) ? outputNames.expand(KeyContexts.of(item)) : positioned;
     }
 
     /**
@@ -543,8 +549,29 @@ final class OrderByExecutor {
             // A key too wide to BE an integer is refused by the literal reader before it is a position
             // at all — the reader runs on the written number, so it outranks the range check that would
             // otherwise call the same digits an out-of-range ordinal.
-            IntegerLiteralRange.reject(item.expression().getStart());
-            resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), stmtCtx, table, aliasToTable);
+            IntegerLiteralRange.reject(KeyContexts.of(item).getStart());
+            resolveOrderOrdinal(ParseTreeText.getOriginalText(KeyContexts.of(item)), stmtCtx, table, aliasToTable);
+        }
+    }
+
+    /**
+     * The star slots of the first select operand's output columns (see QueryExecutor.starProjectionSlots), or null
+     * when its stars cannot be laid out.
+     */
+    private List<Integer> starSlotsOfFirstOperand(final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                                                  final Map<String, Table> aliasToTable,
+                                                  final List<Table> allTables) {
+        final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
+        final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
+            ? firstOp.selectClause()
+            : firstOp.selectStatement().selectOperand(0).selectClause();
+        if (table == null || firstClause == null) {
+            return null;
+        }
+        try {
+            return executor.starProjectionSlots(firstClause, table, aliasToTable, allTables);
+        } catch (final RuntimeException unexpandable) {
+            return null;
         }
     }
 
@@ -606,7 +633,7 @@ final class OrderByExecutor {
             if (colIndex[k] >= 0 && projected != null && colIndex[k] < projected.size()) {
                 keyTexts.add(projected.get(colIndex[k]));
             } else {
-                keyTexts.add(ParseTreeText.getOriginalText(items.get(k).expression()));
+                keyTexts.add(ParseTreeText.getOriginalText(KeyContexts.of(items.get(k))));
             }
         }
         if (!KeyCollations.reachable(keyTexts, table, aliasToTable, null)) {
@@ -618,10 +645,77 @@ final class OrderByExecutor {
     }
 
     /**
+     * ORDER BY ALL: the rows ordered by every column the query answers, left to right, each under the clause's one
+     * direction and NULLS placement and under its own collation; ties keep their order (live-verified).
+     *
+     * @param rows   rows in the shape of the columns the query answers
+     * @param clause the ORDER BY ALL clause
+     * @param width  how many columns the query answers
+     * @param rules  the collation of each column, null where it carries none
+     * @return the rows in order
+     */
+    private static List<Row> orderByEveryColumn(final List<Row> rows, final FrostlakeParser.OrderByClauseContext clause,
+                                                final int width, final CollationSpec[] rules) {
+        final boolean ascending = clause.DESC() == null;
+        final Boolean nullsFirst = clause.NULLS() == null ? null : Boolean.valueOf(clause.FIRST() != null);
+        final List<Object[]> keys = new ArrayList<>(rows.size());
+        for (final Row row : rows) {
+            final Object[] rowKeys = new Object[Math.min(width, row.size())];
+            for (int k = 0; k < rowKeys.length; k++) {
+                rowKeys[k] = CollatedKey.of(DeferredFault.read(row.getValue(k)), rules[k]);
+            }
+            keys.add(rowKeys);
+        }
+        final Integer[] order = new Integer[rows.size()];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        Arrays.sort(order, new Comparator<Integer>() {
+            @Override
+            public int compare(final Integer a, final Integer b) {
+                final Object[] ka = keys.get(a);
+                final Object[] kb = keys.get(b);
+                for (int k = 0; k < ka.length && k < kb.length; k++) {
+                    final int cmp = ValueComparisons.compareOrderKey(ka[k], kb[k], ascending, nullsFirst);
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                }
+                return 0;
+            }
+        });
+        final List<Row> sorted = new ArrayList<>(rows.size());
+        for (final int i : order) {
+            sorted.add(rows.get(i));
+        }
+        return sorted;
+    }
+
+    /**
+     * The collation each column of a projection sorts under for ORDER BY ALL.
+     *
+     * @param projected    the projected expression per column, or null when the projection cannot be laid out
+     * @param width        how many columns the query answers
+     * @param table        the base relation, or null
+     * @param aliasToTable its alias map, or null
+     * @return one entry per column, null where the column carries no collation
+     */
+    private CollationSpec[] everyColumnCollations(final List<String> projected, final int width, final Table table,
+                                                  final Map<String, Table> aliasToTable) {
+        if (projected == null || projected.size() != width
+                || !KeyCollations.reachable(projected, table, aliasToTable, null)) {
+            return new CollationSpec[width];
+        }
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(table,
+            executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        return KeyCollations.resolve(projected, evaluator);
+    }
+
+    /**
      * The select list as the OUTPUT columns it projects, each star expanded against its relation — the
-     * width a position is judged against, and the expression a position resolves to. Returns null when
-     * a star cannot be expanded (no relation supplied, an unresolvable qualifier, or modifiers that
-     * reshape the projection), so the caller steps aside instead of guessing.
+     * width a position is judged against, and the expression a position resolves to; a star's EXCLUDE,
+     * ILIKE, RENAME and REPLACE shape the columns it counts (live-verified). Returns null when a star cannot be
+     * expanded (no relation supplied, an unresolvable qualifier), so the caller steps aside instead of guessing.
      */
     private List<String> projectedExpressions(final List<FrostlakeParser.SelectItemContext> items,
                                               final Table table, final Map<String, Table> aliasToTable) {
@@ -637,7 +731,7 @@ final class OrderByExecutor {
                 projected.add(ParseTreeText.getOriginalText(e));
                 continue;
             }
-            if (table == null || !SelectItemAccessors.getStarModifiers(item).isEmpty()) {
+            if (table == null) {
                 return null;
             }
             if (SelectItemAccessors.isObjectStarItem(item)) {
@@ -645,9 +739,11 @@ final class OrderByExecutor {
                 continue;
             }
             final List<StarColumn> starColumns = executor.starItemColumns(item, table, aliasToTable);
-            if (starColumns.isEmpty()) {
+            if (starColumns.isEmpty() && table.getColumns().isEmpty()) {
                 return null;
             }
+            // A star over columns it does not read — a named stage's fields — projects nothing, so an ordinal past
+            // the rest of the list is refused (live-verified).
             for (final StarColumn starColumn : starColumns) {
                 projected.add(starColumn.getExpression());
             }
@@ -684,7 +780,7 @@ final class OrderByExecutor {
                 final List<String> names = new ArrayList<String>();
                 try {
                     for (final StarColumn sc : executor.starItemColumns(si, table, aliasToTable)) {
-                        names.add(sc.getOutputName().toUpperCase());
+                        names.add(sc.getOutputName().toUpperCase(Locale.ROOT));
                     }
                 } catch (final RuntimeException unresolvable) {
                     // an unresolvable star leaves its columns unmatchable; the resolver may still serve
@@ -697,6 +793,11 @@ final class OrderByExecutor {
             }
         }
         final int totalSlots = slotCount;
+        if (ctx.orderByClause().ALL() != null) {
+            return orderByEveryColumn(rows, ctx.orderByClause(), totalSlots,
+                everyColumnCollations(projectedExpressions(selectItems, table, aliasToTable), totalSlots, table,
+                    aliasToTable));
+        }
 
         final List<FrostlakeParser.OrderItemContext> items = ctx.orderByClause().orderItem();
         final int nKeys = items.size();
@@ -707,13 +808,13 @@ final class OrderByExecutor {
             final FrostlakeParser.OrderItemContext item = items.get(k);
             ascending[k] = item.DESC() == null;
             nullsFirst[k] = ValueComparisons.nullsFirstFlag(item);
-            colIndex[k] = matchOrderSlot(item.expression().getText(), selectItems, itemStartSlot,
+            colIndex[k] = matchOrderSlot(KeyContexts.of(item).getText(), selectItems, itemStartSlot,
                 starNamesByItem, totalSlots, ctx.selectOperand().size() > 1);
             if (colIndex[k] == -1 && resolver == null) {
                 // AS WRITTEN, not getText(): the latter concatenates tokens with no whitespace, so a
                 // key with separators came back unreadable — ROW_NUMBER()OVER(ORDERBYc).
                 throw new RuntimeException("ORDER BY expression not found in SELECT list: "
-                    + ParseTreeText.getOriginalText(item.expression()));
+                    + ParseTreeText.getOriginalText(KeyContexts.of(item)));
             }
         }
 
@@ -782,7 +883,7 @@ final class OrderByExecutor {
         for (final FrostlakeParser.SelectItemContext item : selectItems) {
             final String produced = producedColumnName(item);
             if (produced != null) {
-                outputNames.add(produced.toUpperCase());
+                outputNames.add(produced.toUpperCase(Locale.ROOT));
             }
         }
         final Set<String> groupKeyTexts = new HashSet<>();
@@ -791,18 +892,24 @@ final class OrderByExecutor {
         final GroupedKeyColumns groupedColumns = new GroupedKeyColumns(table, aliasToTable, allTables, selectCtx);
         collectGroupKeys(groupBy, groupKeyTexts, groupKeyNames, groupedColumns);
 
+        // The keys are judged in the order written, and a grouped or DISTINCT query's key that holds a subquery is
+        // refused where it stands: ahead of a later key's ungrouped column, after an earlier one's.
+        final boolean subqueryFree = groupBy != null || selectCtx.DISTINCT() != null;
         for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
+            if (subqueryFree) {
+                rejectSubqueryInKey(item, table, aliasToTable, allTables);
+            }
             rejectCaseVariantOrderKey(item, selectItems, groupBy, table, allTables);
-            if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) >= 0) {
                 continue;
             }
-            final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
-            if (outputNames.contains(asWritten.toUpperCase())
-                    || groupKeyTexts.contains(item.expression().getText().toUpperCase())) {
+            final String asWritten = ParseTreeText.getOriginalText(KeyContexts.of(item)).trim();
+            if (outputNames.contains(asWritten.toUpperCase(Locale.ROOT))
+                    || groupKeyTexts.contains(KeyContexts.of(item).getText().toUpperCase(Locale.ROOT))) {
                 continue;
             }
             executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
-                item.expression());
+                KeyContexts.of(item));
             if (groupBy != null && groupBy.ALL() == null) {
                 rejectUngroupedOrderReference(ExpressionEvaluator.parse(asWritten), table, allTables,
                     outputNames, groupKeyNames, groupedColumns);
@@ -821,7 +928,7 @@ final class OrderByExecutor {
                                            final List<Table> allTables) {
         final Expression key;
         try {
-            key = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(item.expression()).trim());
+            key = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(KeyContexts.of(item)).trim());
         } catch (final RuntimeException unparsed) {
             return;
         }
@@ -856,11 +963,13 @@ final class OrderByExecutor {
     }
 
     /**
-     * A GROUPED or DISTINCT query's ORDER BY may hold no subquery at all — correlated or not. Live refuses
-     * the key by re-printing the subquery from its plan: {@code [(SELECT MAX(G.V) AS "MAX(V)" FROM G AS G)]
-     * is not a valid order by expression}, where the same key over an ungrouped query is answered, and a
-     * key that names the subquery through the select list's alias or by its ordinal stays legal. A query
-     * that groups only implicitly ({@code SELECT MAX(id) FROM fz ORDER BY (SELECT …)}) is answered too
+     * A GROUPED or DISTINCT query's ORDER BY may hold no subquery at all — correlated or not, read as a value
+     * or tested by EXISTS, IN or a quantified comparison. Live refuses the key by re-printing the subquery from
+     * its plan: {@code [(SELECT MAX(G.V) AS "MAX(V)" FROM G AS G)] is not a valid order by expression},
+     * {@code [EXISTS(SELECT 1 AS "1" FROM G AS G)]}, {@code [ANY(SELECT G.ID AS "ID" FROM G AS G)]} for an IN,
+     * where the same key over an ungrouped query is answered, and a key that names the subquery through the
+     * select list's alias or by its ordinal stays legal — the same subquery written again in the key does not. A
+     * query that groups only implicitly ({@code SELECT MAX(id) FROM fz ORDER BY (SELECT …)}) is answered too
      * (live-verified).
      *
      * <p>A subquery an aggregate call takes as its argument is computed with the aggregate, row by row, and is
@@ -884,12 +993,27 @@ final class OrderByExecutor {
             return;
         }
         for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
-            final ParserRuleContext subquery = firstUnaggregatedSubqueryIn(item.expression());
-            if (subquery != null) {
-                throw new RuntimeException(SqlCompilationError.of("[" + plannedSubquery(subquery, table,
-                    aliasToTable, allTables) + "] is not a valid order by expression"));
-            }
+            rejectSubqueryInKey(item, table, aliasToTable, allTables);
         }
+    }
+
+    /** Refuses one key of a grouped or DISTINCT query's ORDER BY that holds a subquery outside every aggregate. */
+    private void rejectSubqueryInKey(final FrostlakeParser.OrderItemContext item, final Table table,
+                                     final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final ParserRuleContext subquery = firstUnaggregatedSubqueryIn(KeyContexts.of(item));
+        if (subquery != null) {
+            // A key that negates an EXISTS is planned as one NOT EXISTS, and echoed so; a NOT over a membership test
+            // is not part of what the plan names (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("[" + (negatedExists(subquery) ? "NOT " : "")
+                + plannedSubquery(subquery, table, aliasToTable, allTables) + "] is not a valid order by expression"));
+        }
+    }
+
+    /** Whether a subquery is an EXISTS a NOT is written right before. */
+    private static boolean negatedExists(final ParserRuleContext subquery) {
+        return subquery instanceof FrostlakeParser.ExistsExprContext
+            && subquery.getParent() instanceof FrostlakeParser.ValueExprContext
+            && subquery.getParent().getParent() instanceof FrostlakeParser.NotExprContext;
     }
 
     /**
@@ -898,8 +1022,22 @@ final class OrderByExecutor {
      * {@code ABS(SELECT …)}. A window call is no aggregate here: it is judged whole as a key.
      */
     private ParserRuleContext firstUnaggregatedSubqueryIn(final ParseTree node) {
-        if (node instanceof FrostlakeParser.ScalarSubqueryExprContext) {
-            return (FrostlakeParser.ScalarSubqueryExprContext) node;
+        if (node instanceof FrostlakeParser.ScalarSubqueryExprContext
+                || node instanceof FrostlakeParser.ExistsExprContext) {
+            return (ParserRuleContext) node;
+        }
+        // A membership test and a quantified comparison read their value first: a subquery written there is the
+        // key's first, and the query after IN, ANY or ALL is the one named otherwise.
+        if (node instanceof FrostlakeParser.InSubqueryExprContext) {
+            final ParserRuleContext inValue =
+                firstUnaggregatedSubqueryIn(((FrostlakeParser.InSubqueryExprContext) node).expression());
+            return inValue != null ? inValue : (ParserRuleContext) node;
+        }
+        if (node instanceof FrostlakeParser.QuantifiedComparisonExprContext
+                && ((FrostlakeParser.QuantifiedComparisonExprContext) node).selectStatement() != null) {
+            final ParserRuleContext inValue = firstUnaggregatedSubqueryIn(
+                ((FrostlakeParser.QuantifiedComparisonExprContext) node).expression(0));
+            return inValue != null ? inValue : (ParserRuleContext) node;
         }
         if (node instanceof FrostlakeParser.FunctionArgContext
                 && ((FrostlakeParser.FunctionArgContext) node).selectStatement() != null) {
@@ -920,6 +1058,36 @@ final class OrderByExecutor {
         return null;
     }
 
+    /** The query an EXISTS, an IN or a quantified comparison tests, or null for a subquery read as a value. */
+    private static FrostlakeParser.SelectStatementContext testedQuery(final ParserRuleContext subquery) {
+        if (subquery instanceof FrostlakeParser.ExistsExprContext) {
+            return ((FrostlakeParser.ExistsExprContext) subquery).selectStatement();
+        }
+        if (subquery instanceof FrostlakeParser.InSubqueryExprContext) {
+            return ((FrostlakeParser.InSubqueryExprContext) subquery).selectStatement();
+        }
+        if (subquery instanceof FrostlakeParser.QuantifiedComparisonExprContext) {
+            return ((FrostlakeParser.QuantifiedComparisonExprContext) subquery).selectStatement();
+        }
+        return null;
+    }
+
+    /**
+     * The word the plan holds a tested query under: {@code EXISTS(SELECT …)}; a membership test and a quantified
+     * comparison are named by their quantifier alone, {@code ANY(SELECT …)} for IN, ANY and SOME and
+     * {@code ALL(SELECT …)} for NOT IN and ALL, without the value they compare (live-verified).
+     */
+    private static String testWord(final ParserRuleContext subquery) {
+        if (subquery instanceof FrostlakeParser.ExistsExprContext) {
+            return "EXISTS";
+        }
+        if (subquery instanceof FrostlakeParser.InSubqueryExprContext) {
+            return ((FrostlakeParser.InSubqueryExprContext) subquery).NOT() != null ? "ALL" : "ANY";
+        }
+        return ((FrostlakeParser.QuantifiedComparisonExprContext) subquery).quantifier().ALL() != null
+            ? "ALL" : "ANY";
+    }
+
     /** The subquery re-printed from its plan, as the refusal echoes it; its written text where the shape
      *  is not modelled. */
     private String plannedSubquery(final ParserRuleContext subquery, final Table table,
@@ -931,12 +1099,19 @@ final class OrderByExecutor {
             if (allTables != null && !allTables.isEmpty()) {
                 printer.setMultiTableContext(aliasToTable, allTables);
             }
-            final Expression parsed = subquery instanceof FrostlakeParser.FunctionArgContext
-                ? new SubqueryExpression(ParseTreeText.getOriginalText(
-                    ((FrostlakeParser.FunctionArgContext) subquery).selectStatement()))
-                : ExpressionEvaluator.parse(written);
+            final FrostlakeParser.SelectStatementContext tested = testedQuery(subquery);
+            final Expression parsed = tested != null
+                ? new SubqueryExpression(ParseTreeText.getOriginalText(tested))
+                : subquery instanceof FrostlakeParser.FunctionArgContext
+                    ? new SubqueryExpression(ParseTreeText.getOriginalText(
+                        ((FrostlakeParser.FunctionArgContext) subquery).selectStatement()))
+                    : ExpressionEvaluator.parse(written);
             final String printed = printer.plannedText(parsed);
-            return printed == null ? written : printed;
+            // A query whose shape the plan print does not model is echoed as it was written.
+            if (printed == null || !printed.startsWith("(") || printed.startsWith("(subquery ")) {
+                return written;
+            }
+            return tested == null ? printed : testWord(subquery) + printed;
         } catch (final RuntimeException notModelled) {
             return written;
         }
@@ -973,18 +1148,19 @@ final class OrderByExecutor {
             }
             final String produced = producedColumnName(item);
             if (produced != null) {
-                outputNames.add(produced.toUpperCase());
+                outputNames.add(produced.toUpperCase(Locale.ROOT));
             }
         }
         for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
-            if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) >= 0) {
                 continue;
             }
             // A name that resolves to NOTHING is that error first, DISTINCT or no DISTINCT — live
             // answers "invalid identifier" for ORDER BY zz rather than calling it unselected.
-            executor.validateClauseScope(ParseTreeText.getOriginalText(item.expression()).trim(),
-                table, aliasToTable, allTables, outputNames, item.expression());
-            rejectUnselectedDistinctKey(item.expression(), selectItems, outputNames, table, allTables);
+            executor.validateClauseScope(ParseTreeText.getOriginalText(KeyContexts.of(item)).trim(),
+                table, aliasToTable, allTables, outputNames, KeyContexts.of(item));
+            rejectUnselectedDistinctKey(KeyContexts.of(item), selectItems, outputNames, table, aliasToTable,
+                allTables);
         }
     }
 
@@ -996,6 +1172,7 @@ final class OrderByExecutor {
     private void rejectUnselectedDistinctKey(final ParseTree node,
                                              final List<FrostlakeParser.SelectItemContext> selectItems,
                                              final Set<String> outputNames, final Table table,
+                                             final Map<String, Table> aliasToTable,
                                              final List<Table> allTables) {
         final String text = node.getText();
         if (text.isEmpty()) {
@@ -1003,7 +1180,7 @@ final class OrderByExecutor {
         }
         // Ordinals are a WHOLE-key spelling only — a bare 1 nested inside a + 1 is a literal.
         if (matchOrderItem(text, selectItems, false, false) >= 0
-                || outputNames.contains(text.toUpperCase())) {
+                || outputNames.contains(text.toUpperCase(Locale.ROOT))) {
             return;
         }
         final String asWritten = originalTextOf(node);
@@ -1018,21 +1195,29 @@ final class OrderByExecutor {
             if (!namesAColumn(ref, table, allTables)) {
                 return;
             }
-            if (!outputNames.contains(ref.getColumnName().toUpperCase())) {
+            if (!outputNames.contains(ref.getColumnName().toUpperCase(Locale.ROOT))) {
                 throw new RuntimeException(SqlCompilationError.of(
-                    "[" + ownerQualifier(ref, table, allTables) + "." + ref.getColumnName().toUpperCase()
+                    "[" + ownerQualifier(ref, table, allTables) + "." + ref.getColumnName().toUpperCase(Locale.ROOT)
                     + "] is not a valid order by expression"));
             }
             return;
         }
         if (parsed instanceof FunctionCallExpression
                 && executor.getFunctionRegistry().getAggregateFunction(
-                    ((FunctionCallExpression) parsed).getFunctionName().toUpperCase()) != null) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "[" + asWritten.trim() + "] is not a valid order by expression"));
+                    ((FunctionCallExpression) parsed).getFunctionName().toUpperCase(Locale.ROOT)) != null) {
+            // The aggregate is echoed as the plan holds it: a column qualified by its relation, [MAX(FZ.ID + 1)],
+            // and one the select list publishes by its bare name.
+            String echoed = asWritten.trim();
+            if (node instanceof ParserRuleContext) {
+                final PlanEcho echo = new PlanEcho(table, aliasToTable, allTables, executor.getFunctionRegistry(),
+                    executor.getCatalog(), executor);
+                echo.printInOutputScope(outputNames);
+                echoed = echo.printAggregateCall((ParserRuleContext) node);
+            }
+            throw new RuntimeException(SqlCompilationError.of("[" + echoed + "] is not a valid order by expression"));
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            rejectUnselectedDistinctKey(node.getChild(i), selectItems, outputNames, table, allTables);
+            rejectUnselectedDistinctKey(node.getChild(i), selectItems, outputNames, table, aliasToTable, allTables);
         }
     }
 
@@ -1063,27 +1248,13 @@ final class OrderByExecutor {
         if (groupBy == null || groupBy.ALL() != null) {
             return;
         }
-        final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
-        for (final FrostlakeParser.GroupByElementContext element : groupBy.groupByElement()) {
-            if (element.expression() != null) {
-                keys.add(element.expression());
-            }
-            if (element.groupByColumnList() != null) {
-                keys.addAll(element.groupByColumnList().expression());
-            }
-            if (element.groupingSetList() != null) {
-                for (final FrostlakeParser.GroupingSetContext set : element.groupingSetList().groupingSet()) {
-                    keys.addAll(set.expression());
-                }
-            }
-        }
-        for (final FrostlakeParser.ExpressionContext key : keys) {
-            keyTexts.add(key.getText().toUpperCase());
+        for (final ParserRuleContext key : KeyContexts.groupKeys(groupBy)) {
+            keyTexts.add(key.getText().toUpperCase(Locale.ROOT));
             groupedColumns.add(ParseTreeText.getOriginalText(key));
             try {
                 final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(key));
                 if (parsed instanceof ColumnReferenceExpression) {
-                    keyNames.add(((ColumnReferenceExpression) parsed).getColumnName().toUpperCase());
+                    keyNames.add(((ColumnReferenceExpression) parsed).getColumnName().toUpperCase(Locale.ROOT));
                 }
             } catch (final RuntimeException unparseableKey) {
                 // A key the expression parser cannot form contributes its text only.
@@ -1104,7 +1275,7 @@ final class OrderByExecutor {
                                                final GroupedKeyColumns groupedColumns) {
         if (expr instanceof ColumnReferenceExpression) {
             final ColumnReferenceExpression ref = (ColumnReferenceExpression) expr;
-            final String colName = ref.getColumnName().toUpperCase();
+            final String colName = ref.getColumnName().toUpperCase(Locale.ROOT);
             // A qualified reference is held to its own relation's key: ORDER BY b.x beside GROUP BY a.x is refused.
             final boolean grouped = ref.getTableName() == null ? groupKeyNames.contains(colName)
                 : groupKeyNames.contains(colName) && groupedColumns.grouped(ref.getTableName(), colName);
@@ -1117,7 +1288,7 @@ final class OrderByExecutor {
         }
         if (expr instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) expr;
-            if (executor.getFunctionRegistry().getAggregateFunction(call.getFunctionName().toUpperCase()) != null) {
+            if (executor.getFunctionRegistry().getAggregateFunction(call.getFunctionName().toUpperCase(Locale.ROOT)) != null) {
                 return;
             }
             for (final Expression arg : call.getArguments()) {
@@ -1171,18 +1342,18 @@ final class OrderByExecutor {
     private String ownerQualifier(final ColumnReferenceExpression ref, final Table table,
                                   final List<Table> allTables) {
         if (ref.isQualified()) {
-            return ref.getTableName().toUpperCase();
+            return ref.getTableName().toUpperCase(Locale.ROOT);
         }
         if (allTables != null) {
             for (final Table candidate : allTables) {
                 for (final TableColumn column : candidate.getColumns()) {
                     if (column.getName().equalsIgnoreCase(ref.getColumnName())) {
-                        return candidate.getName().toUpperCase();
+                        return candidate.getName().toUpperCase(Locale.ROOT);
                     }
                 }
             }
         }
-        return table != null ? table.getName().toUpperCase() : "";
+        return table != null ? table.getName().toUpperCase(Locale.ROOT) : "";
     }
 
     /** The canonical name a key written as one identifier spells, or null for any other key text. */
@@ -1204,6 +1375,14 @@ final class OrderByExecutor {
      */
     List<Row> orderBySetOperation(final List<Row> rows, final FrostlakeParser.SelectStatementContext ctx,
                                   final List<ResultSetColumn> outputColumns) {
+        if (ctx.orderByClause().ALL() != null) {
+            final CollationSpec[] rules = new CollationSpec[outputColumns.size()];
+            for (int k = 0; k < rules.length; k++) {
+                final String spec = outputColumns.get(k).getCollation();
+                rules[k] = spec == null ? null : CollationSpec.parse(spec);
+            }
+            return orderByEveryColumn(rows, ctx.orderByClause(), outputColumns.size(), rules);
+        }
         final List<FrostlakeParser.OrderItemContext> items = ctx.orderByClause().orderItem();
         final int nKeys = items.size();
         final int[] colIndex = new int[nKeys];
@@ -1223,12 +1402,25 @@ final class OrderByExecutor {
         }
         final Table outputTable = new Table("unioned", outputAsTableColumns, false);
 
+        // A name two output columns carry names neither, alone or inside a key: SELECT 1 a, 2 a UNION ALL …
+        // ORDER BY a.
+        final Set<String> repeatedNames = new HashSet<>();
+        final Set<String> seenNames = new HashSet<>();
+        for (final ResultSetColumn column : outputColumns) {
+            if (!seenNames.add(column.getName())) {
+                repeatedNames.add(column.getName());
+            }
+        }
+
         ExpressionEvaluator keyEvaluator = null;
         for (int k = 0; k < nKeys; k++) {
             final FrostlakeParser.OrderItemContext item = items.get(k);
             ascending[k] = item.DESC() == null;
             nullsFirst[k] = ValueComparisons.nullsFirstFlag(item);
-            final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
+            final String asWritten = ParseTreeText.getOriginalText(KeyContexts.of(item)).trim();
+            if (!repeatedNames.isEmpty()) {
+                AmbiguousOutputNames.refuseReferences(KeyContexts.of(item), repeatedNames);
+            }
             int matched = -1;
             final long ordinal = OrdinalLiteral.positionOf(asWritten);
             if (ordinal != OrdinalLiteral.NOT_AN_ORDINAL) {
@@ -1259,17 +1451,17 @@ final class OrderByExecutor {
             // An expression key: only the output relation is in scope — the walk turns anything
             // else (a branch qualifier, a non-output name) into live's invalid-identifier.
             executor.validateClauseScope(asWritten, outputTable,
-                Map.of(outputTable.getName().toUpperCase(), outputTable), List.of(outputTable), outputNames,
-                item.expression());
+                Map.of(outputTable.getName().toUpperCase(Locale.ROOT), outputTable), List.of(outputTable), outputNames,
+                KeyContexts.of(item));
             // A subquery in the key compiles where the key stands, so what it refuses is placed in the statement.
             // It reads none of the output's names: they are no relation of its.
-            final RuntimeException subqueryRefusal = executor.compileSubqueriesIn(List.of(item.expression()),
+            final RuntimeException subqueryRefusal = executor.compileSubqueriesIn(List.of(KeyContexts.of(item)),
                 new Table("DUMMY", new ArrayList<TableColumn>(), false), null, null, null);
             if (subqueryRefusal != null) {
                 throw subqueryRefusal;
             }
-            keyOrigins[k] = new SourcePosition(item.expression().getStart().getLine(),
-                item.expression().getStart().getCharPositionInLine());
+            keyOrigins[k] = new SourcePosition(KeyContexts.of(item).getStart().getLine(),
+                KeyContexts.of(item).getStart().getCharPositionInLine());
             if (keyEvaluator == null) {
                 keyEvaluator = new ExpressionEvaluator(outputTable,
                     executor.getFunctionRegistry(), executor.getCatalog(), executor);
@@ -1349,7 +1541,7 @@ final class OrderByExecutor {
             return itemStartSlot[itemMatch];
         }
         final int dot = orderExpr.lastIndexOf('.');
-        final String bare = (dot >= 0 ? orderExpr.substring(dot + 1) : orderExpr).toUpperCase();
+        final String bare = (dot >= 0 ? orderExpr.substring(dot + 1) : orderExpr).toUpperCase(Locale.ROOT);
         for (int i = 0; i < selectItems.size(); i++) {
             final List<String> names = starNamesByItem.get(i);
             if (names == null) {
@@ -1450,7 +1642,7 @@ final class OrderByExecutor {
             : firstOp.selectStatement().selectOperand(0).selectClause();
         final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            if (matchOrderItem(item.expression().getText(), selectItems, false) < 0) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, false) < 0) {
                 return false;
             }
         }
@@ -1464,14 +1656,13 @@ final class OrderByExecutor {
                                final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final List<String> orderColumns = new ArrayList<>();
         final List<SourcePosition> keyOrigins = new ArrayList<>();
+        final OrderKeyOutputNames outputNames = outputNames(ctx, table, aliasToTable, allTables);
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx,
-                table, aliasToTable);
-            colName = resolveOrderAlias(colName, ctx, table, aliasToTable);
+            final String colName = resolveOrderKey(item, ctx, table, aliasToTable, outputNames);
             orderColumns.add(colName);
-            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
-                ? new SourcePosition(item.expression().getStart().getLine(),
-                    item.expression().getStart().getCharPositionInLine())
+            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(KeyContexts.of(item)))
+                ? new SourcePosition(KeyContexts.of(item).getStart().getLine(),
+                    KeyContexts.of(item).getStart().getCharPositionInLine())
                 : null);
         }
         rejectFileSortKeys(orderColumns, keyOrigins, table, aliasToTable, allTables);
@@ -1493,7 +1684,7 @@ final class OrderByExecutor {
             : firstOp.selectStatement().selectOperand(0).selectClause();
         final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            if (matchOrderItem(item.expression().getText(), selectItems, ctx.selectOperand().size() > 1) == -1) {
+            if (matchOrderItem(KeyContexts.of(item).getText(), selectItems, ctx.selectOperand().size() > 1) == -1) {
                 unmatched.add(item);
             }
         }

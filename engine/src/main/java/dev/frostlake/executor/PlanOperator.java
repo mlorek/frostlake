@@ -20,8 +20,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * One operator of an EXPLAIN plan: its id, the operators it feeds, what it does, the object it reads or writes, the
- * alias it reads it under, and the expressions it computes.
+ * One operator of an EXPLAIN plan: its id, the operator it feeds, what it does, the objects it reads or writes, the
+ * alias it reads them under, the expressions it computes, and the partitions a scan holds and is assigned.
  */
 final class PlanOperator {
 
@@ -29,28 +29,35 @@ final class PlanOperator {
     private final Integer parent;
     private final int depth;
     private final String operation;
-    private final String objects;
+    private final List<String> objects;
     private final String alias;
     private final List<String> expressions;
+    private final Long partitionsTotal;
+    private final Long partitionsAssigned;
 
     /**
-     * @param id          the operator's id, 0 for the root
-     * @param parent      the id of the operator it feeds, or null for the root
-     * @param depth       how many operators stand above it
-     * @param operation   what it does
-     * @param objects     the object it reads or writes, or null
-     * @param alias       the alias it reads the object under, or null
-     * @param expressions the expressions it computes, empty for none
+     * @param id                 the operator's id, 0 for the root
+     * @param parent             the id of the operator it feeds, or null for the root
+     * @param depth              how many listed operators stand above it
+     * @param operation          what it does
+     * @param objects            the objects it reads or writes, empty for none
+     * @param alias              the alias it reads the object under, or null
+     * @param expressions        the expressions it computes, empty for none
+     * @param partitionsTotal    the partitions of the table a scan reads, or null for an operator that is no scan
+     * @param partitionsAssigned the partitions the scan is assigned, or null for an operator that is no scan
      */
-    PlanOperator(final int id, final Integer parent, final int depth, final String operation, final String objects,
-                 final String alias, final List<String> expressions) {
+    PlanOperator(final int id, final Integer parent, final int depth, final String operation,
+                 final List<String> objects, final String alias, final List<String> expressions,
+                 final Long partitionsTotal, final Long partitionsAssigned) {
         this.id = id;
         this.parent = parent;
         this.depth = depth;
         this.operation = operation;
-        this.objects = objects;
+        this.objects = new ArrayList<>(objects);
         this.alias = alias;
         this.expressions = new ArrayList<>(expressions);
+        this.partitionsTotal = partitionsTotal;
+        this.partitionsAssigned = partitionsAssigned;
     }
 
     int getId() {
@@ -69,7 +76,7 @@ final class PlanOperator {
         return operation;
     }
 
-    String getObjects() {
+    List<String> getObjects() {
         return objects;
     }
 
@@ -78,6 +85,14 @@ final class PlanOperator {
     }
 
     List<String> getExpressions() {
-        return new ArrayList<>(expressions);
+        return expressions;
+    }
+
+    Long getPartitionsTotal() {
+        return partitionsTotal;
+    }
+
+    Long getPartitionsAssigned() {
+        return partitionsAssigned;
     }
 }

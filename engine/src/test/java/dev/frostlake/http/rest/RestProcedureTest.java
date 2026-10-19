@@ -91,8 +91,9 @@ public class RestProcedureTest extends BaseRestTest {
     public void unsupportedFormsAndMissingProceduresAreRefused() throws Exception {
         error(501, post(PROCS, "{\"name\":\"sec_proc\",\"is_secure\":true,\"arguments\":[],"
             + "\"return_type\":{\"datatype\":\"NUMBER\"},\"language_config\":{\"language\":\"SQL\"},\"body\":\"BEGIN RETURN 1; END\"}"));
-        error(501, post(PROCS, "{\"name\":\"rc_proc\",\"execute_as\":\"RESTRICTED CALLER\",\"arguments\":[],"
+        ok(post(PROCS, "{\"name\":\"rc_proc\",\"execute_as\":\"RESTRICTED CALLER\",\"arguments\":[],"
             + "\"return_type\":{\"datatype\":\"NUMBER\"},\"language_config\":{\"language\":\"SQL\"},\"body\":\"BEGIN RETURN 1; END\"}"));
+        assertEquals("RESTRICTED CALLER", ok(get(PROCS + "/rc_proc()")).path("execute_as").asString());
         error(400, post(PROCS, "{\"name\":\"no_ret\",\"arguments\":[],\"language_config\":{\"language\":\"SQL\"}}"));
         assertEquals("002141", json(post(PROCS + "/no_such_proc:call", "{\"call_arguments\":[]}")).path("code")
             .asString());
@@ -105,7 +106,13 @@ public class RestProcedureTest extends BaseRestTest {
         ok(post(PROCS, procedure("proc_tagged", "t")));
         ok(post(PROCS + "/proc_tagged(NUMBER):set-tags",
             "[{\"tag_database\":\"proc_db\",\"tag_schema\":\"s\",\"tag_name\":\"proc_tag\",\"tag_value\":\"v\"}]"));
+        final JsonNode tags = ok(get(PROCS + "/proc_tagged(NUMBER):get-tags"));
+        assertEquals(1, tags.size(), tags.toString());
+        assertEquals("PROC_TAG", tags.get(0).path("tag_name").asString());
+        assertEquals("v", tags.get(0).path("tag_value").asString());
+        assertEquals("PROCEDURE", tags.get(0).path("level").asString());
         ok(post(PROCS + "/proc_tagged(NUMBER):unset-tags",
             "[{\"tag_database\":\"proc_db\",\"tag_schema\":\"s\",\"tag_name\":\"proc_tag\"}]"));
+        assertEquals(0, ok(get(PROCS + "/proc_tagged(NUMBER):get-tags")).size());
     }
 }

@@ -25,8 +25,9 @@ import java.util.List;
 /**
  * Where a star may be written as a function argument. The select list takes it, lone ({@code HASH(*)}) or
  * beside other arguments ({@code HASH(a, t.*)}), and so does GROUP BY; WHERE, HAVING, QUALIFY and ORDER BY
- * refuse it whatever the function, as the account does. The row-counting {@code COUNT(*)}, windowed or not,
- * is no star argument and keeps its own rules there. A subquery answers for itself.
+ * refuse it whatever the function, as the account does, but for SEARCH's tuple of a star,
+ * {@code SEARCH((*), 'q')}. The row-counting {@code COUNT(*)}, windowed or not, is no star argument and keeps its
+ * own rules there. A subquery answers for itself.
  */
 final class StarArgumentPlacement {
 
@@ -62,7 +63,8 @@ final class StarArgumentPlacement {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
             final List<FrostlakeParser.FunctionArgContext> args = call.functionArgList().functionArg();
             for (final FrostlakeParser.FunctionArgContext arg : args) {
-                if (arg.STAR() != null && !(args.size() == 1
+                // SEARCH's tuple of a star, SEARCH((*), 'q'), searches the row wherever it stands (live-verified).
+                if (arg.STAR() != null && arg.LPAREN() == null && !(args.size() == 1
                         && countsRows(call.functionName().getText(), call.DISTINCT() != null, StarArgument.of(arg)))) {
                     return true;
                 }

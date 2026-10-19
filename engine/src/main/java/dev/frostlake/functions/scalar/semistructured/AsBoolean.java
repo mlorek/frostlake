@@ -16,14 +16,14 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.BooleanType;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 
-public class AsBoolean extends StructuredArgumentFunction {
+public class AsBoolean extends VariantArgumentFunction {
     public AsBoolean() { super("AS_BOOLEAN", new BooleanType()); }
 
     @Override

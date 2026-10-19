@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -51,7 +53,7 @@ public class OperandFamilyRefusalTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery(sql);
         assertEquals(1, rs.getRowCount());
         final Object value = rs.getRows().get(0).getValue(0);
-        return value == null ? "NULL" : value.toString().toUpperCase();
+        return value == null ? "NULL" : value.toString().toUpperCase(Locale.ROOT);
     }
 
     /** Arithmetic does not read a BOOLEAN, a BINARY, an ARRAY or an OBJECT. */

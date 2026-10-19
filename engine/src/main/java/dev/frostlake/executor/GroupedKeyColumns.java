@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -81,7 +82,7 @@ final class GroupedKeyColumns {
             return;
         }
         final ColumnReferenceExpression reference = (ColumnReferenceExpression) parsed;
-        final String column = reference.getColumnName().toUpperCase();
+        final String column = reference.getColumnName().toUpperCase(Locale.ROOT);
         names.add(column);
         final Table relation = reference.getTableName() == null ? null : relationOf(reference.getTableName());
         if (relation == null) {
@@ -98,7 +99,7 @@ final class GroupedKeyColumns {
 
     /** Whether any key groups a column of this name, whichever relation it names. */
     boolean hasName(final String column) {
-        return names.contains(column.toUpperCase());
+        return names.contains(column.toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -109,7 +110,7 @@ final class GroupedKeyColumns {
      * @return true when the column is grouped for the relation the qualifier names
      */
     boolean grouped(final String qualifier, final String column) {
-        final String name = column.toUpperCase();
+        final String name = column.toUpperCase(Locale.ROOT);
         if (!names.contains(name)) {
             return false;
         }
@@ -162,7 +163,7 @@ final class GroupedKeyColumns {
             if (join.usingColumnList() != null) {
                 for (final FrostlakeParser.QualifiedNameContext name : join.usingColumnList().qualifiedName()) {
                     final String[] parts = ParseTreeText.qualifiedNameParts(name);
-                    merged.add(parts[parts.length - 1].toUpperCase());
+                    merged.add(parts[parts.length - 1].toUpperCase(Locale.ROOT));
                 }
             }
         }

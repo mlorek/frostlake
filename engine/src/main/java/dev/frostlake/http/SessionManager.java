@@ -30,6 +30,10 @@ import java.util.concurrent.TimeUnit;
 /**
  * Manages HTTP sessions for concurrent users
  * Handles session creation, retrieval, and cleanup
+ *
+ * <p>A session that sits idle longer than the timeout is ended, as Snowflake ends one after four hours without
+ * activity: every request that names it, a client's heartbeat included, counts as activity. A timeout of 0 keeps
+ * every session until it is released.
  */
 public class SessionManager {
     private static final Logger logger = LoggerFactory.getLogger(SessionManager.class);
@@ -41,7 +45,11 @@ public class SessionManager {
     private final String defaultDatabase;
     private final String defaultSchema;
 
-    private static final long DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+    /** Snowflake's four hours: a session policy's SESSION_IDLE_TIMEOUT_MINS defaults to 240. */
+    private static final long DEFAULT_TIMEOUT_MS = 4L * 60 * 60 * 1000;
+    /** The idle sweep runs at most this far apart, and a quarter of the timeout apart when that is sooner. */
+    private static final long MAX_SWEEP_MS = 5L * 60 * 1000;
+    private static final long MIN_SWEEP_MS = 1000L;
 
     public SessionManager() {
         this(DEFAULT_TIMEOUT_MS);
@@ -71,11 +79,29 @@ public class SessionManager {
             }
         });
 
-        // Start cleanup task to remove expired sessions
-        startCleanupTask();
+        // Start cleanup task to remove expired sessions; with no timeout there is nothing to sweep.
+        if (sessionTimeoutMs > 0) {
+            startCleanupTask(sweepPeriodMs(sessionTimeoutMs));
+        }
     }
 
-    private void startCleanupTask() {
+    /**
+     * How far apart the idle sweep runs for a timeout: a quarter of it, between a second and five minutes, so a
+     * session ends within a quarter of its timeout of going idle.
+     *
+     * @param timeoutMs the idle timeout
+     * @return the period, in milliseconds
+     */
+    static long sweepPeriodMs(final long timeoutMs) {
+        return Math.max(MIN_SWEEP_MS, Math.min(MAX_SWEEP_MS, timeoutMs / 4));
+    }
+
+    /** How long a session may sit idle before it is ended, in milliseconds; 0 when sessions never idle out. */
+    public long getSessionTimeoutMs() {
+        return sessionTimeoutMs;
+    }
+
+    private void startCleanupTask(final long periodMs) {
         cleanupExecutor.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
@@ -85,7 +111,7 @@ public class SessionManager {
                     logger.error("Error during session cleanup", e);
                 }
             }
-        }, 1, 5, TimeUnit.MINUTES);
+        }, periodMs, periodMs, TimeUnit.MILLISECONDS);
     }
 
     /**

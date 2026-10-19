@@ -199,7 +199,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         final ResultSet history = engine.executeQuery("""
             SELECT query_type, TOTAL_ELAPSED_TIME
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
-            WHERE query_type IN ('CREATE', 'INSERT')
+            WHERE query_type IN ('CREATE_TABLE', 'INSERT')
             """);
 
         assertTrue(history.getRowCount() >= 2);
@@ -329,7 +329,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         final ResultSet history = engine.executeQuery("""
             SELECT error_message
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
-            WHERE execution_status = 'FAILED'
+            WHERE execution_status = 'FAILED_WITH_ERROR'
             AND error_message IS NOT NULL
             """);
 

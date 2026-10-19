@@ -43,4 +43,12 @@ public interface MergedRelationStatistics extends RelationStatistics {
      *     relation passing every column of its source through holds at the same position
      */
     String columnSource(int index);
+
+    /**
+     * The name {@link #sourceRelation()} is read under where the relation reads it, which its items may qualify a
+     * column with: the {@code a} of {@code SELECT a.n + 1 x FROM t a}.
+     *
+     * @return the alias, or null where the relation is read under no name of its own
+     */
+    String sourceAlias();
 }

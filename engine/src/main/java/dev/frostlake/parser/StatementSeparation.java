@@ -21,7 +21,6 @@ import dev.frostlake.executor.SqlCompilationError;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -100,6 +99,12 @@ public final class StatementSeparation {
         rejectSplitSelectInto(script, tokens, sql);
         final MissingSeparator fault = firstFault(script, tokens, sql, true);
         if (fault != null) {
+            // A bracket after a LIMIT read as an alias is the clause's value to the account (see RowLimitWordLines).
+            final List<String> bracketed = sql == null ? null
+                : RowLimitWordLines.bracketedValueLines(sql, tokens, fault.firstLine());
+            if (bracketed != null) {
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", bracketed)), bracketed, sql);
+            }
             throw fault.refusal(sql);
         }
     }
@@ -132,8 +137,46 @@ public final class StatementSeparation {
         final MissingSeparator fault = firstFault(script, tokens, sql, true);
         if (fault != null && fault.precedes(parseFaultAt) && separatesRealStatements(script, fault, queryOrDml)
                 && (queryOrDml || opensOnlyAStatement(script, fault))) {
-            throw fault.refusal(sql);
+            // A bracket after a LIMIT read as an alias is the clause's value to the account (see RowLimitWordLines).
+            final List<String> bracketed = sql == null ? null
+                : RowLimitWordLines.bracketedValueLines(sql, tokens, fault.firstLine());
+            if (bracketed != null) {
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", bracketed)), bracketed, sql);
+            }
+            throw readingOn(script, tokens, sql, listener, fault);
         }
+    }
+
+    /**
+     * The refusal of a missing separator, with the later statements' lines where live reads them: a SELECT, DROP,
+     * CREATE, GRANT, DELETE, UPDATE or ALTER run in where a string run in would let the report go on — after a value,
+     * a FROM list's table, a DROP's name (see {@link LiteralRunIn}). {@code SELECT 1 FROM t WHERE a = 1 DROP TABLE t;
+     * SELECT 1 x y} is 'DROP' and 'y'; after COMMIT, and for any other word, the report ends (live-verified).
+     */
+    private static SqlSyntaxException readingOn(final FrostlakeParser.SqlScriptContext script, final TokenStream tokens,
+                                                final String sql, final SyntaxErrorListener listener,
+                                                final MissingSeparator fault) {
+        final int second = fault.secondChain();
+        if (second < 1 || second >= script.flowChain().size() || fault.lines().size() != 1) {
+            return fault.refusal(sql);
+        }
+        final Token word = script.flowChain().get(second).getStart();
+        final List<FrostlakeParser.StatementContext> before = script.flowChain().get(second - 1).statement();
+        final Token end = word == null ? null : statementEnd(tokens, word);
+        if (word == null || before == null || before.isEmpty() || end == null || !readsOnWhenRunIn(word.getType())
+                || !LiteralRunIn.readsOnAfter(before.get(before.size() - 1), tokens, word)) {
+            return fault.refusal(sql);
+        }
+        final List<String> lines = new ArrayList<>(fault.lines());
+        lines.addAll(listener.reportedLinesAfter(
+            SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(end))));
+        return new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
+    }
+
+    private static boolean readsOnWhenRunIn(final int type) {
+        return type == FrostlakeLexer.SELECT || type == FrostlakeLexer.DROP || type == FrostlakeLexer.CREATE
+            || type == FrostlakeLexer.GRANT || type == FrostlakeLexer.DELETE || type == FrostlakeLexer.UPDATE
+            || type == FrostlakeLexer.ALTER;
     }
 
     /**
@@ -240,7 +283,8 @@ public final class StatementSeparation {
             return false;
         }
         final FrostlakeParser.ProceduralStatementContext procedural = first.proceduralStatement();
-        return procedural == null || procedural.callStatement() != null || procedural.executeImmediateStatement() != null;
+        return procedural == null || procedural.callStatement() != null || procedural.callIntoStatement() != null
+            || procedural.executeImmediateStatement() != null;
     }
 
     /**
@@ -298,10 +342,29 @@ public final class StatementSeparation {
                 return fault("<EOF>", EndOfInput.line(sql), EndOfInput.position(sql), null).between(i + 1);
             }
             final Token word = next.getStart();
+            if (word.getType() == FrostlakeLexer.INSERT && chain.getStop() != null
+                    && chain.getStop().getType() == FrostlakeLexer.COMMA) {
+                // INSERT after a select list's trailing comma is the string function's name, and the token after it
+                // is refused: SELECT 'foo', INSERT FROM t is the FROM, SELECT 1, INSERT the end of the input.
+                final Token after = nextSpoken(tokens, word.getTokenIndex());
+                return after == null || after.getType() == Token.EOF
+                    ? fault("<EOF>", EndOfInput.line(sql), EndOfInput.position(sql), null).between(i + 1)
+                    : fault(after.getText(), after.getLine(), after.getCharPositionInLine(), null).between(i + 1);
+            }
             if (word.getType() == FrostlakeLexer.LPAREN && endsInSignableName(chain)) {
                 // The '(' opens the name's signature, which no statement's first token can open.
                 final Token inside = nextSpoken(tokens, word.getTokenIndex());
                 return fault(inside.getText(), inside.getLine(), inside.getCharPositionInLine(), null).between(i + 1);
+            }
+            if (word.getType() == FrostlakeLexer.WITH && chain.getStart() != null
+                    && chain.getStart().getType() == FrostlakeLexer.SHOW) {
+                // A WITH after a SHOW listing is read on as the listing's own, and the word after it is refused:
+                // SHOW TABLES WITH x AS (SELECT 1) SELECT 1 is the 'x' (live-verified).
+                final Token named = nextSpoken(tokens, word.getTokenIndex());
+                if (named != null && named.getType() != Token.EOF && named.getType() != FrostlakeLexer.SEMI) {
+                    return fault(named.getText(), named.getLine(), named.getCharPositionInLine(), null)
+                        .between(i + 1);
+                }
             }
             if (swallowsWord(chain, word)) {
                 final Token follower = nextSpoken(tokens, word.getTokenIndex());
@@ -365,7 +428,13 @@ public final class StatementSeparation {
             text.setCharAt(i, 'x');
         }
         final String firstLine = firstFaultOf(text.toString(), -1);
-        return firstLine == null || SyntaxErrorListener.sentenceCoordinates(firstLine) == null ? null : firstLine;
+        final int[] at = firstLine == null ? null : SyntaxErrorListener.sentenceCoordinates(firstLine);
+        if (at == null) {
+            return null;
+        }
+        // A fault at the word itself names the word as written, never the name it was read as.
+        return at[0] == word.getLine() && at[1] == word.getCharPositionInLine()
+            ? SyntaxErrorListener.sentence(word) : firstLine;
     }
 
     /**
@@ -484,11 +553,13 @@ public final class StatementSeparation {
     static String firstFaultOf(final String text, final int resumedAt) {
         final SyntaxErrorListener listener = new SyntaxErrorListener(text, true);
         listener.statementParse();
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         lexer.addErrorListener(listener);
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         final FrostlakeParser parser = new FrostlakeParser(stream);
+        // Where this parse reports a fault is read: it must not depend on what was parsed before.
+        ColdPrediction.arm(parser);
         parser.removeErrorListeners();
         parser.addErrorListener(listener);
         final FrostlakeParser.SqlScriptContext script = parser.sqlScript();

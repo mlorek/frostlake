@@ -20,6 +20,7 @@ import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
 
@@ -45,8 +46,8 @@ public class Split extends TextArgumentFunction {
         if (args.get(0) == null || args.get(1) == null) {
             return null;
         }
-        final String str = args.get(0).toString();
-        final String delim = args.get(1).toString();
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
+        final String delim = SharedFunctionHelpers.textOf(args.get(1));
         final ArrayNode array = MAPPER.createArrayNode();
         if (delim.isEmpty()) {
             array.add(str);
@@ -65,8 +66,8 @@ public class Split extends TextArgumentFunction {
             return evaluate(args);
         }
         final ArrayNode array = MAPPER.createArrayNode();
-        for (final String part : CollationMatching.splitUnder(collation, args.get(0).toString(),
-                args.get(1).toString())) {
+        for (final String part : CollationMatching.splitUnder(collation, SharedFunctionHelpers.textOf(args.get(0)),
+                SharedFunctionHelpers.textOf(args.get(1)))) {
             array.add(part);
         }
         return VariantValue.ofNode(array);

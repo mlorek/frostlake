@@ -24,8 +24,8 @@ import java.util.List;
  * The comparison-level operators of an expression, read back in the order they were written.
  *
  * <p>Live reads every comparison-level operator at ONE precedence, from the left: the six comparisons, [NOT] LIKE
- * and ILIKE, RLIKE and REGEXP, [NOT] IN, [NOT] BETWEEN, LIKE ANY, LIKE ALL, ILIKE ANY and the quantified
- * comparisons. IS [NOT] NULL, IS [NOT] DISTINCT FROM and the value operators bind tighter. So
+ * and ILIKE, RLIKE and REGEXP, [NOT] IN, [NOT] BETWEEN, LIKE ANY, LIKE ALL, ILIKE ANY - over a list of patterns
+ * or over one written without parentheses - and the quantified comparisons. IS [NOT] NULL, IS [NOT] DISTINCT FROM and the value operators bind tighter. So
  *
  * <pre>
  *   'a' LIKE 'a' = TRUE        is ('a' LIKE 'a') = TRUE          TRUE
@@ -130,9 +130,6 @@ public final class ComparisonLevelChain {
      * @return the operand, or null
      */
     static FrostlakeParser.ExpressionContext valueOperand(final FrostlakeParser.ExpressionContext node) {
-        if (node instanceof FrostlakeParser.ConcatExprContext) {
-            return ((FrostlakeParser.ConcatExprContext) node).expression(0);
-        }
         if (node instanceof FrostlakeParser.AdditiveExprContext) {
             return ((FrostlakeParser.AdditiveExprContext) node).expression(0);
         }
@@ -223,8 +220,11 @@ public final class ComparisonLevelChain {
         if (node instanceof FrostlakeParser.LikeAnyAllExprContext) {
             return ((FrostlakeParser.LikeAnyAllExprContext) node).expression(0);
         }
+        if (node instanceof FrostlakeParser.LikeAnyAllSingleExprContext) {
+            return ((FrostlakeParser.LikeAnyAllSingleExprContext) node).expression(0);
+        }
         if (node instanceof FrostlakeParser.QuantifiedComparisonExprContext) {
-            return ((FrostlakeParser.QuantifiedComparisonExprContext) node).expression();
+            return ((FrostlakeParser.QuantifiedComparisonExprContext) node).expression(0);
         }
         if (node instanceof FrostlakeParser.ScalarRowComparisonExprContext) {
             return ((FrostlakeParser.ScalarRowComparisonExprContext) node).expression(0);
@@ -265,6 +265,9 @@ public final class ComparisonLevelChain {
         if (node instanceof FrostlakeParser.RlikeExprContext) {
             return ((FrostlakeParser.RlikeExprContext) node).expression(1);
         }
+        if (node instanceof FrostlakeParser.LikeAnyAllSingleExprContext) {
+            return ((FrostlakeParser.LikeAnyAllSingleExprContext) node).single;
+        }
         if (node instanceof FrostlakeParser.BetweenExprContext) {
             return ((FrostlakeParser.BetweenExprContext) node).expression(2);
         }
@@ -281,6 +284,9 @@ public final class ComparisonLevelChain {
     private static boolean rightStaysWhole(final FrostlakeParser.ExpressionContext node) {
         if (node instanceof FrostlakeParser.RowComparisonExprContext) {
             return true;
+        }
+        if (node instanceof FrostlakeParser.LikeAnyAllSingleExprContext) {
+            return ((FrostlakeParser.LikeAnyAllSingleExprContext) node).esc != null;
         }
         return node instanceof FrostlakeParser.LikeExprContext
             && ((FrostlakeParser.LikeExprContext) node).escapeOperand() != null;

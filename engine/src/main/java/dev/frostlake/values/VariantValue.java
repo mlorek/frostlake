@@ -141,9 +141,12 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         return comparisonKey().equals(that.comparisonKey());
     }
 
-    /** Whether a UUID sits anywhere in this value; a value read back from its text holds none. */
+    /**
+     * Whether a UUID or a DECFLOAT sits anywhere in this value, each printing as the string of its text; a value read
+     * back from its text holds neither.
+     */
     private boolean holdsUuid() {
-        return node != null && UuidTextNode.anywhereIn(node);
+        return node != null && (UuidTextNode.anywhereIn(node) || DecfloatTextNode.anywhereIn(node));
     }
 
     @Override

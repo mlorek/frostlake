@@ -16,10 +16,17 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RoutineOverloads;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.expressions.CaretOperator;
+import dev.frostlake.executor.expressions.ParsedEchoPrinter;
+import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.SnowflakeBuiltinNames;
+import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.UdfLanguage;
@@ -29,7 +36,9 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Checks a SQL UDF body that is a Snowflake-Scripting block against the restricted language Snowflake
@@ -39,16 +48,30 @@ import java.util.List;
  *
  * <p>Live-verified on a real account, each rejection reproducing Snowflake's own message:
  * <ul>
- *   <li>{@code Unsupported statement type for Snowscript UDF: query statement} — any plain SQL statement
- *       in the body: {@code SELECT 1}, {@code INSERT INTO t VALUES (99)}, {@code UPDATE t SET v = 0},
- *       {@code CREATE TABLE zz (a INT)}, {@code EXECUTE IMMEDIATE '…'} and {@code CALL someproc()};</li>
- *   <li>{@code … : select into statement} — {@code SELECT COUNT(*) INTO x FROM t};</li>
- *   <li>{@code … : cursor declaration} — {@code DECLARE c CURSOR FOR SELECT …};</li>
+ *   <li>{@code Unsupported statement type for Snowscript UDF: SELECT} — any plain SQL statement in the body,
+ *       named by its kind ({@link SnowscriptStatementKind}): {@code SELECT 1} and {@code CALL someproc()} are
+ *       {@code SELECT}, {@code INSERT INTO t VALUES (99)} is {@code INSERT}, {@code CREATE TABLE zz (a INT)} is
+ *       {@code CREATE_TABLE}, and {@code EXECUTE IMMEDIATE '…'} is {@code UNKNOWN}. The first such statement as
+ *       written is the one named, in a branch, a loop or a handler too;</li>
+ *   <li>{@code … : select into statement} — {@code SELECT COUNT(*) INTO x FROM t}, and a CALL … INTO;</li>
+ *   <li>{@code … : cursor declaration} — {@code DECLARE c CURSOR FOR SELECT …}; a cursor's OPEN, FETCH and
+ *       CLOSE are {@code open cursor statement}, {@code fetch cursor statement} and
+ *       {@code close cursor statement}, and an AWAIT {@code await statement};</li>
+ *   <li>{@code … : resultset declaration} — {@code DECLARE rs RESULTSET} and {@code LET rs RESULTSET}, with a
+ *       query, with a dynamic statement or with nothing: the declaration itself is refused, before anything its
+ *       query holds;</li>
  *   <li>{@code Unsupported expression for Snowscript UDF: <expr>} — any subquery
  *       ({@code RETURN (SELECT COUNT(*) FROM t)}, {@code EXISTS (SELECT …)}, {@code FOR r IN (SELECT …)},
- *       with a {@code :name} bind or a bare one alike), and any call of a user-defined function —
- *       including the routine calling ITSELF, so a Snowscript UDF cannot recurse.</li>
+ *       with a {@code :name} bind or a bare one alike), any call written with OVER, and any call of a function
+ *       the account does not build in: a user-defined one — including the routine calling ITSELF, so a
+ *       Snowscript UDF cannot recurse — and a name nothing declares.</li>
  * </ul>
+ *
+ * <p>An unsupported expression is named WHOLE, as the statement holds it, and re-printed from the tree as parsed
+ * rather than echoed ({@link ParsedEchoPrinter}): {@code RETURN ABS(nosuch(1) + 1)} is
+ * {@code ABS((NOSUCH(1)) + 1)}, an IF's condition {@code (NOSUCH(1)) > 0}, {@code RETURN (SELECT 1)} is
+ * {@code (SELECT 1 AS "1" FROM (VALUES (null)) DUAL)}. The first such expression in the body is the one refused.
+ * A built-in called with a wrong count, an aggregate and a name no variable carries are all created.
  *
  * <p>Control flow is fully available and was live-verified to work: {@code DECLARE}/{@code LET}
  * variables, assignment, {@code IF}, {@code CASE}, {@code WHILE}, {@code REPEAT}, {@code FOR i IN a TO b},
@@ -57,9 +80,8 @@ import java.util.List;
  * {@code PARSE_JSON}, {@code CURRENT_DATABASE}, …).
  *
  * <p>Like the rest of {@link RoutineBodyCompiler}, this FAILS OPEN: only a construct the engine can
- * positively read and knows Snowflake refuses is rejected. A call of a name the catalog does not hold is
- * left alone (Snowflake rejects it too, but as a Frostlake grammar subset an unknown name is more likely
- * a built-in this engine has not modelled than a genuine error).
+ * positively read and knows Snowflake refuses is rejected. A built-in the account has and this engine lacks
+ * counts as built in (see {@link SnowflakeBuiltinNames}).
  */
 final class ScriptingUdfBodyValidator {
 
@@ -82,7 +104,27 @@ final class ScriptingUdfBodyValidator {
 
     /** Walk the whole block, throwing on the first construct Snowflake refuses in a Snowscript UDF. */
     void validate(final FrostlakeParser.BeginEndBlockContext block) {
-        walk(block);
+        // What no expression may write is refused before any statement or call is judged: a caret between two
+        // values, and a sign written straight after a sign (live-verified).
+        CaretOperator.rejectIn(block);
+        rejectDoubledSigns(block);
+        walk(block, null);
+    }
+
+    /**
+     * Two signs in a row are no expression: {@code - -a} is refused as an invalid function named by the outer
+     * sign, in a RETURN's value and in a call's argument alike, as a query's is (live-verified).
+     */
+    private static void rejectDoubledSigns(final ParseTree node) {
+        if (node instanceof FrostlakeParser.UnaryExprContext) {
+            final FrostlakeParser.UnaryExprContext signed = (FrostlakeParser.UnaryExprContext) node;
+            if (signed.expression() instanceof FrostlakeParser.UnaryExprContext) {
+                throw new RuntimeException(SqlCompilationError.of("invalid function '" + signed.op.getText() + "'"));
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rejectDoubledSigns(node.getChild(i));
+        }
     }
 
     /**
@@ -115,6 +157,40 @@ final class ScriptingUdfBodyValidator {
         }
     }
 
+    /**
+     * Whether a block holds an expression the account's reading of a function's block stops at, so that the body is
+     * read as an expression instead and refused in that frame: a word before a string inside a call's parentheses
+     * — {@code nosuch(TIMESTAMP_LTZ '…')}, {@code nosuch(foo 'x')}, where DATE, TIME and TIMESTAMP alone open a
+     * literal — and a name of three parts, {@code a.b.c} (all live-verified).
+     *
+     * @param node the block, or a node of it
+     * @return whether the block is no block a function's body may be
+     */
+    static boolean holdsWhatNoBlockReads(final ParseTree node) {
+        return holdsWhatNoBlockReads(node, false);
+    }
+
+    private static boolean holdsWhatNoBlockReads(final ParseTree node, final boolean insideCall) {
+        if (node instanceof FrostlakeParser.TypedLiteralArgExprContext
+                || insideCall && node instanceof FrostlakeParser.UnknownTypedLiteralExprContext) {
+            return true;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            return ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName().namePart().size() > 1;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            // A query's names are the query's: a.b.c there names a column of a table in a schema.
+            return false;
+        }
+        final boolean arguments = insideCall || node instanceof FrostlakeParser.FunctionArgListContext;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsWhatNoBlockReads(node.getChild(i), arguments)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Whether every overload the catalog holds for {@code called} has a scripting-block body. */
     private boolean hasScriptingBody(final FrostlakeParser.FunctionNameContext name, final String called) {
         final Schema schema = resolveSchema(name);
@@ -138,13 +214,22 @@ final class ScriptingUdfBodyValidator {
         return body != null && queryExecutor != null && queryExecutor.isProceduralBlock(body.trim());
     }
 
-    private void walk(final ParseTree node) {
+    /**
+     * @param node       the node walked
+     * @param expression the outermost expression the node stands in, or null outside any
+     */
+    private void walk(final ParseTree node, final ParserRuleContext expression) {
+        ParserRuleContext whole = expression;
+        if (whole == null && (node instanceof FrostlakeParser.ExpressionContext
+                || node instanceof FrostlakeParser.BooleanExprContext)) {
+            whole = (ParserRuleContext) node;
+        }
         if (node instanceof FrostlakeParser.StatementContext) {
             final FrostlakeParser.StatementContext stmt = (FrostlakeParser.StatementContext) node;
             if (stmt.proceduralStatement() == null) {
                 // Any non-procedural statement — DML, DDL, a bare query, SHOW … — is where a side effect
-                // would come from, and Snowflake reports every one of them as "query statement".
-                throw unsupportedStatement("query statement");
+                // would come from, and Snowflake refuses each by the name of its kind.
+                throw unsupportedStatement(SnowscriptStatementKind.of(stmt));
             }
         }
         if (node instanceof FrostlakeParser.ProceduralStatementContext) {
@@ -154,45 +239,116 @@ final class ScriptingUdfBodyValidator {
             if (((FrostlakeParser.DeclarationItemContext) node).CURSOR() != null) {
                 throw unsupportedStatement("cursor declaration");
             }
+            if (((FrostlakeParser.DeclarationItemContext) node).RESULTSET() != null) {
+                throw unsupportedStatement("resultset declaration");
+            }
         }
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             // Reached only from inside an expression or a declaration — a query STATEMENT was already
             // rejected above — so this is a subquery, which a Snowscript UDF may not contain.
-            throw unsupportedExpression((ParserRuleContext) node);
+            throw unsupportedExpression(whole != null ? whole : (ParserRuleContext) node);
         }
         if (node instanceof FrostlakeParser.FunctionNameContext) {
-            checkFunctionName((FrostlakeParser.FunctionNameContext) node);
+            checkFunctionName((FrostlakeParser.FunctionNameContext) node, whole);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            walk(node.getChild(i));
+            walk(node.getChild(i), whole);
         }
     }
 
     private void checkProceduralStatement(final FrostlakeParser.ProceduralStatementContext stmt) {
-        if (stmt.selectIntoStatement() != null) {
+        if (stmt.selectIntoStatement() != null || stmt.callIntoStatement() != null) {
+            // A CALL that stores its answer is named as the query that does.
             throw unsupportedStatement("select into statement");
         }
-        if (stmt.executeImmediateStatement() != null || stmt.callStatement() != null) {
-            // Both run arbitrary SQL, so Snowflake groups them with the plain statements it refuses.
-            throw unsupportedStatement("query statement");
+        if (stmt.executeImmediateStatement() != null) {
+            // A text only read when it runs is of no kind the account can tell.
+            throw unsupportedStatement("UNKNOWN");
         }
-        if (stmt.openStatement() != null || stmt.fetchStatement() != null || stmt.closeStatement() != null) {
+        if (stmt.callStatement() != null || stmt.asyncStatement() != null || assignsAQuery(stmt)) {
+            // A CALL, a query started as a job and a query a variable is assigned are named as a query is.
+            throw unsupportedStatement("SELECT");
+        }
+        if (stmt.setStatement() != null) {
+            throw unsupportedStatement("SET");
+        }
+        if (stmt.awaitStatement() != null) {
+            throw unsupportedStatement("await statement");
+        }
+        if (stmt.openStatement() != null) {
+            throw unsupportedStatement("open cursor statement");
+        }
+        if (stmt.fetchStatement() != null) {
+            throw unsupportedStatement("fetch cursor statement");
+        }
+        if (stmt.closeStatement() != null) {
+            throw unsupportedStatement("close cursor statement");
+        }
+        if (stmt.letStatement() != null && stmt.letStatement().CURSOR() != null) {
+            // A cursor a LET declares among the statements is one too.
             throw unsupportedStatement("cursor declaration");
+        }
+        if (stmt.letStatement() != null && stmt.letStatement().RESULTSET() != null) {
+            // Declared with a query, with a dynamic statement or with nothing at all.
+            throw unsupportedStatement("resultset declaration");
         }
     }
 
-    /** Reject a call of a user-defined function — Snowscript UDFs may call built-ins only, never a UDF. */
-    private void checkFunctionName(final FrostlakeParser.FunctionNameContext name) {
+    /**
+     * Whether a statement assigns a variable a query written alone in parentheses, {@code x := (SELECT 1)}: the
+     * account names that statement by its query's kind, where a query deeper in the value is an expression of the
+     * statement's (live-verified).
+     */
+    private static boolean assignsAQuery(final FrostlakeParser.ProceduralStatementContext stmt) {
+        final FrostlakeParser.AssignmentStatementContext assignment = stmt.assignmentStatement();
+        if (assignment == null || !(assignment.booleanExpr() instanceof FrostlakeParser.ValueExprContext)) {
+            return false;
+        }
+        return ((FrostlakeParser.ValueExprContext) assignment.booleanExpr()).expression()
+            instanceof FrostlakeParser.ScalarSubqueryExprContext;
+    }
+
+    /**
+     * Reject a call a Snowscript UDF may not make: one written with OVER, and one of a function the account does
+     * not build in — a user-defined function, the routine itself, a name nothing declares.
+     */
+    private void checkFunctionName(final FrostlakeParser.FunctionNameContext name, final ParserRuleContext whole) {
         if (name.identifier() == null || name.identifier().isEmpty()) {
             return;   // IDENTIFIER(expr) — the name is only known at run time
         }
+        final ParserRuleContext named = whole != null ? whole : callSite(name);
+        if (name.getParent() instanceof FrostlakeParser.FunctionCallExprContext
+                && ((FrostlakeParser.FunctionCallExprContext) name.getParent()).overClause() != null) {
+            throw unsupportedExpression(named);
+        }
         final String called = SqlIdentifiers.canonical(name.identifier().get(name.identifier().size() - 1));
         if (routineName != null && name.identifier().size() == 1 && called.equals(routineName)) {
-            throw unsupportedExpression(callSite(name));
+            throw unsupportedExpression(named);
         }
-        if (isUserDefinedFunction(name, called)) {
-            throw unsupportedExpression(callSite(name));
+        if (isUserDefinedFunction(name, called) || !isBuiltIn(name, called)) {
+            throw unsupportedExpression(named);
         }
+    }
+
+    /**
+     * Whether a call names a function the account builds in: a bare name on the account's list or in this
+     * engine's registry, or a qualified one the registry holds under its whole name.
+     */
+    private boolean isBuiltIn(final FrostlakeParser.FunctionNameContext name, final String called) {
+        final FunctionRegistry registry = queryExecutor == null ? null : queryExecutor.getFunctionRegistry();
+        if (name.identifier().size() > 1) {
+            final StringBuilder whole = new StringBuilder();
+            for (final FrostlakeParser.IdentifierContext part : name.identifier()) {
+                whole.append(whole.length() > 0 ? "." : "").append(SqlIdentifiers.canonical(part));
+            }
+            return registry != null && registry.hasFunction(whole.toString().toUpperCase(Locale.ROOT));
+        }
+        if (name.identifier().get(0).getText().startsWith("\"") && !called.equals(called.toUpperCase(Locale.ROOT))) {
+            return false;   // a quoted name of another case is no built-in's
+        }
+        return registry == null || SnowflakeBuiltinNames.contains(called) || called.startsWith("SYSTEM$")
+            || registry.hasFunction(called) || registry.hasTableFunction(called)
+            || registry.getAggregateFunction(called) != null || WindowFunctionNames.handles(called);
     }
 
     /** Whether {@code called} names a UDF held by the schema the call resolves against. */
@@ -202,28 +358,19 @@ final class ScriptingUdfBodyValidator {
     }
 
     /**
-     * The schema a call resolves against, exactly as the evaluator resolves one: a qualified name against
-     * the schema it names, a bare one against the current schema. Null when nothing resolves — an
-     * unresolvable database/schema is "unknown", not "invalid", so the checks above fail open.
+     * The schema a call resolves against, exactly as the evaluator resolves one (see
+     * {@link RoutineOverloads#schemaOf}). Null when nothing resolves — an unresolvable database or schema is
+     * "unknown", not "invalid", so the checks above fail open.
      */
     private Schema resolveSchema(final FrostlakeParser.FunctionNameContext name) {
-        if (catalog == null || catalog.getCurrentDatabase() == null) {
+        if (catalog == null) {
             return null;
         }
-        final int parts = name.identifier().size();
-        final String databaseName = parts == 3
-            ? SqlIdentifiers.canonical(name.identifier().get(0)) : catalog.getCurrentDatabase();
-        final String schemaName = parts >= 2
-            ? SqlIdentifiers.canonical(name.identifier().get(parts - 2)) : catalog.getCurrentSchema();
-        if (schemaName == null) {
-            return null;
+        final List<String> parts = new ArrayList<>();
+        for (final FrostlakeParser.IdentifierContext part : name.identifier()) {
+            parts.add(SqlIdentifiers.canonical(part));
         }
-        try {
-            final Database database = catalog.getDatabase(databaseName);
-            return database.getSchema(schemaName);
-        } catch (final RuntimeException noSuchContainer) {
-            return null;
-        }
+        return RoutineOverloads.schemaOf(queryExecutor, parts);
     }
 
     /** The enclosing expression of a function name, so the message quotes the call and not just the name. */
@@ -236,7 +383,17 @@ final class ScriptingUdfBodyValidator {
     }
 
     private RuntimeException unsupportedExpression(final ParserRuleContext ctx) {
-        return new RuntimeException("Unsupported expression for Snowscript UDF: " + text(ctx));
+        return new RuntimeException("Unsupported expression for Snowscript UDF: " + echoed(ctx));
+    }
+
+    /** An expression as the tree as parsed prints it, or its source text where it does not re-print. */
+    private String echoed(final ParserRuleContext ctx) {
+        final String written = text(ctx);
+        try {
+            return ParsedEchoPrinter.print(ExpressionEvaluator.parse(written));
+        } catch (final RuntimeException notPrinted) {
+            return written;
+        }
     }
 
     /** The context's ORIGINAL source text, so the message reads like the body the user wrote. */

@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.Map;
 
 /** Serializable snapshot of a PIPE (its COPY statement and ingest settings). */
@@ -28,6 +29,9 @@ public class PipeSnapshot implements Serializable {
     public boolean autoIngest;
     public String notificationChannel;
     public boolean paused;
+    // A cloned auto-ingest pipe not resumed since (STOPPED_CLONED). False in a snapshot written before this was
+    // recorded, which reads back as a pipe that is merely paused or running.
+    public boolean stoppedCloned;
     public String errorIntegration;
     public String awsSnsTopicArn;
     public String integration;
@@ -39,4 +43,8 @@ public class PipeSnapshot implements Serializable {
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
     public Map<String, String> tags;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
 }

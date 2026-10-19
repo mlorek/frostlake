@@ -25,6 +25,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * AI_SENTIMENT(text [, categories]) — sentiment per aspect rather than one number: an OBJECT holding
@@ -72,7 +73,7 @@ public class CortexAiSentiment extends BuiltInFunction {
             ? "Give the overall sentiment of the text below. Answer with one of: %s."
             : "Give the sentiment the text below expresses about " + aspect
               + ". Answer with one of: %s.";
-        return CortexChoice.one(instruction, subject, SENTIMENTS).toLowerCase();
+        return CortexChoice.one(instruction, subject, SENTIMENTS).toLowerCase(Locale.ROOT);
     }
 
     @Override

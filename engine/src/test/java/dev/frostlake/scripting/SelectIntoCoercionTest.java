@@ -18,7 +18,6 @@ package dev.frostlake.scripting;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -133,10 +132,6 @@ public class SelectIntoCoercionTest extends BaseDatabaseTest {
 
     @Test
     public void selectIntoMultipleRowsErrors() {
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "matches the exact \"wrong number of rows: 2\" wording of the too-many-rows SELECT INTO "
-            + "error; a real account words that failure differently — the sibling test proves the error "
-            + "itself is raised and catchable on both backends");
         seedNums();
         final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
             @Override
@@ -145,7 +140,7 @@ public class SelectIntoCoercionTest extends BaseDatabaseTest {
                     "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums; RETURN t; END");
             }
         });
-        assertTrue(ex.getMessage().contains("wrong number of rows: 2"),
+        assertTrue(ex.getMessage().contains("A SELECT INTO statement expects exactly 1 returned row, but got 2."),
             "unexpected message: " + ex.getMessage());
     }
 

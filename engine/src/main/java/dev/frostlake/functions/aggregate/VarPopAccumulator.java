@@ -20,7 +20,13 @@ import dev.frostlake.functions.AggregateFunction;
 
 /** Accumulator for {@link VarPop}. */
 public class VarPopAccumulator
-        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
+        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator, DecfloatAwareAccumulator {
+
+    /** The values of a DECFLOAT argument, whose statistic is a DECFLOAT of 38 digits (see DecfloatMoments). */
+    private final DecfloatMoments decfloatMoments = new DecfloatMoments();
+
+    private boolean decfloat;
+
     private final WelfordMoments moments = new WelfordMoments();
     private final SquaredSumMoments floatMoments = new SquaredSumMoments();
     private int maxScale;
@@ -39,8 +45,18 @@ public class VarPopAccumulator
         this.approximate = this.approximate || approximate;
     }
 
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
+
     @Override
     public void accumulate(final Object v) {
+        if (decfloat) {
+            decfloatMoments.add(v);
+            return;
+        }
         if (v == null) return;
         // The input's SCALE decides the declared scale the result is presented at — read it before the
         // value becomes a double. See AggregateNumerics.varianceAtDeclaredScale.
@@ -53,6 +69,9 @@ public class VarPopAccumulator
 
     @Override
     public Object getResult() {
+        if (decfloat) {
+            return decfloatMoments.heldVariance(false);
+        }
         if (moments.count() == 0) return null;
         // A FLOAT input is read through the account's sums, an exact one through the running mean.
         final double variance = approximate ? floatMoments.populationVariance() : moments.populationVariance();
@@ -61,6 +80,7 @@ public class VarPopAccumulator
 
     @Override
     public void reset() {
+        decfloatMoments.reset();
         moments.reset();
         floatMoments.reset();
         maxScale = 0;
@@ -70,6 +90,7 @@ public class VarPopAccumulator
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
         final VarPopAccumulator o = (VarPopAccumulator) other;
+        decfloatMoments.merge(o.decfloatMoments);
         moments.merge(o.moments);
         floatMoments.merge(o.floatMoments);
         maxScale = Math.max(maxScale, o.maxScale);

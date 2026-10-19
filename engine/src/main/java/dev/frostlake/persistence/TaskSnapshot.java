@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +63,8 @@ public class TaskSnapshot implements Serializable {
     public String successIntegration;
     public String finalizedRootTask;
     public String executeAsUser;
+    /** The contacts attached to the task, by purpose. Null on older snapshots. */
+    public Map<String, String> contacts;
     public String serverlessTaskMinStatementSize;
 
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
@@ -70,4 +73,6 @@ public class TaskSnapshot implements Serializable {
 
     // The runs TASK_HISTORY reports, oldest first. Null in a snapshot written before they were kept.
     public ArrayList<TaskExecutionSnapshot> history;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public LocalDateTime createdAt;
 }

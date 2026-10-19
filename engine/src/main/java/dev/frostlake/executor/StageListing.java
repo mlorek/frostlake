@@ -19,6 +19,8 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Stage;
+import dev.frostlake.metastore.model.StageType;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -53,6 +55,9 @@ import java.util.Locale;
  */
 final class StageListing {
 
+    /** The block an internal stage's cipher pads a file to. */
+    private static final long CIPHER_BLOCK = 16L;
+
     private final QueryExecutor executor;
 
     StageListing(final QueryExecutor executor) {
@@ -68,28 +73,36 @@ final class StageListing {
     ResultSet list(final FrostlakeParser.ListStatementContext ctx) {
         final FrostlakeParser.StageRefContext stage = ctx.stageRef();
         StageReferenceShape.refuseEmptyParts(stage, executor.getCatalog());
+        executor.requireStagePrivilege(null, stage);
         final String prefix = stage.stagePath() == null ? "" : stage.stagePath().getText().substring(1);
         final String shownStage;
         final String location;
+        // An internal stage keeps its files encrypted, and a listing shows the size they are stored at.
+        final boolean encrypted;
         if (stage.TILDE() != null) {
             shownStage = null;
             location = "@~";
+            encrypted = true;
         } else if (stage.PERCENT() != null) {
             requireTable(stage);
             shownStage = null;
             location = "@%" + QualifiedName.join(StageReferenceShape.nameParts(stage).toArray(new String[0]));
+            encrypted = true;
         } else {
-            shownStage = StageReferenceShape.namedStage(stage, executor.getCatalog()).getName().toLowerCase(Locale.ROOT);
+            final Stage named = StageReferenceShape.namedStage(stage, executor.getCatalog());
+            shownStage = named.getName().toLowerCase(Locale.ROOT);
             location = "@" + QualifiedName.join(StageReferenceShape.nameParts(stage).toArray(new String[0]));
+            encrypted = named.getType() == StageType.INTERNAL && named.getUrl() == null;
         }
         final Path root = executor.resolveCopyBaseDir(location);
         final String stored = executor.copyPatternPrefix(location);
         final String pattern = ctx.PATTERN() != null ? ParseTreeText.extractStringLiteral(ctx.STRING_LITERAL()) : null;
+        // Each column of a listing is nullable to the driver, which reads it as known (live-verified).
         final List<ResultSetColumn> cols = Arrays.asList(
-            new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("size", NumericType.NUMBER),
-            new ResultSetColumn("md5", StringType.VARCHAR),
-            new ResultSetColumn("last_modified", StringType.VARCHAR));
+            new ResultSetColumn("name", StringType.VARCHAR, null, null, true, true),
+            new ResultSetColumn("size", NumericType.NUMBER, null, null, true, true),
+            new ResultSetColumn("md5", StringType.VARCHAR, null, null, true, true),
+            new ResultSetColumn("last_modified", StringType.VARCHAR, null, null, true, true));
         final List<Row> rows = new ArrayList<>();
         if (root == null || !Files.isDirectory(root)) {
             return new ResultSet(cols, rows);
@@ -107,7 +120,8 @@ final class StageListing {
                     continue;
                 }
                 final String name = shownStage == null ? relative : shownStage + "/" + relative;
-                rows.add(new Row(Arrays.asList(name, Files.size(file), md5Hex(file),
+                rows.add(new Row(Arrays.asList(name, encrypted ? storedSize(Files.size(file)) : Files.size(file),
+                    md5Hex(file),
                     DateTimeFormatter.RFC_1123_DATE_TIME
                         .format(Files.getLastModifiedTime(file).toInstant().atZone(ZoneOffset.UTC)))));
             }
@@ -115,6 +129,14 @@ final class StageListing {
             throw new RuntimeException("Failed to list stage: " + e.getMessage(), e);
         }
         return new ResultSet(cols, rows);
+    }
+
+    /**
+     * The size an internal stage stores a file at: its bytes padded to the cipher's 16-byte block, a whole block
+     * added when they already fill one — 2 bytes list as 16, 27 as 32, 47 as 48 (live-verified).
+     */
+    private static long storedSize(final long bytes) {
+        return (bytes / CIPHER_BLOCK + 1) * CIPHER_BLOCK;
     }
 
     /** A table's stage exists only with its table: a missing one is refused as the missing stage it would be. */

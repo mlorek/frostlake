@@ -17,20 +17,26 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.FileFormatClause;
 import dev.frostlake.executor.FileFormatReference;
-import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StageDirectoryRefresh;
+import dev.frostlake.executor.StatementClock;
+import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.executor.WarehouseReference;
+import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.InstanceFamilies;
+import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StatementSession;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Pipe;
@@ -39,7 +45,6 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
-import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
@@ -53,7 +58,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -93,10 +97,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String taskQualifiedName = getText(ctx.qualifiedName(0));
         final String taskName = ddl.extractObjectName(taskQualifiedName);
         final boolean orReplace = ctx.or_replace() != null;
+        TaskBodySyntax.requireOneStatement(ctx);
 
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_TASK, ContainerType.SCHEMA,
-                ddl.resolveSchemaFromQualifiedName(taskQualifiedName).getName());
+            DDLCommandHandler.refuseTakenName(!orReplace && !ifNotExists,
+                hasTaskNamed(ddl.resolveSchemaFromQualifiedName(taskQualifiedName), taskName),
+                qualifiedNameParts(ctx.qualifiedName(0)));
+            ddl.checkCreatePrivilege(Privilege.CREATE_TASK,
+                ddl.resolveSchemaFromQualifiedName(taskQualifiedName));
             if (orReplace) {
                 queryExecutor.requireOwnership("TASK", qualifiedNameParts(ctx.qualifiedName(0)), null);
             }
@@ -147,7 +155,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final List<FrostlakeParser.QualifiedNameContext> after = ctx.afterClause() != null
                 ? ctx.afterClause().qualifiedName() : new ArrayList<FrostlakeParser.QualifiedNameContext>();
             for (final FrostlakeParser.QualifiedNameContext predecessor : after) {
-                task.addPredecessor(getText(predecessor).toUpperCase());
+                task.addPredecessor(getText(predecessor).toUpperCase(Locale.ROOT));
             }
             properties.requireScheduleFits(task);
             if (properties.finalizeGiven()) {
@@ -167,40 +175,49 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             properties.requireRootSettings(task);
             properties.requireServerlessSettings(task);
+            // The tags are written right after the name, before every property, and each has to exist.
+            if (ctx.tagList() != null) {
+                InlineTags.apply(task, ctx.tagList(), queryExecutor);
+            }
+            if (ctx.taskContacts() != null) {
+                TaskContacts.apply(task, ctx.taskContacts(), catalog);
+            }
             if (orReplace && hasTaskNamed(schema, taskName)) {
                 schema.dropTask(taskName);
             }
             schema.addTask(task);
             logger.trace("Created task: {}", taskQualifiedName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Task already exists (IF NOT EXISTS): {}", taskName);
         }
         return null;
     }
 
-    /** The SQL a task body runs, as written: a statement, a CALL, an EXECUTE IMMEDIATE or a scripting block. */
+    /**
+     * The SQL a task body runs, as written: any statement — a query or DML, a CALL, an EXECUTE IMMEDIATE, a
+     * scripting block, a DDL statement — kept as its own text and re-issued when the task runs.
+     */
     private String taskBodyText(final FrostlakeParser.TaskBodyContext body) {
-        if (body.sqlStatement() != null) {
-            return ddl.getOriginalText(body.sqlStatement());
+        if (body == null) {
+            throw new RuntimeException("Task body is required");
         }
-        if (body.callStatement() != null) {
-            return ddl.getOriginalText(body.callStatement());
-        }
-        if (body.executeImmediateStatement() != null) {
-            return ddl.getOriginalText(body.executeImmediateStatement());
-        }
-        if (body.beginEndBlock() != null) {
-            // A Snowflake Scripting block body: kept as its own text and re-issued when the task
-            // runs, exactly like every other body shape.
-            return ddl.getOriginalText(body.beginEndBlock());
-        }
-        throw new RuntimeException("Task body is required");
+        return ParseTreeText.taskBodyText(body);
     }
 
     /** Whether the schema holds a task of exactly that name. */
     private static boolean hasTaskNamed(final Schema schema, final String name) {
         for (final Task candidate : schema.getTasks()) {
+            if (candidate.getName().equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether the schema holds a pipe of exactly that name. */
+    private static boolean hasPipeNamed(final Schema schema, final String name) {
+        for (final Pipe candidate : schema.getPipes()) {
             if (candidate.getName().equals(name)) {
                 return true;
             }
@@ -214,22 +231,29 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String pipeName = QualifiedName.parse(pipeQualifiedName).last();
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("PIPE", qualifiedNameParts(ctx.qualifiedName(0)), null);
+            // Asked before the pipe a replacement drops is gone.
+            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, pipeSchema);
             try { pipeSchema.dropPipe(pipeName); } catch (final RuntimeException ignored) {}
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, ContainerType.SCHEMA, pipeSchema.getName());
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists,
+                hasPipeNamed(pipeSchema, pipeName), qualifiedNameParts(ctx.qualifiedName(0)));
+            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, pipeSchema);
             // Extract COPY statement text
             final String copyStatement = ddl.getOriginalText(ctx.copyStatement());
             // The COPY's names resolve in the pipe's schema, as they do when the pipe loads.
             final String[] priorScope = catalog.currentSessionScope();
             catalog.beginSessionScope(pipeSchema.getDatabaseName(), pipeSchema.getName());
+            final Stage pipeStage;
             try {
-                validatePipeCopyBody(ctx.copyStatement());
+                pipeStage = validatePipeCopyBody(ctx.copyStatement());
+                requirePipeCopyPrivileges(ctx.copyStatement(), pipeStage);
             } finally {
                 catalog.restoreSessionScope(priorScope);
             }
 
             // Parse pipe options
+            Boolean autoIngestWritten = null;
             boolean autoIngest = false;
             String awsSnsTopicArn = null;
             String errorIntegration = null;
@@ -240,6 +264,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 for (final FrostlakeParser.PipeOptionContext optionCtx : ctx.pipeOptions().pipeOption()) {
                     if (optionCtx.AUTO_INGEST() != null) {
                         autoIngest = optionCtx.booleanValue().TRUE() != null;
+                        autoIngestWritten = Boolean.valueOf(autoIngest);
                     } else if (optionCtx.AWS_SNS_TOPIC() != null) {
                         awsSnsTopicArn = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
                     } else if (optionCtx.ERROR_INTEGRATION() != null) {
@@ -252,6 +277,17 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         optionComment = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
                     }
                 }
+            }
+
+            // An integration the pipe names has to exist and to be a queue of the right direction.
+            final IntegrationReferences references = new IntegrationReferences(catalog);
+            if (errorIntegration != null) {
+                references.requirePipeError(errorIntegration);
+            }
+            if (integration != null) {
+                references.requirePipeNotification(integration, autoIngestWritten, pipeStage);
+            } else if (autoIngest) {
+                references.requireNotificationFor(pipeStage);
             }
 
             // An SNS topic feeds automatic ingestion: without AUTO_INGEST = TRUE the pipe is refused.
@@ -286,7 +322,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             pipeSchema.addPipe(pipe);
             logger.trace("Created pipe: {}", pipeName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Pipe already exists (IF NOT EXISTS): {}", pipeName);
         }
         return null;
@@ -300,43 +336,63 @@ public class CreateInfrastructureHandler implements CommandHandler {
      * values, unknown format options) belongs to the engine-wide option-value surface and is not
      * pipe-specific.
      */
-    private void validatePipeCopyBody(final FrostlakeParser.CopyStatementContext copyCtx) {
+    private Stage validatePipeCopyBody(final FrostlakeParser.CopyStatementContext copyCtx) {
         if (copyCtx == null) {
-            return;
+            return null;
         }
         requirePipeTargetTableExists(copyCtx);
-        requirePipeStageExists(copyCtx);
+        final Stage stage = requirePipeStageExists(copyCtx);
         refusePipeOnlyCopyOptions(copyCtx);
+        return stage;
     }
 
     /** COPY INTO's target must exist when the PIPE is created, live-verified wording. */
     private void requirePipeTargetTableExists(final FrostlakeParser.CopyStatementContext copyCtx) {
-        final FrostlakeParser.QualifiedNameContext target = copyCtx.qualifiedName();
-        if (target == null) {
+        final List<String> parts = pipeTargetParts(copyCtx);
+        if (parts.isEmpty()) {
             return;
         }
-        final List<String> parts = new ArrayList<>();
-        parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(target.nameStartPart())));
-        for (final FrostlakeParser.NamePartContext part : target.namePart()) {
-            parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(part)));
-        }
-        final StringBuilder written = new StringBuilder();
-        for (final String part : parts) {
-            if (written.length() > 0) {
-                written.append('.');
-            }
-            written.append(part);
-        }
-        final Schema container = ddl.resolveSchemaFromQualifiedName(written.toString());
-        Table targetTable;
-        try {
-            targetTable = container.getTable(parts.get(parts.size() - 1));
-        } catch (final RuntimeException e) {
-            targetTable = null;
-        }
-        if (targetTable == null) {
+        final String written = String.join(".", parts);
+        final Schema container = ddl.resolveSchemaFromQualifiedName(QualifiedName.join(parts.toArray(new String[0])));
+        // Named exactly: a quoted name in another case is another table, which is not there.
+        if (container.tableExact(parts.get(parts.size() - 1)) == null) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Table '" + written + "' does not exist"));
+        }
+    }
+
+    /** The canonical parts of the table a pipe's COPY loads, as the COPY names it; empty when it names none. */
+    private static List<String> pipeTargetParts(final FrostlakeParser.CopyStatementContext copyCtx) {
+        final List<String> parts = new ArrayList<>();
+        final FrostlakeParser.QualifiedNameContext target = copyCtx.qualifiedName();
+        if (target == null) {
+            return parts;
+        }
+        parts.add(ParseTreeText.namePartText(target.nameStartPart()));
+        for (final FrostlakeParser.NamePartContext part : target.namePart()) {
+            parts.add(ParseTreeText.namePartText(part));
+        }
+        return parts;
+    }
+
+    /**
+     * What a pipe's COPY asks of the role creating the pipe, as Snowflake's CREATE PIPE page lists it: READ on an
+     * internal stage the COPY reads, USAGE on an external one, and SELECT and INSERT on the table it loads. The pipe
+     * loads with its owner's rights later, so they are asked of the creator now.
+     */
+    private void requirePipeCopyPrivileges(final FrostlakeParser.CopyStatementContext copyCtx, final Stage stage) {
+        if (copyCtx == null || queryExecutor.getSecurityManager() == null) {
+            return;
+        }
+        if (stage != null) {
+            final List<String> stageParts = pipeStageParts(copyCtx);
+            queryExecutor.requirePrivilege(stage.getUrl() != null ? Privilege.USAGE : Privilege.READ, "STAGE",
+                stageParts.toArray(new String[0]), null);
+        }
+        final List<String> target = pipeTargetParts(copyCtx);
+        if (!target.isEmpty()) {
+            queryExecutor.requireOnRelation(Privilege.INSERT, String.join(".", target));
+            queryExecutor.requireOnRelation(Privilege.SELECT, String.join(".", target));
         }
     }
 
@@ -352,7 +408,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final int type = ((TerminalNode) child).getSymbol().getType();
             if (type == FrostlakeParser.VALIDATION_MODE || type == FrostlakeParser.FILES) {
                 throw new RuntimeException(SqlCompilationError.PREFIX + " Invalid copy option '"
-                    + child.getText().toUpperCase() + "' in pipe definition.");
+                    + child.getText().toUpperCase(Locale.ROOT) + "' in pipe definition.");
             }
         }
     }
@@ -363,13 +419,29 @@ public class CreateInfrastructureHandler implements CommandHandler {
      * ({@code copyRestOfStatement} keeps raw tokens), so the named-stage reference is read off the
      * token stream: the first {@code @} followed by an identifier chain. A user stage ({@code @~})
      * is refused outright; a table stage ({@code @%t}) resolves implicitly and is not checked.
+     *
+     * @return the named stage, or null when the pipe reads a table's own
      */
-    private void requirePipeStageExists(final FrostlakeParser.CopyStatementContext copyCtx) {
+    private Stage requirePipeStageExists(final FrostlakeParser.CopyStatementContext copyCtx) {
+        final List<String> parts = pipeStageParts(copyCtx);
+        if (parts.isEmpty()) {
+            return null;
+        }
+        return ddl.resolveSchemaFromQualifiedName(QualifiedName.join(parts.toArray(new String[0])))
+            .getStageExact(parts.get(parts.size() - 1));
+    }
+
+    /**
+     * The canonical parts of the named stage a pipe's COPY reads, read off the body's tokens as
+     * {@link #requirePipeStageExists} describes; empty for a table's stage or a body naming none. A user stage is
+     * refused.
+     */
+    private static List<String> pipeStageParts(final FrostlakeParser.CopyStatementContext copyCtx) {
+        final List<String> parts = new ArrayList<>();
         if (copyCtx == null || copyCtx.copyRestOfStatement() == null
                 || copyCtx.copyRestOfStatement().children == null) {
-            return;
+            return parts;
         }
-        final List<String> parts = new ArrayList<>();
         boolean inStageName = false;
         boolean expectPart = false;
         for (final ParseTree child : copyCtx.copyRestOfStatement().children) {
@@ -390,7 +462,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     + " Stage: '~' cannot be a user stage in the pipe definition.");
             }
             if (type == FrostlakeParser.PERCENT) {
-                return;
+                return new ArrayList<>();
             }
             if (expectPart && (type == FrostlakeParser.IDENTIFIER
                     || type == FrostlakeParser.QUOTED_IDENTIFIER
@@ -405,29 +477,29 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             break;
         }
-        if (parts.isEmpty()) {
-            return;
-        }
-        final StringBuilder joined = new StringBuilder();
-        for (final String part : parts) {
-            if (joined.length() > 0) {
-                joined.append('.');
-            }
-            joined.append(part);
-        }
-        ddl.resolveSchemaFromQualifiedName(joined.toString()).getStage(parts.get(parts.size() - 1));
+        return parts;
     }
 
     public Object handleCreateSequence(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        CreatedObjectProperties.requireSequenceProperties(ctx);
         final String sequenceQualifiedName = getText(ctx.qualifiedName(0));
         final String sequenceName = ddl.extractObjectName(sequenceQualifiedName);
         // A clone continues from where its source stands: the same next value, step, ordering and comment.
         final Sequence cloneSource = ctx.CLONE() == null ? null
             : ddl.resolveSchemaFromQualifiedName(getText(ctx.qualifiedName(1)))
                 .getSequence(ddl.extractObjectName(getText(ctx.qualifiedName(1))));
+        final Schema sequenceSchema = ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName);
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("SEQUENCE", qualifiedNameParts(ctx.qualifiedName(0)), null);
-            try { ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName).dropSequence(sequenceName); } catch (final RuntimeException ignored) {}
+        }
+        // Asked before the sequence a replacement drops is gone; a plain CREATE of a name a sequence already
+        // holds is refused for the name ahead of the privilege (live-verified).
+        if (ctx.or_replace() != null || ifNotExists || !sequenceSchema.hasSequenceExact(sequenceName)) {
+            ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, sequenceSchema);
+        }
+        if (ctx.or_replace() != null && sequenceSchema.hasSequenceExact(sequenceName)) {
+            // A sequence whose name differs only in case is another sequence, which OR REPLACE leaves alone.
+            sequenceSchema.dropSequenceExact(sequenceName);
         }
         try {
             long startValue = 1;
@@ -480,13 +552,13 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     cloneSource.isOrder(), cloneSource.getComment())
                 : new Sequence(sequenceName, startValue, increment, order, comment);
 
-            final Schema schema = ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName);
-            ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, ContainerType.SCHEMA, schema.getName());
+            final Schema schema = sequenceSchema;
+            schema.requireCreatable(Privilege.CREATE_SEQUENCE);
             sequence.setOwner(FutureGrants.ownerOfNew(catalog, "SEQUENCE", schema, sequence.getName()));
             schema.addSequence(sequence);
             logger.trace("Created sequence: {} with START={}, INCREMENT={}", sequenceQualifiedName, startValue, increment);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Sequence already exists (IF NOT EXISTS): {}", sequenceName);
         }
         return null;
@@ -501,11 +573,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
     public Object handleCreateComputePool(final FrostlakeParser.CreateStatementContext ctx,
             final boolean ifNotExists) {
         final String poolName = getText(ctx.identifier(0));
-        if (!poolName.equals(poolName.toUpperCase())) {
+        if (!poolName.equals(poolName.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(
                 "Invalid compute pool name: '" + poolName + "'. Name must be uppercase.");
         }
-        if (ifNotExists && catalog.hasComputePool(poolName)) {
+        if (ifNotExists && catalog.hasComputePoolExact(poolName)) {
             logger.debug("Compute pool already exists (IF NOT EXISTS): {}", poolName);
             return null;
         }
@@ -519,7 +591,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             } else if (option.MAX_NODES() != null) {
                 maxNodes = Integer.valueOf(option.INTEGER_LITERAL().getText());
             } else if (option.INSTANCE_FAMILY() != null) {
-                instanceFamily = getText(option.identifier()).toUpperCase();
+                instanceFamily = getText(option.identifier()).toUpperCase(Locale.ROOT);
             } else if (option.AUTO_RESUME() != null) {
                 pool.setAutoResume("TRUE".equalsIgnoreCase(option.booleanValue().getText()));
             } else if (option.INITIALLY_SUSPENDED() != null) {
@@ -625,7 +697,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     public Object handleCreateWarehouse(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String warehouseName = getText(ctx.identifier(0));
         if (ctx.or_replace() != null) {
-            try { catalog.dropWarehouse(warehouseName); } catch (final RuntimeException ignored) {}
+            try { catalog.dropWarehouseExact(warehouseName); } catch (final RuntimeException ignored) {}
         }
         try {
             WarehouseSize size = WarehouseSize.X_SMALL;
@@ -635,14 +707,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             catalog.createWarehouse(warehouseName, size);
 
-            final Warehouse warehouse = catalog.getWarehouse(warehouseName);
+            final Warehouse warehouse = catalog.getWarehouseExact(warehouseName);
             if (ctx.warehouseProperties() != null) {
                 try {
                     ddl.applyWarehouseProperties(warehouse, ctx.warehouseProperties());
                     applyWarehouseTypeDefaults(warehouse, ctx.warehouseProperties());
                 } catch (final RuntimeException refused) {
                     // A refused property leaves no warehouse behind.
-                    catalog.dropWarehouse(warehouseName);
+                    catalog.dropWarehouseExact(warehouseName);
                     throw refused;
                 }
             }
@@ -657,6 +729,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             logger.trace("Created warehouse: {}", warehouseName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
+            // The warehouse that was already there becomes the session's current one all the same (live-verified).
+            catalog.useWarehouse(warehouseName);
             logger.debug("Warehouse already exists (IF NOT EXISTS): {}", warehouseName);
         }
         return null;
@@ -671,31 +745,20 @@ public class CreateInfrastructureHandler implements CommandHandler {
         "CREDENTIALS", "STORAGE_INTEGRATION", "DIRECTORY", "COPY_OPTIONS",
         "AWS_ROLE", "AWS_EXTERNAL_ID", "SNOWFLAKE_IAM_USER", "ENCRYPTION");
 
-    /** The load-format types a real account accepts for FILE_FORMAT TYPE, live-refused otherwise. */
-    private static void requireKnownFormatType(final String type, final String written) {
-        FileFormatSurfaces.requireLegalValue("TYPE", type, written);
-    }
-
-    /** One parenthesized option's value AS WRITTEN, quotes and all, or null when it is not there. */
-    private String parenOptionText(final FrostlakeParser.ParenOptionListContext list, final String key) {
-        for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
-            if (key.equals(option.optionKey().getText().toUpperCase()) && option.copyOptionValue() != null) {
-                return option.copyOptionValue().getText();
-            }
-        }
-        return null;
-    }
-
-    /** An option's value AS WRITTEN, for a refusal that echoes what the statement said. */
-    private String optionText(final FrostlakeParser.CopyOptionValueContext v) {
-        return v == null ? null : v.getText();
+    /** Whether a word names a stage property a CREATE STAGE or an ALTER STAGE … SET takes by a plain name. */
+    static boolean isStageOption(final String name) {
+        return STAGE_OPTION_NAMES.contains(name);
     }
 
     /** Collect a parenthesized option list's key=value pairs (values unquoted, keys upper). */
     private void collectParenOptions(final FrostlakeParser.ParenOptionListContext list,
                                      final Map<String, String> into) {
         for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
-            final String key = option.optionKey().getText().toUpperCase();
+            final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
+            if (option.LPAREN() != null) {
+                into.put(key, listedValues(option.stringLiteralList()));
+                continue;
+            }
             String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : "";
             if (value.length() >= 2 && value.startsWith("'") && value.endsWith("'")) {
                 value = value.substring(1, value.length() - 1);
@@ -704,15 +767,96 @@ public class CreateInfrastructureHandler implements CommandHandler {
         }
     }
 
+    /**
+     * A list option's values as a stage lists them: {@code NULL_IF = ('\\N', 'NULL')} reads {@code [\\N, NULL]},
+     * a backslash doubled, and a list of nothing but empty texts reads {@code []} (live-verified).
+     *
+     * @param list the written list, or null for an empty pair of parentheses
+     * @return the listed text
+     */
+    static String listedValues(final FrostlakeParser.StringLiteralListContext list) {
+        final List<String> values = new ArrayList<>();
+        if (list != null) {
+            for (final TerminalNode node : list.STRING_LITERAL()) {
+                final String value = ParseTreeText.extractStringLiteral(node);
+                if (!value.isEmpty()) {
+                    values.add(value.replace("\\", "\\\\"));
+                }
+            }
+        }
+        return "[" + String.join(", ", values) + "]";
+    }
+
+    /**
+     * The CREATE privilege a new object of a schema asks, unless the statement makes a temporary one, which needs
+     * no privilege on the schema it is named in (live-verified); nothing is created in INFORMATION_SCHEMA either way.
+     */
+    private void requireCreateUnlessTemporary(final FrostlakeParser.CreateStatementContext ctx,
+                                              final Privilege createPrivilege, final String qualifiedName) {
+        final Schema schema = ddl.resolveSchemaFromQualifiedName(qualifiedName);
+        if (TemporaryObjectStatements.isTemporary(ctx)) {
+            schema.requireCreatable(createPrivilege);
+        } else {
+            ddl.checkCreatePrivilege(createPrivilege, schema);
+        }
+    }
+
+    /**
+     * CREATE [OR REPLACE] GIT REPOSITORY: ORIGIN and API_INTEGRATION are required, each missing one named (live's
+     * {@code Missing option(s): [ORIGIN]}), then the API integration is judged ({@link ExternalFunctions}). A
+     * repository whose integration passes is refused all the same: it would be cloned from its ORIGIN, which this
+     * engine does not reach.
+     *
+     * @param ctx the statement
+     * @return null, as every CREATE handler answers
+     */
+    public Object handleCreateGitRepository(final FrostlakeParser.CreateStatementContext ctx) {
+        final String repositoryName = getText(ctx.qualifiedName(0));
+        ddl.resolveSchemaFromQualifiedName(repositoryName);
+        boolean origin = false;
+        FrostlakeParser.QualifiedNameContext integration = null;
+        for (final FrostlakeParser.GitRepositoryOptionContext option : ctx.gitRepositoryOption()) {
+            if (option.optionName == null) {
+                continue;
+            }
+            final String name = SqlIdentifiers.canonical(option.optionName);
+            if ("ORIGIN".equals(name) && option.STRING_LITERAL() != null) {
+                origin = true;
+            } else if ("API_INTEGRATION".equals(name) && option.qualifiedName() != null) {
+                integration = option.qualifiedName();
+            } else if (!"GIT_CREDENTIALS".equals(name) || option.qualifiedName() == null) {
+                throw ExternalFunctions.unknownOption(option.optionName.getStart());
+            }
+        }
+        final List<String> missing = new ArrayList<>();
+        if (!origin) {
+            missing.add("ORIGIN");
+        }
+        if (integration == null) {
+            missing.add("API_INTEGRATION");
+        }
+        if (!missing.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): " + missing));
+        }
+        ExternalFunctions.requireGitIntegration(catalog, integration);
+        throw new RuntimeException(SqlCompilationError.of("Git repository "
+            + SqlIdentifiers.spellCanonical(ddl.extractObjectName(repositoryName))
+            + " cannot be created: its ORIGIN is not reached from this engine."));
+    }
+
     public Object handleCreateStage(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String stageName = getText(ctx.qualifiedName(0));
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("STAGE", qualifiedNameParts(ctx.qualifiedName(0)), null);
-            try { catalog.dropStage(stageName); } catch (final RuntimeException ignored) {}
+            // Asked before the stage a replacement drops is gone.
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_STAGE, stageName);
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_STAGE, ContainerType.SCHEMA,
-                ddl.resolveSchemaFromQualifiedName(stageName).getName());
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists
+                    && !TemporaryObjectStatements.isTemporary(ctx),
+                ddl.resolveSchemaFromQualifiedName(stageName).hasStageExact(ddl.extractObjectName(stageName)),
+                qualifiedNameParts(ctx.qualifiedName(0)));
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_STAGE, stageName);
             // A URL-less CREATE STAGE makes an internal named stage (Snowflake's default when URL is omitted);
             // a URL (except file://) denotes an external stage.
             final boolean hasProps = ctx.stageProperties() != null;
@@ -723,7 +867,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
             String comment = null;
             boolean sawFileFormat = false;
             boolean sawCloudAccessOption = false;
-            boolean directoryEnable = false;
+            boolean credentials = false;
+            boolean encryptionKey = false;
+            StageDirectoryOptions directory = null;
             final Map<String, String> formatOptions = new LinkedHashMap<>();
             final Map<String, String> copyOptions = new LinkedHashMap<>();
             String declaredEncryptionType = null;
@@ -742,16 +888,28 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         if (option.STRING_LITERAL() != null) {
                             fileFormat = ddl.extractStringLiteral(option.STRING_LITERAL());
                             FileFormatReference.require(catalog, SqlIdentifiers.canonicalText(fileFormat));
+                            formatOptions.put("FORMAT_NAME", fileFormat);
                         } else if (option.qualifiedName() != null) {
                             fileFormat = getText(option.qualifiedName());
                             FileFormatReference.require(catalog, fileFormat);
+                            // The listing keeps the name as the statement wrote it.
+                            formatOptions.put("FORMAT_NAME", ddl.getOriginalText(option.qualifiedName()));
                         } else if (option.parenOptionList() != null) {
-                            FileFormatReference.require(catalog,
-                                SqlIdentifiers.canonicalText(formatNameFromOptions(option.parenOptionList())));
-                            fileFormat = formatFromOptions(option.parenOptionList(), fileFormat);
-                            collectParenOptions(option.parenOptionList(), formatOptions);
-                            requireKnownFormatType(formatOptions.get("TYPE"),
-                                parenOptionText(option.parenOptionList(), "TYPE"));
+                            // Read and judged as every FILE_FORMAT list is (see FileFormatClause): the format
+                            // FORMAT_NAME names wins, else TYPE as written, and the options are kept as a named
+                            // format keeps its own.
+                            final FileFormatClause written = FileFormatClause.read(option.parenOptionList(),
+                                new FileFormat("WRITTEN", "CSV"), true);
+                            if (written.formatName() != null) {
+                                FileFormatReference.require(catalog,
+                                    SqlIdentifiers.canonicalText(written.formatName()));
+                                fileFormat = written.formatName();
+                                formatOptions.put("FORMAT_NAME", written.formatNameWritten());
+                            } else if (written.writtenType() != null) {
+                                fileFormat = written.writtenType();
+                                formatOptions.put("TYPE", written.writtenType());
+                            }
+                            formatOptions.putAll(written.format().getOptions());
                         }
                     } else if (option.ENCRYPTION() != null) {
                         encryption = option.booleanValue() != null && option.booleanValue().TRUE() != null;
@@ -759,17 +917,27 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             final Map<String, String> encryptionOptions = new LinkedHashMap<>();
                             collectParenOptions(option.parenOptionList(), encryptionOptions);
                             declaredEncryptionType = encryptionOptions.get("TYPE");
+                            encryptionKey = encryptionOptions.containsKey("MASTER_KEY")
+                                || encryptionOptions.containsKey("KMS_KEY_ID");
                             // Only Snowflake-managed encryption fits an internal stage, live-verified.
                             if (url == null && declaredEncryptionType != null
-                                    && !declaredEncryptionType.toUpperCase().startsWith("SNOWFLAKE_")) {
+                                    && !declaredEncryptionType.toUpperCase(Locale.ROOT).startsWith("SNOWFLAKE_")) {
                                 throw new RuntimeException(SqlCompilationError.of("Cannot set URL,"
                                     + " credentials, or encryption key of an internal or temporary stage."));
                             }
                         }
                     } else if (option.COMMENT() != null) {
                         comment = ddl.extractStringLiteral(option.STRING_LITERAL());
+                    } else if (option.COPY_OPTIONS() != null) {
+                        if (option.stageCopyOptionList() != null) {
+                            copyOptions.putAll(StageCopyOptions.read(option.stageCopyOptionList()));
+                        }
                     } else if (option.identifier() != null) {
-                        final String key = ParseTreeText.getIdentifier(option.identifier()).toUpperCase();
+                        if (option.identifier().getText().startsWith("\"")) {
+                            // A quoted word is no property's name, whatever it spells (live-verified).
+                            throw ParameterRegistry.invalidProperty(option.identifier().getText(), "STAGE");
+                        }
+                        final String key = ParseTreeText.getIdentifier(option.identifier()).toUpperCase(Locale.ROOT);
                         if ("URL".equals(key) && option.copyOptionValue() != null
                                 && option.copyOptionValue().STRING_LITERAL() != null) {
                             // Stage options come in ANY order live, URL included. The grammar anchors
@@ -780,14 +948,17 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         if (!STAGE_OPTION_NAMES.contains(key)) {
                             throw ParameterRegistry.invalidProperty(key, "STAGE");
                         }
+                        if ("STORAGE_INTEGRATION".equals(key)) {
+                            // The integration is looked up before the stage's own shape is judged.
+                            StorageIntegrationReference.require(catalog, option.copyOptionValue());
+                        }
                         if ("CREDENTIALS".equals(key) || "STORAGE_INTEGRATION".equals(key)) {
                             sawCloudAccessOption = true;
-                        } else if ("DIRECTORY".equals(key) && option.parenOptionList() != null) {
-                            final Map<String, String> directoryOptions = new LinkedHashMap<>();
-                            collectParenOptions(option.parenOptionList(), directoryOptions);
-                            directoryEnable = "TRUE".equalsIgnoreCase(directoryOptions.get("ENABLE"));
+                            credentials = credentials || "CREDENTIALS".equals(key);
+                        } else if ("DIRECTORY".equals(key)) {
+                            directory = StageDirectoryOptions.read(option.parenOptionList(), true);
                         } else if ("COPY_OPTIONS".equals(key) && option.parenOptionList() != null) {
-                            collectParenOptions(option.parenOptionList(), copyOptions);
+                            copyOptions.putAll(StageCopyOptions.read(option.parenOptionList()));
                         }
                     }
                 }
@@ -796,10 +967,20 @@ public class CreateInfrastructureHandler implements CommandHandler {
             // Cloud access options make no sense without a location, live-verified wording.
             if (sawCloudAccessOption && url == null) {
                 throw new RuntimeException(SqlCompilationError.of("invalid stage ("
-                    + ddl.extractObjectName(stageName).toUpperCase() + "): location not specified"));
+                    + ddl.extractObjectName(stageName).toUpperCase(Locale.ROOT) + "): location not specified"));
             }
 
+            CloudStageUrls.require(url);
             refuseLocalUrlUnlessEnabled(url);
+            // A replacement drops the stage it replaces once the new one is judged whole, so a refused statement
+            // leaves that stage as it was (live-verified).
+            if (ctx.or_replace() != null) {
+                try {
+                    catalog.dropStageExact(stageName);
+                } catch (final RuntimeException ignored) {
+                    // No stage of that name to replace.
+                }
+            }
 
             final StageType type = (url == null || url.startsWith("file://")) ? StageType.INTERNAL : StageType.EXTERNAL;
             catalog.createStage(stageName, type, url, fileFormat, encryption, comment);
@@ -811,8 +992,23 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final Stage created = catalog.getStage(stageName);
             created.getFileFormatOptions().putAll(formatOptions);
             created.getCopyOptions().putAll(copyOptions);
-            created.setDirectoryEnabled(directoryEnable);
             created.setEncryptionType(declaredEncryptionType);
+            created.setTemporary(ctx.TEMPORARY() != null || ctx.TEMP() != null);
+            created.setCredentials(credentials);
+            created.setEncryptionKey(encryptionKey);
+            if (directory != null) {
+                directory.applyTo(created);
+                // A directory table enabled at creation registers the files its stage already holds, unless
+                // REFRESH_ON_CREATE says otherwise; one enabled later registers none before its first refresh. A new
+                // internal stage holds none, so its replayed CREATE registers none either: the files on disk then are
+                // the ones the statements after it staged.
+                final boolean replayedInternal = url == null && StatementClock.isReplay();
+                if (directory.enables() && directory.refreshesOnCreate() && !replayedInternal) {
+                    final Schema owner = catalog.resolveOwningSchema(stageName);
+                    StageDirectoryRefresh.refresh(queryExecutor, created, owner.getDatabaseName(),
+                        owner.getDatabaseName() + "." + owner.getName() + "." + created.getName(), "");
+                }
+            }
 
             final String statementComment = ddl.extractCommentFromList(ctx.commentClause());
             if (statementComment != null) {
@@ -822,7 +1018,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             logger.trace("Created stage: {}", stageName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Stage already exists (IF NOT EXISTS): {}", stageName);
         }
         return null;
@@ -842,8 +1038,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String serviceName = getText(ctx.qualifiedName(0));
         final String searchColumn = SqlIdentifiers.canonical(ctx.identifier(0));
         final List<String> attributeColumns = new ArrayList<>();
-        if (!ctx.identifierList().isEmpty()) {
-            for (final FrostlakeParser.IdentifierContext attribute : ctx.identifierList(0).identifier()) {
+        if (ctx.identifierList() != null) {
+            for (final FrostlakeParser.IdentifierContext attribute : ctx.identifierList().identifier()) {
                 attributeColumns.add(SqlIdentifiers.canonical(attribute));
             }
         }
@@ -870,23 +1066,22 @@ public class CreateInfrastructureHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Missing option(s): [TARGET_LAG]"));
         }
         WarehouseReference.require(catalog, warehouse);
+        ddl.checkCreatePrivilege(Privilege.CREATE_CORTEX_SEARCH_SERVICE, ddl.resolveSchemaFromQualifiedName(serviceName));
 
-        if (ctx.or_replace() != null) {
-            try {
-                catalog.resolveCortexSearchService(serviceName);
-                dropCortexSearchService(serviceName, ctx.qualifiedName(0));
-            } catch (final RuntimeException nothingToReplace) {
-                // OR REPLACE over a name that is not taken.
-            }
+        // The name's parts off the parse tree: a quoted name keeps its case, and is that service alone.
+        final String[] serviceParts = qualifiedNameParts(ctx.qualifiedName(0));
+        final Schema serviceSchema = catalog.requireOwningSchema(QualifiedName.of(serviceParts));
+        final String ownName = serviceParts[serviceParts.length - 1];
+        if (ctx.or_replace() != null && serviceSchema.hasCortexSearchServiceExact(ownName)) {
+            serviceSchema.dropCortexSearchServiceExact(ownName);
         }
-        if (ctx.or_replace() == null && existingCortexSearchService(serviceName)) {
+        if (ctx.or_replace() == null && serviceSchema.hasCortexSearchServiceExact(ownName)) {
             if (ifNotExists) {
                 ConditionalDdlOutcome.createSkipped();
                 return null;
             }
-            final String[] existingParts = qualifiedNameParts(ctx.qualifiedName(0));
             throw new RuntimeException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(existingParts[existingParts.length - 1]) + "' already exists."));
+                + SqlIdentifiers.spellCanonical(ownName) + "' already exists."));
         }
 
         final String definition = ddl.getOriginalText(ctx.selectStatement());
@@ -896,12 +1091,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
             requireProjected(columns, attribute);
         }
 
-        final String[] serviceParts = qualifiedNameParts(ctx.qualifiedName(0));
         final CortexSearchService service = new CortexSearchService(
-            serviceParts[serviceParts.length - 1].toUpperCase(), searchColumn, attributeColumns, columns,
+            ownName, searchColumn, attributeColumns, columns,
             warehouse, targetLag, embeddingModel, definition, comment);
         service.setOwner(catalog.currentRoleForOwner());
-        ddl.resolveSchemaFromQualifiedName(serviceName).addCortexSearchService(service);
+        serviceSchema.addCortexSearchService(service);
         logger.trace("Created Cortex search service: {}", serviceName);
         return null;
     }
@@ -925,21 +1119,6 @@ public class CreateInfrastructureHandler implements CommandHandler {
         throw new RuntimeException(SqlCompilationError.invalidIdentifier(column));
     }
 
-    private boolean existingCortexSearchService(final String serviceName) {
-        try {
-            catalog.resolveCortexSearchService(serviceName);
-            return true;
-        } catch (final RuntimeException absent) {
-            return false;
-        }
-    }
-
-    private void dropCortexSearchService(final String serviceName,
-                                         final FrostlakeParser.QualifiedNameContext nameCtx) {
-        final String[] parts = qualifiedNameParts(nameCtx);
-        ddl.resolveSchemaFromQualifiedName(serviceName).dropCortexSearchService(parts[parts.length - 1]);
-    }
-
     public Object handleCreateFileFormat(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String name = getText(ctx.qualifiedName(0));
         // The simple name is the parse tree's last identifier part — never a re-split of the
@@ -948,196 +1127,99 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String simpleName = nameParts[nameParts.length - 1];
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("FILE_FORMAT", nameParts, null);
-            try {
-                catalog.dropFileFormat(name);
-            } catch (final RuntimeException ignored) {
-                // OR REPLACE: nothing to drop
-            }
+            // Asked before the file format a replacement drops is gone.
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_FILE_FORMAT, ContainerType.SCHEMA,
-                ddl.resolveSchemaFromQualifiedName(name).getName());
+            // A file format whose name differs only in case is another one (live-verified).
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists
+                    && !TemporaryObjectStatements.isTemporary(ctx), catalog.hasFileFormatExact(name), nameParts);
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
             final FileFormat fileFormat = new FileFormat(simpleName, "CSV");
-            fileFormat.setOwner(catalog.currentRoleForOwner());
-            applyFileFormatOptions(fileFormat, ctx.copyFormatOption());
+            if (TemporaryObjectStatements.isTemporary(ctx)) {
+                // Its session's alone, and gone when that session ends (live-verified).
+                fileFormat.markTemporary(StatementSession.current());
+            }
+            // The future grants of the schema or its database cover the new format (live-verified).
+            fileFormat.setOwner(TemporaryObjectStatements.isTemporary(ctx) ? catalog.currentRoleForOwner()
+                : FutureGrants.ownerOfNew(catalog, "FILE_FORMAT", catalog.requireOwningSchema(
+                    QualifiedName.of(nameParts)), simpleName));
+            final FileFormatClause written = FileFormatClause.read(ctx.copyFormatOption(), fileFormat, true, false);
+            if (written.comment() != null) {
+                fileFormat.setComment(written.comment());
+            }
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 fileFormat.setComment(comment);
             }
+            if (ctx.or_replace() != null) {
+                // The options are judged before the format a replacement drops is gone: a refused CREATE OR REPLACE
+                // leaves the old one as it was (live-verified).
+                try {
+                    catalog.dropFileFormatExact(name);
+                } catch (final RuntimeException ignored) {
+                    // OR REPLACE: nothing to drop
+                }
+            }
             // The options are judged BEFORE existence: an invalid option refuses even over an existing
             // format, IF NOT EXISTS or not (live-verified).
-            if (catalog.hasFileFormat(name)) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + catalog.getFileFormat(name).getName() + "' already exists."));
+            if (catalog.hasFileFormatExact(name)) {
+                throw new NameTakenException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(catalog.getFileFormat(name).getName()) + "' already exists."));
             }
             catalog.addFileFormat(name, fileFormat);
             logger.trace("Created file format: {}", simpleName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
         }
         return null;
     }
 
     public Object handleAlterFileFormat(final FrostlakeParser.AlterStatementContext ctx) {
         final String name = getText(ctx.qualifiedName());
-        final FileFormat fileFormat = catalog.getFileFormat(name);
+        // Named exactly: a quoted name in another case is another file format, which is not there, refused by its
+        // full path (live-verified).
+        final FileFormat fileFormat = catalog.getFileFormatExact(name);
         if (fileFormat == null) {
             if (ctx.if_exists() != null) {
                 return null;
             }
             throw new RuntimeException(SqlCompilationError.doesNotExist("File format",
-                catalog.getCurrentDatabase().toUpperCase() + "."
-                    + ddl.resolveSchemaFromQualifiedName(name).getName().toUpperCase() + "."
-                    + ddl.extractObjectName(name).toUpperCase()));
+                catalog.qualifiedExactName(name)));
         }
         final FrostlakeParser.FileFormatActionContext action = ctx.fileFormatAction();
+        if (action.RENAME() == null) {
+            queryExecutor.requirePrivilege(Privilege.MODIFY, "FILE_FORMAT", name);
+        }
         if (action.RENAME() != null) {
             final String newName = getText(action.qualifiedName());
             final String[] newParts = qualifiedNameParts(action.qualifiedName());
             final String newSimple = newParts[newParts.length - 1];
+            catalog.resolveOwningSchema(newName).requireCreatable(Privilege.CREATE_FILE_FORMAT);
             // The new name is taken: refused before the old one is given up.
             if (catalog.hasFileFormat(newName)) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + catalog.getFileFormat(newName).getName() + "' already exists."));
+                throw DDLCommandHandler.namedAsWritten(new NameTakenException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(newSimple) + "' already exists.")), newParts);
             }
+            // A renamed file format is created under its new name: its schema is asked for the privilege to
+            // create one, once the name is found free (live-verified).
+            queryExecutor.requireCreatePrivilege(Privilege.CREATE_FILE_FORMAT, catalog.resolveOwningSchema(newName));
+            final String grantedBefore = catalog.resolveOwningSchema(name).qualifiedName(fileFormat.getName());
             catalog.dropFileFormat(name);
             fileFormat.setName(newSimple);
             catalog.addFileFormat(newName, fileFormat);
+            GrantNames.renamed(catalog, "FILE_FORMAT", grantedBefore,
+                catalog.resolveOwningSchema(newName).qualifiedName(newSimple));
         } else {
-            applyFileFormatOptions(fileFormat, action.copyFormatOption(), false);
+            // An ALTER may not change the type; its COMMENT is the format's.
+            final FileFormatClause written = FileFormatClause.read(action.copyFormatOption(), fileFormat, false, false);
+            if (written.comment() != null) {
+                fileFormat.setComment(written.comment());
+            }
         }
+        // Every ALTER is DDL on the file format, a rename included: its LAST_ALTERED moves.
+        fileFormat.markDdl();
         return null;
-    }
-
-    private void applyFileFormatOptions(final FileFormat fileFormat, final List<FrostlakeParser.CopyFormatOptionContext> options) {
-        applyFileFormatOptions(fileFormat, options, true);
-    }
-
-    /**
-     * A file-format parameter may be given ONCE — live calls the repeat a conflict rather than a
-     * duplicate property, in its own message shape (live-verified on TYPE and SKIP_HEADER). The
-     * parameter's name is its first token, read off the parse tree.
-     */
-    static void rejectDuplicateFormatOptions(final List<FrostlakeParser.CopyFormatOptionContext> options) {
-        final Set<String> seen = new HashSet<>();
-        for (final FrostlakeParser.CopyFormatOptionContext opt : options) {
-            final String name = opt.getStart().getText().toUpperCase(Locale.ROOT);
-            if (!seen.add(name)) {
-                throw new RuntimeException(SqlCompilationError.conflictingFileFormatParameter(name));
-            }
-        }
-    }
-
-    /**
-     * Apply and VALIDATE the options against the account's measured surface: an unknown name is
-     * an invalid parameter, a bad TYPE/COMPRESSION/negative-SKIP_HEADER value refuses with the
-     * invalid-value shape, an option outside the effective type's tree refuses {@code Option X is
-     * not valid for file format type Y.}, and ALTER may not change the type at all.
-     */
-    private void applyFileFormatOptions(final FileFormat fileFormat,
-                                        final List<FrostlakeParser.CopyFormatOptionContext> options,
-                                        final boolean typeChangeable) {
-        rejectDuplicateFormatOptions(options);
-        for (final FrostlakeParser.CopyFormatOptionContext opt : options) {
-            if (opt.TYPE() != null) {
-                final String newType = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("TYPE", newType, optionText(opt.copyOptionValue()));
-                if (!typeChangeable && !newType.equalsIgnoreCase(fileFormat.getType())) {
-                    throw new RuntimeException(SqlCompilationError.of(
-                        "File format type cannot be changed."));
-                }
-                fileFormat.setType(newType.toUpperCase());
-            } else if (opt.FIELD_DELIMITER() != null) {
-                final String field_delimiterValue = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("FIELD_DELIMITER", field_delimiterValue, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("FIELD_DELIMITER", field_delimiterValue);
-            } else if (opt.SKIP_HEADER() != null) {
-                final String headerCount = (opt.MINUS() != null ? "-" : "")
-                    + opt.INTEGER_LITERAL().getText();
-                FileFormatSurfaces.requireLegalValue("SKIP_HEADER", headerCount);
-                fileFormat.setOption("SKIP_HEADER", headerCount);
-            } else if (opt.DATE_FORMAT() != null) {
-                fileFormat.setOption("DATE_FORMAT", fileFormatOptValue(opt.copyOptionValue()));
-            } else if (opt.COMPRESSION() != null) {
-                final String codec = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("COMPRESSION", codec, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("COMPRESSION", codec);
-            } else if (opt.RECORD_DELIMITER() != null) {
-                final String record_delimiterValue = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("RECORD_DELIMITER", record_delimiterValue, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("RECORD_DELIMITER", record_delimiterValue);
-            } else if (opt.ESCAPE() != null) {
-                final String escapeValue = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("ESCAPE", escapeValue, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("ESCAPE", escapeValue);
-            } else if (opt.identifier() != null && opt.copyOptionValue() != null) {
-                final String optionName = getText(opt.identifier());
-                if ("COMMENT".equalsIgnoreCase(optionName)) {
-                    // COMMENT describes the format object itself; it is not one of its format options.
-                    fileFormat.setComment(fileFormatOptValue(opt.copyOptionValue()));
-                } else {
-                    if (!FileFormatSurfaces.isKnownOption(optionName)) {
-                        throw ParameterRegistry.invalidSessionParameter(optionName.toUpperCase());
-                    }
-                    final String value = fileFormatOptValue(opt.copyOptionValue());
-                    FileFormatSurfaces.requireLegalValue(optionName, value, optionText(opt.copyOptionValue()));
-                    fileFormat.setOption(optionName.toUpperCase(), value);
-                }
-            } else if (opt.identifier() != null && opt.LPAREN() != null) {
-                // A string-list option such as NULL_IF = ('\\N', '') — NULL_IF keeps each value whole (see
-                // FileFormat.getNullIfValues); any other list is stored comma-joined so the named format
-                // round-trips without a parse error (COPY applies NULL_IF from its inline form).
-                final List<String> values = new ArrayList<>();
-                if (opt.stringLiteralList() != null) {
-                    for (final TerminalNode node : opt.stringLiteralList().STRING_LITERAL()) {
-                        values.add(ddl.extractStringLiteral(node));
-                    }
-                }
-                final String optionName = getText(opt.identifier()).toUpperCase();
-                if ("NULL_IF".equals(optionName)) {
-                    fileFormat.setNullIfValues(values);
-                } else {
-                    fileFormat.setOption(optionName, String.join(",", values));
-                }
-            }
-        }
-        // Cross-type membership fires against the EFFECTIVE type, wherever TYPE sat in the list.
-        for (final String key : fileFormat.getOptions().keySet()) {
-            if (!"TYPE".equalsIgnoreCase(key)
-                    && !FileFormatSurfaces.isOptionValidFor(fileFormat.getType(), key)) {
-                throw new RuntimeException(SqlCompilationError.of("Option " + key.toUpperCase()
-                    + " is not valid for file format type " + fileFormat.getType().toUpperCase() + "."));
-            }
-        }
-    }
-
-    private String fileFormatOptValue(final FrostlakeParser.CopyOptionValueContext v) {
-        if (v == null) {
-            return null;
-        }
-        return v.STRING_LITERAL() != null ? ddl.extractStringLiteral(v.STRING_LITERAL()) : v.getText();
-    }
-
-
-    /** The format a parenthesized FILE_FORMAT group names: FORMAT_NAME wins, else TYPE, else the default. */
-    private String formatFromOptions(final FrostlakeParser.ParenOptionListContext options, final String fallback) {
-        String result = fallback;
-        for (final FrostlakeParser.ParenOptionContext option : options.parenOption()) {
-            final String key = option.optionKey().getText().toUpperCase();
-            if (!"FORMAT_NAME".equals(key) && !"TYPE".equals(key)) {
-                continue;
-            }
-            String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : null;
-            if (value == null) {
-                continue;
-            }
-            if (value.startsWith("'") && value.endsWith("'") && value.length() >= 2) {
-                value = value.substring(1, value.length() - 1);
-            }
-            result = value;
-            if ("FORMAT_NAME".equals(key)) {
-                return result;
-            }
-        }
-        return result;
     }
 
     /**
@@ -1164,22 +1246,4 @@ public class CreateInfrastructureHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("invalid URL: " + url));
         }
     }
-
-
-    /** The FORMAT_NAME a FILE_FORMAT group names, or null where it declares a TYPE instead. */
-    private String formatNameFromOptions(final FrostlakeParser.ParenOptionListContext options) {
-        for (final FrostlakeParser.ParenOptionContext option : options.parenOption()) {
-            if (!"FORMAT_NAME".equals(option.optionKey().getText().toUpperCase())) {
-                continue;
-            }
-            final String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : null;
-            if (value == null) {
-                return null;
-            }
-            return value.startsWith("'") && value.endsWith("'") && value.length() >= 2
-                ? value.substring(1, value.length() - 1) : value;
-        }
-        return null;
-    }
-
 }

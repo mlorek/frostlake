@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -49,7 +51,7 @@ public class AlterTablePropertySetTest extends BaseDatabaseTest {
     /** One SHOW TABLES cell for a table in this test's schema. */
     private String tableCell(final String table, final String column) {
         final ResultSet tables = engine.executeQuery("SHOW TABLES LIKE '" + table + "'");
-        return cell(tables, soleRowWhere(tables, "name", table.toUpperCase()), column);
+        return cell(tables, soleRowWhere(tables, "name", table.toUpperCase(Locale.ROOT)), column);
     }
 
     // ── several properties in one SET ─────────────────────────────────────────────────────────────

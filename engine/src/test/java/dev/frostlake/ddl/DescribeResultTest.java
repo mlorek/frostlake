@@ -23,6 +23,7 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -35,7 +36,7 @@ public class DescribeResultTest extends BaseDatabaseTest {
     private Set<String> columnNames(final ResultSet rs) {
         final Set<String> names = new HashSet<>();
         for (final Row row : rs.getRows()) {
-            names.add(String.valueOf(row.getValue(0)).toUpperCase());
+            names.add(String.valueOf(row.getValue(0)).toUpperCase(Locale.ROOT));
         }
         return names;
     }

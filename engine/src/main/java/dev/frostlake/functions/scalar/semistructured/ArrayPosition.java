@@ -16,10 +16,12 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -33,7 +35,7 @@ public class ArrayPosition extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         final Object value = args.get(0);
-        final ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(1));
+        final ArrayNode arr = ArrayFunctionHelper.parseArrayOrSingle(args.get(1));
         if (arr == null) return null;
         // A SQL NULL needle looks for the VARIANT `undefined` element — live:
         // ARRAY_POSITION(NULL::VARIANT, ARRAY_CONSTRUCT(1,NULL,2)) is 1, while over
@@ -44,6 +46,7 @@ public class ArrayPosition extends BuiltInFunction {
             final JsonNode el = arr.get(i);
             if (ArrayFunctionHelper.nodesEqual(el, target)) return (long) i;
             if (value != null && el.isTextual() && UuidTextNode.holds(el) == UuidTextNode.holds(target)
+                    && !DecfloatTextNode.holds(el) && !DecfloatTextNode.holds(target)
                     && el.asText().equals(value.toString())) return (long) i;
         }
         return null;
@@ -58,5 +61,16 @@ public class ArrayPosition extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.VALUE;
+        }
+        if (position == 1) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        return null;
     }
 }

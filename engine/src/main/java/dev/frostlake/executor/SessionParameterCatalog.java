@@ -53,6 +53,11 @@ public final class SessionParameterCatalog {
 
     private static final List<SessionParameterRow> USER_ONLY_ROWS = load(USER_ONLY_RESOURCE);
 
+    /** The parameters the account lists that a session does not, in the same layout. */
+    private static final String ACCOUNT_ONLY_RESOURCE = "/account-parameters.tsv";
+
+    private static final List<SessionParameterRow> ACCOUNT_ONLY_ROWS = load(ACCOUNT_ONLY_RESOURCE);
+
     /** The parameter names a real account lists for a USER, in its order. */
     private static final String USER_RESOURCE = "/dev/frostlake/parameters/user.txt";
 
@@ -64,6 +69,11 @@ public final class SessionParameterCatalog {
     private static final List<String> TASK_NAMES = loadNames(TASK_RESOURCE);
 
     private SessionParameterCatalog() {
+    }
+
+    /** The parameters SHOW PARAMETERS IN ACCOUNT lists beside a session's own, alphabetical by name. */
+    public static List<SessionParameterRow> accountOnlyRows() {
+        return ACCOUNT_ONLY_ROWS;
     }
 
     /** Every known parameter, in the order live lists them (alphabetical by name). */

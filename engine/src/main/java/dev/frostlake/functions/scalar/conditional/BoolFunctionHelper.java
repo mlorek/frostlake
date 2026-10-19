@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
+import dev.frostlake.functions.WholeNumbers;
+
 /** Shared truthiness helper for the BOOLAND / BOOLOR / BOOLNOT / BOOLXOR functions. */
 public final class BoolFunctionHelper {
 
@@ -23,9 +25,11 @@ public final class BoolFunctionHelper {
     }
 
     /**
-     * Interprets a value as a three-valued boolean. NULL stays NULL (UNKNOWN); booleans pass
-     * through; numbers and numeric/boolean strings are TRUE when non-zero and FALSE when zero.
-     * Non-numeric, non-boolean strings are treated as TRUE (present, non-null).
+     * Interprets a value as a three-valued boolean, as the functions read their arguments: as NUMBERs, TRUE when
+     * not zero (live-verified). NULL stays NULL (UNKNOWN), a BOOLEAN is itself, a FLOAT is true when not zero, NaN
+     * included, and a text or a VARIANT converts as an argument read as a NUMBER converts (see
+     * {@link WholeNumbers#decimalOf}): {@code BOOLAND('1.5', 1)} is TRUE, {@code BOOLAND('yes', 1)} is "Numeric
+     * value 'yes' is not recognized" and a VARIANT holding "yes" "Failed to cast variant value "yes" to FIXED".
      */
     public static Boolean truthiness(final Object value) {
         if (value == null) {
@@ -34,20 +38,9 @@ public final class BoolFunctionHelper {
         if (value instanceof Boolean) {
             return (Boolean) value;
         }
-        if (value instanceof Number) {
+        if (value instanceof Double || value instanceof Float) {
             return ((Number) value).doubleValue() != 0.0;
         }
-        final String s = value.toString().trim();
-        if (s.equalsIgnoreCase("true")) {
-            return Boolean.TRUE;
-        }
-        if (s.equalsIgnoreCase("false")) {
-            return Boolean.FALSE;
-        }
-        try {
-            return Double.parseDouble(s) != 0.0;
-        } catch (final NumberFormatException e) {
-            return Boolean.TRUE;
-        }
+        return WholeNumbers.decimalOf(value).signum() != 0;
     }
 }

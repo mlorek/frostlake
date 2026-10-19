@@ -30,11 +30,11 @@ import java.sql.SQLException;
  * MULTI_STATEMENT_COUNT connection property) and follows {@code ALTER SESSION SET
  * MULTI_STATEMENT_COUNT} / {@code UNSET} statements executed through the connection.
  *
- * <p>Counting is scanner-based like the drivers' placeholder handling — string literals (both
- * {@code ''} and {@code \'} escapes), quoted identifiers, {@code --}/{@code //}/{@code /* *&#47;}
- * comments and {@code $$…$$} bodies are opaque; a trailing {@code ;} does not add a statement; a
- * scripting region — an unquoted block or DECLARE-headed body — counts as one statement, as the
- * account counts it (see {@link #countStatements}).
+ * <p>The count is the parser's own where the text is parsed in this process, and the lexer's tokens'
+ * where it is handed to a server, which counts what it parses and has the last word; neither reads a
+ * literal, a name or a comment differently from the grammar. A trailing {@code ;} does not add a
+ * statement, and a scripting region — an unquoted block or DECLARE-headed body — counts as one, as the
+ * account counts it (see {@link StatementCount}).
  */
 final class JdbcMultiStatement {
 
@@ -49,6 +49,14 @@ final class JdbcMultiStatement {
     /** Top-level statement count, as {@link StatementCount} counts it for every client. */
     static int countStatements(final String sql) {
         return StatementCount.countStatements(sql);
+    }
+
+    /**
+     * Top-level statement count read off the lexer's tokens, for the transport that hands the text to a
+     * server: the server counts what it parses and has the last word, so the client does not parse it too.
+     */
+    static int countTokens(final String sql) {
+        return StatementCount.countTokens(sql);
     }
 
     /** The live refusal, byte-for-byte. */
@@ -70,10 +78,5 @@ final class JdbcMultiStatement {
             return new SQLException(syntaxError.getMessage(), syntaxError);
         }
         return countMismatch(actual, desired);
-    }
-
-    private static int skipLine(final String s, final int start) {
-        final int j = s.indexOf('\n', start);
-        return j < 0 ? s.length() : j + 1;
     }
 }

@@ -29,9 +29,10 @@ import org.antlr.v4.runtime.ParserRuleContext;
  * conversion to its type, and the interval conversions take no cached value, so any query over such a
  * scan is refused while it compiles, naming the first interval column whatever the query reads —
  * {@code SELECT n}, {@code COUNT(*)}, a WHERE, an ORDER BY, a LIMIT, {@code SELECT r.*}, a CTAS and a UNION
- * alike: "invalid type [CAST(STRIP_NULL_VALUE(GET("RESULT_SCAN_&lt;id&gt;_RESULT_SCAN".$1, 'IV')) AS
- * INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'". The relation is named by its alias
- * when it has one, and a column that cannot hold NULL is read without STRIP_NULL_VALUE. Only the bare
+ * alike: "invalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_RESULT_SCAN.$1, 'IV')) AS
+ * INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'". The relation is named RESULT_SCAN_ and
+ * its alias when it has one (RESULT_SCAN_R), and a column that cannot hold NULL is read without
+ * STRIP_NULL_VALUE. Only the bare
  * {@code SELECT * FROM TABLE(RESULT_SCAN(…))}, with or without an alias, hands the result back as it is
  * (live-verified).
  */
@@ -64,7 +65,7 @@ final class IntervalResultScan {
             return;
         }
         final boolean nullable = interval.isNullable() || !interval.isNullabilityKnown();
-        final String read = "GET(\"RESULT_SCAN_" + queryId + "_" + (alias == null ? "RESULT_SCAN" : alias) + "\".$1, '"
+        final String read = "GET(RESULT_SCAN_" + (alias == null ? "RESULT_SCAN" : alias) + ".$1, '"
             + interval.getName() + "')";
         final DataType type = declared(interval);
         throw new RuntimeException(SqlCompilationError.of("invalid type [CAST("
@@ -84,7 +85,7 @@ final class IntervalResultScan {
         }
         final FrostlakeParser.TableReferenceContext reference =
             (FrostlakeParser.TableReferenceContext) call.getParent().getParent();
-        if (reference.LATERAL() != null || reference.pivotClause() != null || reference.unpivotClause() != null
+        if (reference.LATERAL() != null || reference.pivotClause() != null || reference.unpivotClause() != null || reference.matchRecognizeClause() != null
                 || reference.sampleClause() != null
                 || !(reference.getParent() instanceof FrostlakeParser.TableExpressionContext)) {
             return false;

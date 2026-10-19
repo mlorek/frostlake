@@ -26,6 +26,7 @@ import org.junit.jupiter.api.function.Executable;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -84,7 +85,7 @@ public class ShowQualifiedAndAccountScopeTest extends BaseDatabaseTest {
         final int nameIndex = rs.getColumnIndex("name");
         final Set<String> out = new HashSet<String>();
         for (final Row row : rs.getRows()) {
-            out.add(String.valueOf(row.getValue(nameIndex)).toUpperCase());
+            out.add(String.valueOf(row.getValue(nameIndex)).toUpperCase(Locale.ROOT));
         }
         return out;
     }

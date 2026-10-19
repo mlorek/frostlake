@@ -21,18 +21,21 @@ import java.util.Map;
 /**
  * Implemented by catalog objects (and columns) that can carry Snowflake object tags applied via
  * {@code ALTER <object> SET TAG <tag> = '<value>'} / {@code ALTER <object> UNSET TAG <tag>}.
+ *
+ * <p>An assignment is kept under a key: the tag's own identity, set and read through {@link TagAssignments},
+ * which is what statements and listings go through.
  */
 public interface Taggable {
 
-    /** Associate (or overwrite) a tag value on this object; {@code tagName} is the canonical upper-cased tag name. */
+    /** Associate (or overwrite) a tag value on this object; {@code tagName} is the assignment's key. */
     void setTag(final String tagName, final String value);
 
     /** Remove a tag association from this object (no-op if absent). */
     void unsetTag(final String tagName);
 
-    /** The value of the named tag on this object, or {@code null} if not set. */
+    /** The value kept under the key on this object, or {@code null} if not set. */
     String getTagValue(final String tagName);
 
-    /** All tag associations on this object (tag name -&gt; value). Named getTagValues to avoid clashing with Schema.getTags(). */
+    /** All tag associations on this object (key -&gt; value). Named getTagValues to avoid clashing with Schema.getTags(). */
     Map<String, String> getTagValues();
 }

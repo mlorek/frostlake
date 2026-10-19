@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSetColumn;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -61,7 +63,7 @@ public class MaterializedViewShowColumnsTest extends BaseDatabaseTest {
             if (names.length() > 0) {
                 names.append('|');
             }
-            names.append(column.getName().toLowerCase());
+            names.append(column.getName().toLowerCase(Locale.ROOT));
         }
         return names.toString();
     }

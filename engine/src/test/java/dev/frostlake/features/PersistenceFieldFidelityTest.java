@@ -43,6 +43,7 @@ import java.security.GeneralSecurityException;
 import java.security.KeyPairGenerator;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -100,6 +101,66 @@ public class PersistenceFieldFidelityTest {
         return engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
     }
 
+    /** A tag's emptied ALLOWED_VALUES list stays a list, and a database role keeps a quoted name's case. */
+    @Test
+    public void anEmptiedTagListAndAQuotedDatabaseRoleSurviveAReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TAG listed ALLOWED_VALUES 'a'");
+        engine1.execute("ALTER TAG listed DROP ALLOWED_VALUES 'a'");
+        engine1.execute("CREATE TAG unlisted");
+        engine1.execute("CREATE DATABASE ROLE \"dr_low\"");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertEquals("[]", schema(engine2).getTag("LISTED").allowedValuesText());
+        assertFalse(schema(engine2).getTag("UNLISTED").hasAllowedValues());
+        assertTrue(engine2.getCatalog().getDatabase("test_db").getDatabaseRole("dr_low") != null);
+        assertTrue(engine2.getCatalog().getDatabase("test_db").getDatabaseRole("DR_LOW") == null);
+        engine2.shutdown();
+    }
+
+    /** A procedure stays SECURE, and a dynamic table renamed into another schema goes on reading its source. */
+    @Test
+    public void aSecureProcedureAndAMovedDynamicTableSurviveAReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE SECURE PROCEDURE keeps() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'p'; END; $$");
+        engine1.execute("CREATE WAREHOUSE IF NOT EXISTS wh");
+        engine1.execute("CREATE TABLE moved_base (a INT)");
+        engine1.execute("INSERT INTO moved_base VALUES (1), (2)");
+        engine1.execute("CREATE DYNAMIC TABLE moved_dt TARGET_LAG = '1 minute' WAREHOUSE = wh AS SELECT a FROM moved_base");
+        engine1.execute("CREATE SCHEMA test_db.moved_to");
+        engine1.execute("USE SCHEMA test_db.test_schema");
+        engine1.execute("ALTER DYNAMIC TABLE moved_dt RENAME TO moved_to.moved_dt");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertTrue(schema(engine2).getProcedures().get(0).isSecure());
+        assertEquals("TEST_SCHEMA",
+            engine2.getCatalog().getDatabase("test_db").getSchema("moved_to").getDynamicTable("MOVED_DT")
+                .getDefinitionSchema());
+        assertEquals(2L, ((Number) engine2.executeQuery("SELECT COUNT(*) FROM moved_to.moved_dt").getRows().get(0)
+            .getValue(0)).longValue());
+        engine2.shutdown();
+    }
+
+    /** A clustering key reads back as its statement wrote it after a reload too. */
+    @Test
+    public void aClusteringKeyKeepsItsSpellingAcrossAReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE keyed (a INT, b INT) CLUSTER BY linear(a , b+1)");
+        engine1.execute("CREATE TABLE keyed_plain (a INT, b INT) CLUSTER BY (  a,b)");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertEquals("linear(a , b+1)", engine2.executeQuery(
+            "SELECT clustering_key FROM information_schema.tables WHERE table_name = 'KEYED'").getRows().get(0)
+            .getValue(0));
+        assertEquals("LINEAR(  a,b)", engine2.executeQuery(
+            "SELECT clustering_key FROM information_schema.tables WHERE table_name = 'KEYED_PLAIN'").getRows().get(0)
+            .getValue(0));
+        engine2.shutdown();
+    }
+
     /** A Cortex search service is definition-only, and every part of that definition survives a reload. */
     @Test
     public void cortexSearchServiceSurvivesAReload() {
@@ -115,10 +176,19 @@ public class PersistenceFieldFidelityTest {
               COMMENT = 'kept'
               AS (SELECT id, body, cat FROM docs)
             """);
+        // What ALTER … SET changes afterwards is part of the definition too.
+        engine1.execute("ALTER CORTEX SEARCH SERVICE persist_svc SET PRIMARY KEY = (id)");
+        engine1.execute("ALTER CORTEX SEARCH SERVICE persist_svc SET AUTO_SUSPEND = 1800");
+        engine1.execute("ALTER CORTEX SEARCH SERVICE persist_svc SET FULL_INDEX_BUILD_INTERVAL_DAYS = 7");
+        engine1.execute("ALTER CORTEX SEARCH SERVICE persist_svc SET REQUEST_LOGGING = TRUE");
         engine1.shutdown();
 
         final DatabaseEngine engine2 = reopenEngine();
         final CortexSearchService service = schema(engine2).getCortexSearchService("PERSIST_SVC");
+        assertEquals(List.of("ID"), service.getPrimaryKeyColumns());
+        assertEquals(Integer.valueOf(1800), service.getAutoSuspend());
+        assertEquals(Integer.valueOf(7), service.getFullIndexBuildIntervalDays());
+        assertTrue(service.isRequestLogging());
         assertEquals("BODY", service.getSearchColumn());
         assertEquals(List.of("CAT"), service.getAttributeColumns());
         assertEquals(List.of("ID", "BODY", "CAT"), service.getColumns());
@@ -270,9 +340,9 @@ public class PersistenceFieldFidelityTest {
         engine1.shutdown();
 
         final DatabaseEngine engine2 = reopenEngine();
-        assertEquals("parent",
-            schema(engine2).getTable("child").getColumn("pid").getReferencedTable().toLowerCase(),
-            "column-level REFERENCES target must survive");
+        // The key keeps its parent by the parent's full name, whatever the statement wrote.
+        assertTrue(schema(engine2).getTable("child").getColumn("pid").getReferencedTable().toLowerCase(Locale.ROOT)
+            .endsWith(".parent"), "column-level REFERENCES target must survive");
         engine2.shutdown();
     }
 

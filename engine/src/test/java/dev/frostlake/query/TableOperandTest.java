@@ -129,4 +129,23 @@ public class TableOperandTest extends BaseDatabaseTest {
             + "\nsyntax error line 1 at position 23 unexpected ','.",
             refusal("SELECT * FROM TABLE(t1), t1"));
     }
+
+    /** IDENTIFIER( … ) is read there as a function's call, and no table function has that name. */
+    @Test
+    public void anIdentifierCallIsATableFunctionThatDoesNotExist() {
+        final String unknown = "SQL compilation error:\nUnknown table function IDENTIFIER";
+        assertEquals(unknown, refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER('t' || '1'))"));
+        assertEquals(unknown, refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER('t1'))"));
+        assertEquals(unknown, refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER(1))"));
+        assertEquals(unknown, refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER())"));
+        assertEquals(unknown, refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER('t1', 't2'))"));
+        assertEquals(unknown, refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER(UPPER('t1')))"));
+        assertEquals(unknown, refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER('nosuch_t'))"));
+        // Its arguments are read first: a name none of them can reach is the fault.
+        assertEquals("SQL compilation error: error line 1 at position 38\ninvalid identifier 'A'",
+            refusal("SELECT COUNT(*) FROM TABLE(IDENTIFIER(a))"));
+        // Outside TABLE( … ) the reference is refused where its reading stops, as before.
+        assertEquals("SQL compilation error:\nsyntax error line 1 at position 36 unexpected '||'.",
+            refusal("SELECT COUNT(*) FROM IDENTIFIER('t' || '1')"));
+    }
 }

@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore;
 
+import dev.frostlake.executor.SqlCompilationError;
+
 /**
  * Live's refusal of a statement that needs a current database the session does not have, naming what the
  * statement was doing, with no compilation-error prefix:
@@ -40,8 +42,12 @@ public final class NoCurrentDatabaseRefusal extends RuntimeException {
     private static final ThreadLocal<String> KIND = new ThreadLocal<String>();
 
     private NoCurrentDatabaseRefusal(final String kind) {
-        super("Cannot perform " + kind + ". This session does not have a current database."
-            + " Call 'USE DATABASE', or use a qualified name.");
+        this(kind, "database", "DATABASE");
+    }
+
+    private NoCurrentDatabaseRefusal(final String kind, final String container, final String use) {
+        super("Cannot perform " + kind + ". This session does not have a current " + container + "."
+            + " Call 'USE " + use + "', or use a qualified name.");
     }
 
     /**
@@ -77,6 +83,41 @@ public final class NoCurrentDatabaseRefusal extends RuntimeException {
     public static RuntimeException forStatement() {
         final String kind = KIND.get();
         return kind == null ? new RuntimeException("No database selected") : new NoCurrentDatabaseRefusal(kind);
+    }
+
+    /**
+     * The refusal of a bare name in a session that has a current database and no current schema — its schema was
+     * renamed away. A statement that makes, drops or changes an object is refused as one with no current database
+     * is, naming the schema: {@code Cannot perform CREATE TABLE. This session does not have a current schema. Call
+     * 'USE SCHEMA', or use a qualified name.} Any other misses the name as it would miss an object not there,
+     * {@code Table 'MC' does not exist or not authorized.} (live-verified).
+     *
+     * @param reportedKind the kind a miss names, as {@code Table}
+     * @param name         the name as written
+     * @return the refusal to throw
+     */
+    public static RuntimeException withoutSchema(final String reportedKind, final String name) {
+        final String kind = KIND.get();
+        return kind != null && changesObjects(kind) ? new NoCurrentDatabaseRefusal(kind, "schema", "SCHEMA")
+            : new RuntimeException(SqlCompilationError.doesNotExist(reportedKind, name));
+    }
+
+    /**
+     * The refusal of a statement that makes, drops or changes an object in the current schema of a session that has
+     * none (see {@link #withoutSchema}).
+     *
+     * @return the refusal to throw
+     */
+    public static RuntimeException schemaForStatement() {
+        final String kind = KIND.get();
+        return kind == null ? new RuntimeException("No schema selected")
+            : new NoCurrentDatabaseRefusal(kind, "schema", "SCHEMA");
+    }
+
+    /** Whether a statement, by the name the refusals give it, makes, drops or changes an object. */
+    private static boolean changesObjects(final String kind) {
+        return kind.startsWith("CREATE") || kind.startsWith("DROP") || kind.startsWith("ALTER")
+            || "TRUNCATE".equals(kind) || "RENAME".equals(kind);
     }
 
     /**

@@ -16,14 +16,20 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ChangeTrackedQuery;
 import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.DmlWriteTarget;
+import dev.frostlake.executor.DynamicTableColumns;
+import dev.frostlake.executor.InformationSchemaGuard;
+import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.MaterializedViewRefresh;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ProjectionSlot;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RecursiveViewChain;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.expressions.ExpressionSource;
@@ -31,10 +37,11 @@ import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
-import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.QualifiedName;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.Initialize;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Privilege;
@@ -42,9 +49,12 @@ import dev.frostlake.metastore.model.RefreshMode;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.State;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlSyntaxException;
+import dev.frostlake.storage.Row;
 
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -56,7 +66,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Handles the SELECT-backed CREATE shapes — VIEW, MATERIALIZED VIEW, and DYNAMIC TABLE — extracted from
@@ -235,37 +249,40 @@ public class CreateRelationalHandler implements CommandHandler {
         BindsInDefinition.reject(ctx.selectStatement());
         rejectSourcelessCopyGrants(ctx);
 
+        // The replaced view's privileges, set aside while its replacement is made: OR ALTER keeps them all, COPY
+        // GRANTS all but OWNERSHIP, a plain OR REPLACE none; a replacement that fails leaves them where they were.
+        String grantsSetAside = null;
         try {
             final Schema schema;
             final String viewName;
 
-            if (parts.length == 1) {
-                schema = ddl.resolveCurrentSchema();
-                viewName = parts[0];
-            } else if (parts.length == 2) {
-                if (catalog.getCurrentDatabase() == null) {
-                    throw NoCurrentDatabaseRefusal.forStatement();
-                }
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                viewName = parts[1];
-            } else if (parts.length == 3) {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                viewName = parts[2];
-            } else {
-                throw new RuntimeException("Invalid view name: " + qualifiedName);
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            viewName = parts[parts.length - 1];
+            CreatedObjectProperties.requireViewProperties(ctx, schema.getName());
+            if (orReplace) {
+                // One of INFORMATION_SCHEMA's views is not replaced (live-verified).
+                InformationSchemaGuard.refuseWrite(catalog, parts);
             }
 
-            ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, ContainerType.SCHEMA, schema.getName());
-            // A name another relation kind holds is refused BEFORE existence is answered, so even
-            // IF NOT EXISTS over a table's name refuses rather than skipping (live-verified).
-            schema.rejectNameHeldByOtherKind(viewName, RelationKind.VIEW,
-                TemporaryObjectStatements.isTemporary(ctx));
-            if (orReplace && !TemporaryObjectStatements.isTemporary(ctx)) {
+            final boolean temporaryView = TemporaryObjectStatements.isTemporary(ctx);
+            // A name another relation kind holds is refused BEFORE anything is asked of the session and before
+            // existence is answered, so even IF NOT EXISTS over a table's name refuses rather than skipping
+            // (live-verified).
+            schema.rejectNameHeldByOtherKind(viewName, RelationKind.VIEW, temporaryView);
+            // Replacing a view needs OWNERSHIP of it, asked ahead of the privilege to create one.
+            if (orReplace && !temporaryView) {
                 queryExecutor.requireOwnership("VIEW", parts, null);
+            }
+            // A temporary view needs no privilege on its schema, and a plain CREATE of a name a view already
+            // holds is refused for the name ahead of the privilege (live-verified, both).
+            if (temporaryView || !orReplace && !ifNotExists && schema.hasViewExact(viewName)) {
+                schema.requireCreatable(Privilege.CREATE_VIEW);
+            } else {
+                ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, schema);
             }
             // A VIEW answers existence FIRST: over an existing view, IF NOT EXISTS succeeds without the
             // body ever compiling (live: a broken body over an existing view is "already exists").
-            if (ifNotExists && !orReplace && schema.hasView(viewName)) {
+            if (ifNotExists && !orReplace && schema.hasViewExact(viewName)) {
                 ConditionalDdlOutcome.createSkipped();
                 return null;
             }
@@ -284,7 +301,10 @@ public class CreateRelationalHandler implements CommandHandler {
                 // sentence a table's is.
                 ColumnDefinitionParser.rejectDuplicateNames(columnNames);
             }
-            final String selectQuery = ctx.RECURSIVE() != null && unionsBranches(ctx.selectStatement())
+            // A RECURSIVE view runs as a recursive CTE when its body recurses on it (see RecursiveViewChain); any other
+            // body reads the view by its name as any query would, which over a view not yet created refuses it.
+            final String selectQuery = ctx.RECURSIVE() != null
+                    && RecursiveViewChain.of(ctx.selectStatement(), viewName) != null
                 ? recursiveDefinition(ctx.objectName().getStop().getText(), writtenColumns, writtenQuery)
                 : writtenQuery;
             final View view = ctx.viewColumnList() != null
@@ -303,7 +323,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 // and live makes the same checks here (the policy must resolve above all).
                 final String written = getText(ctx.rowAccessPolicyClause().qualifiedName());
                 RowAccessPolicyAttachment.require(catalog, written);
-                view.setRowAccessPolicyName(written.toUpperCase());
+                view.setRowAccessPolicyName(catalog.qualifiedObjectName(written));
                 final List<String> policyCols = new ArrayList<>();
                 for (final FrostlakeParser.IdentifierContext id : ctx.rowAccessPolicyClause().identifierList().identifier()) {
                     policyCols.add(getText(id));
@@ -341,6 +361,25 @@ public class CreateRelationalHandler implements CommandHandler {
                     }
                 }
             }
+            // CHANGE_TRACKING = TRUE turns the view's change tracking on, as a stream created on it does; a query
+            // change tracking cannot follow is refused (live-verified, see ChangeTrackedQuery).
+            for (final FrostlakeParser.ViewPropertyContext property : ctx.viewProperty()) {
+                if ("CHANGE_TRACKING".equalsIgnoreCase(property.optionKey().getText())) {
+                    final boolean tracked = "TRUE".equalsIgnoreCase(property.copyOptionValue().getText());
+                    final String untracked = tracked ? ChangeTrackedQuery.refusal(catalog, ctx.selectStatement())
+                        : null;
+                    if (untracked != null) {
+                        throw new RuntimeException(untracked);
+                    }
+                    view.setChangeTracking(tracked);
+                    if (tracked) {
+                        // The tables the view reads track their changes with it, as they do for a stream on it.
+                        for (final Table read : ChangeTrackedQuery.trackedTables(catalog, ctx.selectStatement())) {
+                            read.setChangeTracking(true);
+                        }
+                    }
+                }
+            }
             if (comment != null) {
                 view.setComment(comment);
                 final String[] texts = ViewCommentText.texts(ctx, ddl.getOriginalText(ctx), comment);
@@ -350,6 +389,11 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
 
+            // A view whose name differs only in case is another view, which OR REPLACE leaves alone (live-verified).
+            if (orReplace && schema.hasViewExact(viewName)) {
+                grantsSetAside = schema.qualifiedName(schema.getView(viewName).getName());
+                GrantNames.setAside(catalog, "VIEW", grantsSetAside);
+            }
             view.setOwner(FutureGrants.ownerOfNew(catalog, "VIEW", schema, viewName));
             view.setLastDdlBy(catalog.currentUserForDdl());
             if (ctx.tagList() != null) {
@@ -370,11 +414,17 @@ public class CreateRelationalHandler implements CommandHandler {
             try {
                 // The body compiles where the view will live, whatever the session's context.
                 view.setResolvedColumns(queryExecutor.resolveViewShapeInScope(
-                    schemaDatabaseName(parts), schema.getName(), selectQuery, view.getColumnNames()));
+                    schemaDatabaseName(parts), schema.getName(), selectQuery, view.getColumnNames(),
+                    selectQuery.equals(writtenQuery) ? null : ctx.objectName().getStop().getText()));
             } finally {
                 ExpressionSource.end(displacedBody);
             }
+            // The role creating the view has to be able to read what the body reads.
+            final Set<String> bodyCteNames = new HashSet<>();
+            QueryExecutor.collectCteNames(ctx.selectStatement(), bodyCteNames);
+            queryExecutor.requireSelectIn(ctx.selectStatement(), bodyCteNames);
             validateViewColumns(ctx);
+            DuplicateColumnNames.rejectAmong(view.getResolvedColumns());
             if (ctx.viewColumnList() != null) {
                 // A per-column COMMENT in the view's own column list belongs to the VIEW's column —
                 // DESCRIBE reports it there, and never the base column's comment (live-verified).
@@ -387,8 +437,13 @@ public class CreateRelationalHandler implements CommandHandler {
             // working view whenever the replacement turned out to be invalid.
             if (orReplace) {
                 try {
-                    schema.dropView(viewName);
+                    schema.dropViewExact(viewName);
                     logger.trace("Dropped existing view for OR REPLACE: {}", qualifiedName);
+                    if (ctx.or_alter() != null) {
+                        // A CREATE OR ALTER that found its view altered it, and answers as an ALTER does
+                        // (live-verified).
+                        ConditionalDdlOutcome.alteredInPlace();
+                    }
                 } catch (final RuntimeException noExistingView) {
                     // Schema.getView RAISES for an absent view rather than answering null, so there
                     // is nothing to ask before dropping — the absence is the normal case.
@@ -396,17 +451,24 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
             schema.addView(view);
+            if (grantsSetAside != null) {
+                if (ctx.or_alter() != null || !ctx.copyGrants().isEmpty()) {
+                    GrantNames.takeBack(catalog, "VIEW", grantsSetAside, ctx.or_alter() == null);
+                } else {
+                    GrantNames.discard(catalog, "VIEW", grantsSetAside);
+                }
+                grantsSetAside = null;
+            }
             logger.trace("Created view: {}", qualifiedName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, DDLCommandHandler.namedAsWritten(e, parts), "object");
             logger.debug("View already exists (IF NOT EXISTS): {}", qualifiedName);
+        } finally {
+            if (grantsSetAside != null) {
+                GrantNames.takeBack(catalog, "VIEW", grantsSetAside, false);
+            }
         }
         return null;
-    }
-
-    /** Whether a query's top level unions its branches: {@code a UNION [ALL] b}. */
-    private static boolean unionsBranches(final FrostlakeParser.SelectStatementContext query) {
-        return !query.setOperator().isEmpty() && query.setOperator(0).UNION() != null;
     }
 
     /**
@@ -441,12 +503,14 @@ public class CreateRelationalHandler implements CommandHandler {
      * the way a CTAS refuses (live-verified). The refusal is wrapped in the write envelope, naming the view
      * (qualified one level up, as a CTAS's table is) and the column whose projection stopped. A fault with no
      * projection to name, an aggregate's, is refused bare, as live refuses it.
+     *
+     * @return how many rows were produced
      */
-    private void populate(final FrostlakeParser.CreateStatementContext ctx, final Schema schema,
+    private long populate(final FrostlakeParser.CreateStatementContext ctx, final Schema schema,
                           final String mvName, final boolean fullyQualified) {
         ProjectionSlot.reset();
         try {
-            queryExecutor.executeSelectFromContext(ctx.selectStatement());
+            return queryExecutor.executeSelectFromContext(ctx.selectStatement()).getRowCount();
         } catch (final RuntimeException failed) {
             final int slot = ProjectionSlot.takeFailedSlot();
             if (!DmlWriteTarget.isRowTimeFailure(failed)) {
@@ -458,14 +522,34 @@ public class CreateRelationalHandler implements CommandHandler {
             }
             final String table = (fullyQualified ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
                 + schema.getDatabaseName() + "." + schema.getName() + "." + mvName;
-            throw DmlWriteTarget.failedOnColumn(table.toUpperCase(), column.toUpperCase(), failed);
+            throw DmlWriteTarget.failedOnColumn(table.toUpperCase(Locale.ROOT), column.toUpperCase(Locale.ROOT), failed);
         }
+    }
+
+    /**
+     * A materialized view's column list, written before its options or after them; a second list after a first is
+     * a syntax error at its parenthesis. Null when the view declares none.
+     */
+    private FrostlakeParser.ViewColumnListContext materializedViewColumns(
+            final FrostlakeParser.CreateStatementContext ctx) {
+        final FrostlakeParser.TrailingViewColumnsContext trailing = ctx.trailingViewColumns();
+        if (trailing == null) {
+            return ctx.viewColumnList();
+        }
+        if (ctx.viewColumnList() != null) {
+            final Token at = trailing.getStart();
+            final String line = "syntax error line " + at.getLine() + " at position " + at.getCharPositionInLine()
+                + " unexpected '('.";
+            throw new SqlSyntaxException(SqlCompilationError.of(line), Collections.singletonList(line),
+                ddl.getOriginalText(ctx));
+        }
+        return trailing.viewColumnList();
     }
 
     /** The name of a materialized view's column at {@code slot}: its declared name, or the item's alias. */
     private String columnNameAt(final FrostlakeParser.CreateStatementContext ctx, final int slot) {
-        if (ctx.viewColumnList() != null) {
-            final List<FrostlakeParser.ViewColumnDefContext> declared = ctx.viewColumnList().viewColumnDef();
+        if (materializedViewColumns(ctx) != null) {
+            final List<FrostlakeParser.ViewColumnDefContext> declared = materializedViewColumns(ctx).viewColumnDef();
             return slot < declared.size() ? getText(declared.get(slot).identifier()) : null;
         }
         final FrostlakeParser.SelectStatementContext body = ctx.selectStatement();
@@ -508,35 +592,89 @@ public class CreateRelationalHandler implements CommandHandler {
      * is initialized ON_SCHEDULE, run as its first refresh. A value that faults there refuses in the
      * refresh's own sentence, which carries the refresh's data timestamp (live-verified).
      */
-    private void initialRefresh(final FrostlakeParser.CreateStatementContext ctx, final String query,
-                                final Initialize initialize) {
+    private void initialRefresh(final FrostlakeParser.CreateStatementContext ctx, final DynamicTable dt,
+                                final Schema schema, final String query, final Initialize initialize) {
         final SourcePosition displaced = ExpressionSource.beginNested(originOf(ctx.selectStatement()));
         try {
             queryExecutor.resolveRelationShape(query, null);
         } finally {
             ExpressionSource.end(displaced);
         }
+        // A body that compiles must read a base table: one reading none, or only common table expressions, is
+        // refused (live-verified).
+        if (!ChangeTrackedQuery.readsBaseTable(ctx.selectStatement())) {
+            throw new RuntimeException(SqlCompilationError.inline("Dynamic Tables must have at least one base table."));
+        }
+        // The table's own column list is judged against the query's columns once the query compiles, and the
+        // columns are kept as they resolved, for the listings that tell them.
+        dt.setResolvedColumns(queryExecutor.dynamicTableColumns(schema, dt));
         if (initialize == Initialize.ON_SCHEDULE) {
             return;
         }
         ProjectionSlot.reset();
+        // The first refresh refreshes a dynamic table it reads that never refreshed, first (live-verified).
+        final boolean outer = queryExecutor.beginDynamicTableRefresh();
         try {
-            queryExecutor.executeSelectFromContext(ctx.selectStatement());
-        } catch (final RuntimeException failed) {
-            ProjectionSlot.takeFailedSlot();
-            if (!DmlWriteTarget.isRowTimeFailure(failed)) {
-                throw failed;
+            List<Row> rows;
+            try {
+                rows = queryExecutor.executeSelectFromContext(ctx.selectStatement()).getRows();
+            } catch (final RuntimeException failed) {
+                ProjectionSlot.takeFailedSlot();
+                if (!DmlWriteTarget.isRowTimeFailure(failed)) {
+                    throw failed;
+                }
+                throw refreshFailure(failed);
             }
-            throw new RuntimeException(SqlCompilationError.inline("Failed to refresh dynamic table with"
-                + " refresh_trigger INITIAL at data_timestamp " + StatementClock.instant().toEpochMilli()
-                + " because of the error: "
-                + SqlCompilationError.inline("Target table failed to refresh: " + failed.getMessage())));
+            if (!dt.getDeclaredColumns().isEmpty()) {
+                // A value the column's declared type cannot hold fails the first refresh, and with it the create.
+                try {
+                    rows = queryExecutor.dynamicTableRows(schema, dt);
+                } catch (final RuntimeException failed) {
+                    throw refreshFailure(failed);
+                }
+            }
+            // What the first refresh holds is what a listing counts and what the next refresh compares.
+            queryExecutor.recordDynamicTableRefresh(dt, rows);
+        } finally {
+            queryExecutor.endDynamicTableRefresh(outer);
         }
     }
 
+    /** The refusal of a create whose first refresh failed on a row. */
+    private static RuntimeException refreshFailure(final RuntimeException failed) {
+        return new RuntimeException(SqlCompilationError.inline("Failed to refresh dynamic table with"
+            + " refresh_trigger INITIAL at data_timestamp " + StatementClock.instant().toEpochMilli()
+            + " because of the error: "
+            + SqlCompilationError.inline("Target table failed to refresh: " + failed.getMessage())));
+    }
+
+    /** The columns a dynamic table's own column list declares, in order; none when it writes no list. */
+    private List<DynamicTableColumn> declaredColumns(final FrostlakeParser.DynamicTableColumnsContext list) {
+        final List<DynamicTableColumn> declared = new ArrayList<>();
+        if (list == null) {
+            return declared;
+        }
+        for (final FrostlakeParser.DynamicTableColumnContext column : list.dynamicTableColumn()) {
+            declared.add(new DynamicTableColumn(SqlIdentifiers.canonical(column.identifier()),
+                column.dataTypeName() == null ? null
+                    : ddl.getColumnParser().parseDataType(column.dataTypeName(), column.typeParameters()),
+                column.STRING_LITERAL() == null ? null : ddl.extractStringLiteral(column.STRING_LITERAL())));
+        }
+        DynamicTableColumns.requireDistinct(declared);
+        return declared;
+    }
+
+    /**
+     * Where a body begins, as the statement's own places are told: past the comments the text opens with, and from
+     * the statement's first token in a request of several (live-verified).
+     */
     private static SourcePosition originOf(final ParserRuleContext ctx) {
-        return ctx == null ? null
-            : new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+        if (ctx == null) {
+            return null;
+        }
+        final int[] shown = LeadingCommentOffset.rebase(ctx.getStart().getLine(),
+            ctx.getStart().getCharPositionInLine());
+        return new SourcePosition(shown[0], shown[1]);
     }
 
     private void applyViewColumnComments(final FrostlakeParser.ViewColumnListContext columnList,
@@ -567,25 +705,17 @@ public class CreateRelationalHandler implements CommandHandler {
             final Schema schema;
             final String mvName;
 
-            if (parts.length == 1) {
-                schema = ddl.resolveCurrentSchema();
-                mvName = parts[0];
-            } else if (parts.length == 2) {
-                if (catalog.getCurrentDatabase() == null) {
-                    throw NoCurrentDatabaseRefusal.forStatement();
-                }
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                mvName = parts[1];
-            } else if (parts.length == 3) {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                mvName = parts[2];
-            } else {
-                throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
-            }
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            mvName = parts[parts.length - 1];
 
-            // No dedicated CREATE MATERIALIZED VIEW privilege exists in the grammar/enum; a
-            // materialized view is a view variant, so CREATE VIEW on the schema authorizes it.
-            ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, ContainerType.SCHEMA, schema.getName());
+            CreatedObjectProperties.requireMaterializedViewProperties(ctx, schema.getName());
+            // A name another kind of relation holds, and for a plain create a materialized view of the name,
+            // are refused before the privilege is asked (live-verified).
+            schema.rejectNameHeldByOtherKind(mvName, RelationKind.MATERIALIZED_VIEW, false);
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists,
+                schema.hasMaterializedView(mvName), parts);
+            // A materialized view has a CREATE privilege of its own: CREATE VIEW does not authorize it.
+            ddl.checkCreatePrivilege(Privilege.CREATE_MATERIALIZED_VIEW, schema);
 
             // A materialized view must select FROM a real table. Live rejects a FROM-less definition —
             // Snowflake plans it as a VALUES table — with this exact sentence
@@ -597,9 +727,10 @@ public class CreateRelationalHandler implements CommandHandler {
 
             // Extract optional column names (with optional per-column comments)
             final MaterializedView mv;
-            if (ctx.viewColumnList() != null) {
+            final FrostlakeParser.ViewColumnListContext declaredColumns = materializedViewColumns(ctx);
+            if (declaredColumns != null) {
                 final List<String> columnNames = new ArrayList<>();
-                for (final FrostlakeParser.ViewColumnDefContext col : ctx.viewColumnList().viewColumnDef()) {
+                for (final FrostlakeParser.ViewColumnDefContext col : declaredColumns.viewColumnDef()) {
                     columnNames.add(getText(col.identifier()));
                 }
                 mv = new MaterializedView(mvName, columnNames, selectQuery);
@@ -614,15 +745,20 @@ public class CreateRelationalHandler implements CommandHandler {
             final String[] source = sourceRelation(ctx.selectStatement());
             if (source != null) {
                 mv.setSource(source[0], source[1], source[2]);
+                mv.bindBaseTable(MaterializedViewValidity.tableNamed(catalog, mv));
                 mv.setMaterializedAsOf(MaterializedViewRefresh.lastWrite(catalog, source[0], source[1], source[2]));
             }
 
+            if (ctx.commentClause().size() > 1) {
+                throw new RuntimeException(SqlCompilationError.duplicateProperty("COMMENT"));
+            }
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 mv.setComment(comment);
             }
 
-            mv.setOwner(catalog.currentRoleForOwner());
+            // The future grants of the schema or its database cover the new view (live-verified).
+            mv.setOwner(FutureGrants.ownerOfNew(catalog, "MATERIALIZED_VIEW", schema, mvName));
             mv.setLastDdlBy(catalog.currentUserForDdl());
             // Live POPULATES a materialized view at CREATE, as a CTAS fills its table. The body compiles,
             // its columns must be named, and then its rows are produced, so a value that faults refuses the
@@ -631,11 +767,13 @@ public class CreateRelationalHandler implements CommandHandler {
             final SourcePosition displacedMvBody = ExpressionSource.beginNested(originOf(ctx.selectStatement()));
             try {
                 mv.setResolvedColumns(queryExecutor.resolveRelationShape(selectQuery, mv.getColumnNames()));
-                if (ctx.viewColumnList() == null) {
+                if (declaredColumns == null) {
                     rejectUnnamedColumns(ctx.selectStatement());
                 }
+                DuplicateColumnNames.rejectAmong(mv.getResolvedColumns());
                 if (creates) {
-                    populate(ctx, schema, mvName, parts.length == 3);
+                    // What it materialized is what a listing counts.
+                    mv.setMaterializedRows(populate(ctx, schema, mvName, parts.length == 3));
                 }
             } catch (final RuntimeException bodyRefused) {
                 if (creates) {
@@ -645,11 +783,18 @@ public class CreateRelationalHandler implements CommandHandler {
             } finally {
                 ExpressionSource.end(displacedMvBody);
             }
-            if (ctx.viewColumnList() != null) {
+            if (declaredColumns != null) {
                 // A materialized view's declared column comments behave exactly as a view's
                 // (live-verified): its own comment surfaces in DESCRIBE, and the base column's
                 // never does.
-                applyViewColumnComments(ctx.viewColumnList(), mv.getResolvedColumns());
+                applyViewColumnComments(declaredColumns, mv.getResolvedColumns());
+            }
+            // The clustering key reads the view's own columns, under the names its column list gives them;
+            // of several CLUSTER BY clauses the last one stands.
+            if (!ctx.clusterByClause().isEmpty()) {
+                mv.setClusterKeys(MaterializedViewKeys.read(
+                    ctx.clusterByClause(ctx.clusterByClause().size() - 1).expressionList(), mv.getResolvedColumns(),
+                    ddl, queryExecutor));
             }
                         // Same rule as the plain view: a FAILED CREATE OR REPLACE leaves the existing materialized
             // view standing on live (measured over an uncompilable body, a missing base table and an
@@ -668,7 +813,7 @@ public class CreateRelationalHandler implements CommandHandler {
             if (e == bodyRefusal) {
                 throw e;
             }
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, DDLCommandHandler.namedAsWritten(e, parts), "object");
             logger.debug("Materialized view already exists (IF NOT EXISTS): {}", qualifiedName);
         }
         return null;
@@ -684,9 +829,12 @@ public class CreateRelationalHandler implements CommandHandler {
         final CharStream input = ctx.getStart().getInputStream();
         final StringBuilder head = new StringBuilder(input.getText(Interval.of(ctx.getStart().getStartIndex(),
             ctx.qualifiedName(0).getStop().getStopIndex())));
-        if (!ctx.identifierList().isEmpty()) {
-            head.append(" (").append(input.getText(Interval.of(ctx.identifierList(0).getStart().getStartIndex(),
-                ctx.identifierList(0).getStop().getStopIndex()))).append(')');
+        if (ctx.dynamicTableColumns() != null) {
+            head.append(' ').append(input.getText(Interval.of(ctx.dynamicTableColumns().getStart().getStartIndex(),
+                ctx.dynamicTableColumns().getStop().getStopIndex())));
+        } else if (ctx.identifierList() != null) {
+            head.append(" (").append(input.getText(Interval.of(ctx.identifierList().getStart().getStartIndex(),
+                ctx.identifierList().getStop().getStopIndex()))).append(')');
         }
         if (!dt.getClusterKeys().isEmpty()) {
             head.append(" CLUSTER BY (").append(String.join(", ", dt.getClusterKeys())).append(')');
@@ -715,28 +863,22 @@ public class CreateRelationalHandler implements CommandHandler {
         try {
             final Schema schema;
             final String dtName;
-            if (parts.length == 1) {
-                schema = ddl.resolveCurrentSchema();
-                dtName = parts[0].toUpperCase();
-            }
-            else if (parts.length == 2) {
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                dtName = parts[1].toUpperCase();
-            } else {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                dtName = parts[2].toUpperCase();
-            }
+            // The name is kept as the reference resolved it, quoted case and all, as a table's is.
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            dtName = parts[parts.length - 1];
 
-            // No dedicated CREATE DYNAMIC TABLE privilege exists in the grammar/enum; a dynamic
-            // table is a table variant, so CREATE TABLE on the schema authorizes it.
-            ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, ContainerType.SCHEMA, schema.getName());
+            // A dynamic table has a CREATE privilege of its own: CREATE TABLE does not authorize it.
+            ddl.checkCreatePrivilege(Privilege.CREATE_DYNAMIC_TABLE, schema);
+            // A name another kind holds is refused before the warehouse, the body or the base table is weighed
+            // (live-verified), whatever OR REPLACE and IF NOT EXISTS say.
+            schema.rejectNameHeldByOtherKind(dtName, RelationKind.DYNAMIC_TABLE, false);
 
             // Parse options
             String targetLag = "1 minute";
             String warehouse = catalog.getCurrentWarehouse();
             RefreshMode refreshMode = RefreshMode.AUTO;
             Initialize initialize = Initialize.ON_CREATE;
-            int retentionDays = 1;
+            Integer retentionDays = null;
             String comment = null;
             final List<String> clusterKeys = new ArrayList<>();
 
@@ -748,7 +890,7 @@ public class CreateRelationalHandler implements CommandHandler {
                             targetLag = TargetLag.canonicalize(ddl.extractStringLiteral(opt.STRING_LITERAL()));
                         }
                     } else if (opt.WAREHOUSE() != null && opt.identifier() != null) {
-                        warehouse = getText(opt.identifier()).toUpperCase();
+                        warehouse = getText(opt.identifier());
                         WarehouseReference.require(catalog, warehouse);
                     } else if (opt.REFRESH_MODE() != null) {
                         if (opt.FULL() != null) refreshMode = RefreshMode.FULL;
@@ -756,7 +898,7 @@ public class CreateRelationalHandler implements CommandHandler {
                     } else if (opt.INITIALIZE() != null) {
                         if (opt.ON_SCHEDULE() != null) initialize = Initialize.ON_SCHEDULE;
                     } else if (opt.DATA_RETENTION_TIME_IN_DAYS() != null && opt.INTEGER_LITERAL() != null) {
-                        retentionDays = Integer.parseInt(opt.INTEGER_LITERAL().getText());
+                        retentionDays = Integer.valueOf(opt.INTEGER_LITERAL().getText());
                     } else if (opt.COMMENT() != null && opt.STRING_LITERAL() != null) {
                         // COMMENT is one of the pre-AS options; the trailing position is a syntax
                         // error on a real account.
@@ -771,16 +913,21 @@ public class CreateRelationalHandler implements CommandHandler {
 
             final String query = ddl.getOriginalText(ctx.selectStatement());
             final DynamicTable dt = new DynamicTable(dtName, query, targetLag, warehouse);
+            dt.setDeclaredColumns(declaredColumns(ctx.dynamicTableColumns()));
             dt.setRefreshMode(refreshMode);
             dt.setInitialize(initialize);
-            dt.setDataRetentionDays(retentionDays);
+            if (retentionDays != null) {
+                dt.setDataRetentionDays(retentionDays.intValue());
+            }
             dt.setClusterKeys(clusterKeys);
-            dt.setTransient(ctx.TRANSIENT() != null);
+            // A dynamic table in a transient schema is transient, as a table there is.
+            dt.setTransient(ctx.TRANSIENT() != null || schema.isTransientObject());
 
             if (comment != null) dt.setComment(comment);
             recordCreateText(ctx, dt);
 
-            dt.setOwner(catalog.currentRoleForOwner());
+            // The future grants of the schema or its database cover the new table (live-verified).
+            dt.setOwner(FutureGrants.ownerOfNew(catalog, "DYNAMIC_TABLE", schema, dtName));
             dt.setLastDdlBy(catalog.currentUserForDdl());
             // Live compiles a dynamic table's body at CREATE and, unless it is to INITIALIZE ON_SCHEDULE,
             // refreshes it there too. An existing table that is not being replaced is never rebuilt, and a
@@ -789,7 +936,7 @@ public class CreateRelationalHandler implements CommandHandler {
             final boolean creates = orReplace || !schema.hasDynamicTable(dtName);
             if (creates) {
                 try {
-                    initialRefresh(ctx, query, initialize);
+                    initialRefresh(ctx, dt, schema, query, initialize);
                 } catch (final RuntimeException bodyRefused) {
                     bodyRefusal = bodyRefused;
                     throw bodyRefused;
@@ -808,7 +955,7 @@ public class CreateRelationalHandler implements CommandHandler {
             if (e == bodyRefusal) {
                 throw e;
             }
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, DDLCommandHandler.namedAsWritten(e, parts), "object");
             logger.debug("Dynamic table already exists (IF NOT EXISTS): {}", qualifiedName);
         }
         return null;
@@ -817,13 +964,7 @@ public class CreateRelationalHandler implements CommandHandler {
 
     /** The schema a dynamic table's name parts place it in, the session supplying what the name leaves out. */
     private Schema dynamicTableSchema(final String[] parts) {
-        if (parts.length == 1) {
-            return ddl.resolveCurrentSchema();
-        }
-        if (parts.length == 2) {
-            return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-        }
-        return catalog.getDatabase(parts[0]).getSchema(parts[1]);
+        return catalog.requireOwningSchema(QualifiedName.of(parts));
     }
 
     /**
@@ -836,24 +977,26 @@ public class CreateRelationalHandler implements CommandHandler {
         final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(0)), 3);
         final String[] sourceParts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(1)), 3);
         final Schema sourceSchema = dynamicTableSchema(sourceParts);
-        final String sourceName = sourceParts[sourceParts.length - 1].toUpperCase();
+        final String sourceName = sourceParts[sourceParts.length - 1];
         if (!sourceSchema.hasDynamicTable(sourceName)) {
-            // A missing source is named as an object, by its full path.
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Object", QualifiedName.join(
-                sourceParts.length == 3 ? sourceParts[0] : catalog.getCurrentDatabase(), sourceSchema.getName(),
-                sourceName)));
+            // A missing source is named as an object: bare when it was written bare, else by its full path.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Object", sourceParts.length == 1
+                ? sourceName : QualifiedName.join(sourceParts.length == 3 ? sourceParts[0]
+                    : catalog.getCurrentDatabase(), sourceSchema.getName(), sourceName)));
         }
         final DynamicTable source = sourceSchema.getDynamicTable(sourceName);
         final Schema schema = dynamicTableSchema(parts);
-        final String dtName = parts[parts.length - 1].toUpperCase();
-        ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, ContainerType.SCHEMA, schema.getName());
+        final String dtName = parts[parts.length - 1];
+        ddl.checkCreatePrivilege(Privilege.CREATE_DYNAMIC_TABLE, schema);
         if (schema.hasDynamicTable(dtName) && ctx.or_replace() == null) {
             if (ifNotExists) {
                 ConditionalDdlOutcome.createSkipped();
                 logger.debug("Dynamic table already exists (IF NOT EXISTS): {}", qualifiedName);
                 return null;
             }
-            throw new RuntimeException(SqlCompilationError.of("Object '" + dtName + "' already exists."));
+            // The name that is taken is echoed as the statement wrote it.
+            throw new RuntimeException(SqlCompilationError.of("Object '" + QualifiedName.join(parts)
+                + "' already exists."));
         }
         final DynamicTable clone = source.copyAs(dtName);
         for (final FrostlakeParser.DynamicTableCloneOptionContext option : ctx.dynamicTableCloneOption()) {
@@ -861,12 +1004,12 @@ public class CreateRelationalHandler implements CommandHandler {
                 clone.setTargetLag(option.DOWNSTREAM() != null ? "DOWNSTREAM"
                     : TargetLag.canonicalize(ddl.extractStringLiteral(option.STRING_LITERAL())));
             } else if (option.WAREHOUSE() != null) {
-                final String warehouse = getText(option.identifier()).toUpperCase();
+                final String warehouse = getText(option.identifier());
                 WarehouseReference.require(catalog, warehouse);
                 clone.setWarehouse(warehouse);
             }
         }
-        clone.setTransient(source.isTransient() || ctx.TRANSIENT() != null);
+        clone.setTransient(source.isTransient() || ctx.TRANSIENT() != null || schema.isTransientObject());
         clone.setClone(true);
         clone.setState(State.SUSPENDED);
         clone.setSchedulingState("SUSPENDED");

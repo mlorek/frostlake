@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -149,7 +151,7 @@ public class TryCastTest extends BaseDatabaseTest {
                 val(sql);
             }
         }, sql);
-        assertTrue(refusal.getMessage().toLowerCase().contains("syntax"),
+        assertTrue(refusal.getMessage().toLowerCase(Locale.ROOT).contains("syntax"),
             sql + " should be refused as a SYNTAX error, was: " + refusal.getMessage());
     }
 }

@@ -27,9 +27,8 @@ public class Cot extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final double t = Math.tan(((Number) args.get(0)).doubleValue());
-        if (t == 0) throw new RuntimeException("COT: division by zero (tan is 0)");
-        return 1.0 / t;
+        // The cotangent of 0 is an infinity, as the account answers it.
+        return 1.0 / Math.tan(((Number) args.get(0)).doubleValue());
     }
 
     @Override

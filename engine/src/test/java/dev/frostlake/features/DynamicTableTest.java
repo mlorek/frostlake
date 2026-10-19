@@ -26,6 +26,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -67,7 +69,7 @@ public class DynamicTableTest extends BaseDatabaseTest {
 
     private String dtCell(final String name, final String column) {
         final ResultSet tables = engine.executeQuery("SHOW DYNAMIC TABLES LIKE '" + name + "'");
-        return cell(tables, soleRowWhere(tables, "name", name.toUpperCase()), column);
+        return cell(tables, soleRowWhere(tables, "name", name.toUpperCase(Locale.ROOT)), column);
     }
 
     private int dtCount(final String name) {
@@ -168,7 +170,7 @@ public class DynamicTableTest extends BaseDatabaseTest {
                     + "AS SELECT id FROM source COMMENT = 'late'");
             }
         });
-        assertTrue(e.getMessage().toLowerCase().contains("syntax error"), e.getMessage());
+        assertTrue(e.getMessage().toLowerCase(Locale.ROOT).contains("syntax error"), e.getMessage());
     }
 
     @Test
@@ -317,7 +319,7 @@ public class DynamicTableTest extends BaseDatabaseTest {
         engine.execute("ALTER DYNAMIC TABLE state_dt SUSPEND");
         final ResultSet rs = engine.executeQuery("SHOW DYNAMIC TABLES");
         final int schedIdx = rs.getColumnIndex("scheduling_state");
-        assertEquals("SUSPENDED", rs.getRows().get(0).getValue(schedIdx).toString().toUpperCase());
+        assertEquals("SUSPENDED", rs.getRows().get(0).getValue(schedIdx).toString().toUpperCase(Locale.ROOT));
     }
 
     // ── DESCRIBE ──────────────────────────────────────────────────────────────

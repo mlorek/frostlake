@@ -16,10 +16,13 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 /**
  * What a request carrying SEVERAL statements answers when one of them fails while running.
@@ -59,22 +62,75 @@ public final class MultiStatementFailure extends RuntimeException {
     public static RuntimeException wrapping(final FrostlakeParser.SqlScriptContext tree,
             final FrostlakeParser.StatementContext failing, final RuntimeException failure,
             final boolean topLevel) {
-        if (!topLevel || failure instanceof MultiStatementFailure
-                || tree == null || tree.flowChain() == null || tree.flowChain().size() < 2
-                || failing == null || failing.getStart() == null) {
-            return failure;
-        }
-        return new MultiStatementFailure(sentence(failing, failure), failure);
+        return wrapping(tree, failing, failure, topLevel, false);
     }
 
-    /** The account's sentence for {@code failing}, carrying its own error inside. */
-    private static String sentence(final FrostlakeParser.StatementContext failing,
-            final RuntimeException failure) {
+    /**
+     * As {@link #wrapping(FrostlakeParser.SqlScriptContext, FrostlakeParser.StatementContext, RuntimeException,
+     * boolean)}, for a statement of the request itself: the sentence places the statement in the request, a
+     * comment that opens the request not counted.
+     *
+     * @param tree the parsed request
+     * @param failing the statement that failed
+     * @param failure what it failed with
+     * @param topLevel whether this is the request's own script rather than a nested one
+     * @return the exception to throw
+     */
+    public static RuntimeException wrappingInRequest(final FrostlakeParser.SqlScriptContext tree,
+            final FrostlakeParser.StatementContext failing, final RuntimeException failure,
+            final boolean topLevel) {
+        return wrapping(tree, failing, failure, topLevel, true);
+    }
+
+    /**
+     * As {@link #wrapping(FrostlakeParser.SqlScriptContext, FrostlakeParser.StatementContext, RuntimeException,
+     * boolean)}, for a statement of a text an EXECUTE IMMEDIATE runs: the sentence places the statement in the
+     * text — as it is written in a text the request hands over itself, and with a comment that opens the text not
+     * counted in a text a block runs, which is placed as a request is (live-verified).
+     *
+     * @param tree the parsed text
+     * @param failing the statement that failed
+     * @param failure what it failed with
+     * @param origin the text's first token when a comment opens it and the text is placed past it, else null
+     * @return the exception to throw
+     */
+    public static RuntimeException wrappingInText(final FrostlakeParser.SqlScriptContext tree,
+            final FrostlakeParser.StatementContext failing, final RuntimeException failure,
+            final SourcePosition origin) {
+        if (!names(tree, failing, failure)) {
+            return failure;
+        }
         final Token start = failing.getStart();
+        return new MultiStatementFailure(sentence(failing, failure, LeadingCommentOffset.rebase(origin,
+            start.getLine(), start.getCharPositionInLine())), failure);
+    }
+
+    private static RuntimeException wrapping(final FrostlakeParser.SqlScriptContext tree,
+            final FrostlakeParser.StatementContext failing, final RuntimeException failure,
+            final boolean topLevel, final boolean inRequest) {
+        if (!topLevel || !names(tree, failing, failure)) {
+            return failure;
+        }
+        final Token start = failing.getStart();
+        // The statement's place in its text; in the request, a comment that opens the request not counted.
+        final int[] at = inRequest ? LeadingCommentOffset.rebase(start.getLine(), start.getCharPositionInLine())
+            : new int[] {start.getLine(), start.getCharPositionInLine()};
+        return new MultiStatementFailure(sentence(failing, failure, at), failure);
+    }
+
+    /** Whether a failure is one of a statement among several, not yet named as such. */
+    private static boolean names(final FrostlakeParser.SqlScriptContext tree,
+            final FrostlakeParser.StatementContext failing, final RuntimeException failure) {
+        return !(failure instanceof MultiStatementFailure) && tree != null && tree.flowChain() != null
+            && tree.flowChain().size() >= 2 && failing != null && failing.getStart() != null;
+    }
+
+    /** The account's sentence for {@code failing} at its place, carrying its own error inside. */
+    private static String sentence(final FrostlakeParser.StatementContext failing,
+            final RuntimeException failure, final int[] at) {
         final String inner = failure.getMessage() != null ? failure.getMessage() : failure.toString();
         return "JavaScript execution error: Uncaught Execution of multiple statements failed on statement \""
-            + statementText(failing) + "\" (at line " + start.getLine() + ", position "
-            + start.getCharPositionInLine() + ").\n"
+            + statementText(failing) + "\" (at line " + at[0] + ", position " + at[1] + ").\n"
             + inner
             + " in " + HELPER + " at '    throw `Execution of multiple statements failed on statement"
             + " {0} (at line {1}, position {2}).`.replace('{1}', LINES[i])' position 4\n"
@@ -82,20 +138,25 @@ public final class MultiStatementFailure extends RuntimeException {
             + HELPER + " line: 10";
     }
 
+    /** How much of the failing statement the sentence quotes before it cuts it short. */
+    private static final int QUOTED_LENGTH = 30;
+
     /**
-     * The statement as it was written, without the separator that follows it. Read from the source the
-     * parser saw rather than rebuilt from tokens, so it keeps its own spacing.
+     * The statement as it was written, without the separator that follows it or a comment before that, and cut to
+     * its first thirty characters with {@code ...} after them when it is longer — a line break counting as one
+     * character. Read
+     * from the source the parser saw rather than rebuilt from tokens, so it keeps its own spacing
+     * (live-verified: {@code "SELECT * FROM nowhere_xyz12345..."}).
      */
     private static String statementText(final FrostlakeParser.StatementContext failing) {
         final Token start = failing.getStart();
-        final Token stop = failing.getStop();
+        final Token stop = lastToken(failing);
         if (start.getInputStream() == null || stop == null) {
             return failing.getText();
         }
         // The separator closing a statement is not part of the statement the account names, and neither
-        // is the space that may sit before it.
-        final int end = stop.getType() == FrostlakeParser.SEMI
-            ? stop.getStartIndex() - 1 : stop.getStopIndex();
+        // is the space or the comment that may sit before it.
+        final int end = stop.getStopIndex();
         if (end < start.getStartIndex()) {
             return failing.getText();
         }
@@ -104,6 +165,21 @@ public final class MultiStatementFailure extends RuntimeException {
         while (last > 0 && Character.isWhitespace(text.charAt(last - 1))) {
             last--;
         }
-        return text.substring(0, last);
+        return last > QUOTED_LENGTH ? text.substring(0, QUOTED_LENGTH) + "..." : text.substring(0, last);
+    }
+
+    /** The last token of a statement, the separators that close it aside; null when it has no other. */
+    private static Token lastToken(final ParseTree node) {
+        if (node instanceof TerminalNode) {
+            final Token token = ((TerminalNode) node).getSymbol();
+            return token.getType() == FrostlakeParser.SEMI || token.getType() == Token.EOF ? null : token;
+        }
+        for (int i = node.getChildCount() - 1; i >= 0; i--) {
+            final Token found = lastToken(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 }

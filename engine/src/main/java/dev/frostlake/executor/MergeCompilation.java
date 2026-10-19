@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -269,7 +270,7 @@ final class MergeCompilation {
                                 && !(targetAlias != null && qualifier.equalsIgnoreCase(targetAlias))) {
                             throw new RuntimeException(SqlCompilationError.invalidIdentifier(
                                 assign.getStart().getLine(), assign.getStart().getCharPositionInLine(),
-                                qualifier.toUpperCase() + "." + column.toUpperCase()));
+                                qualifier.toUpperCase(Locale.ROOT) + "." + column.toUpperCase(Locale.ROOT)));
                         }
                     }
                     requireColumn(target, column, assign.namePart());
@@ -290,7 +291,7 @@ final class MergeCompilation {
             executor.getColumnIndex(target, column);
         } catch (final RuntimeException unknown) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(at.getStart().getLine(),
-                at.getStart().getCharPositionInLine(), column.toUpperCase()), unknown);
+                at.getStart().getCharPositionInLine(), column.toUpperCase(Locale.ROOT)), unknown);
         }
     }
 
@@ -305,6 +306,6 @@ final class MergeCompilation {
     }
 
     private static String relationName(final Table relation, final String alias) {
-        return (alias != null ? alias : relation.getName()).toUpperCase();
+        return (alias != null ? alias : relation.getName()).toUpperCase(Locale.ROOT);
     }
 }

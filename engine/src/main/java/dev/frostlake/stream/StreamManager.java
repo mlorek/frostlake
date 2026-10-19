@@ -18,12 +18,14 @@ package dev.frostlake.stream;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +35,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -53,9 +56,15 @@ public class StreamManager {
     }
 
     /**
-     * Track an INSERT operation
+     * Track an INSERT operation.
+     *
+     * @param qualifiedTableName the table written, DB.SCHEMA.NAME
+     * @param row                the row inserted
+     * @param rowId              the row's identity in the table's storage, which is its METADATA$ROW_ID: an
+     *                           UPDATE keeps it and a DELETE reports it, so a change is told from the row it
+     *                           happened to (live-verified)
      */
-    public void trackInsert(final String qualifiedTableName, final Row row) {
+    public void trackInsert(final String qualifiedTableName, final Row row, final long rowId) {
         final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
@@ -66,15 +75,13 @@ public class StreamManager {
         try {
             final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
-            final long rowId = getNextRowId(qualifiedTableName);
-
             for (final Stream stream : streams) {
                 final StreamRecord record = new StreamRecord(
                     row.getValues(),
                     ChangeType.INSERT,
                     false,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(record);
                 logger.debug("Tracked INSERT to stream: {}", stream.getName());
@@ -102,75 +109,81 @@ public class StreamManager {
         }
     }
 
-    /** {@link #trackInsert(String, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
-    public void trackInsert(final List<Stream> capturing, final String qualifiedTableName, final Row row) {
+    /** {@link #trackInsert(String, Row, long)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    public void trackInsert(final List<Stream> capturing, final String qualifiedTableName, final Row row,
+                            final long rowId) {
         if (capturing.isEmpty()) {
             return;
         }
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
-        final long rowId = getNextRowId(qualifiedTableName);
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(row.getValues(), ChangeType.INSERT, false, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
         }
     }
 
-    /** {@link #trackUpdate(String, Row, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    /** {@link #trackUpdate(String, Row, Row, long)} over a PRE-RESOLVED capture list (bulk commit apply). */
     public void trackUpdate(final List<Stream> capturing, final String qualifiedTableName,
-                            final Row oldRow, final Row newRow) {
+                            final Row oldRow, final Row newRow, final long rowId) {
         if (capturing.isEmpty()) {
             return;
         }
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
-        final long rowId = getNextRowId(qualifiedTableName);
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(oldRow.getValues(), ChangeType.DELETE, true, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
             stream.addRecord(new StreamRecord(newRow.getValues(), ChangeType.INSERT, true, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
         }
     }
 
-    /** {@link #trackDelete(String, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
-    public void trackDelete(final List<Stream> capturing, final String qualifiedTableName, final Row row) {
+    /** {@link #trackDelete(String, Row, long)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    public void trackDelete(final List<Stream> capturing, final String qualifiedTableName, final Row row,
+                            final long rowId) {
         if (capturing.isEmpty()) {
             return;
         }
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
-        final long rowId = getNextRowId(qualifiedTableName);
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(row.getValues(), ChangeType.DELETE, false, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
         }
     }
 
     /**
-     * Every stream in the database that captures changes to {@code db.schema.table}, searched across ALL of
-     * the database's schemas — a stream commonly lives in a different schema from the table it reads (e.g. a
-     * {@code BASE_TRANSFORM} stream ON a {@code INGEST} table), and looking only in the mutated table's own
-     * schema meant such a stream never saw a committed change at all. A TABLE stream is matched on the FULL
-     * name (its source resolved against the STREAM's own database/schema for any part it omits) so two
-     * same-named tables in different schemas cannot cross-capture; a VIEW stream keeps the bare-name match on
-     * its recorded base tables, which a view may draw from any schema.
+     * Every stream that captures changes to {@code db.schema.table}, searched across every schema of every
+     * database: a stream commonly lives in another schema from the table it reads (e.g. a {@code BASE_TRANSFORM}
+     * stream ON an {@code INGEST} table), or in another database altogether, and looking only near the table meant
+     * such a stream never saw a committed change. A stream is matched on the table ITSELF (StreamSources) — a table
+     * stream on its table, a view stream on the tables its view reads — so two same-named tables in different
+     * schemas cannot cross-capture, a renamed or swapped table keeps feeding its streams, and a new table under a
+     * dropped one's name feeds none of them.
      */
     private List<Stream> streamsCapturing(final String dbName, final String schemaName, final String tableName) {
         final List<Stream> out = new ArrayList<>();
-        final Database database = catalog.getDatabase(dbName);
+        final Database database = catalog.findDatabase(dbName);
         if (database == null) {
             return out;
         }
-        for (final Schema schema : database.getAllSchemas()) {
-            for (final Stream stream : schema.getStreams()) {
-                if (stream.getSourceType() == StreamSourceType.STAGE
-                        || stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE) {
-                    continue; // their changes come from a directory refresh or a table refresh, not DML
-                }
-                if (stream.getSourceType() == StreamSourceType.VIEW || !stream.getBaseTableNames().isEmpty()) {
-                    if (capturesTable(stream, tableName)) {
+        final Schema changedSchema = database.hasSchema(schemaName) ? database.getSchema(schemaName) : null;
+        final Table changed = changedSchema != null && changedSchema.hasTable(tableName)
+            ? changedSchema.getTable(tableName) : null;
+        if (changed == null) {
+            return out;
+        }
+        for (final Database holder : catalog.getAllDatabases()) {
+            for (final Schema schema : holder.getAllSchemas()) {
+                for (final Stream stream : schema.getStreams()) {
+                    if (stream.getSourceType() == StreamSourceType.STAGE
+                            || stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE) {
+                        continue; // their changes come from a directory refresh or a table refresh, not DML
+                    }
+                    final boolean captures = stream.getSourceType() == StreamSourceType.VIEW
+                        ? StreamSources.capturesThroughView(catalog, stream, changed)
+                        : StreamSources.captures(catalog, schema, stream, changed);
+                    if (captures) {
                         out.add(stream);
                     }
-                } else if (matchesSourceTable(stream, dbName, schema.getName(), schemaName, tableName)) {
-                    out.add(stream);
                 }
             }
         }
@@ -178,24 +191,14 @@ public class StreamManager {
     }
 
     /**
-     * Whether a TABLE stream's source names exactly the mutated table. The source may be written unqualified
-     * or schema-qualified, so the missing parts are filled from the schema the STREAM itself lives in.
+     * Track an UPDATE operation: the row's old image leaves and its new image arrives, both under the row's id.
+     *
+     * @param qualifiedTableName the table written, DB.SCHEMA.NAME
+     * @param oldRow             the row as it was
+     * @param newRow             the row as it is
+     * @param rowId              the row's identity in the table's storage, unchanged by the update
      */
-    private boolean matchesSourceTable(final Stream stream, final String dbName, final String streamSchemaName,
-                                       final String mutatedSchemaName, final String mutatedTableName) {
-        final String[] parts = QualifiedName.parse(stream.getSourceTableName()).parts();
-        final String sourceTable = parts[parts.length - 1];
-        final String sourceSchema = parts.length >= 2 ? parts[parts.length - 2] : streamSchemaName;
-        final String sourceDb = parts.length >= 3 ? parts[parts.length - 3] : dbName;
-        return sourceTable.equalsIgnoreCase(mutatedTableName)
-            && sourceSchema.equalsIgnoreCase(mutatedSchemaName)
-            && sourceDb.equalsIgnoreCase(dbName);
-    }
-
-    /**
-     * Track an UPDATE operation
-     */
-    public void trackUpdate(final String qualifiedTableName, final Row oldRow, final Row newRow) {
+    public void trackUpdate(final String qualifiedTableName, final Row oldRow, final Row newRow, final long rowId) {
         final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
@@ -206,8 +209,6 @@ public class StreamManager {
         try {
             final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
-            final long rowId = getNextRowId(qualifiedTableName);
-
             for (final Stream stream : streams) {
                 // For updates, streams track both DELETE and INSERT
                 final StreamRecord deleteRecord = new StreamRecord(
@@ -215,7 +216,7 @@ public class StreamManager {
                     ChangeType.DELETE,
                     true,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(deleteRecord);
 
@@ -224,7 +225,7 @@ public class StreamManager {
                     ChangeType.INSERT,
                     true,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(insertRecord);
 
@@ -236,9 +237,13 @@ public class StreamManager {
     }
 
     /**
-     * Track a DELETE operation
+     * Track a DELETE operation.
+     *
+     * @param qualifiedTableName the table written, DB.SCHEMA.NAME
+     * @param row                the row removed
+     * @param rowId              the identity the row had in the table's storage
      */
-    public void trackDelete(final String qualifiedTableName, final Row row) {
+    public void trackDelete(final String qualifiedTableName, final Row row, final long rowId) {
         final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
@@ -249,15 +254,13 @@ public class StreamManager {
         try {
             final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
-            final long rowId = getNextRowId(qualifiedTableName);
-
             for (final Stream stream : streams) {
                 final StreamRecord record = new StreamRecord(
                     row.getValues(),
                     ChangeType.DELETE,
                     false,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(record);
                 logger.debug("Tracked DELETE to stream: {}", stream.getName());
@@ -265,29 +268,6 @@ public class StreamManager {
         } catch (final Exception e) {
             logger.warn("Failed to track DELETE for streams: {}", e.getMessage());
         }
-    }
-
-    /**
-     * True when a change to {@code tableName} (the bare table name of the mutated table) feeds this
-     * stream: its source table, or — for a stream defined ON VIEW — the view's resolved base table.
-     * A qualified source name is reduced to its last segment before comparing.
-     */
-    private boolean capturesTable(final Stream stream, final String tableName) {
-        // A view stream tracks one base table per branch (UNION ALL); a table stream tracks its source.
-        final List<String> captureNames = stream.getBaseTableNames().isEmpty()
-            ? Collections.singletonList(stream.getSourceTableName())
-            : stream.getBaseTableNames();
-        for (final String captureName : captureNames) {
-            String name = captureName;
-            final int dot = name.lastIndexOf('.');
-            if (dot >= 0) {
-                name = name.substring(dot + 1);
-            }
-            if (name.equalsIgnoreCase(tableName)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -304,7 +284,7 @@ public class StreamManager {
     public void trackRefresh(final String databaseName, final StreamSourceType kind, final String sourceName,
                              final List<List<Object>> removed, final List<List<Object>> added) {
         for (final Stream stream : streamsOver(databaseName, kind, sourceName)) {
-            final String rowIdKey = sourceName.toUpperCase() + "#" + stream.getName();
+            final String rowIdKey = sourceName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
             for (final List<Object> values : removed) {
                 stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
             }
@@ -330,7 +310,7 @@ public class StreamManager {
             final List<List<Object>> removed = new ArrayList<>();
             final List<List<Object>> added = new ArrayList<>();
             diff(before, rows, removed, added);
-            final String rowIdKey = tableName.toUpperCase() + "#" + stream.getName();
+            final String rowIdKey = tableName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
             for (final List<Object> values : removed) {
                 stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
             }
@@ -339,6 +319,32 @@ public class StreamManager {
             }
             stream.setRefreshImage(new ArrayList<>(rows));
         }
+    }
+
+    /**
+     * Bring a new stream over a dynamic table, started from a past refresh's rows (its refresh image), up to the
+     * table's last refresh: the rows that left and arrived since are pending in it, and the last refresh's rows
+     * become its image, as {@link #trackDynamicTableRefresh} would have left them refresh by refresh.
+     *
+     * @param stream    the stream, its image the rows of the refresh it starts from
+     * @param tableName the dynamic table's qualified name, DB.SCHEMA.NAME
+     * @param rows      the rows of the table's last refresh
+     */
+    public void catchUpDynamicTableStream(final Stream stream, final String tableName,
+                                          final List<List<Object>> rows) {
+        final List<List<Object>> before = stream.getRefreshImage() == null
+            ? new ArrayList<List<Object>>() : stream.getRefreshImage();
+        final List<List<Object>> removed = new ArrayList<>();
+        final List<List<Object>> added = new ArrayList<>();
+        diff(before, rows, removed, added);
+        final String rowIdKey = tableName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
+        for (final List<Object> values : removed) {
+            stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
+        }
+        for (final List<Object> values : added) {
+            stream.addRecord(new StreamRecord(values, ChangeType.INSERT, false, getNextRowId(rowIdKey)));
+        }
+        stream.setRefreshImage(new ArrayList<>(rows));
     }
 
     /**
@@ -408,7 +414,7 @@ public class StreamManager {
         if (parts.length != 3) {
             return;
         }
-        final String tableName = parts[2].toUpperCase();
+        final String tableName = parts[2].toUpperCase(Locale.ROOT);
         for (final Stream stream : capturingStreams(qualifiedTableName)) {
             final boolean viewStream = stream.getSourceType() == StreamSourceType.VIEW
                 || !stream.getBaseTableNames().isEmpty();
@@ -429,7 +435,7 @@ public class StreamManager {
         if (parts.length != 3) {
             return;
         }
-        final String tableName = parts[2].toUpperCase();
+        final String tableName = parts[2].toUpperCase(Locale.ROOT);
         for (final Stream stream : capturingStreams(qualifiedTableName)) {
             final boolean viewStream = stream.getSourceType() == StreamSourceType.VIEW
                 || !stream.getBaseTableNames().isEmpty();
@@ -438,27 +444,27 @@ public class StreamManager {
     }
 
     /**
-     * Forget a table's change-tracking row-id counter when the table is dropped, so {@link #rowIdCounters}
-     * does not grow without bound as tables are created and dropped over the engine's lifetime. Keyed by
-     * the fully-qualified name, normalized to upper case to match the write path ({@link #getNextRowId}).
+     * Forget the row-id counters kept under a dropped source's name, so {@link #rowIdCounters} does not grow
+     * without bound as objects are created and dropped over the engine's lifetime. Keyed by the fully-qualified
+     * name, normalized to upper case to match the write path ({@link #getNextRowId}).
      */
     public void onTableDropped(final String qualifiedTableName) {
         if (qualifiedTableName != null) {
-            rowIdCounters.remove(qualifiedTableName.toUpperCase());
+            rowIdCounters.remove(qualifiedTableName.toUpperCase(Locale.ROOT));
         }
     }
 
     /** Forget the counters of every table in a dropped schema (DROP SCHEMA cascades to its tables). */
     public void onSchemaDropped(final String databaseName, final String schemaName) {
         if (databaseName != null && schemaName != null) {
-            removeByPrefix((databaseName + "." + schemaName + ".").toUpperCase());
+            removeByPrefix((databaseName + "." + schemaName + ".").toUpperCase(Locale.ROOT));
         }
     }
 
     /** Forget the counters of every table in a dropped database (DROP DATABASE cascades). */
     public void onDatabaseDropped(final String databaseName) {
         if (databaseName != null) {
-            removeByPrefix((databaseName + ".").toUpperCase());
+            removeByPrefix((databaseName + ".").toUpperCase(Locale.ROOT));
         }
     }
 
@@ -471,10 +477,14 @@ public class StreamManager {
         }
     }
 
-    private long getNextRowId(final String qualifiedTableName) {
+    /**
+     * The next row id of a source no DML writes, a stage's directory table or a dynamic table, counted per stream
+     * over it. A table's rows carry their own identity instead, which the write paths hand to the track methods.
+     */
+    private long getNextRowId(final String sourceAndStream) {
         // putIfAbsent rather than get/put: two threads racing here must end up sharing ONE counter,
         // or the same row id would be handed out twice.
-        final String key = qualifiedTableName.toUpperCase();
+        final String key = sourceAndStream.toUpperCase(Locale.ROOT);
         AtomicLong counter = rowIdCounters.get(key);
         if (counter == null) {
             counter = new AtomicLong(1);

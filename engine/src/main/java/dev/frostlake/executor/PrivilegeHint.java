@@ -105,7 +105,7 @@ public final class PrivilegeHint {
      */
     public static String of(final String kind, final String spelled) {
         final SessionRole pinned = SessionRole.pinned();
-        return pinned == null ? "" : sentence(kind, spelled, pinned.role(), pinned.ownersRights(), pinned.account());
+        return pinned == null ? "" : sentence(kind, spelled, subject(pinned), pinned.role(), pinned.account());
     }
 
     /**
@@ -136,7 +136,7 @@ public final class PrivilegeHint {
         }
         final StringBuilder hint = new StringBuilder();
         for (final String privilege : privileges) {
-            hint.append(' ').append(subject(pinned.role(), pinned.ownersRights())).append(" must have ")
+            hint.append(' ').append(subject(pinned)).append(" must have ")
                 .append(privilege).append(" granted on ACCOUNT ").append(pinned.account()).append('.');
         }
         return hint.toString();
@@ -147,23 +147,29 @@ public final class PrivilegeHint {
      *
      * @param kind the refusal's kind noun, as its first sentence spells it
      * @param spelled the object's name, as its first sentence spells it between the quotes
+     * @param subject who is addressed, as {@link #subject} words it
      * @param role the role addressed; null gives no hint
-     * @param ownersRights whether the refusal comes from inside a procedure running with owner's rights
      * @param account the account locator, as {@code CURRENT_ACCOUNT()} answers it
      * @return the hint with its leading space, or "" when the kind carries none
      */
-    private static String sentence(final String kind, final String spelled, final String role,
-                                   final boolean ownersRights, final String account) {
+    private static String sentence(final String kind, final String spelled, final String subject, final String role,
+                                   final String account) {
         final String wanted = privilege(kind, spelled, account);
         if (wanted == null || role == null) {
             return "";
         }
-        return " " + subject(role, ownersRights) + " must have " + wanted + ".";
+        return " " + subject + " must have " + wanted + ".";
     }
 
-    private static String subject(final String role, final boolean ownersRights) {
-        return ownersRights ? "This executable runs with owner's rights. The owner role " + role
-            : "Your primary role " + role;
+    /**
+     * Who a hint addresses: the owner inside a procedure running with owner's rights, else the session's primary
+     * role — and its secondary roles once USE SECONDARY ROLES asked for some (live-verified).
+     */
+    private static String subject(final SessionRole pinned) {
+        if (pinned.ownersRights()) {
+            return "This executable runs with owner's rights. The owner role " + pinned.role();
+        }
+        return "Your primary role " + pinned.role() + (pinned.secondaryRoles() ? " or one of your secondary roles" : "");
     }
 
     /** What the role must have, with what it would be granted on; null when the kind carries no hint. */

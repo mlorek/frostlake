@@ -28,9 +28,12 @@ public class TryBase64Decode extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
+        // A NULL alphabet makes the call NULL, where an absent one is the standard alphabet (live-verified).
+        if (args.get(0) == null || args.size() > 1 && args.get(1) == null) {
+            return null;
+        }
         try {
-            return DecodedText.lenient(Base64.getDecoder().decode(Base64Options.toStandardAlphabet(
+            return DecodedText.lenient(Base64.getDecoder().decode(Base64Options.decodable(
                 args.get(0).toString(), Base64Options.alphabetOf(args, 1))));
         } catch (final Exception e) { return null; }
     }

@@ -332,7 +332,6 @@ public final class EmptySchemaPartSyntax {
             || node instanceof FrostlakeParser.AndExprContext
             || node instanceof FrostlakeParser.OrExprContext
             || node instanceof FrostlakeParser.UnaryExprContext
-            || node instanceof FrostlakeParser.ConcatExprContext
             || node instanceof FrostlakeParser.MultiplicativeExprContext
             || node instanceof FrostlakeParser.AdditiveExprContext
             || node instanceof FrostlakeParser.IsNullExprContext
@@ -379,10 +378,11 @@ public final class EmptySchemaPartSyntax {
             return new EmptyPartFault(EmptyPartShape.STAR, lines, name, null,
                 next != null && next.getType() == FrostlakeLexer.AS);
         }
-        if (modifier.getStart().getType() == FrostlakeLexer.ILIKE
-                && modifier.getToken(FrostlakeLexer.STRING_LITERAL, 0) != null) {
+        final FrostlakeParser.StringTextContext pattern = modifier.getStart().getType() == FrostlakeLexer.ILIKE
+            ? modifier.getRuleContext(FrostlakeParser.StringTextContext.class, 0) : null;
+        if (pattern != null && pattern.getStart() != null) {
             // Live multiplies by ILIKE, read as a name, and refuses the pattern after it.
-            lines.add(modifier.getToken(FrostlakeLexer.STRING_LITERAL, 0).getSymbol());
+            lines.add(pattern.getStart());
         }
         return new EmptyPartFault(EmptyPartShape.STAR, lines, name, null, false);
     }
@@ -416,7 +416,7 @@ public final class EmptySchemaPartSyntax {
             return next;
         }
         if (tail.STARTS() != null && tail.STARTS().getSymbol() == next) {
-            return tail.STRING_LITERAL().isEmpty() ? next : tail.STRING_LITERAL(0).getSymbol();
+            return tail.stringText().isEmpty() ? next : tail.stringText(0).getStart();
         }
         if (tail.LIMIT() != null && tail.LIMIT().getSymbol() == next) {
             return tail.INTEGER_LITERAL() == null ? next : tail.INTEGER_LITERAL().getSymbol();

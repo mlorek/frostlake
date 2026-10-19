@@ -20,6 +20,8 @@ public class DeclareCursorStatement extends Statement {
     private final String cursorName;
     private final String selectQuery;
     private final String resultSetVariableName;
+    private int resultSetLine = -1;
+    private int resultSetColumn = -1;
 
     public DeclareCursorStatement(final String cursorName, final String selectQuery) {
         this(cursorName, selectQuery, null);
@@ -39,6 +41,25 @@ public class DeclareCursorStatement extends Statement {
 
     public String getSelectQuery() {
         return selectQuery;
+    }
+
+    /**
+     * Note where the RESULTSET the cursor is declared over is named, which a refusal of that RESULTSET is placed at.
+     *
+     * @param line   the name's line
+     * @param column the name's column
+     */
+    public void setResultSetAt(final int line, final int column) {
+        this.resultSetLine = line;
+        this.resultSetColumn = column;
+    }
+
+    public int getResultSetLine() {
+        return resultSetLine;
+    }
+
+    public int getResultSetColumn() {
+        return resultSetColumn;
     }
 
     /** The RESULTSET variable this cursor iterates, or null when it is declared over a SELECT query. */

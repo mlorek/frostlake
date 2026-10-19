@@ -36,8 +36,9 @@ import java.util.Set;
  *
  * <pre>
  *   type, name  constant   'PUBLIC'  $v  'PUB' || 'LIC'  UPPER(…)  LOWER(CURRENT_DATABASE())  CURRENT_SCHEMA()
- *                          GETVARIABLE('V')  (SELECT 'PUBLIC')
+ *                          GETVARIABLE('V')  (SELECT 'PUBLIC')  NULL::INT
  *               refused    a column  UPPER(T0.N)  TRIM(' PUBLIC ')  IFF(RANDOM() &gt; 2, 'X', 'PUBLIC')  a number
+ *   name        no object  1  0  -1   (a whole number: the call is refused under its type, as the object)
  *   third       folds      TRUE  1  -1  2.5  1.5::FLOAT  'yes'  'tRuE'  'off'  '1'  NULL
  *               refused    'abc'  ' yes '  'TRUE '  ''  '2'  1 = 1  a column  TO_VARIANT(TRUE)  PARSE_JSON('true')
  *               by type    a DATE, TIME, TIMESTAMP, BINARY, ARRAY or OBJECT
@@ -81,6 +82,11 @@ final class GetDdlArguments {
         if (argument instanceof SubqueryExpression) {
             return true;
         }
+        if (argument instanceof CastExpression) {
+            // A NULL stays one under any cast, and names nothing.
+            final Expression inner = ((CastExpression) argument).getExpression();
+            return inner instanceof LiteralExpression && ((LiteralExpression) inner).getType() == LiteralType.NULL;
+        }
         if (argument instanceof BinaryOperationExpression) {
             final BinaryOperationExpression join = (BinaryOperationExpression) argument;
             return join.getOperator() == BinaryOperator.CONCAT
@@ -107,6 +113,24 @@ final class GetDdlArguments {
             }
         }
         return true;
+    }
+
+    /**
+     * Whether the name argument is written as a whole number, signed or not. Such a name names no object: the call
+     * is refused under its type, as the object ({@code GET_DDL('table', 1)} is {@code Object 'table' does not exist
+     * or not authorized.}), where a number with a fraction is not constant text.
+     *
+     * @param argument the name argument as written
+     * @return whether it is a whole number
+     */
+    static boolean isWholeNumber(final Expression argument) {
+        if (argument instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression signed = (UnaryOperationExpression) argument;
+            return (signed.getOperator() == UnaryOperator.NEGATE || signed.getOperator() == UnaryOperator.PLUS)
+                && isWholeNumber(signed.getOperand());
+        }
+        return argument instanceof LiteralExpression
+            && ((LiteralExpression) argument).getType() == LiteralType.INTEGER;
     }
 
     /**

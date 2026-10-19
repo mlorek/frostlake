@@ -1,0 +1,42 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.executor.udf;
+
+import java.nio.file.Path;
+import java.util.List;
+
+/**
+ * Gives a routine's imports as its handler loader reads them: a file an internal named stage keeps by its local
+ * path, every other import as kept.
+ */
+public interface ImportLocalizer {
+
+    /**
+     * @param imports the imports a routine keeps
+     * @return the imports, in the same order
+     */
+    List<String> localImports(List<String> imports);
+
+    /**
+     * Where a stage the engine keeps itself holds the file an import names: a user's stage, a table's stage or an
+     * internal named stage without a URL.
+     *
+     * @param location the import, {@code @stage/path}
+     * @return the file's local path, whether or not a file is there, or null for a location on no such stage
+     */
+    Path keptStageFile(String location);
+}

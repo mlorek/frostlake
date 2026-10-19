@@ -19,7 +19,8 @@ package dev.frostlake.metastore;
 /**
  * The coarse kind of a tracked statement, classified from its leading keyword (see
  * {@code QueryHistory.determineQueryType}). {@link #OTHER} covers recognized-but-uncategorized statements and
- * {@link #UNKNOWN} a null/blank query; the enum name is the value shown in query history / SHOW output.
+ * {@link #UNKNOWN} a null/blank query. Time travel reads it to tell a DDL statement; QUERY_HISTORY lists the
+ * account's own kinds instead (see {@code QueryHistory.getQueryTypeName}).
  */
 public enum StatementKind {
     SELECT, INSERT, UPDATE, DELETE, MERGE, COPY, CREATE, DROP, ALTER, TRUNCATE,

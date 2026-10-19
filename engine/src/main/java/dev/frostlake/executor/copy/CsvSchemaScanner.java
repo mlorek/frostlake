@@ -53,7 +53,7 @@ final class CsvSchemaScanner {
         final List<InferredType> types = new ArrayList<InferredType>();
         long records = 0;
         try (BufferedReader source = StagedFileIo.reader(file.path())) {
-            final CsvRecordReader reader = new CsvRecordReader(source, file.relativeName(), options);
+            final CsvRecordReader reader = new CsvRecordReader(source, file.relativeName(), options.format(), false);
             final List<Boolean> enclosed = new ArrayList<Boolean>();
             if (options.parseHeader()) {
                 final List<String> names = reader.header(enclosed);
@@ -76,7 +76,7 @@ final class CsvSchemaScanner {
                         + " columns while data contains " + fields.size() + " columns. \n\n  File '"
                         + file.relativeName() + "'" + ROW_TAIL);
                 }
-                settle(fields, enclosed, options);
+                options.format().settle(fields, enclosed);
                 for (int i = 0; i < fields.size(); i++) {
                     while (types.size() <= i) {
                         types.add(null);
@@ -118,24 +118,5 @@ final class CsvSchemaScanner {
             names.add(name);
         }
         return names;
-    }
-
-    /** A record's fields once TRIM_SPACE, NULL_IF and EMPTY_FIELD_AS_NULL have settled them; null is a NULL. */
-    private static void settle(final List<String> fields, final List<Boolean> enclosed,
-                               final SchemaScanOptions options) {
-        final List<String> nullIf = options.nullIf();
-        for (int i = 0; i < fields.size(); i++) {
-            final boolean fieldEnclosed = i < enclosed.size() && enclosed.get(i).booleanValue();
-            String value = fields.get(i);
-            if (options.trimSpace() && !fieldEnclosed) {
-                value = value.trim();
-            }
-            if (nullIf.contains(value)) {
-                value = null;
-            } else if (options.emptyFieldAsNull() && value.isEmpty() && !fieldEnclosed) {
-                value = null;
-            }
-            fields.set(i, value);
-        }
     }
 }

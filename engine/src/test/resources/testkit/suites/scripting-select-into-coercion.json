@@ -41,11 +41,10 @@
       {"sql": "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums WHERE n > 100; RETURN COALESCE(:t, -1); END", "expect": {"value": -1}}
     ]},
     {"name": "select-into-over-several-rows-errors",
-     "skip": {"backends": ["snowflake"], "reason": "matches the exact 'wrong number of rows: 2' wording of the too-many-rows SELECT INTO error; a real account words that failure differently - the sibling test proves the error itself is raised and catchable on both backends"},
      "steps": [
       {"sql": "CREATE TABLE nums (n INTEGER)"},
       {"sql": "INSERT INTO nums VALUES (1), (2)"},
-      {"sql": "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums; RETURN t; END", "expect": {"error": {"messageContains": "wrong number of rows: 2"}}}
+      {"sql": "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums; RETURN t; END", "expect": {"error": {"messageContains": "A SELECT INTO statement expects exactly 1 returned row, but got 2."}}}
     ]},
     {"name": "the-too-many-rows-error-is-catchable-by-a-handler", "steps": [
       {"sql": "CREATE TABLE nums (n INTEGER)"},

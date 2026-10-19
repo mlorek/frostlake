@@ -74,29 +74,27 @@ final class ColumnScopeWalk extends AstPrinterVisitor {
         final FunctionCallExpression expr = context.splicedStarArguments(written);
         // A bind variable naming the column or the function is refused ahead of the names inside the call.
         context.rejectUnboundIdentifierBind(expr);
-        // A call's ARGUMENTS are where the date/time-unit barewords are exempt, so the phase has to
-        // descend in argument position the way the combined walk does.
-        final boolean enclosing = context.beginFunctionArgumentScope();
+        if ("SYSTEM$GET_TAG".equalsIgnoreCase(expr.getFunctionName()) && expr.getNameExpression() == null
+                && expr.getArguments().size() >= 3) {
+            // Its arguments are read before a name in them is resolved (see SystemConstantArguments).
+            SystemConstantArguments.judge("SYSTEM$GET_TAG", expr.getArguments(), context);
+        }
         final String walked;
-        try {
-            final int slot = DateTimeUnitSlot.positionIn(
-                expr.getFunctionName().toUpperCase(Locale.ROOT));
-            if (slot < 0) {
-                walked = super.visitFunctionCall(expr);
-            } else {
-                // A unit SLOT holds a NAME, so there is no reference in it to resolve. Walking it would
-                // refuse DATEADD(zz, …) as an invalid identifier, where live reports the word as a bad
-                // date/time component instead — a different sentence, from a later phase.
-                final List<Expression> args = expr.getArguments();
-                for (int i = 0; i < args.size(); i++) {
-                    if (i != slot) {
-                        args.get(i).accept(this);
-                    }
+        final int slot = DateTimeUnitSlot.positionIn(
+            expr.getFunctionName().toUpperCase(Locale.ROOT));
+        if (slot < 0) {
+            walked = super.visitFunctionCall(expr);
+        } else {
+            // A unit SLOT holds a NAME, so there is no reference in it to resolve. Walking it would
+            // refuse DATEADD(zz, …) as an invalid identifier, where live reports the word as a bad
+            // date/time component instead — a different sentence, from a later phase.
+            final List<Expression> args = expr.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (i != slot) {
+                    args.get(i).accept(this);
                 }
-                walked = "";
             }
-        } finally {
-            context.endFunctionArgumentScope(enclosing);
+            walked = "";
         }
         // The call's own shape as written, once the names inside it are walked (see CallShapeRules).
         shapes.rejectCall(written, this);

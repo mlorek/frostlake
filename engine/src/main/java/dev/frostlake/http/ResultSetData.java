@@ -28,6 +28,7 @@ import dev.frostlake.types.IntervalQualifier;
 import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.TemporalText;
 import dev.frostlake.values.VariantJsonFormat;
 import dev.frostlake.values.VariantJsonText;
@@ -83,24 +84,25 @@ public class ResultSetData {
             final IntervalQualifier qualifier = intervalQualifier(col.getDataType());
             if (qualifier != null) {
                 colData.setDataType(qualifier.isDayTime() ? DAY_TIME : YEAR_MONTH);
-                colData.setPrecision(0);
-                colData.setScale(qualifier.driverScale());
+                colData.setPrecision(Integer.valueOf(0));
+                colData.setScale(Integer.valueOf(qualifier.driverScale()));
             }
-            // The APPROXIMATE family carries no pair: Snowflake's driver answers 0 for a FLOAT
-            // column's precision and scale, and its metadata surfaces leave both cells empty.
+            // Only a fixed-point NUMBER carries a precision and a scale of its own. The APPROXIMATE family
+            // carries no pair, and neither does text, binary, BOOLEAN, DATE or a semi-structured type: the
+            // account's result metadata leaves both null there, so both fields stay off the wire.
             if (col.getDataType() instanceof NumericType
                 && !NumericType.isApproximate(col.getDataType())) {
                 final NumericType numeric = (NumericType) col.getDataType();
-                colData.setPrecision(numeric.getPrecision());
-                colData.setScale(numeric.getScale());
+                colData.setPrecision(Integer.valueOf(numeric.getPrecision()));
+                colData.setScale(Integer.valueOf(numeric.getScale()));
             }
             // A time of day or a timestamp carries its fractional-second precision as the scale, with
             // precision 0, as the account's result metadata does: TIMESTAMP_NTZ(3) sends 0 and 3, a bare
             // TIMESTAMP_LTZ 0 and 9. A DATE carries neither.
             if (col.getDataType() instanceof DateTimeType
                 && !"DATE".equalsIgnoreCase(col.getDataType().getName())) {
-                colData.setPrecision(0);
-                colData.setScale(((DateTimeType) col.getDataType()).getPrecision());
+                colData.setPrecision(Integer.valueOf(0));
+                colData.setScale(Integer.valueOf(((DateTimeType) col.getDataType()).getPrecision()));
             }
             // The field means "KNOWN to accept NULL", and is ALWAYS sent: a NOT NULL column, an
             // expression and a literal all send false, which is what the driver reports as
@@ -130,7 +132,9 @@ public class ResultSetData {
                 // out of a VARIANT, which the engine holds unwrapped and would send as a bare JSON number.
                 // A STRING read out of one crosses JSON-quoted, as live's driver hands it back.
                 final String unwrappedDouble = VariantJsonText.unwrappedDoubleText(cell, declared);
-                rowData.add(cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
+                rowData.add(cell instanceof Number && NumericType.isDecfloat(declared)
+                        ? Decfloats.text(Decfloats.of((Number) cell, "TO_DECFLOAT"))
+                    : cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
                     : cell instanceof VariantValue ? variantText((VariantValue) cell)
                     : cell instanceof VectorValue ? cell.toString()
                     : cell instanceof String && VariantJsonText.isSemiStructured(declared)

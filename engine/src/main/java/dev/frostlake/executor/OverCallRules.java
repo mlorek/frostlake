@@ -24,9 +24,14 @@ import dev.frostlake.functions.window.NamedArgumentWindowFunctions;
 import dev.frostlake.functions.window.WindowFunctionArity;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
+import dev.frostlake.parser.OperandRefusal;
+import dev.frostlake.parser.OperandRefusals;
+import dev.frostlake.parser.SyntaxErrorListener;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -72,12 +77,100 @@ final class OverCallRules {
 
     private static final String RATIO_TO_REPORT = "RATIO_TO_REPORT";
 
+    private static final String KIND_SENTENCE_START = "Invalid function type [";
+
+    private static final String KIND_SENTENCE_END = "] for window function.";
+
     private final FunctionRegistry functionRegistry;
     private final PlanEcho echo;
 
     OverCallRules(final FunctionRegistry functionRegistry, final PlanEcho echo) {
         this.functionRegistry = functionRegistry;
         this.echo = echo;
+    }
+
+    /**
+     * Refuses the first operand of a parsed text that read ({@link OperandRefusals}). A refusal that names a kind
+     * of function gives way to an earlier call written with OVER whose function takes no window: the account names
+     * kinds in the order written, so {@code SELECT ABS(x) OVER (), x::INT OVER ()} is ABS and
+     * {@code SELECT x::INT OVER (), ABS(x) OVER ()} is CAST (live-verified).
+     *
+     * @param script    the parsed script, or one statement of it
+     * @param functions the registry that tells a window function or an aggregate from any other name
+     */
+    static void requireOperands(final ParseTree script, final FunctionRegistry functions) {
+        final OperandRefusal refusal = OperandRefusals.first(script);
+        if (refusal == null) {
+            return;
+        }
+        if (!refusal.isOfValue()) {
+            final List<ParserRuleContext> windowed = new ArrayList<>();
+            collectEverywhere(script, windowed);
+            ParserRuleContext earliest = null;
+            for (final ParserRuleContext call : windowed) {
+                final String canonical = functionName(call).getText().toUpperCase(Locale.ROOT);
+                if (overToken(call) < refusal.order() && !WindowFunctionNames.handles(canonical)
+                        && !functions.hasBuiltInAggregateFunction(canonical)
+                        && (earliest == null || overToken(call) < overToken(earliest))) {
+                    earliest = call;
+                }
+            }
+            if (earliest != null) {
+                throw new RuntimeException(SqlCompilationError.of(KIND_SENTENCE_START
+                    + spelledName(functionName(earliest)) + KIND_SENTENCE_END));
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.of(refusal.message()));
+    }
+
+    /**
+     * A text's refusal as the account orders it: one that names a kind of function, raised where the text was
+     * parsed and no registry was at hand, gives way to the refusal {@link #requireOperands} makes of the same
+     * text. Any other failure is handed back as it is.
+     *
+     * @param refused   what parsing the text threw
+     * @param sql       the text
+     * @param functions the registry that tells a window function or an aggregate from any other name
+     * @return the refusal to throw
+     */
+    static RuntimeException inWrittenOrder(final RuntimeException refused, final String sql,
+                                           final FunctionRegistry functions) {
+        final String told = refused.getMessage();
+        if (told == null || !told.endsWith(KIND_SENTENCE_END) || !told.contains(KIND_SENTENCE_START)) {
+            return refused;
+        }
+        final ParseTree script = SyntaxErrorListener.cleanParse(sql);
+        if (script == null) {
+            return refused;
+        }
+        try {
+            requireOperands(script, functions);
+        } catch (final RuntimeException ordered) {
+            return ordered;
+        }
+        return refused;
+    }
+
+    /** Every call written with OVER under a node, the queries nested in it included. */
+    private static void collectEverywhere(final ParseTree node, final List<ParserRuleContext> out) {
+        if (!isTableFunctionCall(node) && (node instanceof FrostlakeParser.FunctionCallExprContext
+                && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null
+                || node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext
+                && ((FrostlakeParser.FunctionCallNamedArgsExprContext) node).overClause() != null
+                || node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext
+                && ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).overClause() != null)) {
+            out.add((ParserRuleContext) node);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectEverywhere(node.getChild(i), out);
+        }
+    }
+
+    /** Where a call's OVER stands among the statement's tokens. */
+    private static int overToken(final ParserRuleContext call) {
+        final FrostlakeParser.OverClauseContext over = call instanceof FrostlakeParser.FunctionCallExprContext
+            ? ((FrostlakeParser.FunctionCallExprContext) call).overClause() : overClause(call);
+        return over.OVER().getSymbol().getTokenIndex();
     }
 
     /**
@@ -88,8 +181,9 @@ final class OverCallRules {
      */
     void rejectKinds(final List<ParseTree> clauses) {
         for (final ParserRuleContext call : calls(clauses)) {
-            final String canonical = functionName(call).getText().toUpperCase();
-            if (!WindowFunctionNames.handles(canonical) && functionRegistry.getAggregateFunction(canonical) == null) {
+            final String canonical = functionName(call).getText().toUpperCase(Locale.ROOT);
+            // A user's aggregate function takes no window (live-verified).
+            if (!WindowFunctionNames.handles(canonical) && !functionRegistry.hasBuiltInAggregateFunction(canonical)) {
                 throw new RuntimeException(SqlCompilationError.of("Invalid function type ["
                     + spelledName(functionName(call)) + "] for window function."));
             }
@@ -113,10 +207,10 @@ final class OverCallRules {
     void rejectNamed(final List<ParseTree> clauses, final FrostlakeParser.SelectListContext selectList,
                      final ExpressionEvaluator itemWalk) {
         for (final ParserRuleContext call : calls(clauses)) {
-            final String kind = functionName(call).getText().toUpperCase();
+            final String kind = functionName(call).getText().toUpperCase(Locale.ROOT);
             // A call of the wrong kind is refused for its kind, whatever its arguments look like.
             if (call instanceof FrostlakeParser.FunctionCallExprContext
-                    || !WindowFunctionNames.handles(kind) && functionRegistry.getAggregateFunction(kind) == null) {
+                    || !WindowFunctionNames.handles(kind) && !functionRegistry.hasBuiltInAggregateFunction(kind)) {
                 continue;
             }
             walkItemsBefore(call, selectList, itemWalk);
@@ -158,11 +252,11 @@ final class OverCallRules {
         final List<ParserRuleContext> written = new ArrayList<>(argumentValues(call));
         final FrostlakeParser.OverClauseContext over = overClause(call);
         if (over.partitionByClause() != null) {
-            written.addAll(over.partitionByClause().expressionList().expression());
+            written.addAll(KeyContexts.partitionKeys(over.partitionByClause()));
         }
         if (over.orderByClause() != null) {
             for (final FrostlakeParser.OrderItemContext item : over.orderByClause().orderItem()) {
-                written.add(item.expression());
+                written.add(KeyContexts.of(item));
             }
         }
         for (final ParserRuleContext node : written) {
@@ -241,16 +335,26 @@ final class OverCallRules {
     }
 
     /** Every call written with OVER under {@code node}, outside a nested query, in written order. */
+    /**
+     * Whether a node is the call a TABLE( … ) source wraps: a table function's, whose OVER names the partitions
+     * it reads its input by and is no window call (live-verified).
+     */
+    static boolean isTableFunctionCall(final ParseTree node) {
+        return node instanceof ParserRuleContext
+            && ((ParserRuleContext) node).getParent() instanceof FrostlakeParser.TableSourceContext
+            && ((FrostlakeParser.TableSourceContext) ((ParserRuleContext) node).getParent()).TABLE() != null;
+    }
+
     private static void collect(final ParseTree node, final List<ParserRuleContext> out) {
         if (node instanceof FrostlakeParser.SelectClauseContext) {
             return;
         }
-        if (node instanceof FrostlakeParser.FunctionCallExprContext
+        if (!isTableFunctionCall(node) && (node instanceof FrostlakeParser.FunctionCallExprContext
                 && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null
                 || node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext
                 && ((FrostlakeParser.FunctionCallNamedArgsExprContext) node).overClause() != null
                 || node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext
-                && ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).overClause() != null) {
+                && ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).overClause() != null)) {
             out.add((ParserRuleContext) node);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -348,7 +452,11 @@ final class OverCallRules {
     private static String spelledName(final FrostlakeParser.FunctionNameContext name) {
         final List<FrostlakeParser.IdentifierContext> parts = name.identifier();
         if (parts == null || parts.isEmpty()) {
-            return name.getText().toUpperCase();
+            return name.getText().toUpperCase(Locale.ROOT);
+        }
+        if (parts.size() == 1 && "GROUPING".equalsIgnoreCase(parts.get(0).getText())) {
+            // The account knows GROUPING as GROUPING_ID wherever it names the call (live-verified).
+            return "GROUPING_ID";
         }
         final StringBuilder spelled = new StringBuilder();
         for (final FrostlakeParser.IdentifierContext part : parts) {

@@ -55,6 +55,28 @@ public final class ShowScopeWords {
     }
 
     /**
+     * Whether a scope's name is one unquoted word that names a kind of object, so that the name after it is that
+     * object's — which may carry a signature — and no instance of a class.
+     *
+     * @param first the first token of the scope's name
+     * @param last  the last token of the scope's name
+     * @return whether the name is such a kind's word
+     */
+    public static boolean namesKind(final Token first, final Token last) {
+        if (first == null || first != last || first.getType() == FrostlakeLexer.QUOTED_IDENTIFIER
+                || ClassNameWords.isClassWord(first)) {
+            return false;
+        }
+        final String upper = first.getText().toUpperCase(Locale.ROOT);
+        for (final String kind : NAMING_KINDS) {
+            if (kind.equals(upper)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Whether the parse refused {@code refused} because the scope written just before it reads no name: the token
      * after a keyword written alone as a SHOW listing's scope ({@link #takesInstance}).
      *
@@ -74,6 +96,61 @@ public final class ShowScopeWords {
         }
         return before[1] != null && before[1].getType() == FrostlakeLexer.IN
             && !takesInstance(before, refused.getType());
+    }
+
+    /**
+     * Whether a refused word stands where a SHOW listing's modifier wants its rest: straight after a WITH or a
+     * LIMIT, after WITH PRIVILEGES, or after the IN of a grant listing. Live reads the listing whole and then refuses
+     * the word, so in a block it is one line (live-verified): {@code BEGIN SHOW TABLES WITH x; END;},
+     * {@code … WITH PRIVILEGES nosuch; RETURN 1; …} and {@code BEGIN SHOW GRANTS IN x; END;} name the word alone.
+     * The block's line is stacked all the same when another word follows the refused one ({@code … WITH x y; END;}
+     * is 'x', then 'END') or a statement reads on past the semicolon ({@code … IN x; SELECT 1; END;} likewise).
+     *
+     * @param stream  the parse's tokens
+     * @param refused the refused word
+     * @return whether a listing's open modifier stands before it
+     */
+    public static boolean followsOpenModifier(final TokenStream stream, final Token refused) {
+        final Token[] before = new Token[4];
+        int index = refused.getTokenIndex();
+        for (int k = 0; k < before.length && index > 0; k++) {
+            index--;
+            while (index > 0 && stream.get(index).getChannel() != Token.DEFAULT_CHANNEL) {
+                index--;
+            }
+            before[k] = stream.get(index).getChannel() == Token.DEFAULT_CHANNEL ? stream.get(index) : null;
+        }
+        if (before[0] == null) {
+            return false;
+        }
+        final int last = before[0].getType();
+        if (last == FrostlakeLexer.PRIVILEGES) {
+            return before[1] != null && before[1].getType() == FrostlakeLexer.WITH && opensInShow(stream, refused);
+        }
+        if (last == FrostlakeLexer.WITH || last == FrostlakeLexer.LIMIT) {
+            return opensInShow(stream, refused);
+        }
+        return last == FrostlakeLexer.IN && before[1] != null && before[1].getType() == FrostlakeLexer.GRANTS
+            && before[2] != null && before[2].getType() == FrostlakeLexer.SHOW;
+    }
+
+    /** Whether the statement a token stands in opens with SHOW. */
+    private static boolean opensInShow(final TokenStream stream, final Token token) {
+        Token first = null;
+        for (int i = token.getTokenIndex() - 1; i >= 0; i--) {
+            final Token read = stream.get(i);
+            if (read.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            if (read.getType() == FrostlakeLexer.SEMI || read.getType() == FrostlakeLexer.BEGIN
+                    || read.getType() == FrostlakeLexer.THEN || read.getType() == FrostlakeLexer.ELSE
+                    || read.getType() == FrostlakeLexer.DO || read.getType() == FrostlakeLexer.LOOP
+                    || read.getType() == FrostlakeLexer.REPEAT) {
+                break;
+            }
+            first = read;
+        }
+        return first != null && first.getType() == FrostlakeLexer.SHOW;
     }
 
     /**
@@ -102,7 +179,8 @@ public final class ShowScopeWords {
      * {@code SHOW FUNCTIONS [LIKE '…'] IN}: a USER, BUILTIN or TERSE listing reads MODEL as no kind (live-verified).
      */
     private static boolean listsFunctions(final Token[] before) {
-        final int listing = before[2] != null && before[2].getType() == FrostlakeLexer.STRING_LITERAL ? 4 : 2;
+        final int listing = before[2] != null && (before[2].getType() == FrostlakeLexer.STRING_LITERAL
+            || before[2].getType() == FrostlakeLexer.DOLLAR_QUOTED_STRING) ? 4 : 2;
         if (listing == 4 && (before[3] == null || before[3].getType() != FrostlakeLexer.LIKE)) {
             return false;
         }

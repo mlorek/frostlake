@@ -20,8 +20,10 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableRefresh;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
@@ -96,6 +98,7 @@ final class StreamStart {
             }
             atPoint = queryExecutor.tableSnapshotAtSequence(table, storage, source.getOffsetSequence());
         } else {
+            queryExecutor.requireAnchoredPoint(point, table);
             requirePointValue(point, table.getName());
             atPoint = queryExecutor.tableSnapshotAtStreamPoint(table, storage, point);
         }
@@ -120,15 +123,18 @@ final class StreamStart {
                  final boolean showInitialRows) {
         final List<Table> tables = new ArrayList<>();
         final List<TableStorage> storages = new ArrayList<>();
-        for (final String name : baseTables) {
-            final Table table = catalog.resolveTable(name);
+        // The tables the stream is bound to, each read where the view lives (StreamSources).
+        final List<Table> bound = stream.getBaseTables();
+        for (int i = 0; i < baseTables.size(); i++) {
+            final String name = baseTables.get(i);
+            final Table table = bound != null && i < bound.size() ? bound.get(i) : catalog.resolveTable(name);
             boolean seen = false;
             for (final Table known : tables) {
                 seen = seen || known == table;
             }
             if (!seen) {
                 tables.add(table);
-                storages.add(storageOf(table, name));
+                storages.add(bound != null ? storageOf(table) : storageOf(table, name));
             }
         }
         if (point == null) {
@@ -187,19 +193,22 @@ final class StreamStart {
     /**
      * Start a stream over a dynamic table: it holds the table's rows as of its last refresh, and records what
      * each later refresh changes. {@code STREAM => '<name>'} over the same table takes that stream's pending
-     * changes. Any other point before the table's first refresh is refused as a time-travel read before the
-     * table was; a later one is unsupported, for the history of the table's refreshes is not kept.
+     * changes. Any other point starts the stream from the refresh a read at that point sees, so what every later
+     * refresh changed is pending at once: AT or BEFORE (STATEMENT => a refresh) holds that refresh's changes and the
+     * later ones (live-verified). A point before the table's first refresh, or before the oldest refresh still
+     * kept, is refused as a time-travel read before the table was.
      *
      * @param stream          the new stream
+     * @param home            the schema the dynamic table lives in
      * @param dynamicTable    its dynamic table
      * @param point           the AT | BEFORE point, or null
      * @param showInitialRows whether the stream first reports the table's rows
      */
-    void forDynamicTable(final Stream stream, final DynamicTable dynamicTable,
+    void forDynamicTable(final Stream stream, final Schema home, final DynamicTable dynamicTable,
                          final FrostlakeParser.StreamPointContext point, final boolean showInitialRows) {
         final List<List<Object>> image = new ArrayList<>();
         if (dynamicTable.getLastRefreshedTime() != null) {
-            for (final Row row : queryExecutor.dynamicTableRows(dynamicTable)) {
+            for (final Row row : queryExecutor.dynamicTableRows(home, dynamicTable)) {
                 image.add(new ArrayList<>(row.getValues()));
             }
         }
@@ -210,13 +219,14 @@ final class StreamStart {
                 if (sameSource(source, stream)) {
                     stream.inheritChanges(source);
                 } else {
-                    refuseDynamicTablePoint(dynamicTable, source.getOffsetSequence() < dynamicTable.getFirstRefreshedSequence());
+                    startFromRefresh(stream, dynamicTable, dynamicTable.refreshAt(source.getOffsetSequence(), 0L,
+                        false));
                 }
             } else {
                 requirePointValue(point, dynamicTable.getName());
                 final long millis = queryExecutor.streamPointMillis(point);
-                refuseDynamicTablePoint(dynamicTable, millis < dynamicTable.getFirstRefreshedMillis()
-                    || point.BEFORE() != null && millis <= dynamicTable.getFirstRefreshedMillis());
+                startFromRefresh(stream, dynamicTable, dynamicTable.refreshAt(
+                    queryExecutor.streamPointSequence(point), millis, point.BEFORE() != null));
             }
         }
         if (showInitialRows) {
@@ -228,14 +238,22 @@ final class StreamStart {
         }
     }
 
-    /** A point on a dynamic table's stream that is no stream of the same table is refused either way. */
-    private static void refuseDynamicTablePoint(final DynamicTable dynamicTable, final boolean beforeFirstRefresh) {
-        if (dynamicTable.getFirstRefreshedSequence() == 0L || beforeFirstRefresh) {
+    /**
+     * Start a dynamic table's stream from a past refresh: what every later refresh changed is pending at once, and
+     * a point no kept refresh came before is refused as a time-travel read before the table was.
+     *
+     * @param stream       the new stream
+     * @param dynamicTable its dynamic table
+     * @param seen         the refresh a read at the point sees, or null for none
+     */
+    private void startFromRefresh(final Stream stream, final DynamicTable dynamicTable,
+                                  final DynamicTableRefresh seen) {
+        final DynamicTableRefresh last = dynamicTable.lastRefresh();
+        if (seen == null || last == null) {
             throw QueryExecutor.timeTravelUnavailable(dynamicTable.getName());
         }
-        throw new RuntimeException(SqlCompilationError.of("Unsupported feature 'AT | BEFORE on a stream over a "
-            + "dynamic table': a point after the table's first refresh needs the history of its refreshes, which "
-            + "Frostlake does not keep."));
+        stream.setRefreshImage(seen.getRows());
+        queryExecutor.getStreamManager().catchUpDynamicTableStream(stream, stream.getSourceTableName(), last.getRows());
     }
 
     /** The stream a {@code STREAM => '<name>'} point names, refused with the name as written when missing. */
@@ -248,7 +266,7 @@ final class StreamStart {
             // A bare name is no stream name but a column the point cannot read, refused where it stands.
             if (unreadable.getMessage() != null && unreadable.getMessage().contains("invalid identifier")) {
                 throw new RuntimeException(SqlCompilationError.invalidIdentifier(expression.getStart().getLine(),
-                    expression.getStart().getCharPositionInLine(), expression.getText().toUpperCase()));
+                    expression.getStart().getCharPositionInLine(), expression.getText().toUpperCase(Locale.ROOT)));
             }
             throw unreadable;
         }
@@ -275,7 +293,7 @@ final class StreamStart {
      */
     private void requirePointValue(final FrostlakeParser.StreamPointContext point, final String tableName) {
         final FrostlakeParser.TimeTravelPointContext ptCtx = point.timeTravelPoint();
-        if (queryExecutor.evaluateStandalone(ptCtx.expression()) != null) {
+        if (queryExecutor.pointValue(ptCtx) != null) {
             return;
         }
         if (ptCtx.TIMESTAMP() != null) {
@@ -364,8 +382,15 @@ final class StreamStart {
         return tag == null ? new StreamRecord(copy, type, update, rowId) : new StreamRecord(copy, type, update, rowId, tag);
     }
 
-    /** Whether two streams read the same object: the same kind of source under the same qualified name. */
+    /**
+     * Whether two streams read the same object: the very same table for two table streams (StreamSources), else
+     * the same kind of source under the same qualified name.
+     */
     private boolean sameSource(final Stream a, final Stream b) {
+        if (a.getSourceType() == StreamSourceType.TABLE && b.getSourceType() == StreamSourceType.TABLE) {
+            final Table table = StreamSources.sourceOf(catalog, StreamSources.homeOf(catalog, a), a);
+            return table != null && table == StreamSources.sourceOf(catalog, StreamSources.homeOf(catalog, b), b);
+        }
         return a.getSourceType() == b.getSourceType() && qualified(a).equalsIgnoreCase(qualified(b));
     }
 
@@ -381,6 +406,13 @@ final class StreamStart {
         } catch (final RuntimeException unresolved) {
             return name;
         }
+    }
+
+    /** The storage of a table, found through the schema that holds it. */
+    private TableStorage storageOf(final Table table) {
+        final Schema schema = StreamSources.holderOf(catalog, table);
+        return queryExecutor.getStorageEngine().getTableStorage(
+            QualifiedName.key(schema.getDatabaseName(), schema.getName(), table.getName()));
     }
 
     private TableStorage storageOf(final Table table, final String name) {

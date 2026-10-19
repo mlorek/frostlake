@@ -16,12 +16,17 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.commands.ExplainedStatementChecks;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -44,14 +49,54 @@ import java.util.Locale;
  *   <li>JSON — the same {@code content} column holding the plan as a JSON document.</li>
  * </ul>
  *
- * <p>Any other word after USING is refused. The operators are this engine's own reading of the statement — a query
- * with no FROM reads a Generator, as the account's does — since no optimizer here reproduces the account's.
+ * <p>Any other word after USING is refused. The operators are those {@link PlanBuilder} arranges for the statement,
+ * numbered from the top; a scan reports one partition of 1024 bytes for a table that holds rows, and GlobalStats
+ * their sums.
  */
 final class ExplainPlan {
 
     private static final NumericType NUMBER_9 = new NumericType("NUMBER", 9, 0);
 
+    /** The bytes a plan assigns for each partition it scans. */
+    private static final long PARTITION_BYTES = 1024;
+
+    /** What a value is written after to be compiled as the one item of a query. */
+    private static final String VALUE_QUERY = "SELECT ";
+
+    private static final ThreadLocal<int[]> PLANNING = new ThreadLocal<int[]>() {
+        @Override
+        protected int[] initialValue() {
+            return new int[1];
+        }
+    };
+
     private ExplainPlan() {
+    }
+
+    /**
+     * Whether a statement is being compiled for its plan alone. A procedure called in the FROM clause, and one
+     * a TO_QUERY text calls, does not run then: an EXPLAIN writes nothing (live-verified).
+     *
+     * @return true while an EXPLAIN compiles its statement
+     */
+    static boolean planning() {
+        return PLANNING.get()[0] > 0;
+    }
+
+    /**
+     * Compile a query for its shape alone, as an EXPLAIN compiles it: a name it cannot resolve is refused, and
+     * nothing it reads is carried out.
+     *
+     * @param executor the executor that compiles the query
+     * @param query    the query's text
+     */
+    static void compileOnly(final QueryExecutor executor, final String query) {
+        PLANNING.get()[0]++;
+        try {
+            executor.resolveRelationShape(query, null);
+        } finally {
+            PLANNING.get()[0]--;
+        }
     }
 
     /**
@@ -63,10 +108,24 @@ final class ExplainPlan {
      */
     static ResultSet answer(final QueryExecutor executor, final FrostlakeParser.ExplainStatementContext ctx) {
         final String format = formatOf(ctx);
-        compile(executor, ctx);
-        final List<PlanOperator> operators = ctx.selectStatement() != null
-            ? queryOperators(executor, ctx.selectStatement(), 0, null, 0, new ArrayList<PlanOperator>())
-            : dmlOperators(executor, ctx.dmlStatement());
+        final List<PlanOperator> operators = new ArrayList<>();
+        // A plan is asked for and nothing is carried out: what a relation calls to learn its shape runs no
+        // procedure while this compiles (see planning).
+        PLANNING.get()[0]++;
+        try {
+            final PlanBuilder builder = new PlanBuilder(executor);
+            final PlanNode plan;
+            if (ctx.explainedStatement() != null) {
+                plan = explained(executor, ctx.explainedStatement(), builder);
+            } else {
+                compile(executor, ctx);
+                plan = ctx.selectStatement() != null ? builder.query(ctx.selectStatement())
+                    : builder.dml(ctx.dmlStatement());
+            }
+            number(plan, null, 0, new int[1], operators);
+        } finally {
+            PLANNING.get()[0]--;
+        }
         if ("TEXT".equals(format)) {
             return content(text(operators));
         }
@@ -91,16 +150,155 @@ final class ExplainPlan {
             " Invalid explain plan format '" + word + "'"));
     }
 
-    /** Compile the statement explained, so a name it cannot resolve is refused as the statement refuses it. */
+    /**
+     * Compile the statement explained, so a name it cannot resolve is refused as the statement refuses it. A query
+     * holding a dynamic PIVOT — IN (ANY) or IN (a subquery) — reads its values to know its columns, as the account's
+     * planner does: its rows are read, and a fault only a row raises is no refusal of the plan (live-verified). A
+     * refusal is placed in the EXPLAIN statement.
+     */
     private static void compile(final QueryExecutor executor, final FrostlakeParser.ExplainStatementContext ctx) {
         if (ctx.selectStatement() != null) {
-            executor.resolveRelationShape(ParseTreeText.getOriginalText(ctx.selectStatement()), null);
+            compileStatementQuery(executor, ctx.selectStatement());
             return;
         }
         final FrostlakeParser.ObjectNameContext target = dmlTarget(ctx.dmlStatement());
         if (target != null) {
             executor.getCatalog().resolveTableAsWritten(executor.resolveObjectName(target), "Table");
         }
+    }
+
+    /**
+     * The plan of a statement that is neither a query nor a DML statement, compiled as the account compiles it for its
+     * plan and with nothing it would do done (live-verified). A DDL statement is judged as {@link
+     * ExplainedStatementChecks} judges it and the query it is made from compiled; a session variable's values are
+     * compiled; a SHOW, a DESCRIBE and a LIST, which change nothing, run and their answer is dropped. A CREATE TABLE …
+     * AS SELECT and a materialized view are planned over their query (see {@link PlanBuilder#created}); every other
+     * statement, and a create IF NOT EXISTS of a name that is taken, is a bare Result.
+     */
+    private static PlanNode explained(final QueryExecutor executor,
+                                      final FrostlakeParser.ExplainedStatementContext explained,
+                                      final PlanBuilder builder) {
+        final FrostlakeParser.DdlStatementContext ddl = explained.ddlStatement();
+        if (ddl != null) {
+            if (!ExplainedStatementChecks.compile(executor, ddl)) {
+                return PlanBuilder.bareResult();
+            }
+            final FrostlakeParser.CreateStatementContext create = ddl.createStatement();
+            final FrostlakeParser.SelectStatementContext query = create == null ? null : createdQuery(create);
+            if (query == null) {
+                return PlanBuilder.bareResult();
+            }
+            compileStatementQuery(executor, query);
+            return create.MATERIALIZED() == null && create.VIEW() != null ? PlanBuilder.bareResult()
+                : builder.created(createdName(executor, create), query, create.MATERIALIZED() != null);
+        }
+        if (explained.sessionSetStatement() != null) {
+            for (final FrostlakeParser.BooleanExprContext value : setValues(explained.sessionSetStatement())) {
+                compileValue(executor, value);
+            }
+            return PlanBuilder.bareResult();
+        }
+        if (explained.showStatement() != null || explained.showClassStatement() != null
+                || explained.describeStatement() != null || explained.listStatement() != null) {
+            final Token start = explained.getStart();
+            executor.executeFromUnrecorded(ParseTreeText.getOriginalText(explained),
+                new SourcePosition(start.getLine(), start.getCharPositionInLine()));
+        }
+        return PlanBuilder.bareResult();
+    }
+
+    /** The query a CREATE makes a table, a view or a materialized view from; null for any other CREATE. */
+    private static FrostlakeParser.SelectStatementContext createdQuery(
+            final FrostlakeParser.CreateStatementContext create) {
+        final boolean table = create.TABLE() != null && create.DYNAMIC() == null && create.EVENT() == null
+            && create.TEMPLATE() == null;
+        return table || create.VIEW() != null ? create.selectStatement() : null;
+    }
+
+    /**
+     * The object a CREATE TABLE … AS SELECT or a materialized view makes, named in full as its plan names it: placed
+     * by the session where the statement names no database or schema, and named with the account's locator first
+     * where the statement names its database (live-verified).
+     */
+    private static String createdName(final QueryExecutor executor,
+                                      final FrostlakeParser.CreateStatementContext create) {
+        final Catalog catalog = executor.getCatalog();
+        final String full = SqlIdentifiers.spellAlreadyCanonicalPath(
+            catalog.qualifiedExactName(executor.resolveObjectName(create.objectName())));
+        return executor.resolveObjectNameParts(create.objectName()).length >= 3
+            ? catalog.getAccountLocator() + "." + full : full;
+    }
+
+    /** The values a session variable's SET assigns. */
+    private static List<FrostlakeParser.BooleanExprContext> setValues(
+            final FrostlakeParser.SessionSetStatementContext set) {
+        if (set.booleanExprList() != null) {
+            return set.booleanExprList().booleanExpr();
+        }
+        return Collections.singletonList(set.booleanExpr());
+    }
+
+    /**
+     * Compile a value a statement holds, as an EXPLAIN compiles it: read as the one item of a query, its names
+     * resolved and nothing it reads run, a refusal placed where the value stands in its statement.
+     */
+    private static void compileValue(final QueryExecutor executor, final ParserRuleContext value) {
+        final Token start = value.getStart();
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(start.getLine(), start.getCharPositionInLine() - VALUE_QUERY.length()));
+        try {
+            executor.resolveRelationShape(VALUE_QUERY + ParseTreeText.getOriginalText(value), null);
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /**
+     * Compile the query a statement holds, as an EXPLAIN compiles it — its names are resolved and nothing it reads
+     * runs — a refusal placed where the query stands in its statement: after an EXPLAIN's first word, at the start
+     * of a query refused for its FOR UPDATE.
+     *
+     * @param executor the executor that compiles the query
+     * @param query    the query, as its statement holds it
+     */
+    static void compileQuery(final QueryExecutor executor, final FrostlakeParser.SelectStatementContext query) {
+        PLANNING.get()[0]++;
+        try {
+            compileStatementQuery(executor, query);
+        } finally {
+            PLANNING.get()[0]--;
+        }
+    }
+
+    private static void compileStatementQuery(final QueryExecutor executor,
+                                              final FrostlakeParser.SelectStatementContext query) {
+        final String text = ParseTreeText.getOriginalText(query);
+        final Token start = query.getStart();
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(start.getLine(), start.getCharPositionInLine()));
+        try {
+            if (holdsDynamicPivot(query)) {
+                executor.resolveRelationColumns(text, null);
+            } else {
+                executor.resolveRelationShape(text, null);
+            }
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /** Whether a tree holds a PIVOT whose values are read: IN (ANY) or IN (a subquery). */
+    private static boolean holdsDynamicPivot(final ParseTree node) {
+        if (node instanceof FrostlakeParser.PivotInListContext) {
+            final FrostlakeParser.PivotInListContext values = (FrostlakeParser.PivotInListContext) node;
+            return values.ANY() != null || values.selectStatement() != null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsDynamicPivot(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The table a DML statement writes, or null for a statement this does not read a target from. */
@@ -118,130 +316,19 @@ final class ExplainPlan {
     }
 
     /**
-     * A query's operators: a Result over what the query reads — a Generator with no FROM, else, from the top, a Limit,
-     * a Sort, an Aggregate, a Filter and a Join where the query has each, over a scan of every table it names.
+     * Numbers a plan's operators from the top, each before the operators under it, as the account lists them. An
+     * operator a plan does not list takes a number all the same, and the operators under it stand no deeper for it.
      */
-    private static List<PlanOperator> queryOperators(final QueryExecutor executor,
-                                                     final FrostlakeParser.SelectStatementContext query,
-                                                     final int firstId, final Integer parent, final int depth,
-                                                     final List<PlanOperator> into) {
-        int id = firstId;
-        final FrostlakeParser.SelectClauseContext select = query.selectOperand(0).selectClause();
-        into.add(new PlanOperator(id, parent, depth, "Result", null, null,
-            select == null ? Collections.<String>emptyList() : itemTexts(select)));
-        final int resultId = id++;
-        if (select == null || select.FROM() == null) {
-            into.add(new PlanOperator(id, resultId, depth + 1, "Generator", null, null, Arrays.asList("1")));
-            return into;
+    private static void number(final PlanNode node, final Integer parent, final int depth, final int[] next,
+                               final List<PlanOperator> into) {
+        final int id = next[0]++;
+        if (!node.isHidden()) {
+            final Long held = !node.isScan() ? null : Long.valueOf(node.getRows().longValue() > 0 ? 1 : 0);
+            into.add(new PlanOperator(id, parent, depth, node.getOperation(), node.getObjects(), node.getAlias(),
+                node.getExpressions(), held, held == null || !node.isUnread() ? held : Long.valueOf(0)));
         }
-        int scanParent = resultId;
-        int scanDepth = depth + 1;
-        final List<String> stages = new ArrayList<>();
-        final List<List<String>> stageExpressions = new ArrayList<>();
-        if (query.limitClause() != null || query.fetchClause() != null) {
-            stages.add("Limit");
-            stageExpressions.add(Collections.<String>emptyList());
-        }
-        if (query.orderByClause() != null) {
-            stages.add("Sort");
-            stageExpressions.add(Arrays.asList(ParseTreeText.getOriginalText(query.orderByClause())));
-        }
-        if (select.groupByClause() != null) {
-            stages.add("Aggregate");
-            stageExpressions.add(Arrays.asList(ParseTreeText.getOriginalText(select.groupByClause())));
-        }
-        if (select.whereClause() != null) {
-            stages.add("Filter");
-            stageExpressions.add(Arrays.asList(ParseTreeText.getOriginalText(select.whereClause().booleanExpr())));
-        }
-        if (!select.tableExpression().joinClause().isEmpty()) {
-            stages.add("Join");
-            stageExpressions.add(Collections.<String>emptyList());
-        }
-        for (int i = 0; i < stages.size(); i++) {
-            into.add(new PlanOperator(id, scanParent, scanDepth, stages.get(i), null, null, stageExpressions.get(i)));
-            scanParent = id++;
-            scanDepth++;
-        }
-        for (final FrostlakeParser.TableSourceContext source : scannedTables(select.tableExpression())) {
-            final String written = ParseTreeText.getQualifiedName(source.tableQualifiedName());
-            final FrostlakeParser.TableReferenceContext reference =
-                (FrostlakeParser.TableReferenceContext) source.getParent();
-            final String alias = reference.aliasName() != null ? ParseTreeText.getIdentifier(reference.aliasName())
-                : reference.nonJoinKeywordIdentifier() != null
-                    ? reference.nonJoinKeywordIdentifier().getText().toUpperCase(Locale.ROOT) : null;
-            into.add(new PlanOperator(id++, scanParent, scanDepth, "TableScan", qualified(executor, written), alias,
-                Collections.<String>emptyList()));
-        }
-        return into;
-    }
-
-    /** A DML statement's operators: a Result counting the rows, the write, and what it reads. */
-    private static List<PlanOperator> dmlOperators(final QueryExecutor executor,
-                                                   final FrostlakeParser.DmlStatementContext dml) {
-        final List<PlanOperator> operators = new ArrayList<>();
-        final FrostlakeParser.ObjectNameContext target = dmlTarget(dml);
-        final String objects = target == null ? null : qualified(executor, executor.resolveObjectName(target));
-        if (dml.insertStatement() != null) {
-            operators.add(new PlanOperator(0, null, 0, "Result", null, null, Arrays.asList("number of rows inserted")));
-            operators.add(new PlanOperator(1, 0, 1, "Insert", objects, null, Collections.<String>emptyList()));
-            final FrostlakeParser.InsertStatementContext insert = dml.insertStatement();
-            if (insert.valueTupleList() != null) {
-                operators.add(new PlanOperator(2, 1, 2, "ValuesClause", null, null,
-                    Arrays.asList(ParseTreeText.getOriginalText(insert.valueTupleList()))));
-            } else {
-                queryOperators(executor, insert.selectStatement(), 2, 1, 2, operators);
-            }
-            return operators;
-        }
-        final String counted = dml.updateStatement() != null ? "number of rows updated"
-            : dml.deleteStatement() != null ? "number of rows deleted" : "number of rows loaded";
-        operators.add(new PlanOperator(0, null, 0, "Result", null, null, Arrays.asList(counted)));
-        final String write = dml.updateStatement() != null ? "Update" : dml.deleteStatement() != null ? "Delete"
-            : dml.mergeStatement() != null ? "Merge" : "Copy";
-        operators.add(new PlanOperator(1, 0, 1, write, objects, null, Collections.<String>emptyList()));
-        if (objects != null) {
-            operators.add(new PlanOperator(2, 1, 2, "TableScan", objects, null, Collections.<String>emptyList()));
-        }
-        return operators;
-    }
-
-    /** The select list's items as written. */
-    private static List<String> itemTexts(final FrostlakeParser.SelectClauseContext select) {
-        final List<String> texts = new ArrayList<>();
-        for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
-            texts.add(ParseTreeText.getOriginalText(item));
-        }
-        return texts;
-    }
-
-    /** Every table a FROM clause reads by name, in the order written, outside nested queries. */
-    private static List<FrostlakeParser.TableSourceContext> scannedTables(final ParseTree node) {
-        final List<FrostlakeParser.TableSourceContext> found = new ArrayList<>();
-        collectTables(node, found);
-        return found;
-    }
-
-    private static void collectTables(final ParseTree node, final List<FrostlakeParser.TableSourceContext> found) {
-        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
-            return;
-        }
-        if (node instanceof FrostlakeParser.TableSourceContext
-                && ((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null
-                && node.getParent() instanceof FrostlakeParser.TableReferenceContext) {
-            found.add((FrostlakeParser.TableSourceContext) node);
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            collectTables(node.getChild(i), found);
-        }
-    }
-
-    /** A table's name in full, as a plan names the object it reads; the name as written when it cannot be placed. */
-    private static String qualified(final QueryExecutor executor, final String written) {
-        try {
-            return executor.getCatalog().qualifiedObjectName(written);
-        } catch (final RuntimeException unplaced) {
-            return written.toUpperCase(Locale.ROOT);
+        for (final PlanNode child : node.getChildren()) {
+            number(child, Integer.valueOf(id), node.isHidden() ? depth : depth + 1, next, into);
         }
     }
 
@@ -258,16 +345,35 @@ final class ExplainPlan {
             new ResultSetColumn("partitionsAssigned", NumericType.NUMBER, null),
             new ResultSetColumn("bytesAssigned", NumericType.NUMBER, null));
         final List<Row> rows = new ArrayList<>();
+        final long[] scanned = partitionsOf(operators);
         rows.add(new Row(Arrays.<Object>asList(null, null, null, "GlobalStats", null, null, null,
-            Long.valueOf(0), Long.valueOf(0), Long.valueOf(0))));
+            Long.valueOf(scanned[0]), Long.valueOf(scanned[1]), Long.valueOf(scanned[1] * PARTITION_BYTES))));
         for (final PlanOperator operator : operators) {
+            final Long assigned = operator.getPartitionsAssigned();
             rows.add(new Row(Arrays.<Object>asList(Long.valueOf(1), Long.valueOf(operator.getId()),
                 operator.getParent() == null ? null : "[" + operator.getParent() + "]", operator.getOperation(),
-                operator.getObjects(), operator.getAlias(),
+                operator.getObjects().isEmpty() ? null : String.join(", ", operator.getObjects()),
+                operator.getAlias(),
                 operator.getExpressions().isEmpty() ? null : String.join(", ", operator.getExpressions()),
-                null, null, null)));
+                operator.getPartitionsTotal(), assigned,
+                assigned == null ? null : Long.valueOf(assigned.longValue() * PARTITION_BYTES))));
         }
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * The partitions of the tables a plan's scans read and those the scans are assigned: one for each scan of a table
+     * that holds rows, and none assigned to a scan that reads no column.
+     */
+    private static long[] partitionsOf(final List<PlanOperator> operators) {
+        final long[] partitions = new long[2];
+        for (final PlanOperator operator : operators) {
+            if (operator.getPartitionsTotal() != null) {
+                partitions[0] += operator.getPartitionsTotal().longValue();
+                partitions[1] += operator.getPartitionsAssigned().longValue();
+            }
+        }
+        return partitions;
     }
 
     private static ResultSet content(final String plan) {
@@ -275,43 +381,59 @@ final class ExplainPlan {
             Collections.singletonList(new Row(Arrays.<Object>asList(plan))));
     }
 
-    /** The TEXT plan: the GlobalStats block, then one line per operator, indented five places a level. */
+    /**
+     * The TEXT plan: the GlobalStats block, then one line per operator, indented five places a level: its objects,
+     * with the alias they are read {@code as}, its expressions, and a scan's partitions.
+     */
     private static String text(final List<PlanOperator> operators) {
-        final StringBuilder plan = new StringBuilder("GlobalStats:\n    partitionsTotal=0\n    partitionsAssigned=0\n"
-            + "    bytesAssigned=0\nOperations:\n");
+        final long[] scanned = partitionsOf(operators);
+        final StringBuilder plan = new StringBuilder("GlobalStats:\n    partitionsTotal=" + scanned[0]
+            + "\n    partitionsAssigned=" + scanned[1] + "\n    bytesAssigned=" + scanned[1] * PARTITION_BYTES
+            + "\nOperations:\n");
         for (final PlanOperator operator : operators) {
             plan.append("1:").append(operator.getId());
             for (int i = 0; i < 5 * (operator.getDepth() + 1); i++) {
                 plan.append(' ');
             }
             plan.append("->").append(operator.getOperation());
-            if (operator.getObjects() != null) {
-                plan.append("  ").append(operator.getObjects());
+            if (!operator.getObjects().isEmpty()) {
+                plan.append("  ").append(String.join(", ", operator.getObjects()));
             }
             if (operator.getAlias() != null) {
-                plan.append("  ").append(operator.getAlias());
+                plan.append(" as ").append(operator.getAlias());
             }
             if (!operator.getExpressions().isEmpty()) {
                 plan.append("  ").append(String.join(", ", operator.getExpressions()));
             }
-            plan.append("  \n");
+            if (operator.getPartitionsTotal() != null) {
+                plan.append("  {partitionsTotal=").append(operator.getPartitionsTotal())
+                    .append(", partitionsAssigned=").append(operator.getPartitionsAssigned())
+                    .append(", bytesAssigned=")
+                    .append(operator.getPartitionsAssigned().longValue() * PARTITION_BYTES).append("}\n");
+            } else {
+                plan.append("  \n");
+            }
         }
         return plan.toString();
     }
 
     /** The JSON plan: the GlobalStats object, then the operators as one step's list. */
     private static String json(final List<PlanOperator> operators) {
-        final StringBuilder plan = new StringBuilder(
-            "{\"GlobalStats\":{\"partitionsTotal\":0,\"partitionsAssigned\":0,\"bytesAssigned\":0},\"Operations\":[[");
+        final long[] scanned = partitionsOf(operators);
+        final StringBuilder plan = new StringBuilder("{\"GlobalStats\":{\"partitionsTotal\":" + scanned[0]
+            + ",\"partitionsAssigned\":" + scanned[1] + ",\"bytesAssigned\":" + scanned[1] * PARTITION_BYTES
+            + "},\"Operations\":[[");
         for (int i = 0; i < operators.size(); i++) {
             final PlanOperator operator = operators.get(i);
             plan.append(i > 0 ? "," : "").append("{\"id\":").append(operator.getId())
                 .append(",\"operation\":").append(quoted(operator.getOperation()));
-            if (operator.getObjects() != null) {
-                plan.append(",\"objects\":[").append(quoted(operator.getObjects())).append(']');
-            }
-            if (operator.getAlias() != null) {
-                plan.append(",\"alias\":").append(quoted(operator.getAlias()));
+            if (!operator.getObjects().isEmpty()) {
+                plan.append(",\"objects\":[");
+                final List<String> objects = operator.getObjects();
+                for (int o = 0; o < objects.size(); o++) {
+                    plan.append(o > 0 ? "," : "").append(quoted(objects.get(o)));
+                }
+                plan.append(']');
             }
             if (!operator.getExpressions().isEmpty()) {
                 plan.append(",\"expressions\":[");
@@ -320,6 +442,15 @@ final class ExplainPlan {
                     plan.append(e > 0 ? "," : "").append(quoted(expressions.get(e)));
                 }
                 plan.append(']');
+            }
+            if (operator.getAlias() != null) {
+                plan.append(",\"alias\":").append(quoted(operator.getAlias()));
+            }
+            if (operator.getPartitionsTotal() != null) {
+                plan.append(",\"partitionsAssigned\":").append(operator.getPartitionsAssigned())
+                    .append(",\"partitionsTotal\":").append(operator.getPartitionsTotal())
+                    .append(",\"bytesAssigned\":")
+                    .append(operator.getPartitionsAssigned().longValue() * PARTITION_BYTES);
             }
             if (operator.getParent() != null) {
                 plan.append(",\"parentOperators\":[").append(operator.getParent()).append(']');

@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
@@ -23,30 +22,39 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS: the graph runs a resumed scheduled root task has coming up. */
+/**
+ * INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS: the graph runs a resumed scheduled root task has coming up. The function
+ * tells every graph of the account, an account's own among them, so the test reads its own roots by name.
+ */
 public class CurrentTaskGraphsFunctionTest extends BaseDatabaseTest {
+
+    private ResultSet coming(final String root) {
+        return engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS(ROOT_TASK_NAME => '"
+            + root + "'))");
+    }
 
     @Test
     public void aResumedScheduledRootIsScheduled() {
         engine.execute("CREATE TASK c_hourly SCHEDULE = '60 MINUTE' AS SELECT 1");
         engine.execute("CREATE TASK c_manual AS SELECT 1");
-        final String sql = "SELECT * FROM TABLE(INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS())";
-        assertEquals(0, engine.executeQuery(sql).getRowCount(), "a suspended task has no graph run coming");
+        assertEquals(0, coming("C_HOURLY").getRowCount(), "a suspended task has no graph run coming");
         engine.execute("ALTER TASK c_hourly RESUME");
         try {
-            final ResultSet rs = engine.executeQuery(sql);
+            final ResultSet rs = coming("C_HOURLY");
             assertEquals(1, rs.getRowCount());
             assertEquals("C_HOURLY", rs.getRows().get(0).getValue(rs.getColumnIndex("ROOT_TASK_NAME")));
+            assertEquals("TEST_DB", rs.getRows().get(0).getValue(rs.getColumnIndex("DATABASE_NAME")));
             assertEquals("SCHEDULED", rs.getRows().get(0).getValue(rs.getColumnIndex("STATE")));
             assertEquals("SCHEDULE", rs.getRows().get(0).getValue(rs.getColumnIndex("SCHEDULED_FROM")));
             assertTrue(rs.getRows().get(0).getValue(rs.getColumnIndex("SCHEDULED_TIME")) != null);
             assertEquals(19, rs.getColumns().size());
             assertEquals("SCHEDULED_FROM", rs.getColumns().get(14).getName(), "after ATTEMPT_NUMBER");
             assertEquals("SCHEDULED_BY_USER", rs.getColumns().get(18).getName());
-            assertEquals(0, engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS("
-                + "ROOT_TASK_NAME => 'c_manual'))").getRowCount());
+            assertEquals(1, coming("c_hourly").getRowCount(), "the root's name in any case");
+            assertEquals(0, coming("C_MANUAL").getRowCount());
         } finally {
             engine.execute("ALTER TASK c_hourly SUSPEND");
         }
+        assertEquals(0, coming("C_HOURLY").getRowCount());
     }
 }

@@ -46,4 +46,12 @@ public class Min extends AggregateFunction {
     @Override
     public int getMaxArgCount() { return 1; }
 
+    /**
+     * A VECTOR has no order to take a least or greatest of: "Function MIN does not support VECTOR(FLOAT, 2) argument
+     * type" (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.UNSUPPORTED_ARGUMENT_TYPE;
+    }
 }

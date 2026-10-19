@@ -154,25 +154,31 @@ public final class SnowflakeDateParser {
         final String element = piece.element();
         switch (element) {
             case "YYYY":
+            case "UUUU":
                 return parseNumber(YEAR, elementFollows(index) ? ADJACENT_YEAR_WIDTHS : YEAR_WIDTHS,
                     0, 999_999_999, index, pos);
             case "YY":
             case "Y":
                 return parseTwoDigitYear(index, pos);
             case "MM":
+            case "MO":
                 return parseNumber(MONTH, TWO_DIGIT_WIDTHS, 1, 12, index, pos);
             case "DD":
             case "D":
                 return parseNumber(DAY, TWO_DIGIT_WIDTHS, 1, 31, index, pos);
             case "HH24":
+            case "H24":
             case "HH":
             case "H":
                 return parseNumber(HOUR, TWO_DIGIT_WIDTHS, 0, 23, index, pos);
             case "HH12":
+            case "H12":
                 return parseNumber(HOUR12, TWO_DIGIT_WIDTHS, 0, 12, index, pos);
             case "MI":
+            case "ME":
                 return parseNumber(MINUTE, TWO_DIGIT_WIDTHS, 0, 59, index, pos);
             case "SS":
+            case "S":
                 return parseNumber(SECOND, TWO_DIGIT_WIDTHS, 0, 59, index, pos);
             case "MON":
             case "MMM":
@@ -183,6 +189,8 @@ public final class SnowflakeDateParser {
             case "AM":
             case "PM":
                 return parseMeridiem(index, pos);
+            case "P":
+                return parseMeridiemLetter(index, pos);
             case "TZH:TZM":
             case "TZHTZM":
             case "TZH":
@@ -289,6 +297,18 @@ public final class SnowflakeDateParser {
             return tryField(MERIDIEM, 1, index, pos + 2);
         }
         return false;
+    }
+
+    /** The meridiem's letter, as P reads it: A or P, in either case (live-verified: '5:08 P' is 17:08). */
+    private boolean parseMeridiemLetter(final int index, final int pos) {
+        if (pos >= input.length()) {
+            return false;
+        }
+        final char letter = Character.toUpperCase(input.charAt(pos));
+        if (letter == 'A') {
+            return tryField(MERIDIEM, 0, index, pos + 1);
+        }
+        return letter == 'P' && tryField(MERIDIEM, 1, index, pos + 1);
     }
 
     private boolean parseOffset(final int index, final int pos) {

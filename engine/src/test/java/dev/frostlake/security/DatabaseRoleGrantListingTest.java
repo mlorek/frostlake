@@ -33,7 +33,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The sentences and listings of database roles and of the grants that name roles: the database role's name
- * qualified in every CREATE and DROP sentence, a database role's own USAGE on its database, the holders listed
+ * qualified in every CREATE and DROP sentence, a database role's own USAGE on its database — under the role and
+ * under the database — the holders listed
  * under SHOW GRANTS ON a role, the order of SHOW GRANTS TO and SHOW FUTURE GRANTS, and SHOW GRANTS TO USER with
  * its {@code role} column.
  */
@@ -94,6 +95,17 @@ public class DatabaseRoleGrantListingTest extends BaseDatabaseTest {
 
     private String currentRole() {
         return status("SELECT CURRENT_ROLE()");
+    }
+
+    @Test
+    public void aDatabasesGrantsTellItsDatabaseRolesOwnUsage() {
+        engine.executeQuery("CREATE DATABASE ROLE test_db.zz_dr");
+        engine.executeQuery("CREATE DATABASE ROLE test_db.aa_dr");
+        engine.executeQuery("GRANT MONITOR ON DATABASE test_db TO DATABASE ROLE test_db.aa_dr");
+        assertEquals(List.of("MONITOR|DATABASE_ROLE|AA_DR", "USAGE|DATABASE_ROLE|AA_DR",
+            "OWNERSHIP|ROLE|" + currentRole(), "USAGE|DATABASE_ROLE|ZZ_DR"),
+            rows("SHOW GRANTS ON DATABASE test_db", "privilege", "granted_to", "grantee_name"),
+            "each database role's USAGE on its own database, which no one granted, by grantee and privilege");
     }
 
     @Test

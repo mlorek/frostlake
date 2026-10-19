@@ -32,6 +32,7 @@ public class RestArtifactRepositoryTest extends BaseRestTest {
     public static void createSchema() {
         sql("CREATE DATABASE art_db");
         sql("CREATE SCHEMA art_db.s");
+        sql("CREATE OR REPLACE API INTEGRATION pypi_int API_PROVIDER = pypi ENABLED = TRUE");
     }
 
     private static String repository(final String name, final String comment) {

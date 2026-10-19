@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -54,7 +56,7 @@ public class UuidVariantTest extends BaseDatabaseTest {
                 if (i > 0) {
                     answer.append(", ");
                 }
-                answer.append(String.valueOf(row.getValue(i)).toLowerCase());
+                answer.append(String.valueOf(row.getValue(i)).toLowerCase(Locale.ROOT));
             }
         }
         return answer.toString();

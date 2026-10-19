@@ -867,7 +867,13 @@
     {
      "sql": "SELECT seq_inc.NEXTVAL as val",
      "expect": {
-      "value": "11"
+      "value": "2"
+     }
+    },
+    {
+     "sql": "SELECT seq_inc.NEXTVAL as val",
+     "expect": {
+      "value": "12"
      }
     }
    ]

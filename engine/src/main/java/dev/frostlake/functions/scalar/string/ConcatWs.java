@@ -35,7 +35,7 @@ public class ConcatWs extends TextArgumentFunction {
         if (args.get(0) == null && args.size() > 2) {
             return null;
         }
-        final String sep = args.get(0) == null ? "" : args.get(0).toString();
+        final String sep = args.get(0) == null ? "" : SharedFunctionHelpers.textOf(args.get(0));
         final StringBuilder result = new StringBuilder();
         boolean first = true;
         for (int i = 1; i < args.size(); i++) {
@@ -58,11 +58,13 @@ public class ConcatWs extends TextArgumentFunction {
     public int getMaxArgCount() { return Integer.MAX_VALUE; }
 
     /**
-     * A predicate separator is not refused: with a single value there is nothing to separate, and
-     * CONCAT_WS(1 = 1, 'a') answers 'a' (live-verified). A predicate VALUE is refused, in CONCAT's name.
+     * A predicate is refused in CONCAT's name wherever it is read: as a value, and as the separator once there are
+     * two values for it to stand between, CONCAT_WS(1 = 1, 'a', 'b') being 'CONCAT': (VARCHAR(1), BOOLEAN,
+     * VARCHAR(1)). With a single value the separator is never read, which the argument walk itself knows, and
+     * CONCAT_WS(1 = 1, 'a') answers 'a' (live-verified).
      */
     @Override
     public SemiStructuredRejection predicateRejection(final int position) {
-        return position == 0 ? SemiStructuredRejection.NONE : SemiStructuredRejection.ARGUMENT_TYPES;
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 }

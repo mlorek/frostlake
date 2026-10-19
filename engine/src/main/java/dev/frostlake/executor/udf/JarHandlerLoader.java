@@ -17,13 +17,16 @@
 package dev.frostlake.executor.udf;
 
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stage;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.DataInputStream;
 import java.io.File;
+import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -32,9 +35,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /**
  * Loads a pre-compiled handler class from the JAR(s) named in a UDF/procedure's {@code IMPORTS} clause — the
@@ -73,12 +79,18 @@ public final class JarHandlerLoader {
      */
     private static final Map<String, Class<?>> HANDLER_CACHE = new ConcurrentHashMap<>();
 
+    /** What every class file opens with. */
+    private static final int CLASS_FILE_MAGIC = 0xCAFEBABE;
+
     /** Load {@code className} (trying the Scala {@code object} singleton {@code className$} first) from the IMPORTS jar(s). */
-    public static Class<?> load(final List<String> imports, final String className,
+    public static Class<?> load(final List<String> written, final String className,
                                 final Catalog catalog, final S3PathResolver s3Resolver) {
-        if (imports == null || imports.isEmpty()) {
+        if (written == null || written.isEmpty()) {
             throw new RuntimeException("No IMPORTS jar specified for handler class " + className);
         }
+        // A file an internal named stage keeps is read from the engine's own directory behind the stage.
+        final ImportLocalizer localizer = LOCALIZER.get();
+        final List<String> imports = localizer != null ? localizer.localImports(written) : written;
         final List<String> localPaths = new ArrayList<>();
         final Set<String> seen = new HashSet<>();
         final List<File> stageDirs = new ArrayList<>();
@@ -102,7 +114,7 @@ public final class JarHandlerLoader {
             }
             final List<File> siblings = new ArrayList<>();
             for (final File f : entries) {
-                if (f.isFile() && f.getName().toLowerCase().endsWith(".jar")) {
+                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".jar")) {
                     siblings.add(f);
                 }
             }
@@ -137,11 +149,15 @@ public final class JarHandlerLoader {
             final Class<?> scalaObject = loader.loadClass(className + "$");   // Scala object singleton, if present
             HANDLER_CACHE.put(cacheKey.toString(), scalaObject);
             return scalaObject;
+        } catch (final UnsupportedClassVersionError newer) {
+            throw tooNewForThisRuntime(className, newer);
         } catch (final ClassNotFoundException e) {
             try {
                 final Class<?> plainClass = loader.loadClass(className);      // plain Java/Scala class
                 HANDLER_CACHE.put(cacheKey.toString(), plainClass);
                 return plainClass;
+            } catch (final UnsupportedClassVersionError newer) {
+                throw tooNewForThisRuntime(className, newer);
             } catch (final ClassNotFoundException e2) {
                 // Spell out how each entry resolved — a stage lookup that silently fell back to a
                 // relative local path is otherwise indistinguishable from a jar that lacks the class.
@@ -157,6 +173,126 @@ public final class JarHandlerLoader {
                     "Handler class '" + className + "' not found in IMPORTS jar(s) " + imports
                     + " (resolved to: " + resolved + ")", e2);
             }
+        }
+    }
+
+    /**
+     * A handler class compiled for a newer Java than the one this engine runs on: the class cannot be loaded here,
+     * whatever runtime its routine names, and the call is refused rather than left to fail inside the JVM.
+     */
+    private static RuntimeException tooNewForThisRuntime(final String className,
+                                                         final UnsupportedClassVersionError newer) {
+        return new RuntimeException("Handler class '" + className + "' was compiled for a newer Java than this"
+            + " engine runs on (Java " + Runtime.version().feature() + "): " + newer.getMessage(), newer);
+    }
+
+    /**
+     * The class-file version a handler class was compiled to, as the IMPORTS jar(s) hold it: 55 for Java 11, 61
+     * for Java 17, 65 for Java 21. The first import that holds the class answers.
+     *
+     * @param written    the routine's imports, as it keeps them
+     * @param className  the handler's class
+     * @param catalog    the catalog the imports' stages are looked up in
+     * @param s3Resolver the resolver of {@code s3://} imports, or null
+     * @return the version, or -1 when no import holds the class or it cannot be read
+     */
+    public static int classFileVersion(final List<String> written, final String className, final Catalog catalog,
+                                       final S3PathResolver s3Resolver) {
+        if (written == null) {
+            return -1;
+        }
+        final ImportLocalizer localizer = LOCALIZER.get();
+        final List<String> imports = localizer != null ? localizer.localImports(written) : written;
+        final String held = className.replace('.', '/') + ".class";
+        for (final String entry : imports) {
+            final File jar;
+            try {
+                jar = new File(resolveToLocalPath(entry, catalog, s3Resolver));
+            } catch (final RuntimeException unresolved) {
+                continue;
+            }
+            if (!jar.isFile()) {
+                continue;
+            }
+            try (JarFile file = new JarFile(jar)) {
+                final JarEntry found = file.getJarEntry(held);
+                if (found == null) {
+                    continue;
+                }
+                try (DataInputStream in = new DataInputStream(file.getInputStream(found))) {
+                    if (in.readInt() != CLASS_FILE_MAGIC) {
+                        return -1;
+                    }
+                    in.readUnsignedShort();
+                    return in.readUnsignedShort();
+                }
+            } catch (final IOException unreadable) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Whether a routine's imports hold its handler class, as the account looks for it when the routine is created: a
+     * JAR that holds the class file, or a stage directory that does (live-verified: a directory that holds nothing
+     * holds no class).
+     *
+     * @param written    the routine's imports, as it keeps them
+     * @param className  the handler's class
+     * @param catalog    the catalog the imports' stages are looked up in
+     * @param s3Resolver the resolver of {@code s3://} imports, or null
+     * @return TRUE or FALSE, or null when an import cannot be read here and nothing can be told
+     */
+    public static Boolean holdsClass(final List<String> written, final String className, final Catalog catalog,
+                                     final S3PathResolver s3Resolver) {
+        if (written == null || written.isEmpty()) {
+            return null;
+        }
+        final String held = className.replace('.', '/') + ".class";
+        for (final String entry : written) {
+            final String trimmed = entry == null ? "" : entry.trim();
+            final File file = localFile(trimmed, catalog, s3Resolver);
+            if (file == null) {
+                return null;
+            }
+            if (trimmed.endsWith("/")) {
+                if (new File(file, held).isFile()) {
+                    return Boolean.TRUE;
+                }
+                continue;
+            }
+            if (!file.isFile()) {
+                return null;
+            }
+            try (JarFile jar = new JarFile(file)) {
+                if (jar.getJarEntry(held) != null) {
+                    return Boolean.TRUE;
+                }
+            } catch (final IOException unreadable) {
+                return null;
+            }
+        }
+        return Boolean.FALSE;
+    }
+
+    /** Where an import lies on this machine, a stage's file or directory included, or null where it cannot be told. */
+    private static File localFile(final String entry, final Catalog catalog, final S3PathResolver s3Resolver) {
+        final ImportLocalizer localizer = LOCALIZER.get();
+        if (localizer != null) {
+            final Path kept = localizer.keptStageFile(entry);
+            if (kept != null) {
+                return kept.toFile();
+            }
+        }
+        if (entry.startsWith("@")) {
+            final String resolved = resolveStageReference(entry.substring(1), catalog, s3Resolver);
+            return resolved == null ? null : new File(resolved);
+        }
+        try {
+            return new File(resolveToLocalPath(entry, catalog, s3Resolver));
+        } catch (final RuntimeException unresolved) {
+            return null;
         }
     }
 
@@ -196,7 +332,8 @@ public final class JarHandlerLoader {
 
         final Stage stage;
         try {
-            stage = catalog.getStage(stageName);
+            // The entry names the stage as an identifier does: quoted parts kept, the rest folded.
+            stage = catalog.getStage(SqlIdentifiers.canonicalText(stageName));
         } catch (final RuntimeException e) {
             logger.warn("IMPORTS stage lookup failed for '{}' ({}) — treating the reference as a local path",
                 stageName, e.getMessage());
@@ -221,6 +358,32 @@ public final class JarHandlerLoader {
             return null;
         }
         return relative.isEmpty() ? base.toString() : base.resolve(relative).toString();
+    }
+
+    /** What turns the imports of the routine running on this thread into local paths, or none. */
+    private static final ThreadLocal<ImportLocalizer> LOCALIZER = new ThreadLocal<ImportLocalizer>();
+
+    /**
+     * The engine running a handler on this thread says how its imports are found.
+     *
+     * @param localizer the engine's localizer
+     * @return the localizer in force until now, to hand to {@link #restore}
+     */
+    public static ImportLocalizer localizeWith(final ImportLocalizer localizer) {
+        final ImportLocalizer outer = LOCALIZER.get();
+        LOCALIZER.set(localizer);
+        return outer;
+    }
+
+    /**
+     * @param outer what {@link #localizeWith} answered
+     */
+    public static void restore(final ImportLocalizer outer) {
+        if (outer == null) {
+            LOCALIZER.remove();
+        } else {
+            LOCALIZER.set(outer);
+        }
     }
 
     private JarHandlerLoader() {

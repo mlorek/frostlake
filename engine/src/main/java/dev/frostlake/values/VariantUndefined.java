@@ -25,6 +25,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The VARIANT {@code undefined} boundary — where a SQL NULL becomes an {@link UndefinedNode} and where the
@@ -205,6 +206,36 @@ public final class VariantUndefined {
                 object.set(key, isUndefined(restored) ? object.nullNode() : restored);
             }
             return object;
+        }
+        return node;
+    }
+
+    /**
+     * A copy of a tree with every {@code undefined} an array holds written as a JSON null: what a reader outside
+     * the variant layer is handed. A Python handler sees an array's SQL NULL element as its own null
+     * (live-verified: {@code ARRAY_CONSTRUCT(1, NULL, 3)} reaches one as {@code [1, None, 3]}); a JavaScript
+     * handler finds a hole there, which its own writer marks.
+     *
+     * @param node the tree
+     * @return the tree itself when it is a scalar, otherwise a copy
+     */
+    public static JsonNode withNulls(final JsonNode node) {
+        if (node == null || isUndefined(node)) {
+            return NullNode.getInstance();
+        }
+        if (node.isArray()) {
+            final ArrayNode copy = ((ArrayNode) node).arrayNode();
+            for (final JsonNode element : node) {
+                copy.add(withNulls(element));
+            }
+            return copy;
+        }
+        if (node.isObject()) {
+            final ObjectNode copy = ((ObjectNode) node).objectNode();
+            for (final Map.Entry<String, JsonNode> member : node.properties()) {
+                copy.set(member.getKey(), withNulls(member.getValue()));
+            }
+            return copy;
         }
         return node;
     }

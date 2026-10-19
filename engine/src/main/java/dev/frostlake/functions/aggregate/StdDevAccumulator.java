@@ -20,7 +20,13 @@ import dev.frostlake.functions.AggregateFunction;
 
 /** Accumulator for {@link StdDev}. */
 public class StdDevAccumulator
-        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
+        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator, DecfloatAwareAccumulator {
+
+    /** The values of a DECFLOAT argument, whose statistic is a DECFLOAT of 38 digits (see DecfloatMoments). */
+    private final DecfloatMoments decfloatMoments = new DecfloatMoments();
+
+    private boolean decfloat;
+
     private final WelfordMoments moments = new WelfordMoments();
     private final SquaredSumMoments floatMoments = new SquaredSumMoments();
     private int maxScale;
@@ -39,8 +45,18 @@ public class StdDevAccumulator
         this.approximate = this.approximate || approximate;
     }
 
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
+
     @Override
     public void accumulate(final Object value) {
+        if (decfloat) {
+            decfloatMoments.add(value);
+            return;
+        }
         if (value != null) {
             final double number = NumericAggregateInput.asDouble(value);
             moments.add(number);
@@ -52,6 +68,9 @@ public class StdDevAccumulator
 
     @Override
     public Object getResult() {
+        if (decfloat) {
+            return decfloatMoments.heldDeviation(true);
+        }
         // STDDEV and STDDEV_SAMP are SAMPLE statistics (live: STDDEV is an alias of
         // STDDEV_SAMP): denominator n-1, and fewer than two rows has no sample spread — NULL.
         // The population variant lives in StdDevPop, not here.
@@ -64,6 +83,7 @@ public class StdDevAccumulator
 
     @Override
     public void reset() {
+        decfloatMoments.reset();
         moments.reset();
         floatMoments.reset();
         maxScale = 0;
@@ -73,6 +93,7 @@ public class StdDevAccumulator
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
         final StdDevAccumulator o = (StdDevAccumulator) other;
+        decfloatMoments.merge(o.decfloatMoments);
         moments.merge(o.moments);
         floatMoments.merge(o.floatMoments);
         maxScale = Math.max(maxScale, o.maxScale);

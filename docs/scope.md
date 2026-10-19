@@ -120,6 +120,38 @@ is harder to reason about than an absent one, because nothing tells the reader w
 So container-scoped `SHOW COLUMNS` counts user objects, and tests that walk a database or the account
 assert "at least mine" rather than a total. Revisit only if something real depends on the count.
 
+WHAT THE ANSWERED VIEWS LIST IS WHAT THE ROLE REACHES. Every role reads the views - they need no grant, and
+none can be granted on one - and TABLES, COLUMNS, VIEWS, TABLE_CONSTRAINTS, REFERENTIAL_CONSTRAINTS, FUNCTIONS,
+PROCEDURES, SEQUENCES, STAGES, FILE_FORMATS and SCHEMATA list only the objects the statement's rights own or
+hold a privilege on, in the schemas and the database those rights were granted into. No role is exempt:
+ACCOUNTADMIN does not see a table that another role owns and it was granted nothing on. Inside a stored
+procedure that runs with owner's rights the rights are the owner's. The SHOW commands are not filtered this
+way: they list every object, as the account's do.
+
+## Object kinds that are listed but not modelled — the listing answers its columns and no rows
+
+A client that walks an account's metadata issues SHOW commands for kinds Frostlake has no object of: resource
+monitors, shares, connections, applications and application packages, indexes, channels, snapshots, Git
+repositories, semantic views, session, authentication, packages and privacy policies, external and data metric
+functions, replication databases, replication and failover groups, replication accounts, and delegated
+authorizations. None of these can be created here, and none is planned for its own sake: they are account
+administration, sharing, replication and ingestion surfaces with nothing behind them in an in-memory engine.
+
+Their listings are in scope all the same, **as shapes**: each `SHOW <KIND>` answers the columns a real account
+declares for it — names, order and types — and no rows, and reads the scopes and modifiers the account's own
+grammar reads for that kind (`executor/commands/UnmodelledListing`, `UnmodelledListings`). A scope is still
+judged: a schema or a database that does not exist is refused as the account refuses it, kind by kind. So
+metadata tooling runs unchanged, and a refusal still means the statement is wrong rather than unsupported.
+
+Three listings of the same family do answer rows, because the engine has something to say: `SHOW EXPORTED KEYS`
+(the foreign keys that reference a table, read from the referenced side), `SHOW GRANTS ON ACCOUNT` (the
+privileges granted on the account in this engine — the grants an account's built-in roles hold from the start
+are not seeded) and `SHOW REGIONS` (the public list of regions, transcribed from an account; any scope is
+refused, as there, and `IN DATA EXCHANGE` is not read).
+
+Adding CREATE for one of these kinds is a separate decision, to be made when a use case needs the object rather
+than its listing.
+
 ## Related
 
 - [functions.md](functions.md) — the catalog of supported functions, including the function families

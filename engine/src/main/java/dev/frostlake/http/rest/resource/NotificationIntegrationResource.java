@@ -147,7 +147,8 @@ public final class NotificationIntegrationResource implements RestResource {
         if ("QUEUE_AWS_SNS_OUTBOUND".equals(type)) {
             RestIntegrations.text(hook, "aws_sns_topic_arn", properties.get("AWS_SNS_TOPIC_ARN"));
             RestIntegrations.text(hook, "aws_sns_role_arn", properties.get("AWS_SNS_ROLE_ARN"));
-            RestJson.nulls(hook, "sf_aws_iam_user_arn", "sf_aws_external_id");
+            RestIntegrations.text(hook, "sf_aws_iam_user_arn", properties.get("SF_AWS_IAM_USER_ARN"));
+            RestIntegrations.text(hook, "sf_aws_external_id", properties.get("SF_AWS_EXTERNAL_ID"));
         } else if ("QUEUE_AZURE_EVENT_GRID_OUTBOUND".equals(type)) {
             RestIntegrations.text(hook, "azure_event_grid_topic_endpoint",
                 properties.get("AZURE_EVENT_GRID_TOPIC_ENDPOINT"));

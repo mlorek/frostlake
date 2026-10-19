@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.config.AccountIdentity;
 import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.metastore.model.Account;
@@ -68,10 +69,22 @@ public class ShowCommandExecutor {
         this.transactionManager = transactionManager;
         this.queryHistoryTracker = queryHistoryTracker;
         this.sessionVariables = sessionVariables;
-        this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine);
-        this.pipelineExecutor = new ShowPipelineExecutor(catalog);
-        this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry);
-        this.infraExecutor = new ShowInfraExecutor(catalog);
+        // Read live, as the security family reads it: the SecurityManager is installed after construction.
+        final DefinitionOwnership ownership = new DefinitionOwnership() {
+            @Override
+            public boolean actsAsOwner(final String owner) {
+                return securityManager == null || securityManager.actsAsOwner(owner);
+            }
+
+            @Override
+            public boolean sees(final String objectType, final String objectName, final String owner) {
+                return securityManager == null || securityManager.sees(objectType, objectName, owner);
+            }
+        };
+        this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine, ownership);
+        this.pipelineExecutor = new ShowPipelineExecutor(catalog, ownership);
+        this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry, ownership);
+        this.infraExecutor = new ShowInfraExecutor(catalog, ownership);
         // The security and session families read securityManager live through this facade, so they receive
         // a reference to it rather than the (still-null-at-construction) SecurityManager value.
         this.securityExecutor = new ShowSecurityExecutor(catalog, this);
@@ -126,8 +139,17 @@ public class ShowCommandExecutor {
         return relationalExecutor.showTables(schemaName);
     }
 
+    /** SHOW TABLES [HISTORY]; HISTORY adds the dropped tables UNDROP can still restore and their dropped_on. */
+    public ResultSet showTables(final String schemaName, final boolean history) {
+        return relationalExecutor.showTables(schemaName, history);
+    }
+
     public ResultSet showTablesInAccount() {
         return relationalExecutor.showTablesInAccount();
+    }
+
+    public ResultSet showTablesInAccount(final boolean history) {
+        return relationalExecutor.showTablesInAccount(history);
     }
 
     public ResultSet showSchemasInAccount() {
@@ -144,6 +166,10 @@ public class ShowCommandExecutor {
 
     public ResultSet showTablesInDatabase(final String databaseName) {
         return relationalExecutor.showTablesInDatabase(databaseName);
+    }
+
+    public ResultSet showTablesInDatabase(final String databaseName, final boolean history) {
+        return relationalExecutor.showTablesInDatabase(databaseName, history);
     }
 
     public ResultSet showHybridTables(final String schemaName) {
@@ -244,6 +270,11 @@ public class ShowCommandExecutor {
 
     public ResultSet showFunctions(final String schemaName, final boolean userOnly) {
         return routineExecutor.showFunctions(schemaName, userOnly);
+    }
+
+    /** A schema's routines by the text their listing prints, each beside its declaration with parameter names. */
+    public Map<String, String> namedRoutineDeclarations(final String schemaName, final boolean procedures) {
+        return routineExecutor.namedDeclarations(schemaName, procedures);
     }
 
     public ResultSet showBuiltinFunctions() {
@@ -380,16 +411,16 @@ public class ShowCommandExecutor {
         return relationalExecutor.describeDatabase(databaseName);
     }
 
-    public ResultSet describeStream(final String streamName) {
-        return pipelineExecutor.describeStream(streamName);
+    public ResultSet describeStream(final SchemaObjectName stream) {
+        return pipelineExecutor.describeStream(stream);
     }
 
-    public ResultSet describeTask(final String taskName) {
-        return pipelineExecutor.describeTask(taskName);
+    public ResultSet describeTask(final SchemaObjectName task) {
+        return pipelineExecutor.describeTask(task);
     }
 
-    public ResultSet describePipe(final String pipeName) {
-        return pipelineExecutor.describePipe(pipeName);
+    public ResultSet describePipe(final SchemaObjectName pipe) {
+        return pipelineExecutor.describePipe(pipe);
     }
 
     public ResultSet showSequences(final String schemaName) {
@@ -400,8 +431,8 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showSequencesInDatabase(databaseName);
     }
 
-    public ResultSet describeSequence(final String sequenceName) {
-        return pipelineExecutor.describeSequence(sequenceName);
+    public ResultSet describeSequence(final SchemaObjectName sequence) {
+        return pipelineExecutor.describeSequence(sequence);
     }
 
     public ResultSet showComputePools() {
@@ -434,10 +465,6 @@ public class ShowCommandExecutor {
 
     public ResultSet showTagsInAccount() {
         return routineExecutor.showTagsInAccount();
-    }
-
-    public ResultSet describeTag(final String tagName) {
-        return routineExecutor.describeTag(tagName);
     }
 
     public ResultSet describeFunction(final String[] parts, final List<DataType> argumentTypes) {
@@ -572,6 +599,14 @@ public class ShowCommandExecutor {
         return sessionExecutor.showImportedKeys(scopeKind, scopeName);
     }
 
+    public ResultSet showExportedKeys(final String scopeKind, final String scopeName) {
+        return sessionExecutor.showExportedKeys(scopeKind, scopeName);
+    }
+
+    public ResultSet showGrantsOnAccount() {
+        return sessionExecutor.showGrantsOnAccount();
+    }
+
     public ResultSet showColumnsScoped(final String name, final boolean view) {
         return relationalExecutor.showColumnsScoped(name, view);
     }
@@ -643,8 +678,8 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showCortexSearchServicesInAccount(like);
     }
 
-    public ResultSet describeCortexSearchService(final String serviceName) {
-        return pipelineExecutor.describeCortexSearchService(serviceName);
+    public ResultSet describeCortexSearchService(final String[] serviceParts) {
+        return pipelineExecutor.describeCortexSearchService(serviceParts);
     }
 
     public ResultSet showDynamicTables(final String schemaName) {
@@ -667,8 +702,28 @@ public class ShowCommandExecutor {
         return sessionExecutor.showParameters(likePattern);
     }
 
-    public ResultSet showParametersInTask(final String taskName, final String likePattern) {
-        return sessionExecutor.showParametersInTask(taskName, likePattern);
+    /** SHOW PARAMETERS IN SESSION, or IN ACCOUNT, which leaves the session's own settings out. */
+    public ResultSet showParameters(final String likePattern, final boolean inAccount) {
+        return sessionExecutor.showParameters(likePattern, inAccount);
+    }
+
+    public ResultSet showParametersInTask(final SchemaObjectName task, final String likePattern) {
+        return sessionExecutor.showParametersInTask(task, likePattern);
+    }
+
+    /**
+     * SHOW PARAMETERS IN ALERT (see {@link ShowSessionExecutor#showParametersInAlert}).
+     *
+     * @param alert        the alert as written
+     * @param likePattern  the LIKE filter, or null
+     * @return the listing
+     */
+    public ResultSet showParametersInAlert(final SchemaObjectName alert, final String likePattern) {
+        return sessionExecutor.showParametersInAlert(alert, likePattern);
+    }
+
+    public ResultSet showParametersInTable(final SchemaObjectName table, final String likePattern) {
+        return sessionExecutor.showParametersInTable(table, likePattern);
     }
 
     public ResultSet showParametersInUser(final String userName, final String likePattern) {

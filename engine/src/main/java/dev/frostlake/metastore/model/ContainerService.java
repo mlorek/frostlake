@@ -17,18 +17,22 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Taggable;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A Snowpark Container Services service or job service, kept as its declared state: the compute pool it names, its
  * specification, and its properties. No container ever runs, so a service reports no instances or containers, and a
  * job service never leaves the state it was recorded in.
  */
-public final class ContainerService {
+public final class ContainerService implements Taggable {
 
+    private final Map<String, String> tags = new LinkedHashMap<String, String>();
     private final String name;
     private final boolean job;
     private final Instant createdOn;
@@ -289,5 +293,25 @@ public final class ContainerService {
     /** Sets the external access integrations. */
     public void setExternalAccessIntegrations(final List<String> integrations) {
         this.externalAccessIntegrations = new ArrayList<>(integrations);
+    }
+
+    @Override
+    public void setTag(final String tagName, final String value) {
+        tags.put(tagName, value);
+    }
+
+    @Override
+    public void unsetTag(final String tagName) {
+        tags.remove(tagName);
+    }
+
+    @Override
+    public String getTagValue(final String tagName) {
+        return tags.get(tagName);
+    }
+
+    @Override
+    public Map<String, String> getTagValues() {
+        return new LinkedHashMap<String, String>(tags);
     }
 }

@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -98,7 +100,7 @@ public class AlterStatementTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SELECT * FROM users");
 
         assertEquals(3, rs.getColumnCount(), "Table should have 3 columns after ADD COLUMN");
-        assertEquals("EMAIL", rs.getColumns().get(2).getName().toUpperCase(),
+        assertEquals("EMAIL", rs.getColumns().get(2).getName().toUpperCase(Locale.ROOT),
                      "Third column should be email");
     }
 
@@ -112,8 +114,8 @@ public class AlterStatementTest extends BaseDatabaseTest {
         assertEquals(2, rs.getColumnCount(), "Table should have 2 columns after DROP COLUMN");
 
         // Verify the remaining columns are correct
-        assertEquals("ID", rs.getColumns().get(0).getName().toUpperCase());
-        assertEquals("NAME", rs.getColumns().get(1).getName().toUpperCase());
+        assertEquals("ID", rs.getColumns().get(0).getName().toUpperCase(Locale.ROOT));
+        assertEquals("NAME", rs.getColumns().get(1).getName().toUpperCase(Locale.ROOT));
     }
 
     @Test
@@ -123,7 +125,7 @@ public class AlterStatementTest extends BaseDatabaseTest {
         engine.execute("ALTER TABLE users RENAME COLUMN name TO full_name");
 
         final ResultSet rs = engine.executeQuery("SELECT * FROM users");
-        assertEquals("FULL_NAME", rs.getColumns().get(1).getName().toUpperCase(),
+        assertEquals("FULL_NAME", rs.getColumns().get(1).getName().toUpperCase(Locale.ROOT),
                      "Column should be renamed to full_name");
 
         // Verify data is preserved
@@ -347,13 +349,14 @@ public class AlterStatementTest extends BaseDatabaseTest {
 
     @Test
     public void testGrantorTrackedFromSession() {
-        // A freshly created role is not granted to the shared live session's user, so USE ROLE of
-        // it refuses there; the grantor rule is asserted embedded.
+        // The case works as a role it creates, which on the shared live session would leave the session
+        // on a role that holds nothing; the grantor rule is asserted embedded.
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "USE ROLE of a just-created role needs a grant to the session user on a live account");
+            "works as a role it creates, which the shared live session is not switched to");
         engine.execute("CREATE ROLE granting_role");
         engine.execute("CREATE ROLE child_role");
         engine.execute("CREATE ROLE parent_role");
+        engine.execute("GRANT ROLE granting_role TO ROLE SYSADMIN");
         engine.execute("USE ROLE granting_role");
         engine.execute("GRANT ROLE child_role TO ROLE parent_role");
         // granted_by reflects the session's current role at GRANT time, not a hard-coded SYSADMIN.
@@ -364,11 +367,14 @@ public class AlterStatementTest extends BaseDatabaseTest {
 
     @Test
     public void testObjectOwnerStampedWithCreatingRole() {
-        // Same live precondition as the grantor test: the fresh role is not granted to the shared
-        // session's user, so USE ROLE refuses there.
+        // Same live precondition as the grantor test: the shared session is not switched to a role the
+        // case creates.
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "USE ROLE of a just-created role needs a grant to the session user on a live account");
+            "works as a role it creates, which the shared live session is not switched to");
         engine.execute("CREATE ROLE data_owner");
+        // A role creates a table only where it holds CREATE TABLE on the schema.
+        engine.execute("GRANT CREATE TABLE ON SCHEMA test_schema TO ROLE data_owner");
+        engine.execute("GRANT ROLE data_owner TO ROLE SYSADMIN");
         engine.execute("USE ROLE data_owner");
         engine.execute("CREATE TABLE owned_tbl (id INTEGER)");
         // SHOW TABLES surfaces the creating role as owner (no longer a hard-coded SYSADMIN).
@@ -421,12 +427,13 @@ public class AlterStatementTest extends BaseDatabaseTest {
 
     @Test
     public void testShowRolesIsCurrentReflectsSession() {
-        // Same live precondition as the grantor test: the fresh role is not granted to the shared
-        // session's user, so USE ROLE refuses there.
+        // Same live precondition as the grantor test: the shared session is not switched to a role the
+        // case creates.
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "USE ROLE of a just-created role needs a grant to the session user on a live account");
+            "works as a role it creates, which the shared live session is not switched to");
         // is_current must track the session's current role, not a hard-coded SYSADMIN.
         engine.execute("CREATE ROLE my_show_role");
+        engine.execute("GRANT ROLE my_show_role TO ROLE SYSADMIN");
         engine.execute("USE ROLE my_show_role");
         final ResultSet rs = engine.executeQuery("SHOW ROLES");
         boolean checkedCurrent = false;

@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -54,7 +56,7 @@ public class CollatedFunctionMatchingTest extends BaseDatabaseTest {
                     text.append(',');
                 }
                 final Object value = rs.getRows().get(r).getValue(c);
-                text.append(value == null ? "NULL" : value.toString().toUpperCase());
+                text.append(value == null ? "NULL" : value.toString().toUpperCase(Locale.ROOT));
             }
         }
         return text.toString();

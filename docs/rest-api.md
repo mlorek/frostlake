@@ -80,7 +80,9 @@ number. A refused statement's message is relayed as the account relays it: the s
 `"\nwarehouse 'w9' does not exist or not authorized."` (a refused statement's message keeps the privilege hint that
 follows that sentence). The code is the
 statement's error number where the refusal's family has one: `002003` does not exist, `002002` already exists,
-`001003` syntax error, `003001` insufficient privileges, and a few others the resources name. Every routed answer
+`001003` syntax error, `003001` insufficient privileges, `090105` a statement that needs a current database the
+session does not have, and a few others the resources name. A request under a schema the system database serves
+without holding it (`SNOWFLAKE.ACCOUNT_USAGE` and its like) names the object that is missing, as under any schema. Every routed answer
 carries `X-Snowflake-Request-ID`, and an error's `request_id` repeats it.
 
 Response bodies carry every property of the specification's schema, `null` where the engine has no value, as the
@@ -117,7 +119,7 @@ Each section lists the endpoints by the specification's `operationId`, what each
 | `useWarehouse` `POST /warehouses/{name}:use` | `USE WAREHOUSE` in the call's session (see `X-Sfc-Session`) |
 | `setTags`, `unsetTags`, `getTags` | see *Tags* |
 
-- **`resource_constraint`** takes the memory constraints (`MEMORY_1X` … `MEMORY_64X_x86`) of a Snowpark-optimized
+- **`resource_constraint`** takes the memory constraints (`MEMORY_1X` … `MEMORY_64X_X86`) of a Snowpark-optimized
   warehouse. A standard warehouse's constraint is its generation: `STANDARD_GEN_1 | STANDARD_GEN_2` is refused
   (`400`, code `000682`, `cannot set resource constraint to '…'. use the generation property …`), and so is unsetting
   it. A `PUT` therefore never sets or unsets `RESOURCE_CONSTRAINT` on a standard warehouse — its constraint follows
@@ -165,6 +167,8 @@ The three tag endpoints of every taggable resource are served by one helper:
 table, schema and database (`TAG_REFERENCES` rows with `APPLY_METHOD` `INHERITED`), each with the `level` the tag is
 set on. A tag named without a database and schema resolves in the call's session, whose current database and schema are
 the server's defaults (`database.default` / `schema.default`, SNOWFLAKE.PUBLIC unless configured): name them.
+A function, a procedure and a service function are named to `TAG_REFERENCES` by their signature (`"DB"."S"."F"(NUMBER)`),
+and a service and an image repository under the domains `SERVICE` and `IMAGE REPOSITORY`.
 
 ### Accounts and managed accounts (`account.yaml`, `managed-account.yaml`)
 
@@ -222,7 +226,7 @@ scope, a revoke the objects it took a privilege or a grant option back from.
 | `listDatabaseRoles` `GET /databases/{database}/database-roles` | `SHOW DATABASE ROLES IN DATABASE [LIMIT … FROM]`; the page starts after the `fromName` |
 | `createDatabaseRole`, `deleteDatabaseRole` | `CREATE DATABASE ROLE [COMMENT]`, `DROP DATABASE ROLE [IF EXISTS]` |
 | `cloneDatabaseRole` `POST …/database-roles/{name}:clone` | the SQL has no clone of a database role: `CREATE DATABASE ROLE` (per `createMode`, in `targetDatabase` when given) with the source's comment, then a `GRANT` of each privilege, database role and future grant the source holds |
-| `listGrants`, `grantPrivileges`, `revokeGrants`, `listFutureGrants`, `grantFuturePrivileges`, `revokeFutureGrants` on `/databases/{database}/database-roles/{name}` | as for roles, with `DATABASE ROLE <database>.<name>` as the grantee |
+| `listGrants`, `grantPrivileges`, `revokeGrants`, `listFutureGrants`, `grantFuturePrivileges`, `revokeFutureGrants` on `/databases/{database}/database-roles/{name}` | as for roles, with `DATABASE ROLE <database>.<name>` as the grantee; `listGrants` in a session with no current database answers `400` with code `090105` (`cannot perform show grants. this session does not have a current database. …`) before the database or the role is looked up |
 | `grantPrivilege` `POST /grants/{granteeType}/{granteeName}/{securableType}/{securableName}/privileges` | `GRANT … ON <kind> <name> \| ON ACCOUNT TO <grantee> [WITH GRANT OPTION]`; a role or database role securable with no privileges grants that role |
 | `grantGroupPrivilege` `POST /grants/…/{bulkGrantType}/{securableTypePlural}/{scopeType}/{scopeName}/privileges` | `GRANT … ON ALL \| FUTURE <kinds> IN DATABASE \| SCHEMA <scope> TO <grantee>` |
 | `revokePrivilege`, `revokeGroupPrivilege` `DELETE …/privileges/{privilege}` | `REVOKE … FROM <grantee> [RESTRICT \| CASCADE]` (`deleteMode`; any other value is no mode, as it is for `mode`) |
@@ -234,8 +238,10 @@ A fetched user answers `password` as `********` when it has one, and `enable_unr
 `false`; `password_last_set` is not recorded and answers null.
 
 Not provided: grantees other than roles, users and database roles (`share`, `application`, `application-role`
-answer `501`); `network_policy` is neither applied nor read back (null even when `ALTER USER … SET NETWORK_POLICY`
-attached one), and `enable_unredacted_query_syntax_error`, which no USER statement takes, is not applied. `showLimit` on the grants listings cuts the answer.
+answer `501`); `enable_unredacted_query_syntax_error`, which no USER statement takes, is not applied. `showLimit` on the grants listings cuts the answer.
+`network_policy` is the statement's `NETWORK_POLICY` property — a policy that is not there fails the request and
+creates nothing, and a `PUT` that leaves it out takes the policy off — and a fetched user answers the policy its
+parameters name (`SHOW PARAMETERS LIKE 'NETWORK_POLICY' IN USER`); the listing leaves it null.
 `days_to_expiry`, `mins_to_unlock` and `mins_to_bypass_mfa` are applied as `DAYS_TO_EXPIRY`, `MINS_TO_UNLOCK` and
 `MINS_TO_BYPASS_MFA` and read back as the whole days and minutes left; `rsa_public_key` and `rsa_public_key_2` are
 applied as the keys and read back as `DESCRIBE USER` prints them, with their `_fp` fingerprints.
@@ -408,11 +414,17 @@ neither per table.
 Only Snowflake-managed Iceberg tables exist: `CREATE [OR REPLACE] [TRANSIENT] ICEBERG TABLE` in the four shapes of a
 table (columns, `AS SELECT`, `CLONE`, `LIKE`) stores the rows as an ordinary table's and keeps the Iceberg metadata
 (`EXTERNAL_VOLUME`, `CATALOG = 'SNOWFLAKE'`, `BASE_LOCATION`, `CATALOG_SYNC`, `STORAGE_SERIALIZATION_POLICY`). A
-table written without an external volume is kept in `SNOWFLAKE_MANAGED` storage (where a `BASE_LOCATION` is
-refused; a schema's, database's or account's `EXTERNAL_VOLUME` parameter is not consulted, where a real account uses
-it) and one without a base location gets `<DB>/<SCHEMA>/<NAME>.<8 random characters>/` — a clone keeps its
-source's — as on a real account. Change tracking is always on (`CHANGE_TRACKING = FALSE` is refused). `SHOW TABLES` reports it with
-`is_iceberg = Y`, `SHOW ICEBERG TABLES` lists it, and `DROP ICEBERG TABLE` refuses a table that is not one.
+table written without an external volume takes the `EXTERNAL_VOLUME` parameter of its schema, else its database's
+(`ALTER SCHEMA | DATABASE … SET EXTERNAL_VOLUME`), which has to name a volume that exists or `SNOWFLAKE_MANAGED`;
+with none set it is kept in `SNOWFLAKE_MANAGED` storage (where a `BASE_LOCATION` is refused), and one without a
+base location gets `<DB>/<SCHEMA>/<NAME>.<8 random characters>/` — a clone keeps its
+source's — as on a real account. Change tracking is always on (`CHANGE_TRACKING = FALSE` is refused, at CREATE and
+in `ALTER ICEBERG TABLE`). `SHOW TABLES` reports it with `is_iceberg = Y`, `SHOW ICEBERG TABLES` lists it, and `DROP
+ICEBERG TABLE` refuses a table that is not one. Its columns take the Iceberg format's types, as on a real account: a
+string is `VARCHAR(134217728)` and a binary `BINARY(67108864)` (no other length is taken), a time or a timestamp is
+at scale 6, `INT` is `NUMBER(10,0)` and `BIGINT` `NUMBER(19,0)`, a NUMBER is written with its precision and scale,
+and CHAR, SMALLINT, VARIANT, TIMESTAMP_TZ and the other types the format lacks are refused. An Iceberg table is
+altered by `ALTER ICEBERG TABLE` alone and cloned by `CREATE ICEBERG TABLE … CLONE` alone.
 
 | endpoint | runs |
 |---|---|
@@ -442,7 +454,7 @@ account-level: `/api/v2/external-volumes`.
 
 | endpoint | runs |
 |---|---|
-| `listStages` `GET /stages` | `SHOW STAGES [LIKE] IN SCHEMA` |
+| `listStages` `GET /stages` | `SHOW STAGES [LIKE] IN SCHEMA` + `DESCRIBE STAGE` per stage: each listed stage is the whole body `fetchStage` answers |
 | `createStage` `POST /stages` | `CREATE [OR REPLACE] [TEMPORARY] STAGE [IF NOT EXISTS]` with `URL`, `STORAGE_INTEGRATION`, `ENDPOINT`, `CREDENTIALS = (…)`, `ENCRYPTION = (…)`, `DIRECTORY = (…)`, `FILE_FORMAT = (…)`, `COPY_OPTIONS = (…)` and `COMMENT` from the body |
 | `fetchStage` `GET /stages/{name}` | `SHOW STAGES LIKE … IN SCHEMA` + `DESCRIBE STAGE` (file format, copy options, directory table) |
 | `deleteStage` `DELETE /stages/{name}` | `DROP STAGE [IF EXISTS]` |
@@ -454,9 +466,9 @@ written upper-cased, each value as the literal its JSON type calls for (text quo
 an array of strings as a list; anything else is `400`). `credentials` is write-only and never read back. A fetched stage answers every property its DESCRIBE lists —
 an empty one as null (`size_limit`, `file_extension`) — with text decoded from the listing's escapes (`\\` is a
 backslash, `\n` a line break), every `directory_table` property (`aws_sns_topic` and `notification_integration` null,
-`refresh_on_create` true when not listed), an internal stage's empty `url` as `""` and an empty comment as null. Frostlake's
-DESCRIBE STAGE lists the CSV options whatever the format's type (a real account lists the type's own), so a JSON
-format's own options (`strip_outer_array`, …) are not read back. A `file_format` of type `FORMAT_REF` is written
+`refresh_on_create` true when not listed), an internal stage's empty `url` as `""` and an empty comment as null.
+DESCRIBE STAGE lists the options of the format's own type, so a JSON format's options (`strip_outer_array`, …) are
+read back as a CSV format's are. A `file_format` of type `FORMAT_REF` is written
 `FILE_FORMAT = (FORMAT_NAME = '…')`; a fetch reports an inline format with the options the specification lists for its
 type. `kind` is read from the listing's `type` column; the engine does not report a stage as temporary there, so a
 fetched stage is always `PERMANENT`.
@@ -488,9 +500,9 @@ as the statement is: `Pipe Notifications bind failure "Cannot set AWS SNS topic 
 
 | endpoint | runs |
 |---|---|
-| `listExternalVolumes` `GET /external-volumes` | `SHOW EXTERNAL VOLUMES [LIKE]` + `DESCRIBE EXTERNAL VOLUME` per row |
+| `listExternalVolumes` `GET /external-volumes` | `SHOW EXTERNAL VOLUMES [LIKE]` + `DESCRIBE EXTERNAL VOLUME` + `SHOW GRANTS ON EXTERNAL VOLUME` per row |
 | `createExternalVolume` `POST /external-volumes` | `CREATE [OR REPLACE] EXTERNAL VOLUME [IF NOT EXISTS] … STORAGE_LOCATIONS = ((NAME = … STORAGE_PROVIDER = … STORAGE_BASE_URL = … [ENCRYPTION = (…)]), …) [ALLOW_WRITES] [COMMENT]` |
-| `fetchExternalVolume` `GET /external-volumes/{name}` | `SHOW EXTERNAL VOLUMES LIKE` + `DESCRIBE EXTERNAL VOLUME` (each `STORAGE_LOCATION_n` row is a JSON object) |
+| `fetchExternalVolume` `GET /external-volumes/{name}` | `SHOW EXTERNAL VOLUMES LIKE` + `DESCRIBE EXTERNAL VOLUME` (each `STORAGE_LOCATION_n` row is a JSON object) + `SHOW GRANTS ON EXTERNAL VOLUME` |
 | `deleteExternalVolume` | `DROP EXTERNAL VOLUME [IF EXISTS]` |
 | `undropExternalVolume` `POST /external-volumes/{name}:undrop` | `UNDROP EXTERNAL VOLUME` |
 
@@ -498,8 +510,11 @@ SQL: `CREATE`, `ALTER EXTERNAL VOLUME … ADD STORAGE_LOCATION = (…) | REMOVE 
 STORAGE_LOCATION = '<name>' CREDENTIALS = (…) | SET ALLOW_WRITES | SET COMMENT`, `DROP`, `UNDROP`, `SHOW EXTERNAL
 VOLUMES [LIKE]` (`name, allow_writes, comment`) and `DESC[RIBE] EXTERNAL VOLUME` (`parent_property, property,
 property_type, property_value, property_default`). Frostlake never reaches the storage: the `ACTIVE` location is
-empty, and the IAM user and external id a real account generates are absent (so is `created_on` / `owner` in the
-API's body, which the listing does not carry).
+empty, and the identity a real account generates for a location is a stand-in — `STORAGE_AWS_IAM_USER_ARN` reads one
+fixed IAM user, `STORAGE_AWS_EXTERNAL_ID` the id that was written or else the one generated for this creation of
+the volume (another after a CREATE OR REPLACE, the same after a DROP that is undone), and a GCS location's `STORAGE_GCP_SERVICE_ACCOUNT` one fixed service account. `created_on`,
+`owner` and `owner_role_type` are the OWNERSHIP row's of `SHOW GRANTS ON EXTERNAL VOLUME` (or `ON VOLUME`), as the
+listing does not carry them; GRANT and REVOKE take `USAGE` on a volume, and GRANT OWNERSHIP moves it.
 
 ### Streams and tasks (`stream.yaml`, `task.yaml`)
 
@@ -601,14 +616,17 @@ The body's `arguments` (with `default_value`), `return_type` (`DATATYPE`, with `
 or `TABLE` with its `column_list`), `language_config` (`language`, `runtime_version`,
 `packages`, `imports`, `handler`, and for a function `called_on_null_input` and `is_volatile`; a procedure's
 `called_on_null_input` is left out), `comment`, `body` and, for a procedure, `execute_as` become
-the statement's clauses. Properties no clause of the engine's statement carries are left out of it:
-`external_access_integrations`, `secrets`, `target_path`, `artifact_repository`, `artifact_repository_packages`,
-and the `copyGrants` parameter. `is_aggregate: true` answers `501` (no aggregate UDFs), as do a secure procedure
-and `execute_as: RESTRICTED CALLER`. A fetch reports what SHOW and DESCRIBE carry, with the account's defaults for
-what they do not (`called_on_null_input` true, `nullable: true`, `log_level` and `trace_level` `OFF`; for a
+the statement's clauses, and so do `external_access_integrations`, `secrets` (`'variable' = secret`),
+`target_path`, `artifact_repository` and `artifact_repository_packages` (written with the packages). The
+`copyGrants` parameter is left out. `is_aggregate: true` creates an AGGREGATE FUNCTION; on a procedure it answers
+`501`, as does a secure procedure. A fetch reports what SHOW, DESCRIBE and the DDL carry, with the account's defaults
+for what they do not (`called_on_null_input` true, `nullable: true`, `log_level` and `trace_level` `OFF`; for a
 function `is_temporary: false` and `is_volatile` true; and `is_builtin: true` for a procedure, as the account reports
 it);
-`default_value`, `owner` and `owner_role_type` are `null`. A listing leaves the body out (`null` for a function,
+each argument's `default_value` is its default as the DDL spells it — printed from its plan, so
+`'2020-01-01'::DATE` is `CAST('2020-01-01' AS DATE)` — (`null` for an argument that has none or defaults to NULL), and `language_config` tells a handler routine's `packages`, `imports`, `target_path`,
+`artifact_repository`, `artifact_repository_packages`, `external_access_integrations` and `secrets`, each secret
+by its full name; `owner` and `owner_role_type` are `null`. A listing leaves the body out (`null` for a function,
 `""` for a procedure), as the account's listing does.
 
 Service functions (`function.yaml`) are functions whose calls go to a Snowpark Container Services service:
@@ -727,7 +745,10 @@ OWNERSHIP grant `SHOW GRANTS ON NETWORK POLICY` lists (list and fetch run it per
 
 The SQL behind them: `CREATE [OR REPLACE | OR ALTER] NETWORK RULE [IF NOT EXISTS]`, `CREATE [OR REPLACE | OR ALTER]
 NETWORK POLICY [IF NOT EXISTS]`, `CREATE [OR REPLACE] PASSWORD POLICY [IF NOT EXISTS]`, `CREATE [OR REPLACE] SECRET
-[IF NOT EXISTS]` (CREATE OR ALTER sets what it names and keeps the rest; a rule's TYPE and MODE cannot change);
+[IF NOT EXISTS]` (CREATE OR ALTER over a network rule tells the whole rule — a value list or a comment it leaves out
+is emptied — and a rule's TYPE and MODE cannot change; a rule's TYPE decides the modes it takes and how its values
+read, each refused in the account's words, and a HOST_PORT rule's hosts are judged by their shape, no name being
+resolved);
 `ALTER … SET` / `UNSET` of the documented properties (`ALTER SECRET … UNSET` is refused as unsupported, as on the
 account), `ALTER NETWORK POLICY … RENAME TO` / `ADD` / `REMOVE {ALLOWED | BLOCKED}_NETWORK_RULE_LIST = ('<rule>', …)` /
 `SET TAG` / `UNSET TAG`, `ALTER PASSWORD POLICY … RENAME TO` / `SET TAG` / `UNSET TAG`; `DROP … [IF EXISTS]`; `SHOW
@@ -771,9 +792,12 @@ created. A statement naming a kind the integration is not answers `Integration <
 
 Differences from a real account: nothing is validated against the outside world — a real account refuses an Azure
 or Google gateway URL it cannot reach, contacts a Polaris/REST catalog on CREATE, and accepts only GCP Pub/Sub
-names of its own cloud; the identities a real account hands out (`API_AWS_IAM_USER_ARN`, `API_AWS_EXTERNAL_ID`,
-`SF_AWS_IAM_USER_ARN`, `GLUE_AWS_IAM_USER_ARN`, …) are not invented, so those `DESCRIBE` rows and the
-notification hooks' `sf_aws_*` / `gcp_pubsub_service_account` / `azure_consent_url` properties are absent or null.
+names of its own cloud. The identities a real account hands out are stand-ins: `API_AWS_IAM_USER_ARN`,
+`SF_AWS_IAM_USER_ARN` and `GLUE_AWS_IAM_USER_ARN` read one fixed IAM user, each `…_AWS_EXTERNAL_ID` an id generated
+for this creation of the integration (`<ACCOUNT>_SFCRole=1_<28 characters>`, kept through an ALTER and another once
+the integration is created again), `API_GCP_SERVICE_ACCOUNT` one fixed service account, and a Glue catalog written without `GLUE_REGION`
+reads the account's own region. The notification hooks' `sf_aws_*` properties carry the same values; their
+`gcp_pubsub_service_account` / `azure_consent_url` properties stay null.
 
 ### Alerts (`alert.yaml`)
 
@@ -858,7 +882,7 @@ them from a local Ollama server. The REST surface calls them through SQL, so on 
 |---|---|
 | `cortexLLMInferenceComplete` `POST /cortex/inference:complete` | `SNOWFLAKE.CORTEX.COMPLETE(model, prompt)` for one user message without options, else `COMPLETE(model, [{role, content}, …], {temperature, top_p, max_tokens})` |
 | `embed` `POST /cortex/inference:embed` | `SNOWFLAKE.CORTEX.EMBED_TEXT_768` or `EMBED_TEXT_1024`, chosen by the model, once per text |
-| `listCortexSearchServices` | `SHOW CORTEX SEARCH SERVICES [LIKE] IN SCHEMA [STARTS WITH] [LIMIT … FROM]` (the engine parses both modifiers but applies neither) |
+| `listCortexSearchServices` | `SHOW CORTEX SEARCH SERVICES [LIKE] IN SCHEMA [STARTS WITH] [LIMIT … FROM]` |
 | `createCortexSearchService` | `CREATE CORTEX SEARCH SERVICE … ON <search_column> [ATTRIBUTES …] WAREHOUSE = … TARGET_LAG = '<seconds> seconds' [COMMENT] AS <definition>` |
 | `fetchCortexSearchService` | `SHOW CORTEX SEARCH SERVICES LIKE … IN SCHEMA` |
 | `deleteCortexSearchService` | `DROP CORTEX SEARCH SERVICE [IF EXISTS]` |

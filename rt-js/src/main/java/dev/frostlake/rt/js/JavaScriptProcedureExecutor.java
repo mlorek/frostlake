@@ -21,6 +21,7 @@ import dev.frostlake.executor.SessionZone;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.types.DataType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,26 +75,39 @@ public final class JavaScriptProcedureExecutor {
             throw new RuntimeException("No JavaScript engine available. Please ensure GraalVM JavaScript or a compatible engine is installed.");
         }
 
+        final List<Parameter> parameters = procedure.getParameters();
+        if (parameters.size() != arguments.size()) {
+            throw new RuntimeException("Procedure " + procedure.getName() + " expects " +
+                parameters.size() + " arguments but got " + arguments.size());
+        }
+        // A procedure that answers a value answers it as its declared RETURNS type; one that answers a table
+        // hands its value back as it is.
+        final DataType returns = procedure.returnsTable() ? null : procedure.getReturnType();
+        final String source = JavaScriptHandler.source(procedure.getName(), parameters, procedure.getBody(), true,
+            returns);
+        final Object result;
+        final SnowflakeAPIWrapper api = new SnowflakeAPIWrapper(engine, procedure.getBody());
         try {
-            final List<Parameter> parameters = procedure.getParameters();
-            if (parameters.size() != arguments.size()) {
-                throw new RuntimeException("Procedure " + procedure.getName() + " expects " +
-                    parameters.size() + " arguments but got " + arguments.size());
-            }
-            final Object invoker = scriptEngine.eval(
-                JavaScriptHandler.source(procedure.getName(), parameters, procedure.getBody(), true));
-            final Object result = JavaScriptHandler.invoke(scriptEngine, invoker, new SnowflakeAPIWrapper(engine),
-                parameters, arguments);
+            final Object invoker = scriptEngine.eval(source);
+            result = JavaScriptHandler.invoke(scriptEngine, invoker, api, procedure.getName(), parameters, arguments);
             logger.debug("JavaScript procedure {} executed successfully", procedure.getName());
-            return result;
         } catch (final ScriptException e) {
             logger.error("Error executing JavaScript procedure: {}", procedure.getName(), e);
+            // A failed statement the handler let through reaches SQL as the account words it, with what the
+            // statement failed with behind it.
+            final JavaScriptApiError uncaught = JavaScriptApiError.of(e);
+            if (uncaught != null) {
+                final Throwable cause = api.causeOf(uncaught.message());
+                throw new RuntimeException("Execution error in store procedure " + procedure.getName() + ":\n"
+                    + uncaught.message() + "\nAt " + uncaught.place() + "\n", cause != null ? cause : e);
+            }
             throw new RuntimeException(JavaScriptErrorText.of(e, procedure.getName(), procedure.getBody(),
-                JavaScriptHandler.BODY_FIRST_LINE, "Error executing JavaScript procedure " + procedure.getName() + ": "
-                    + e.getMessage()), e);
+                JavaScriptHandler.BODY_FIRST_LINE, source, GraalJsEngine.hostOf(scriptEngine),
+                "Error executing JavaScript procedure " + procedure.getName() + ": " + e.getMessage()), e);
         } catch (final NoSuchMethodException e) {
             throw new RuntimeException("Error executing JavaScript procedure " + procedure.getName() + ": "
                 + e.getMessage(), e);
         }
+        return JavaScriptReturn.toSql(result, returns, true);
     }
 }

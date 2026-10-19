@@ -56,8 +56,12 @@ public final class StatementResultWidths {
     /** A text column of a GET or PUT result. */
     public static final StringType TRANSFER_TEXT = new StringType("VARCHAR", 20480);
 
-    /** A byte size in a GET or PUT result. */
-    public static final NumericType TRANSFER_SIZE = new NumericType("NUMBER", 10, 0);
+    /**
+     * A byte size in a GET or PUT result. It is a DECIMAL where every other count is a NUMBER, and that is no
+     * slip: the client answers a file transfer and names the column by its own type, which a driver reports as
+     * {@code java.sql.Types.DECIMAL} and reads as a {@code BigDecimal} though it holds no fraction (live-verified).
+     */
+    public static final NumericType TRANSFER_SIZE = new NumericType("DECIMAL", 10, 0);
 
     private StatementResultWidths() {
     }

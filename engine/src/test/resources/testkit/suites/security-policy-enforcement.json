@@ -1,6 +1,6 @@
 {
   "suite": "security-policy-enforcement",
-  "description": "Column MASKING policies and ROW ACCESS policies: creating them, attaching them, the values they produce, and the roles that bypass them. A masking policy is created with its signature and body and attaches to a COLUMN; an administrative role (SYSADMIN, ACCOUNTADMIN) sees the RAW value while an ordinary role sees the masked one. The masking is applied to the COLUMN REFERENCE rather than to the output, which is the regression the middle group pins: any expression around the column used to leak the raw data, so the masked value is asserted inside a function call, a concatenation, arithmetic and a qualified reference, while a STRING LITERAL that merely happens to spell the column's name is NOT rewritten and an unmasked column in the same SELECT is untouched. Policies can be dropped, replaced, renamed (both spellings), renamed with IF EXISTS as a silent no-op, and a rename of a missing policy throws. Two TAG-DRIVEN policies key off SYSTEM and SYSTEM, so the same policy masks one column and leaves another alone. Row access policies filter ROWS by the same role logic, can block everything, detach from the table, drop as objects and rename. The last test runs both kinds at once. Converted 1:1 from security/PolicyEnforcementTest (now retired); the Java read the catalog directly for every existence and attachment claim, which becomes SHOW MASKING POLICIES / SHOW ROW ACCESS POLICIES LIKE for existence, DESCRIBE MASKING POLICY for the signature and body, and TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(...)) for the attachments - and its setCurrentRole calls become plain USE ROLE.",
+  "description": "Column MASKING policies and ROW ACCESS policies: creating them, attaching them, the values they produce, and the roles that bypass them. A masking policy is created with its signature and body and attaches to a COLUMN; an administrative role (SYSADMIN, ACCOUNTADMIN) sees the RAW value while an ordinary role sees the masked one. The masking is applied to the COLUMN REFERENCE rather than to the output, which is the regression the middle group pins: any expression around the column used to leak the raw data, so the masked value is asserted inside a function call, a concatenation, arithmetic and a qualified reference, while a STRING LITERAL that merely happens to spell the column's name is NOT rewritten and an unmasked column in the same SELECT is untouched. Policies can be dropped, replaced, renamed (both spellings), renamed with IF EXISTS as a silent no-op, and a rename of a missing policy throws. Two TAG-DRIVEN policies key off SYSTEM and SYSTEM, so the same policy masks one column and leaves another alone. Row access policies filter ROWS by the same role logic, can block everything, detach from the table, drop as objects and rename. The last test runs both kinds at once. Converted 1:1 from security/PolicyEnforcementTest (now retired); the Java read the catalog directly for every existence and attachment claim, which becomes SHOW MASKING POLICIES / SHOW ROW ACCESS POLICIES LIKE for existence, DESCRIBE MASKING POLICY for the signature and body, and TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(...)) for the attachments - and its setCurrentRole calls become plain USE ROLE. A case that changes role first takes every secondary role, so the role it changes to still reads the table through the role that made it; the policies read CURRENT_ROLE() alone.",
   "tags": [
     "security",
     "converted"
@@ -30,7 +30,7 @@
         {
           "sql": "SELECT \"name\" || '/' || \"signature\" || '/' || \"return_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
           "expect": {
-            "value": "SALARY_MASK/(VAL FLOAT)/DOUBLE"
+            "value": "SALARY_MASK/(VAL FLOAT)/FLOAT"
           }
         }
       ]
@@ -80,6 +80,9 @@
           "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
         },
         {
+          "sql": "USE SECONDARY ROLES ALL"
+        },
+        {
           "sql": "USE ROLE SYSADMIN"
         },
         {
@@ -115,6 +118,9 @@
           "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
         },
         {
+          "sql": "USE SECONDARY ROLES ALL"
+        },
+        {
           "sql": "USE ROLE SYSADMIN"
         },
         {
@@ -139,6 +145,9 @@
         },
         {
           "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE ACCOUNTADMIN"
@@ -199,6 +208,9 @@
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
         },
         {
+          "sql": "USE SECONDARY ROLES ALL"
+        },
+        {
           "sql": "USE ROLE PUBLIC"
         },
         {
@@ -229,6 +241,9 @@
         },
         {
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE PUBLIC"
@@ -263,6 +278,9 @@
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
         },
         {
+          "sql": "USE SECONDARY ROLES ALL"
+        },
+        {
           "sql": "USE ROLE PUBLIC"
         },
         {
@@ -293,6 +311,9 @@
         },
         {
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE PUBLIC"
@@ -327,6 +348,9 @@
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
         },
         {
+          "sql": "USE SECONDARY ROLES ALL"
+        },
+        {
           "sql": "USE ROLE PUBLIC"
         },
         {
@@ -357,6 +381,9 @@
         },
         {
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE PUBLIC"
@@ -394,6 +421,9 @@
         },
         {
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE PUBLIC"
@@ -554,6 +584,9 @@
           "sql": "ALTER TABLE employees ALTER COLUMN department SET MASKING POLICY tag_mask"
         },
         {
+          "sql": "USE SECONDARY ROLES ALL"
+        },
+        {
           "sql": "USE ROLE PUBLIC"
         },
         {
@@ -589,6 +622,9 @@
         },
         {
           "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY tbl_mask"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE PUBLIC"
@@ -659,6 +695,9 @@
           "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY it_only ON (department)"
         },
         {
+          "sql": "USE SECONDARY ROLES ALL"
+        },
+        {
           "sql": "USE ROLE SYSADMIN"
         },
         {
@@ -697,6 +736,9 @@
         },
         {
           "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY block_all ON (department)"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE PUBLIC"
@@ -809,6 +851,9 @@
         },
         {
           "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY hr_only ON (department)"
+        },
+        {
+          "sql": "USE SECONDARY ROLES ALL"
         },
         {
           "sql": "USE ROLE PUBLIC"

@@ -22,7 +22,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-public class View extends SqlObject {
+public class View extends SqlObject implements SessionScoped {
 
     private final String definition;
     private final List<String> columnNames;
@@ -35,6 +35,11 @@ public class View extends SqlObject {
     /** The view's column list as resolved when it was created — see {@link #getResolvedColumns()}. */
     private List<TableColumn> resolvedColumns;
     private boolean secure = false;
+    /**
+     * Whether the view tracks its changes, so a CHANGES clause may read it: a stream created on it and CHANGE_TRACKING
+     * = TRUE turn it on, and it stays on when the stream is dropped (live-verified).
+     */
+    private boolean changeTracking = false;
     private boolean temporary = false;
     /** Whether the view was created RECURSIVE, its definition then the recursive CTE it runs as. */
     private boolean recursive = false;
@@ -148,6 +153,8 @@ public class View extends SqlObject {
 
     public boolean isSecure() { return secure; }
     public void setSecure(final boolean secure) { this.secure = secure; }
+    public boolean isChangeTracking() { return changeTracking; }
+    public void setChangeTracking(final boolean changeTracking) { this.changeTracking = changeTracking; }
 
     /**
      * A TEMPORARY (TEMP / VOLATILE) view lives only as long as the session that created it, the same
@@ -155,6 +162,7 @@ public class View extends SqlObject {
      * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
      * it models the lifetime and not the isolation.
      */
+    @Override
     public boolean isTemporary() { return temporary; }
 
     /** Whether the view was created RECURSIVE. */
@@ -192,7 +200,8 @@ public class View extends SqlObject {
 
     /**
      * A full-fidelity duplicate for CLONE DATABASE/SCHEMA: keeps the explicit column list, the SECURE
-     * flag, the comment and any attached row access policy (the name-and-definition constructor alone
+     * flag, the comment, the change tracking a stream on the clone reads by, any attached row access policy, and the
+     * columns with their masking and projection policies and their tags (the name-and-definition constructor alone
      * silently dropped all of these from clones).
      */
     public View copy() {
@@ -203,8 +212,16 @@ public class View extends SqlObject {
         clone.originalDdl = originalDdl;
         clone.definitionText = definitionText;
         clone.listedText = listedText;
-        clone.setResolvedColumns(resolvedColumns);
+        if (resolvedColumns != null) {
+            // Each column its own copy, so a policy or a tag set on a column of one view is not set on the other.
+            final List<TableColumn> columns = new ArrayList<>();
+            for (final TableColumn column : resolvedColumns) {
+                columns.add(column.copy());
+            }
+            clone.resolvedColumns = columns;
+        }
         clone.secure = secure;
+        clone.changeTracking = changeTracking;
         clone.recursive = recursive;
         clone.writtenBody = writtenBody;
         clone.rowAccessPolicyName = rowAccessPolicyName;

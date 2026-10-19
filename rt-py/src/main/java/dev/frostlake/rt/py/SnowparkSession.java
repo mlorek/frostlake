@@ -58,6 +58,21 @@ public class SnowparkSession {
     }
 
     /**
+     * {@link #sql(String)}, its refusal answered rather than thrown (see {@link SnowparkOutcome}). The refusal reads as
+     * the exception's own text, which is what Python's {@code str()} of the thrown exception read.
+     *
+     * @param sqlText the statement
+     * @return its result, or the engine's refusal
+     */
+    public SnowparkOutcome attempt(final String sqlText) {
+        try {
+            return SnowparkOutcome.of(sql(sqlText));
+        } catch (final RuntimeException refused) {
+            return SnowparkOutcome.refusedWith(refused.toString());
+        }
+    }
+
+    /**
      * The owner's rights temporary-object refusal, in Snowflake's words — the same rule and the same
      * sentence the Java/Scala session applies, because live applies it to both.
      */

@@ -24,10 +24,13 @@ import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.stream.StreamManager;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -44,8 +47,15 @@ public class Transaction {
     private final List<String> walStatements = new ArrayList<>();   // mutating SQL to log on commit (WAL)
     // The statements run inside this transaction, whose changes become visible when it commits.
     private final List<QueryHistory> statements = new ArrayList<>();
+    /** Each statement that ran here under a savepoint, by identity, with its ordinal among them. */
+    private final Map<QueryHistory, Long> ordinals = new IdentityHashMap<>();
     /** What each buffered statement called "now" — one per entry of walStatements, same order. */
     private final List<Instant> walInstants = new ArrayList<>();
+    /** What each buffered statement ran under — one per entry of walStatements, same order. */
+    private final List<WalStatementContext> walContexts = new ArrayList<>();
+
+    /** What the transaction's statements left for its end, in the order they registered it. */
+    private final List<TransactionOutcome> outcomes = new ArrayList<>();
     // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
     // this txn's then-buffered changes) so commit advances past exactly that. Latest read governs.
     private final Map<Stream, StreamReadScope> streamsToConsume = new LinkedHashMap<>();
@@ -55,6 +65,9 @@ public class Transaction {
     private final StorageEngine storageEngine;
     private final StreamManager streamManager;
     private boolean explicit;   // started by an explicit BEGIN → suspends statement-end autocommit
+    private boolean begunInBlock;
+    private int scope;
+    private Transaction outer;
     /** SHOW TRANSACTIONS' name cell — live names an unnamed transaction with a fresh UUID, and a
      *  {@code BEGIN NAME <name>} replaces it with that name. */
     private String name = UUID.randomUUID().toString();
@@ -62,6 +75,14 @@ public class Transaction {
      *  tracks its own set in {@link TransactionWriteSet}. One {@code PARTITIONS} lock per table
      *  (live-verified — appends do NOT lock), released with the transaction. */
     private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
+    /** The statement a lock refusal names for a table this transaction only inserted into, by table. */
+    private final Map<String, String> insertLockIds = new HashMap<>();
+
+    /** The table a statement of this transaction waits for, by its storage name upper-cased, or null. */
+    private volatile String waitingFor;
+
+    /** The query ID of the statement that waits, which SHOW LOCKS and its refusal name. */
+    private volatile String waitingQueryId;
     /** The number of the session that began the transaction — SHOW TRANSACTIONS' and SHOW LOCKS'
      *  session cell — or null for a transaction begun with no session context wired. */
     private volatile Long sessionNumber;
@@ -93,6 +114,50 @@ public class Transaction {
     /** Record a statement that ran inside this transaction, so its commit can date the statement's changes. */
     public void addStatement(final QueryHistory statement) {
         statements.add(statement);
+        noteOrdinal(statement);
+    }
+
+    /**
+     * Note where a statement falls among this transaction's statements, whether it succeeded or failed: what a
+     * time-travel read naming it, while the transaction is still open, reads the transaction's own changes up to
+     * (see {@link TransactionWriteSet#overlayRowsAsOf}).
+     *
+     * @param statement the statement, as it ends
+     */
+    public void noteOrdinal(final QueryHistory statement) {
+        final long ordinal = writeSet.activeOrdinal();
+        if (ordinal >= 0 && !ordinals.containsKey(statement)) {
+            ordinals.put(statement, Long.valueOf(ordinal));
+        }
+    }
+
+    /**
+     * Where a statement falls among this transaction's statements.
+     *
+     * @param statement a statement
+     * @return its ordinal, or -1 when it did not run in this transaction or ran under no savepoint
+     */
+    public long ordinalOf(final QueryHistory statement) {
+        final Long ordinal = statement == null ? null : ordinals.get(statement);
+        return ordinal == null ? -1L : ordinal.longValue();
+    }
+
+    /**
+     * The ordinal of the last of this transaction's statements that had ended by an instant.
+     *
+     * @param instant  the instant
+     * @param strictly whether the statement must have ended before the instant rather than by it
+     * @return the ordinal, or -1 when none had
+     */
+    public long lastOrdinalEndedBy(final LocalDateTime instant, final boolean strictly) {
+        long last = -1L;
+        for (final Map.Entry<QueryHistory, Long> noted : ordinals.entrySet()) {
+            final LocalDateTime ended = noted.getKey().getEndTime();
+            if (ended != null && (strictly ? ended.isBefore(instant) : !ended.isAfter(instant))) {
+                last = Math.max(last, noted.getValue().longValue());
+            }
+        }
+        return last;
     }
 
     /** The statements that ran inside this transaction, in the order they ran. */
@@ -130,11 +195,13 @@ public class Transaction {
     /**
      * Record a mutating statement to be written to the WAL (as part of this transaction) on commit,
      * together with the instant it called "now" — statements of one transaction get DIFFERENT
-     * instants, so the log keeps one per statement rather than one per record.
+     * instants, so the log keeps one per statement rather than one per record — and what it ran under, or null
+     * where nothing was noted.
      */
-    public void logStatementForWal(final String sql, final Instant instant) {
+    public void logStatementForWal(final String sql, final Instant instant, final WalStatementContext context) {
         walStatements.add(sql);
         walInstants.add(instant);
+        walContexts.add(context);
     }
 
     /** The mutating statements buffered for the WAL, in execution order (empty when the WAL is off). */
@@ -147,6 +214,11 @@ public class Transaction {
         return walInstants;
     }
 
+    /** What the statements of {@link #getWalStatements} ran under, in the same order. */
+    public List<WalStatementContext> getWalContexts() {
+        return walContexts;
+    }
+
     /**
      * Register a stream read by a consuming DML in this txn; consumed on commit (scoped to what the
      * read saw — see {@link StreamReadScope}), discarded on rollback. A re-read replaces the scope:
@@ -156,6 +228,56 @@ public class Transaction {
         streamsToConsume.put(stream, scope);
     }
 
+    /**
+     * Begin a statement's savepoint ({@link TransactionWriteSet#beginStatementSavepoint}), the streams the
+     * transaction's consuming reads registered so far noted beside it.
+     *
+     * @return the savepoint
+     */
+    public WriteSetSavepoint beginStatementSavepoint() {
+        final WriteSetSavepoint savepoint = writeSet.beginStatementSavepoint();
+        savepoint.noteStreamReads(new LinkedHashMap<>(streamsToConsume));
+        savepoint.noteOutcomes(outcomes.size());
+        return savepoint;
+    }
+
+    /**
+     * Leaves work for the transaction's end: run when it commits, its writes applied, or undone when it rolls back
+     * or the statement that registered it fails inside it.
+     *
+     * @param outcome the work
+     */
+    public void onOutcome(final TransactionOutcome outcome) {
+        outcomes.add(outcome);
+    }
+
+    /**
+     * Undo a failed statement ({@link TransactionWriteSet#rollbackToSavepoint}), the stream reads it registered
+     * included: "the changes made by that failed statement are rolled back", and a stream advances at COMMIT only
+     * for a statement that consumed it (live-verified: a failed INSERT … SELECT FROM a stream leaves the stream
+     * whole after the transaction commits).
+     *
+     * @param savepoint what {@link #beginStatementSavepoint} returned for the statement
+     */
+    public void rollbackToSavepoint(final WriteSetSavepoint savepoint) {
+        if (writeSet.rollbackToSavepoint(savepoint)) {
+            if (savepoint.streamReadsBefore() != null) {
+                streamsToConsume.clear();
+                streamsToConsume.putAll(savepoint.streamReadsBefore());
+            }
+            if (savepoint.outcomesBefore() >= 0) {
+                undoOutcomesFrom(savepoint.outcomesBefore());
+            }
+        }
+    }
+
+    /** Undoes the outcomes registered from an index on, the latest first. */
+    private void undoOutcomesFrom(final int first) {
+        for (int i = outcomes.size() - 1; i >= first; i--) {
+            outcomes.remove(i).rolledBack();
+        }
+    }
+
     /** True if started by an explicit BEGIN — statement-end autocommit is suspended until COMMIT/ROLLBACK. */
     public boolean isExplicit() {
         return explicit;
@@ -163,6 +285,43 @@ public class Transaction {
 
     public void setExplicit(final boolean explicit) {
         this.explicit = explicit;
+    }
+
+    /**
+     * Whether a Snowflake Scripting block or a procedure began the transaction: it is then that block's to end, and
+     * one ended from inside the block leaves nothing for the session to acknowledge.
+     */
+    public boolean isBegunInBlock() {
+        return begunInBlock;
+    }
+
+    public void setBegunInBlock(final boolean begunInBlock) {
+        this.begunInBlock = begunInBlock;
+    }
+
+    /**
+     * The scope whose BEGIN made the transaction explicit, as {@link TransactionManager#enterScope} counts them:
+     * 0 for a statement of the session's own, one more inside each block statement, procedure body and text that
+     * is a block. It is that scope's to end.
+     */
+    public int getScope() {
+        return scope;
+    }
+
+    public void setScope(final int scope) {
+        this.scope = scope;
+    }
+
+    /**
+     * The transaction of an enclosing scope this one was begun beside: it waits, untouched, until this one ends,
+     * and is the session's again then. Null for a transaction begun with none open.
+     */
+    public Transaction getOuter() {
+        return outer;
+    }
+
+    public void setOuter(final Transaction outer) {
+        this.outer = outer;
     }
 
     public void logInsert(final String tableName, final int rowIndex, final Row row) {
@@ -191,9 +350,80 @@ public class Transaction {
         this.name = name;
     }
 
+    /**
+     * Whether this transaction has written a row of a table — inserted, changed or removed one — and so holds the
+     * table against other sessions' writers (see {@link TableLockGate}). Read by the transaction's own session, or
+     * under the engine's lock.
+     *
+     * @param fullyQualifiedName the table's storage name
+     * @return whether the transaction has written the table
+     */
+    public boolean hasWritten(final String fullyQualifiedName) {
+        for (final String changed : writeSet.changedTables()) {
+            if (changed.equalsIgnoreCase(fullyQualifiedName)) {
+                return true;
+            }
+        }
+        for (final TransactionLog log : logs) {
+            if (fullyQualifiedName.equalsIgnoreCase(log.getTableName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The statement a lock refusal names as holding a table: the one whose write registered its lock, or one
+     * named once for a table this transaction only inserted into.
+     *
+     * @param fullyQualifiedName the table's storage name
+     * @return the statement's query ID
+     */
+    public synchronized String lockQueryId(final String fullyQualifiedName) {
+        final String key = fullyQualifiedName.toUpperCase(Locale.ROOT);
+        final TableLock lock = getAllTableLocks().get(key);
+        if (lock != null) {
+            return lock.getQueryId();
+        }
+        String named = insertLockIds.get(key);
+        if (named == null) {
+            named = UUID.randomUUID().toString();
+            insertLockIds.put(key, named);
+        }
+        return named;
+    }
+
+    /**
+     * A statement of this transaction waits for another transaction's lock on a table: SHOW LOCKS lists the lock as
+     * WAITING, with the statement's query ID, until the statement takes the lock or gives up (live-verified).
+     *
+     * @param fullyQualifiedName the table's storage name
+     * @param queryId            the waiting statement's query ID
+     */
+    public void beginWaiting(final String fullyQualifiedName, final String queryId) {
+        waitingQueryId = queryId;
+        waitingFor = fullyQualifiedName.toUpperCase(Locale.ROOT);
+    }
+
+    /** The waiting statement took its lock or gave up. */
+    public void endWaiting() {
+        waitingFor = null;
+        waitingQueryId = null;
+    }
+
+    /** The table a statement of this transaction waits for, upper-cased, or null when none waits. */
+    public String getWaitingFor() {
+        return waitingFor;
+    }
+
+    /** The query ID of the statement that waits, or null when none waits. */
+    public String getWaitingQueryId() {
+        return waitingQueryId;
+    }
+
     /** Register the PARTITIONS lock a DML touch takes on a table; the first touch wins the cell. */
     public void recordTableTouch(final String tableName) {
-        final String key = tableName.toUpperCase();
+        final String key = tableName.toUpperCase(Locale.ROOT);
         if (!tableLocks.containsKey(key)) {
             tableLocks.put(key, new TableLock(System.currentTimeMillis(), UUID.randomUUID().toString()));
         }
@@ -224,6 +454,11 @@ public class Transaction {
             entry.getKey().consumeSeen(entry.getValue().getCommittedCut(), entry.getValue().getSeenTransient());
         }
         streamsToConsume.clear();
+        final List<TransactionOutcome> ended = new ArrayList<>(outcomes);
+        outcomes.clear();
+        for (final TransactionOutcome outcome : ended) {
+            outcome.committed();
+        }
         logs.clear();
         writeSet.clear();
         savepoints.clear();
@@ -240,6 +475,7 @@ public class Transaction {
         // Deferred-apply path: nothing was written to storage, so discarding the write set IS the
         // rollback (the clear below). Streams read by this txn's DML are NOT consumed on rollback.
         streamsToConsume.clear();
+        undoOutcomesFrom(0);
         logs.clear();
         writeSet.clear();
         savepoints.clear();

@@ -44,6 +44,25 @@ import java.nio.file.StandardCopyOption;
  */
 public final class StagePathSegments {
 
+    /**
+     * A location written in a string, with its stage named as an identifier names it: quoted parts kept, the rest
+     * folded to upper case, the path after the stage untouched; the user's stage as written.
+     *
+     * @param location the location as written, {@code @stage/path}, {@code @%table/path} or {@code @~/path}
+     * @return the location with its stage canonical
+     */
+    public static String canonicalLocation(final String location) {
+        if (location == null || !location.startsWith("@") || location.startsWith("@~")) {
+            return location;
+        }
+        final int kind = location.startsWith("@%") ? 2 : 1;
+        final String reference = location.substring(kind);
+        final int slash = reference.indexOf('/');
+        final String stage = slash >= 0 ? reference.substring(0, slash) : reference;
+        return location.substring(0, kind) + SqlIdentifiers.canonicalText(stage)
+            + (slash >= 0 ? reference.substring(slash) : "");
+    }
+
     private StagePathSegments() {
     }
 

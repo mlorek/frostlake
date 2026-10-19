@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -33,7 +34,8 @@ public class ArrayRemoveAt extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null || args.get(1) == null) return null;
-        int idx = ((Number) args.get(1)).intValue();
+        // A position is read as the whole number it gives, a fraction rounded: 0.6 is 1 (see wholeNumber).
+        int idx = wholeNumber(args.get(1));
         if (idx < 0) idx = src.size() + idx;
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = 0; i < src.size(); i++) {
@@ -51,5 +53,16 @@ public class ArrayRemoveAt extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        if (position == 1) {
+            return ArrayArgumentKind.WHOLE_NUMBER;
+        }
+        return null;
     }
 }

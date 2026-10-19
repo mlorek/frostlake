@@ -79,15 +79,32 @@ public final class ShowModifierProfile {
 
     private final boolean sortsByName;
 
+    private final ShowPageStart pageStart;
+
     private ShowModifierProfile(final boolean honorsStartsWith, final boolean honorsLimit,
                                 final List<String> terseColumns, final String terseKind,
                                 final boolean terseKindFromMaterializedFlag, final boolean sortsByName) {
+        this(honorsStartsWith, honorsLimit, terseColumns, terseKind, terseKindFromMaterializedFlag, sortsByName,
+            ShowPageStart.AFTER_NAME);
+    }
+
+    private ShowModifierProfile(final boolean honorsStartsWith, final boolean honorsLimit,
+                                final List<String> terseColumns, final String terseKind,
+                                final boolean terseKindFromMaterializedFlag, final boolean sortsByName,
+                                final ShowPageStart pageStart) {
         this.honorsStartsWith = honorsStartsWith;
         this.honorsLimit = honorsLimit;
         this.terseColumns = terseColumns;
         this.terseKind = terseKind;
         this.terseKindFromMaterializedFlag = terseKindFromMaterializedFlag;
         this.sortsByName = sortsByName;
+        this.pageStart = pageStart;
+    }
+
+    /** This profile, its page starting as {@code start} tells. */
+    private ShowModifierProfile startingPage(final ShowPageStart start) {
+        return new ShowModifierProfile(honorsStartsWith, honorsLimit, terseColumns, terseKind,
+            terseKindFromMaterializedFlag, sortsByName, start);
     }
 
     /**
@@ -133,6 +150,11 @@ public final class ShowModifierProfile {
         return honorsLimit;
     }
 
+    /** Where {@code LIMIT n FROM 'name'} starts this listing's page. */
+    public ShowPageStart pageStart() {
+        return pageStart;
+    }
+
     /** The columns TERSE projects onto, in order; empty when TERSE leaves the listing alone. */
     public List<String> terseColumns() {
         return terseColumns;
@@ -160,14 +182,23 @@ public final class ShowModifierProfile {
             // TERSE reports the kind as EVENT_TABLE.
             return sorted(true, true, STANDARD_TERSE, "EVENT_TABLE", false);
         }
-        if (ctx.INTEGRATIONS() != null || ctx.VOLUMES() != null) {
-            // Account listings with a LIKE and no other modifier, by name.
+        if (ctx.INTEGRATIONS() != null) {
+            // An account listing with a LIKE and no other modifier, by name.
             return sorted(false, false, NO_TERSE, null, false);
+        }
+        if (ctx.VOLUMES() != null) {
+            // An account listing: LIKE, STARTS WITH and LIMIT all act on it (live-verified).
+            return sorted(true, true, NO_TERSE, null, false);
         }
         if (ctx.COMPUTE() != null && ctx.POOLS() != null) {
             // LIKE, STARTS WITH and LIMIT all act on the listing; the family catalog
             // (SHOW COMPUTE POOL INSTANCE FAMILIES) takes the unsorted default instead,
             // keeping the account's own order.
+            return sorted(true, true, NO_TERSE, null, false);
+        }
+        if (ctx.CORTEX() != null && ctx.SERVICES() != null) {
+            // LIKE, STARTS WITH and LIMIT … FROM all act on the listing, by name, as the statement's reference
+            // describes them.
             return sorted(true, true, NO_TERSE, null, false);
         }
         if (ctx.NOTEBOOKS() != null) {
@@ -190,11 +221,16 @@ public final class ShowModifierProfile {
             return sorted(false, false, NO_TERSE, null, false);
         }
         if (ctx.MASKING() != null && ctx.POLICIES() != null) {
-            // LIMIT 1 → 1 of 2 masking policies; STARTS WITH 'ZZZ' → none.
-            return sorted(true, true, NO_TERSE, null, false);
+            // LIMIT 1 → 1 of 2 masking policies; STARTS WITH 'ZZZ' → none. FROM 'name' is read and starts
+            // nothing, in a schema or across a database.
+            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.IGNORED);
         }
         if (ctx.ROW() != null && ctx.POLICIES() != null) {
-            return sorted(true, true, NO_TERSE, null, false);
+            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.IGNORED);
+        }
+        if (ctx.unmodelledListingKind() != null && ctx.unmodelledListingKind().SESSION() != null) {
+            // LIMIT 1 → 1 of 2 session policies, FROM the first name that one; TERSE keeps every column.
+            return sorted(true, true, NO_TERSE, null, false).startingPage(ShowPageStart.IGNORED);
         }
         if (ctx.TABLES() != null) {
             // 6 tables, LIMIT 2 → the first 2 by name; STARTS WITH 'T' → the 4 uppercase ones, excluding
@@ -220,16 +256,18 @@ public final class ShowModifierProfile {
         if (ctx.STREAMS() != null) {
             // STARTS WITH 'ZZZ' → none, LIMIT 1 → 1 of 2. TERSE adds a sixth column, tableOn, which
             // carries what the untrimmed listing calls table_name; kind reads DELTA.
-            return sorted(true, true, terseWithExtra("tableOn"), "DELTA", false);
+            // FROM 'name' starts at the name's own row and runs on through the listing.
+            return sorted(true, true, terseWithExtra("tableOn"), "DELTA", false).startingPage(ShowPageStart.AT_NAME);
         }
         if (ctx.TASKS() != null) {
             // Same six-column shape, the extra one being schedule; kind is null.
-            return sorted(true, true, terseWithExtra("schedule"), null, false);
+            // FROM 'name' keeps the tasks named at or after it.
+            return sorted(true, true, terseWithExtra("schedule"), null, false).startingPage(ShowPageStart.FROM_NAME);
         }
         if (ctx.ALERTS() != null) {
             // The standard five, then schedule and state; kind is null.
             return sorted(true, true, Arrays.asList("created_on", "name", "kind", "database_name", "schema_name",
-                "schedule", "state"), null, false);
+                "schedule", "state"), null, false).startingPage(ShowPageStart.AT_NAME);
         }
         if (ctx.ROLES() != null) {
             // LIMIT 1 → 1 of 7, STARTS WITH 'A' → ACCOUNTADMIN alone. TERSE keeps an unrelated subset:
@@ -248,7 +286,7 @@ public final class ShowModifierProfile {
         }
         if (ctx.TAGS() != null) {
             // The asymmetric one: LIMIT 1 returned 1 of 2 tags, STARTS WITH 'ZZZ' returned both.
-            return sorted(false, true, NO_TERSE, null, false);
+            return sorted(false, true, NO_TERSE, null, false).startingPage(ShowPageStart.AT_NAME);
         }
         if (ctx.PIPES() != null) {
             // Both dropped: with two pipes over internal stages, LIMIT 1 returned both and
@@ -274,6 +312,10 @@ public final class ShowModifierProfile {
             // STARTS WITH 'I' returned all 10 columns although only 9 are named ID; LIMIT 2 returned 10.
             // TERSE is inert too — 13 columns with and without, so the old 3-column projection was wrong.
             return unsorted();
+        }
+        if (ctx.GRANTS() != null) {
+            // A grant listing keeps its own order and LIMIT n cuts it there.
+            return new ShowModifierProfile(false, true, NO_TERSE, null, false, false);
         }
         if (ctx.FUNCTIONS() != null || ctx.PROCEDURES() != null) {
             // SHOW FUNCTIONS STARTS WITH 'FN' → all 1136 rows, LIMIT 2 → all 1136; SHOW PROCEDURES

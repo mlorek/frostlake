@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.QueryExecution;
 import dev.frostlake.metastore.Taggable;
 
@@ -24,6 +25,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -41,7 +43,7 @@ public class Warehouse implements Taggable {
     private int maxClusterCount;
     private Integer autoSuspendSeconds;
     private boolean autoResume;
-    private final LocalDateTime createdAt;
+    private LocalDateTime createdAt;
     private LocalDateTime lastStateChange;
     private final List<QueryExecution> queryHistory;
     private long totalQueriesExecuted;
@@ -50,13 +52,19 @@ public class Warehouse implements Taggable {
     private String warehouseType = "STANDARD";
     private boolean initiallySuspended = true;
     private String resourceMonitor;
-    private int maxConcurrencyLevel = 8;
+    /** MAX_CONCURRENCY_LEVEL while the warehouse sets none. */
+    private static final int DEFAULT_MAX_CONCURRENCY_LEVEL = 8;
+    /** STATEMENT_TIMEOUT_IN_SECONDS while the warehouse sets none: two days. */
+    private static final int DEFAULT_STATEMENT_TIMEOUT_SECONDS = 172800;
+
+    private int maxConcurrencyLevel = DEFAULT_MAX_CONCURRENCY_LEVEL;
     private int statementQueuedTimeoutSeconds = 0;
-    // Live's default is two days; the engine stores the setting but enforces no timeout.
-    private int statementTimeoutSeconds = 172800;
+    // The engine stores the setting but enforces no timeout.
+    private int statementTimeoutSeconds = DEFAULT_STATEMENT_TIMEOUT_SECONDS;
     /** Parameter names this warehouse set explicitly, which SHOW PARAMETERS reports at WAREHOUSE level. */
     private final Set<String> explicitParameters = new LinkedHashSet<>();
-    private boolean enableQueryAcceleration = false;
+    /** ENABLE_QUERY_ACCELERATION as a statement set it, or null while the warehouse keeps its type's default. */
+    private Boolean enableQueryAcceleration;
     private int queryAccelerationMaxScaleFactor = 8;
     /** The compute generation a warehouse runs on; live defaults a new warehouse to 2. */
     private String generation = "2";
@@ -72,8 +80,8 @@ public class Warehouse implements Taggable {
         this.maxClusterCount = 1;
         this.autoSuspendSeconds = 600; // 10 minutes default
         this.autoResume = true;
-        this.createdAt = LocalDateTime.now();
-        this.lastStateChange = LocalDateTime.now();
+        this.createdAt = StatementClock.hostLocal();
+        this.lastStateChange = createdAt;
         this.queryHistory = new ArrayList<>();
         this.totalQueriesExecuted = 0;
         this.totalCreditsUsed = 0;
@@ -91,19 +99,19 @@ public class Warehouse implements Taggable {
             Thread.currentThread().interrupt();
         }
         this.state = WarehouseState.STARTED;
-        this.lastStateChange = LocalDateTime.now();
+        this.lastStateChange = StatementClock.hostLocal();
     }
 
     /** ALTER WAREHOUSE … SUSPEND. Suspending a warehouse that is already suspended is an error
      *  (live-verified wording), unlike a compute pool's idempotent suspend. */
     public void suspend() {
         if (state == WarehouseState.SUSPENDED) {
-            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase()
+            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase(Locale.ROOT)
                 + "' cannot be suspended.");
         }
         this.state = WarehouseState.SUSPENDING;
         this.state = WarehouseState.SUSPENDED;
-        this.lastStateChange = LocalDateTime.now();
+        this.lastStateChange = StatementClock.hostLocal();
     }
 
     /**
@@ -115,7 +123,7 @@ public class Warehouse implements Taggable {
             if (ifSuspended) {
                 return;
             }
-            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase()
+            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase(Locale.ROOT)
                 + "' cannot be resumed since it is not suspended.");
         }
         start();
@@ -153,17 +161,17 @@ public class Warehouse implements Taggable {
 
     @Override
     public void setTag(final String tagName, final String value) {
-        tags.put(tagName.toUpperCase(), value);
+        tags.put(tagName.toUpperCase(Locale.ROOT), value);
     }
 
     @Override
     public void unsetTag(final String tagName) {
-        tags.remove(tagName.toUpperCase());
+        tags.remove(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override
     public String getTagValue(final String tagName) {
-        return tags.get(tagName.toUpperCase());
+        return tags.get(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override
@@ -185,7 +193,7 @@ public class Warehouse implements Taggable {
 
     public void setState(final WarehouseState state) {
         this.state = state;
-        this.lastStateChange = LocalDateTime.now();
+        this.lastStateChange = StatementClock.hostLocal();
     }
 
     public ScalingPolicy getScalingPolicy() {
@@ -233,6 +241,28 @@ public class Warehouse implements Taggable {
         return createdAt;
     }
 
+    /**
+     * Put back the time a restored warehouse was created at.
+     *
+     * @param created the recorded creation time, or null to keep the one it has
+     */
+    public void restoreCreatedAt(final LocalDateTime created) {
+        if (created != null) {
+            this.createdAt = created;
+        }
+    }
+
+    /**
+     * Puts back the moment the warehouse last changed state, which a restart keeps as it keeps the creation time.
+     *
+     * @param moment the moment, or null to keep the one the restore set
+     */
+    public void restoreLastStateChange(final LocalDateTime moment) {
+        if (moment != null) {
+            this.lastStateChange = moment;
+        }
+    }
+
     public LocalDateTime getLastStateChange() {
         return lastStateChange;
     }
@@ -258,7 +288,7 @@ public class Warehouse implements Taggable {
     }
 
     public String getWarehouseType() { return warehouseType; }
-    public void setWarehouseType(final String warehouseType) { this.warehouseType = warehouseType != null ? warehouseType.toUpperCase() : "STANDARD"; }
+    public void setWarehouseType(final String warehouseType) { this.warehouseType = warehouseType != null ? warehouseType.toUpperCase(Locale.ROOT) : "STANDARD"; }
 
     public boolean isInitiallySuspended() { return initiallySuspended; }
     public void setInitiallySuspended(final boolean initiallySuspended) { this.initiallySuspended = initiallySuspended; }
@@ -268,7 +298,25 @@ public class Warehouse implements Taggable {
 
     /** Record that {@code parameterName} was given on the warehouse rather than left at its default. */
     public void markParameterSet(final String parameterName) {
-        explicitParameters.add(parameterName.toUpperCase());
+        explicitParameters.add(parameterName.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Puts a parameter the warehouse set itself back on its default, its level blank again:
+     * MAX_CONCURRENCY_LEVEL 8, STATEMENT_QUEUED_TIMEOUT_IN_SECONDS 0, STATEMENT_TIMEOUT_IN_SECONDS 172800.
+     *
+     * @param parameterName the parameter's name
+     */
+    public void unsetParameter(final String parameterName) {
+        final String name = parameterName.toUpperCase(Locale.ROOT);
+        explicitParameters.remove(name);
+        if ("MAX_CONCURRENCY_LEVEL".equals(name)) {
+            maxConcurrencyLevel = DEFAULT_MAX_CONCURRENCY_LEVEL;
+        } else if ("STATEMENT_QUEUED_TIMEOUT_IN_SECONDS".equals(name)) {
+            statementQueuedTimeoutSeconds = 0;
+        } else if ("STATEMENT_TIMEOUT_IN_SECONDS".equals(name)) {
+            statementTimeoutSeconds = DEFAULT_STATEMENT_TIMEOUT_SECONDS;
+        }
     }
 
     /** Every parameter the warehouse set itself, upper-cased — a copy. */
@@ -278,7 +326,7 @@ public class Warehouse implements Taggable {
 
     /** Whether the warehouse set this parameter itself — a WAREHOUSE level rather than a blank one. */
     public boolean isParameterSetOnWarehouse(final String parameterName) {
-        return explicitParameters.contains(parameterName.toUpperCase());
+        return explicitParameters.contains(parameterName.toUpperCase(Locale.ROOT));
     }
 
     public int getMaxConcurrencyLevel() { return maxConcurrencyLevel; }
@@ -290,8 +338,22 @@ public class Warehouse implements Taggable {
     public int getStatementTimeoutSeconds() { return statementTimeoutSeconds; }
     public void setStatementTimeoutSeconds(final int s) { this.statementTimeoutSeconds = s; }
 
-    public boolean isEnableQueryAcceleration() { return enableQueryAcceleration; }
-    public void setEnableQueryAcceleration(final boolean v) { this.enableQueryAcceleration = v; }
+    /**
+     * Whether queries may be accelerated: what a statement set, or the type's default — on for a standard
+     * warehouse, off for the others (live-verified).
+     */
+    public boolean isEnableQueryAcceleration() {
+        return enableQueryAcceleration != null ? enableQueryAcceleration.booleanValue()
+            : "STANDARD".equals(warehouseType);
+    }
+
+    public void setEnableQueryAcceleration(final boolean v) { this.enableQueryAcceleration = Boolean.valueOf(v); }
+
+    /** ENABLE_QUERY_ACCELERATION as a statement set it, or null while the type's default applies. */
+    public Boolean getEnableQueryAccelerationSetting() { return enableQueryAcceleration; }
+
+    /** Puts ENABLE_QUERY_ACCELERATION back on the type's default. */
+    public void unsetEnableQueryAcceleration() { this.enableQueryAcceleration = null; }
 
     public int getQueryAccelerationMaxScaleFactor() { return queryAccelerationMaxScaleFactor; }
     public void setQueryAccelerationMaxScaleFactor(final int v) { this.queryAccelerationMaxScaleFactor = v; }

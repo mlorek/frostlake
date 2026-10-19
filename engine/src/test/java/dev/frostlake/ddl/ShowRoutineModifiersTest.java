@@ -26,6 +26,7 @@ import org.junit.jupiter.api.function.Executable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -82,7 +83,7 @@ public class ShowRoutineModifiersTest extends BaseDatabaseTest {
     private List<String> columnNames(final ResultSet rs) {
         final List<String> names = new ArrayList<String>();
         for (final ResultSetColumn column : rs.getColumns()) {
-            names.add(column.getName().toLowerCase());
+            names.add(column.getName().toLowerCase(Locale.ROOT));
         }
         return names;
     }
@@ -104,7 +105,7 @@ public class ShowRoutineModifiersTest extends BaseDatabaseTest {
     private List<String> namesOf(final ResultSet rs) {
         final List<String> names = new ArrayList<String>();
         for (final Row row : rs.getRows()) {
-            names.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+            names.add(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT));
         }
         return names;
     }

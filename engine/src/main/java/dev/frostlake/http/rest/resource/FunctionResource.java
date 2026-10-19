@@ -99,10 +99,12 @@ public final class FunctionResource implements RestResource {
     private static RestResponse list(final RestCall call) {
         final ArrayNode out = RestJson.array();
         for (final RestRow row : call.sql().show(show(call, RestShow.like(call)))) {
-            final List<RestRow> describe = RoutineSupport.describe(call, "FUNCTION",
-                RestIdentifier.ofResolved(row.string("name")), RoutineSupport.showArgumentTypes(row));
+            final RestIdentifier name = RestIdentifier.ofResolved(row.string("name"));
+            final List<String> types = RoutineSupport.showArgumentTypes(row);
+            final List<RestRow> describe = RoutineSupport.describe(call, "FUNCTION", name, types);
             out.add(RoutineSupport.property(describe, "service") != null ? toJson(row, describe)
-                : RoutineSupport.toJson(row, describe, false, true));
+                : RoutineSupport.toJson(row, describe, false, true,
+                    RoutineSupport.defaults(call, "FUNCTION", name, types)));
         }
         return RestResponse.json(200, out);
     }
@@ -110,16 +112,16 @@ public final class FunctionResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RoutineSignature signature) {
         final List<RestRow> shows = call.sql().showNamed(show(call, RestShow.likeName(signature.name())),
             signature.name());
-        final String missing = "Function '"
-            + UserDefinedFunctionResource.qualified(call, signature.name()) + "' does not exist or not authorized.";
         if (shows.isEmpty()) {
-            throw RestException.notFound(missing);
+            throw RestException.missing("Function", UserDefinedFunctionResource.qualified(call, signature.name()));
         }
-        final List<RestRow> describe = RoutineSupport.describe(call, "FUNCTION", signature.name(),
-            signature.hasArguments() ? signature.types() : RoutineSupport.showArgumentTypes(shows.get(0)));
+        final List<String> types = signature.hasArguments() ? signature.types()
+            : RoutineSupport.showArgumentTypes(shows.get(0));
+        final List<RestRow> describe = RoutineSupport.describe(call, "FUNCTION", signature.name(), types);
         final RestRow show = RoutineSupport.pick(shows, RoutineSupport.signatureTypes(describe));
         return RoutineSupport.property(describe, "service") != null ? toJson(show, describe)
-            : RoutineSupport.toJson(show, describe, false);
+            : RoutineSupport.toJson(show, describe, false, false,
+                RoutineSupport.defaults(call, "FUNCTION", signature.name(), types));
     }
 
     private static ObjectNode toJson(final RestRow show, final List<RestRow> describe) {

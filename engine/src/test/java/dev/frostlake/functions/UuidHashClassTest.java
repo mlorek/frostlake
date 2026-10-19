@@ -21,6 +21,8 @@ import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -50,8 +52,8 @@ public class UuidHashClassTest extends BaseDatabaseTest {
     @Test
     public void aUuidHashesApartFromItsText() {
         assertEquals("false, false, false", cells("SELECT HASH(u) = HASH(s), HASH(u) = HASH(u::VARCHAR),"
-            + " HASH(u, s) = HASH(s, u) FROM uhc_t").toLowerCase());
-        assertEquals("true", cells("SELECT HASH(u) = HASH(s::UUID) FROM uhc_t").toLowerCase());
+            + " HASH(u, s) = HASH(s, u) FROM uhc_t").toLowerCase(Locale.ROOT));
+        assertEquals("true", cells("SELECT HASH(u) = HASH(s::UUID) FROM uhc_t").toLowerCase(Locale.ROOT));
     }
 
     @Test
@@ -59,6 +61,6 @@ public class UuidHashClassTest extends BaseDatabaseTest {
         assertEquals("false, false, false, false", cells("SELECT HASH(TO_VARIANT(u)) = HASH(TO_VARIANT(s)),"
             + " HASH(u) = HASH(TO_VARIANT(u)), HASH(ARRAY_CONSTRUCT(u)) = HASH(ARRAY_CONSTRUCT(s)),"
             + " HASH(TO_VARIANT(u)) = HASH(PARSE_JSON('\"8e6b1a90-3c0e-4a52-9c4e-0f5b2f7d1a11\"')) FROM uhc_t")
-            .toLowerCase());
+            .toLowerCase(Locale.ROOT));
     }
 }

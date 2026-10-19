@@ -18,6 +18,10 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.metastore.SqlObject;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
 /**
  * Represents a Snowflake PIPE for continuous data loading
  */
@@ -31,6 +35,8 @@ public class Pipe extends SqlObject {
     private String integration;
     private int lastLoadedFileCount;
     private String lastLoadedTime;
+    // An auto-ingest pipe made by cloning its schema, which does not run until it is resumed (documented).
+    private boolean stoppedCloned;
 
     public Pipe(final String name, final String copyStatement, final boolean autoIngest) {
         super(name);
@@ -68,6 +74,84 @@ public class Pipe extends SqlObject {
 
     public void setPaused(final boolean paused) {
         this.paused = paused;
+        if (!paused) {
+            // Resuming is what ends a cloned pipe's stop, as it ends a pause.
+            stoppedCloned = false;
+        }
+    }
+
+    /** Whether this is a cloned auto-ingest pipe that has not been resumed since. */
+    public boolean isStoppedCloned() {
+        return stoppedCloned;
+    }
+
+    public void setStoppedCloned(final boolean stoppedCloned) {
+        this.stoppedCloned = stoppedCloned;
+    }
+
+    /**
+     * The stage this pipe's COPY loads from, as the parts of the name written after its '@'. A user stage
+     * ({@code @~}) or a table stage ({@code @%t}) answers an empty list. A statement in which no stage can be
+     * read answers null. A quoted part keeps its case; any other part is upper-cased, as it resolves.
+     *
+     * @return the stage name's parts, an empty list, or null
+     */
+    public List<String> stageParts() {
+        if (copyStatement == null) {
+            return null;
+        }
+        boolean inLiteral = false;
+        for (int i = 0; i < copyStatement.length(); i++) {
+            final char c = copyStatement.charAt(i);
+            if (c == '\'') {
+                inLiteral = !inLiteral;
+            } else if (c == '@' && !inLiteral) {
+                return stageNameAt(i + 1);
+            }
+        }
+        return null;
+    }
+
+    /** The parts of the stage name starting at {@code start}, just past its '@'; see {@link #stageParts}. */
+    private List<String> stageNameAt(final int start) {
+        final List<String> parts = new ArrayList<>();
+        int i = start;
+        while (i < copyStatement.length()) {
+            final char c = copyStatement.charAt(i);
+            if (c == '~' || c == '%') {
+                return new ArrayList<>();
+            }
+            if (c == '.') {
+                i++;
+            } else if (c == '"') {
+                final StringBuilder part = new StringBuilder();
+                i++;
+                while (i < copyStatement.length()) {
+                    if (copyStatement.charAt(i) == '"') {
+                        if (i + 1 < copyStatement.length() && copyStatement.charAt(i + 1) == '"') {
+                            part.append('"');
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        break;
+                    }
+                    part.append(copyStatement.charAt(i));
+                    i++;
+                }
+                parts.add(part.toString());
+            } else if (Character.isLetterOrDigit(c) || c == '_' || c == '$') {
+                final int begin = i;
+                while (i < copyStatement.length() && (Character.isLetterOrDigit(copyStatement.charAt(i))
+                        || copyStatement.charAt(i) == '_' || copyStatement.charAt(i) == '$')) {
+                    i++;
+                }
+                parts.add(copyStatement.substring(begin, i).toUpperCase(Locale.ROOT));
+            } else {
+                break;
+            }
+        }
+        return parts.isEmpty() ? null : parts;
     }
 
     public String getErrorIntegration() {
@@ -111,6 +195,9 @@ public class Pipe extends SqlObject {
     }
 
     public String getStatus() {
+        if (stoppedCloned) {
+            return "STOPPED_CLONED";
+        }
         if (paused) {
             return "PAUSED";
         }

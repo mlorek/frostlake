@@ -44,7 +44,10 @@ import java.util.Set;
  *       {@code ABS(PI())}; RANDOM and the SEQ functions whatever their arguments, {@code RANDOM(RANDOM(5))}; a call that reads the session, {@code RANDOM(GETVARIABLE('V'))};
  *       and an untyped NULL the plan converts, {@code ABS(NULL)}, {@code NULL + 1}, {@code NULL AND TRUE},
  *       {@code CAST(NULL AS INT)}, {@code COALESCE(NULL, 5)}, {@code COALESCE(NULL, NULL) + 1},
- *       {@code YEAR(NULL) * n}, or a CASE's missing ELSE.</li>
+ *       {@code YEAR(NULL) * n}, a CASE's missing ELSE, or a call folding to NULL that a condition tests —
+ *       {@code IFF(NVL(NULL, NULL), 1, 2)}, {@code CASE WHEN NVL(NULL, NULL) THEN 1 ELSE 2 END},
+ *       {@code IFF(NOT NVL(NULL, NULL), 1, 2)} — where the bare NULL as the condition, NVL2's first argument
+ *       and what IS NULL tests stay as they are.</li>
  * </ul>
  *
  * <p>It subclasses the printer for its TRAVERSAL only; the printed string is discarded.
@@ -136,9 +139,14 @@ final class ConstantArgumentWalk extends AstPrinterVisitor {
                 markUnconverted(branch);
             }
         }
-        if ("IFF".equals(name) || "NVL2".equals(name)) {
-            // IFF's condition and NVL2's first argument are tested, not converted: NVL2(NULL, 1, 2) is 2.
+        if ("NVL2".equals(name)) {
+            // NVL2's first argument is tested for NULL, not converted, whatever folds to it: NVL2(NULL, 1, 2)
+            // and NVL2(NVL(NULL, NULL), 1, 2) are 2.
             markUnconverted(args.get(0));
+        } else if ("IFF".equals(name)) {
+            // IFF's condition is tested as it stands when it is the NULL itself; a call folding to one is
+            // converted to a condition first, and is no constant: IFF(NVL(NULL, NULL), 1, 2).
+            markUnconvertedLiteral(args.get(0));
         }
         if (CONSTRUCTORS.contains(name) || "HASH".equals(name)) {
             for (final Expression element : args) {
@@ -173,7 +181,7 @@ final class ConstantArgumentWalk extends AstPrinterVisitor {
             }
         }
         for (final WhenClause when : expr.getWhenClauses()) {
-            markUnconverted(when.getCondition());
+            markUnconvertedLiteral(when.getCondition());
         }
         return super.visitCaseExpression(expr);
     }
@@ -192,9 +200,16 @@ final class ConstantArgumentWalk extends AstPrinterVisitor {
     @Override
     public String visitUnaryOperation(final UnaryOperationExpression expr) {
         if (expr.getOperator() == UnaryOperator.NOT) {
-            markUnconverted(expr.getOperand());
+            markUnconvertedLiteral(expr.getOperand());
         }
         return super.visitUnaryOperation(expr);
+    }
+
+    /** IS NULL tests its operand and converts nothing: IFF(NVL(NULL, NULL) IS NULL, 1, 2) is a constant. */
+    @Override
+    public String visitIsNull(final IsNullExpression expr) {
+        markUnconverted(expr.getOperand());
+        return super.visitIsNull(expr);
     }
 
     @Override
@@ -228,6 +243,13 @@ final class ConstantArgumentWalk extends AstPrinterVisitor {
 
     private void markUnconverted(final Expression expression) {
         if (UntypedNullFold.isUntypedNull(expression)) {
+            unconverted.put(expression, Boolean.TRUE);
+        }
+    }
+
+    /** Keep the NULL literal itself unconverted where a condition is read; a call folding to one is converted. */
+    private void markUnconvertedLiteral(final Expression expression) {
+        if (isNull(expression)) {
             unconverted.put(expression, Boolean.TRUE);
         }
     }

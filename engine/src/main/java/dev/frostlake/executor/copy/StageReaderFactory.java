@@ -17,6 +17,7 @@
 package dev.frostlake.executor.copy;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.TreeSet;
@@ -40,7 +41,7 @@ public final class StageReaderFactory {
         final ServiceLoader<StageFileReader> providers =
             ServiceLoader.load(StageFileReader.class, StageReaderFactory.class.getClassLoader());
         for (final StageFileReader reader : providers) {
-            byType.put(reader.formatType().toUpperCase(), reader);
+            byType.put(reader.formatType().toUpperCase(Locale.ROOT), reader);
         }
         return byType;
     }
@@ -50,7 +51,7 @@ public final class StageReaderFactory {
         if (type == null) {
             return null;
         }
-        return READERS.get(type.toUpperCase());
+        return READERS.get(type.toUpperCase(Locale.ROOT));
     }
 
     /** CSV plus every discovered record type, sorted — for the loader's "unsupported format" message. */

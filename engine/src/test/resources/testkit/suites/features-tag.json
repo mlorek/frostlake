@@ -1,6 +1,6 @@
 {
   "suite": "features-tag",
-  "description": "CREATE / ALTER / DROP / COMMENT ON / SHOW / DESCRIBE TAG, read back through SHOW TAGS cells (name, allowed_values, comment, database_name, schema_name) so every check runs against whichever engine executed the DDL. ALLOWED_VALUES is stored as a JSON array string and is added to, dropped from and unset in place. MASKING is not a tag property: it is refused at compile time with invalid property 'MASKING' for 'TAG', both at CREATE and at ALTER, and the CREATE refusal leaves no tag behind. Converted 1:1 from features/TagTest (now retired). The two DESCRIBE TAG tests keep the class's live skip - DESCRIBE TAG answers \"Unsupported feature 'TAG'\" on a Standard-edition account.",
+  "description": "CREATE / ALTER / DROP / COMMENT ON / SHOW / DESCRIBE TAG, read back through SHOW TAGS cells (name, allowed_values, comment, database_name, schema_name) so every check runs against whichever engine executed the DDL. ALLOWED_VALUES is stored as a JSON array string and is added to, dropped from and unset in place. MASKING is not a tag property: it is refused at compile time with invalid property 'MASKING' for 'TAG', both at CREATE and at ALTER, and the CREATE refusal leaves no tag behind. Converted 1:1 from features/TagTest (now retired). DESCRIBE TAG is refused on every backend with \"Unsupported feature 'TAG'.\", whether or not the tag exists.",
   "tags": ["features", "converted"],
   "tests": [
     {"name": "create-a-simple-tag", "steps": [
@@ -112,18 +112,12 @@
     {"name": "altering-a-nonexistent-tag-fails", "steps": [
       {"sql": "ALTER TAG nonexistent_tag SET COMMENT = 'test'", "expect": {"error": {}}}
     ]},
-    {"name": "describe-tag-reports-the-name-property",
-     "skip": {"backends": ["snowflake"], "reason": "DESCRIBE TAG answers \"Unsupported feature 'TAG'\" on a Standard-edition account, so its shape is asserted embedded only"},
-     "steps": [
+    {"name": "describing-a-tag-is-unsupported", "steps": [
       {"sql": "CREATE TAG department ALLOWED_VALUES 'HR', 'IT'"},
-      {"sql": "DESCRIBE TAG department"},
-      {"sql": "SELECT \"property\", \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
-       "expect": {"rows": [["name", "DEPARTMENT"]]}}
+      {"sql": "DESCRIBE TAG department", "expect": {"error": {"messageContains": "Unsupported feature 'TAG'."}}}
     ]},
-    {"name": "describing-a-nonexistent-tag-fails",
-     "skip": {"backends": ["snowflake"], "reason": "DESCRIBE TAG answers \"Unsupported feature 'TAG'\" on a Standard-edition account, so its shape is asserted embedded only"},
-     "steps": [
-      {"sql": "DESCRIBE TAG nonexistent_tag", "expect": {"error": {}}}
+    {"name": "describing-a-nonexistent-tag-is-unsupported-too", "steps": [
+      {"sql": "DESCRIBE TAG nonexistent_tag", "expect": {"error": {"messageContains": "Unsupported feature 'TAG'."}}}
     ]}
   ]
 }

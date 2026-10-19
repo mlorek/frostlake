@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import java.nio.ByteBuffer;
@@ -52,7 +53,7 @@ public class TryValidateUtf8 extends TextArgumentFunction {
                 return null;
             }
         }
-        return args.get(0).toString();
+        return SharedFunctionHelpers.textOf(args.get(0));
     }
 
     @Override

@@ -19,11 +19,12 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -42,14 +43,10 @@ public class TagTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(TagTest.class);
 
-    private static final String DESCRIBE_TAG_EDITION_GATED =
-        "DESCRIBE TAG answers \"Unsupported feature 'TAG'\" on a Standard-edition account, so its "
-        + "shape is asserted embedded only";
-
     /** One SHOW TAGS cell for the given tag, or null when the cell carries no value. */
     private String tagCell(final String tag, final String column) {
         final ResultSet rs = engine.executeQuery("SHOW TAGS LIKE '" + tag + "'");
-        return cell(rs, soleRowWhere(rs, "name", tag.toUpperCase()), column);
+        return cell(rs, soleRowWhere(rs, "name", tag.toUpperCase(Locale.ROOT)), column);
     }
 
     private int tagCount(final String name) {
@@ -256,27 +253,27 @@ public class TagTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testDescribeTag() {
-        Assumptions.assumeFalse(isLiveSnowflake(), DESCRIBE_TAG_EDITION_GATED);
-
-        logger.info("Testing DESCRIBE TAG");
+    public void testDescribeTagIsUnsupported() {
+        logger.info("Testing DESCRIBE TAG is refused");
         engine.execute("CREATE TAG department ALLOWED_VALUES 'HR', 'IT'");
-        final ResultSet rs = engine.executeQuery("DESCRIBE TAG department");
-
-        assertEquals("name", cell(rs, rs.getRows().get(0), "property"));
-        assertEquals("DEPARTMENT", cell(rs, rs.getRows().get(0), "value"));
+        final RuntimeException refusal = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("DESCRIBE TAG department");
+            }
+        });
+        assertTrue(refusal.getMessage().contains("Unsupported feature 'TAG'."), refusal.getMessage());
     }
 
     @Test
-    public void testDescribeNonexistentTagFails() {
-        Assumptions.assumeFalse(isLiveSnowflake(), DESCRIBE_TAG_EDITION_GATED);
-
-        logger.info("Testing DESCRIBE nonexistent TAG fails");
-        assertThrows(RuntimeException.class, new Executable() {
+    public void testDescribeNonexistentTagIsUnsupported() {
+        logger.info("Testing DESCRIBE of a nonexistent TAG is refused the same way");
+        final RuntimeException refusal = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.executeQuery("DESCRIBE TAG nonexistent_tag");
             }
         });
+        assertTrue(refusal.getMessage().contains("Unsupported feature 'TAG'."), refusal.getMessage());
     }
 }

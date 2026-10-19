@@ -114,7 +114,9 @@ public final class StageResource implements RestResource {
         final ArrayNode out = RestJson.array();
         for (final RestRow row : call.sql().show("SHOW STAGES" + RestShow.like(call) + " IN SCHEMA "
                 + call.schemaSql())) {
-            out.add(toJson(row, null));
+            // A listed stage is the whole body a fetch answers, its described properties included.
+            out.add(toJson(row, call.sql().show("DESCRIBE STAGE "
+                + call.qualifiedSql(RestIdentifier.ofResolved(row.string("name"))))));
         }
         return RestResponse.json(200, out);
     }
@@ -124,7 +126,7 @@ public final class StageResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW STAGES" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Stage '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Stage", RelationNames.qualifiedDisplay(call, name));
         }
         return toJson(rows.get(0), call.sql().show("DESCRIBE STAGE " + call.qualifiedSql(name)));
     }
@@ -149,15 +151,6 @@ public final class StageResource implements RestResource {
         RestJson.string(node, "cloud", row, "cloud");
         final ObjectNode directory = RestJson.object();
         RestJson.bool(directory, "enable", row, "directory_enabled");
-        if (described == null) {
-            if (directory.size() > 0) {
-                node.set("directory_table", directory);
-            }
-            RestJson.nulls(node, "name", "kind", "url", "endpoint", "storage_integration", "comment", "credentials",
-                "encryption", "directory_table", "file_format", "copy_options", "created_on", "has_credentials",
-                "has_encryption_key", "owner", "owner_role_type", "region", "cloud");
-            return node;
-        }
         final ObjectNode format = RestJson.object();
         final ObjectNode copyOptions = RestJson.object();
         for (final RestRow property : described) {
@@ -167,7 +160,10 @@ public final class StageResource implements RestResource {
                 continue;
             }
             if ("DIRECTORY".equals(parent)) {
-                describedValue(directory, key.toLowerCase(Locale.ROOT), property);
+                // The moment of the last refresh is the listing's alone; a stage's body does not carry it.
+                if (!"LAST_REFRESHED_ON".equals(key)) {
+                    describedValue(directory, key.toLowerCase(Locale.ROOT), property);
+                }
             } else if ("STAGE_COPY_OPTIONS".equals(parent)) {
                 describedValue(copyOptions, key.toLowerCase(Locale.ROOT), property);
             } else if ("STAGE_FILE_FORMAT".equals(parent)) {
@@ -463,7 +459,7 @@ public final class StageResource implements RestResource {
         }
         if (call.sql().showNamed("SHOW STAGES" + RestShow.likeName(name) + " IN SCHEMA " + call.schemaSql(), name)
                 .isEmpty()) {
-            throw RestException.notFound("Stage '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Stage", RelationNames.qualifiedDisplay(call, name));
         }
         final ObjectNode out = RestJson.object();
         RestJson.put(out, "presigned_url", call.sql().status(sql.append(')').toString()));

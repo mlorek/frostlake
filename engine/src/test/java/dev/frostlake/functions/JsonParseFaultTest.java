@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -173,7 +175,7 @@ public class JsonParseFaultTest extends BaseDatabaseTest {
         assertEquals("accepted {\"a\":1}", fault("{\"a\":1,}"), "a trailing comma is tolerated");
         final ResultSet tried = engine.executeQuery("SELECT TRY_PARSE_JSON('cdefg') IS NULL");
         tried.next();
-        assertEquals("true", String.valueOf(tried.getValue(0)).toLowerCase());
+        assertEquals("true", String.valueOf(tried.getValue(0)).toLowerCase(Locale.ROOT));
     }
 
     /** CHECK_JSON answers the same sentence without the prefix, and NULL for a document that parses. */
@@ -183,7 +185,7 @@ public class JsonParseFaultTest extends BaseDatabaseTest {
             "SELECT CHECK_JSON('cdefg'), CHECK_JSON('{\"a\":1}') IS NULL, CHECK_JSON('{bad}')");
         rs.next();
         assertEquals("unknown keyword \"cdefg\", pos 6", String.valueOf(rs.getValue(0)));
-        assertEquals("true", String.valueOf(rs.getValue(1)).toLowerCase());
+        assertEquals("true", String.valueOf(rs.getValue(1)).toLowerCase(Locale.ROOT));
         assertEquals("misplaced }, pos 5", String.valueOf(rs.getValue(2)));
     }
 }

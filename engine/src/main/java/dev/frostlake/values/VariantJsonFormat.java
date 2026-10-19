@@ -40,6 +40,9 @@ public final class VariantJsonFormat {
      */
     public static final int DEFAULT_INDENT = 0;
 
+    /** The widest indentation a session's JSON_INDENT lays a value out at. */
+    public static final int WIDEST_INDENT = 16;
+
     /** JSON_INDENT for the calling thread, when a session has bound one. */
     private static final ThreadLocal<Integer> BOUND_INDENT = new ThreadLocal<>();
 

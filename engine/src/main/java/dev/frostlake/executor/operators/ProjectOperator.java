@@ -32,6 +32,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -51,6 +52,7 @@ public class ProjectOperator implements Operator {
     private final RowExpressionEvaluator expressionEvaluator;
     private final Map<String, Object> lateralAliasSink;
     private final Map<String, Object> baseBindings;
+    private WhereAliasValues whereAliasValues;
 
     /**
      * Create a PROJECT operator.
@@ -134,6 +136,14 @@ public class ProjectOperator implements Operator {
         this.sourceSlots = sourceSlots;
     }
 
+    /**
+     * The values the WHERE computed for the aliases it read, for the rows it kept: an aliased item it computed
+     * for a row shows that value instead of being computed again. Null when none are carried.
+     */
+    public void carryWhereAliasValues(final WhereAliasValues whereAliasValues) {
+        this.whereAliasValues = whereAliasValues;
+    }
+
     /** The input-row slot item {@code index} reads, or -1 when it evaluates its expression. */
     private int slotOf(final int index) {
         return sourceSlots != null && index < sourceSlots.size() ? sourceSlots.get(index) : -1;
@@ -187,8 +197,12 @@ public class ProjectOperator implements Operator {
                 // when no FROM-source column has that name: the real column takes precedence over a
                 // same-named sibling alias (what makes a swap projection `SELECT t AS s, s AS t` read
                 // both values from the input row instead of collapsing to t, t).
-                } else if (rowAliasValues.containsKey(expr.toUpperCase()) && !isInputColumn(expr, context)) {
-                    value = rowAliasValues.get(expr.toUpperCase());
+                } else if (rowAliasValues.containsKey(expr.toUpperCase(Locale.ROOT)) && !isInputColumn(expr, context)) {
+                    value = rowAliasValues.get(expr.toUpperCase(Locale.ROOT));
+                // The WHERE computed this item for the row: the value it tested is the value shown.
+                } else if (whereAliasValues != null && columnAliases != null && columnAliases.get(i) != null
+                        && whereAliasValues.holds(row, columnAliases.get(i).toUpperCase(Locale.ROOT))) {
+                    value = whereAliasValues.valueOf(row, columnAliases.get(i).toUpperCase(Locale.ROOT));
                 } else {
                     // Note where this item began in the statement, so a message about an unresolvable
                     // column inside it can carry the position live always reports. A star-expanded
@@ -213,7 +227,7 @@ public class ProjectOperator implements Operator {
                 }
                 projectedValues.add(value);
                 if (columnAliases != null && columnAliases.get(i) != null) {
-                    rowAliasValues.put(columnAliases.get(i).toUpperCase(), value);
+                    rowAliasValues.put(columnAliases.get(i).toUpperCase(Locale.ROOT), value);
                 }
             }
 

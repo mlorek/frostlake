@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.CodePointText;
 import java.util.List;
@@ -29,7 +30,7 @@ public class RtrimmedLength extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final String s = args.get(0).toString();
+        final String s = SharedFunctionHelpers.textOf(args.get(0));
         int end = s.length();
         while (end > 0 && s.charAt(end - 1) == ' ') {
             end--;

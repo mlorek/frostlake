@@ -29,46 +29,29 @@ import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
 
-import java.io.InputStream;
-import java.io.Reader;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.net.URL;
-import java.sql.Array;
-import java.sql.Blob;
-import java.sql.Clob;
 import java.sql.Date;
-import java.sql.NClob;
-import java.sql.Ref;
 import java.sql.ResultSetMetaData;
-import java.sql.RowId;
 import java.sql.SQLException;
-import java.sql.SQLFeatureNotSupportedException;
-import java.sql.SQLWarning;
-import java.sql.SQLXML;
 import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * Simple ResultSet adapter for engine ResultSet with updatable support
+ * The in-process transport's result set: the engine's own result, its typed values read through
+ * {@link AbstractFrostlakeResultSet}. Built with a table and its key columns, it also writes rows back — an
+ * embedded caller's convenience the HTTP transport does not offer.
  */
-public class DirectResultSet implements java.sql.ResultSet {
+public class DirectResultSet extends AbstractFrostlakeResultSet {
 
     private final ResultSet engineResultSet;
     private final Statement statement;
-    private boolean closed = false;
-
-    // Cursor position for the JDBC location predicates: 0 = before the first row; incremented by
-    // next(); exhausted once next() has returned false after consuming rows.
-    private int positionRow = 0;
-    private boolean exhausted = false;
-    private boolean lastReadWasNull = false;
 
     // Updatable ResultSet support
     private final DatabaseEngine engine;
@@ -79,27 +62,13 @@ public class DirectResultSet implements java.sql.ResultSet {
     private final Map<String, Object> insertRowValues;
     private boolean onInsertRow = false;
 
-    /**
-     * Run one of this result set's write-back statements (updateRow/insertRow/deleteRow) under the
-     * owning connection's session scope, so its unqualified table name resolves exactly as the query
-     * that produced these rows did; falls back to the raw engine when the owner is not a direct
-     * connection (embedded callers).
-     */
-    private void executeWriteback(final String sql) throws SQLException {
-        final java.sql.Connection owner = statement != null ? statement.getConnection() : null;
-        if (owner instanceof DirectConnection) {
-            ((DirectConnection) owner).executeScoped(sql);
-            return;
-        }
-        engine.execute(sql);
-    }
-
     public DirectResultSet(final Statement statement, final ResultSet engineResultSet) {
         this(statement, engineResultSet, null, null, null);
     }
 
     public DirectResultSet(final Statement statement, final ResultSet engineResultSet,
                           final DatabaseEngine engine, final String tableName, final List<String> keyColumns) {
+        super(statement);
         this.statement = statement;
         this.engineResultSet = engineResultSet;
         this.engine = engine;
@@ -110,138 +79,67 @@ public class DirectResultSet implements java.sql.ResultSet {
         this.insertRowValues = new HashMap<>();
     }
 
-    @Override
-    public boolean next() throws SQLException {
-        checkClosed();
-        final boolean hasNext = engineResultSet.next();
-        if (hasNext) {
-            positionRow++;
-            // Clear updated values when moving to new row
-            updatedValues.clear();
-            onInsertRow = false;
-            // Capture current row values for potential updates
-            captureCurrentRowValues();
-        } else {
-            exhausted = true;
-        }
-        return hasNext;
-    }
-
-    private void captureCurrentRowValues() throws SQLException {
-        currentRowValues.clear();
-        final List<ResultSetColumn> columns = engineResultSet.getColumns();
-        for (int i = 0; i < columns.size(); i++) {
-            final String columnName = columns.get(i).getName();
-            final Object value = engineResultSet.getValue(i);
-            currentRowValues.put(columnName.toUpperCase(), value);
-        }
+    /** The engine-native result this JDBC view wraps — for embedders needing the typed columns. */
+    public ResultSet getEngineResultSet() {
+        return engineResultSet;
     }
 
     @Override
-    public String getString(final int columnIndex) throws SQLException {
+    public ResultSetMetaData getMetaData() throws SQLException {
         checkClosed();
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getString(interval, intervalNumberAt(columnIndex - 1));
-        }
-        return ClientValueText.render(readValue(columnIndex), declaredType(columnIndex - 1));
+        return new DirectResultSetMetaData(engineResultSet.getColumns());
     }
 
     @Override
-    public String getString(final String columnLabel) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getString(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        return ClientValueText.render(readValue(columnLabel), declaredType(indexOf(columnLabel)));
+    protected int columnCount() {
+        return engineResultSet.getColumns().size();
     }
 
-    /**
-     * The interval kind of a 0-based column (see {@link IntervalColumnReads}): the declared interval type
-     * decides, and a column the engine could not type is judged by its current cell. Null for any other
-     * column and for an index out of range.
-     */
-    private IntervalKind intervalKindAt(final int index) {
-        final List<ResultSetColumn> columns = engineResultSet.getColumns();
-        if (index < 0 || index >= columns.size()) {
+    @Override
+    protected String columnLabel(final int column) {
+        return engineResultSet.getColumns().get(column - 1).getName();
+    }
+
+    @Override
+    protected int rowCount() {
+        return engineResultSet.getRows().size();
+    }
+
+    @Override
+    protected Object cell(final int row, final int column) {
+        return engineResultSet.getRows().get(row - 1).getValue(column - 1);
+    }
+
+    /** The declared type of a column, from 1. */
+    private DataType declaredType(final int column) {
+        return engineResultSet.getColumns().get(column - 1).getDataType();
+    }
+
+    /** The declared interval type decides, and a column the engine could not type is judged by its cell. */
+    @Override
+    protected IntervalKind intervalKind(final int column, final Object cell) {
+        if (column < 1 || column > columnCount()) {
             return null;
         }
-        return IntervalColumnReads.kindOf(columns.get(index).getDataType(), engineResultSet.getValue(index));
-    }
-
-    /** A 0-based interval column's current cell as its nanoseconds or months, null for SQL NULL. */
-    private BigInteger intervalNumberAt(final int index) {
-        final Object value = engineResultSet.getValue(index);
-        lastReadWasNull = value == null;
-        return value == null ? null : IntervalCells.number(value);
-    }
-
-    /** The declared type of a 0-based column, or null when the index is out of range. */
-    private DataType declaredType(final int index) {
-        final List<ResultSetColumn> columns = engineResultSet.getColumns();
-        return index >= 0 && index < columns.size() ? columns.get(index).getDataType() : null;
-    }
-
-    /** The 0-based position of a named column, or -1. */
-    private int indexOf(final String columnLabel) {
-        final List<ResultSetColumn> columns = engineResultSet.getColumns();
-        for (int i = 0; i < columns.size(); i++) {
-            if (columns.get(i).getName().equalsIgnoreCase(columnLabel)) {
-                return i;
-            }
-        }
-        return -1;
+        return IntervalColumnReads.kindOf(declaredType(column), cell);
     }
 
     @Override
-    public int getInt(final int columnIndex) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getInt(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return 0;
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        return Integer.parseInt(value.toString());
+    protected BigInteger intervalNumber(final Object cell) {
+        return IntervalCells.number(cell);
     }
 
     @Override
-    public int getInt(final String columnLabel) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getInt(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return 0;
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        return Integer.parseInt(value.toString());
+    protected String text(final int column, final Object cell) {
+        return ClientValueText.render(cell, declaredType(column));
     }
 
     @Override
-    public Object getObject(final int columnIndex) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getObject(interval, intervalNumberAt(columnIndex - 1));
+    protected BigDecimal decimal(final int column, final Object cell) throws SQLException {
+        if (cell instanceof Number && NumericType.isDecfloat(declaredType(column))) {
+            return ClientValueText.decfloatObject((Number) cell);
         }
-        return unwrapEngineValue(engineResultSet.getValue(columnIndex - 1), declaredType(columnIndex - 1));
-    }
-
-    @Override
-    public Object getObject(final String columnLabel) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getObject(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        return unwrapEngineValue(engineResultSet.getValue(columnLabel), declaredType(indexOf(columnLabel)));
+        return super.decimal(column, cell);
     }
 
     /**
@@ -255,12 +153,14 @@ public class DirectResultSet implements java.sql.ResultSet {
      * DATE, {@code java.sql.Time} for a TIME and a {@code java.sql.Timestamp} for each timestamp flavour,
      * and a client reading {@code getColumnClassName} is entitled to cast to it.
      */
-    private Object unwrapEngineValue(final Object value, final DataType declared) {
+    @Override
+    protected Object object(final int column, final Object value) {
+        final DataType declared = declaredType(column);
         if (value instanceof BinaryValue) {
             return ((BinaryValue) value).bytes();
         }
-        if (value != null && declared instanceof DateTimeType) {
-            final String family = declared.getName().toUpperCase();
+        if (declared instanceof DateTimeType) {
+            final String family = declared.getName().toUpperCase(Locale.ROOT);
             if (family.equals("DATE")) {
                 return JdbcMarshaling.toDate(value);
             }
@@ -287,28 +187,52 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (value instanceof Number && !(value instanceof Double) && NumericType.isApproximate(declared)) {
             return Double.valueOf(((Number) value).doubleValue());
         }
+        if (value instanceof Number && !(value instanceof BigDecimal) && JdbcMarshaling.isClientDecimal(declared)) {
+            // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
+            return new BigDecimal(value.toString());
+        }
+        if (value instanceof Number && NumericType.isDecfloat(declared)) {
+            return ClientValueText.decfloatObject((Number) value);
+        }
+        if (value instanceof BigDecimal && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                && ((NumericType) declared).getScale() == 0) {
+            // A scale-0 NUMBER is the Long its metadata names while its value fits one, as the HTTP transport and
+            // the account's driver read it, and a BigDecimal past it (live-verified).
+            final BigDecimal whole = (BigDecimal) value;
+            if (whole.signum() == 0
+                    || whole.stripTrailingZeros().scale() <= 0 && whole.toBigInteger().bitLength() < Long.SIZE) {
+                return Long.valueOf(whole.longValue());
+            }
+        }
         return value;
     }
 
-    /** The engine-native result this JDBC view wraps — for embedders needing the typed columns. */
-    public ResultSet getEngineResultSet() {
-        return engineResultSet;
-    }
+    // ---------------------------------------------------------------- writing rows back
 
     @Override
-    public void close() throws SQLException {
-        closed = true;
-    }
-
-    @Override
-    public boolean isClosed() throws SQLException {
-        return closed;
-    }
-
-    private void checkClosed() throws SQLException {
-        if (closed) {
-            throw new SQLException("ResultSet is closed");
+    protected void enteredRow(final int row) {
+        updatedValues.clear();
+        onInsertRow = false;
+        currentRowValues.clear();
+        final List<ResultSetColumn> columns = engineResultSet.getColumns();
+        for (int i = 0; i < columns.size(); i++) {
+            currentRowValues.put(columns.get(i).getName().toUpperCase(Locale.ROOT), cell(row, i + 1));
         }
+    }
+
+    /**
+     * Run one of this result set's write-back statements (updateRow/insertRow/deleteRow) under the
+     * owning connection's session scope, so its unqualified table name resolves exactly as the query
+     * that produced these rows did; falls back to the raw engine when the owner is not a direct
+     * connection (embedded callers).
+     */
+    private void executeWriteback(final String sql) throws SQLException {
+        final java.sql.Connection owner = statement != null ? statement.getConnection() : null;
+        if (owner instanceof DirectConnection) {
+            ((DirectConnection) owner).executeScoped(sql);
+            return;
+        }
+        engine.execute(sql);
     }
 
     private void checkUpdatable() throws SQLException {
@@ -323,635 +247,77 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (columnIndex < 1 || columnIndex > columns.size()) {
             throw new SQLException("Invalid column index: " + columnIndex);
         }
-        return columns.get(columnIndex - 1).getName().toUpperCase();
+        return columns.get(columnIndex - 1).getName().toUpperCase(Locale.ROOT);
     }
 
-    @Override
-    public int getRow() throws SQLException {
-        // The current row number (1-based), 0 when before the first row or after the last.
-        return exhausted ? 0 : positionRow;
-    }
-
-    @Override
-    public Statement getStatement() throws SQLException {
-        return statement;
-    }
-
-    // Minimal implementations for other required methods
-
-    @Override
-    public boolean wasNull() throws SQLException {
-        return lastReadWasNull;
-    }
-
-    /** Read a column by 1-based index, recording its nullness for {@link #wasNull()}. */
-    private Object readValue(final int columnIndex) {
-        final Object value = engineResultSet.getValue(columnIndex - 1);
-        lastReadWasNull = value == null;
-        return value;
-    }
-
-    /** Read a column by label, recording its nullness for {@link #wasNull()}. */
-    private Object readValue(final String columnLabel) {
-        final Object value = engineResultSet.getValue(columnLabel);
-        lastReadWasNull = value == null;
-        return value;
-    }
-
-    @Override
-    public boolean getBoolean(final int columnIndex) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getBoolean(interval, intervalNumberAt(columnIndex - 1));
+    /** Keep a value for the insert row or the current row's update, by its upper-case column name. */
+    private void put(final String columnName, final Object value) throws SQLException {
+        checkUpdatable();
+        if (onInsertRow) {
+            insertRowValues.put(columnName, value);
+        } else {
+            updatedValues.put(columnName, value);
         }
-        final Object value = readValue(columnIndex);
-        if (value == null) return false;
-        if (value instanceof Boolean) return (Boolean) value;
-        return Boolean.parseBoolean(value.toString());
-    }
-
-    @Override
-    public byte getByte(final int columnIndex) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getByte(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).byteValue();
-        return Byte.parseByte(value.toString());
-    }
-
-    @Override
-    public short getShort(final int columnIndex) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getShort(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).shortValue();
-        return Short.parseShort(value.toString());
-    }
-
-    @Override
-    public long getLong(final int columnIndex) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getLong(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).longValue();
-        return Long.parseLong(value.toString());
-    }
-
-    @Override
-    public float getFloat(final int columnIndex) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getFloat(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).floatValue();
-        return Float.parseFloat(value.toString());
-    }
-
-    @Override
-    public double getDouble(final int columnIndex) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getDouble(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).doubleValue();
-        return Double.parseDouble(value.toString());
-    }
-
-    @Override
-    public BigDecimal getBigDecimal(final int columnIndex, final int scale) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return null;
-        if (value instanceof BigDecimal) return (BigDecimal) value;
-        return new BigDecimal(value.toString());
-    }
-
-    @Override
-    public byte[] getBytes(final int columnIndex) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getBytes(interval, intervalNumberAt(columnIndex - 1));
-        }
-        return JdbcMarshaling.toBytes(engineResultSet.getValue(columnIndex - 1));
-    }
-
-    @Override
-    public Date getDate(final int columnIndex) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            intervalNumberAt(columnIndex - 1);
-            return IntervalColumnReads.getDate(interval);
-        }
-        return JdbcMarshaling.toDate(engineResultSet.getValue(columnIndex - 1));
-    }
-
-    @Override
-    public Time getTime(final int columnIndex) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            intervalNumberAt(columnIndex - 1);
-            return IntervalColumnReads.getTime(interval);
-        }
-        return JdbcMarshaling.toTime(engineResultSet.getValue(columnIndex - 1));
-    }
-
-    @Override
-    public Timestamp getTimestamp(final int columnIndex) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            intervalNumberAt(columnIndex - 1);
-            return IntervalColumnReads.getTimestamp(interval);
-        }
-        return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnIndex - 1));
-    }
-
-    @Override
-    public InputStream getAsciiStream(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getAsciiStream not supported");
-    }
-
-    @Override
-    public InputStream getUnicodeStream(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getUnicodeStream not supported");
-    }
-
-    @Override
-    public InputStream getBinaryStream(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getBinaryStream not supported");
-    }
-
-    @Override
-    public boolean getBoolean(final String columnLabel) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getBoolean(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return false;
-        if (value instanceof Boolean) return (Boolean) value;
-        return Boolean.parseBoolean(value.toString());
-    }
-
-    @Override
-    public byte getByte(final String columnLabel) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getByte(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).byteValue();
-        return Byte.parseByte(value.toString());
-    }
-
-    @Override
-    public short getShort(final String columnLabel) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getShort(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).shortValue();
-        return Short.parseShort(value.toString());
-    }
-
-    @Override
-    public long getLong(final String columnLabel) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getLong(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).longValue();
-        return Long.parseLong(value.toString());
-    }
-
-    @Override
-    public float getFloat(final String columnLabel) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getFloat(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).floatValue();
-        return Float.parseFloat(value.toString());
-    }
-
-    @Override
-    public double getDouble(final String columnLabel) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getDouble(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return 0;
-        if (value instanceof Number) return ((Number) value).doubleValue();
-        return Double.parseDouble(value.toString());
-    }
-
-    @Override
-    public BigDecimal getBigDecimal(final String columnLabel, final int scale) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return null;
-        if (value instanceof BigDecimal) return (BigDecimal) value;
-        return new BigDecimal(value.toString());
-    }
-
-    // Remaining unimplemented methods - throw UnsupportedOperationException or return defaults
-
-    @Override
-    public byte[] getBytes(final String columnLabel) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getBytes(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        return JdbcMarshaling.toBytes(engineResultSet.getValue(columnLabel));
-    }
-
-    @Override
-    public Date getDate(final String columnLabel) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            intervalNumberAt(indexOf(columnLabel));
-            return IntervalColumnReads.getDate(interval);
-        }
-        return JdbcMarshaling.toDate(engineResultSet.getValue(columnLabel));
-    }
-
-    @Override
-    public Time getTime(final String columnLabel) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            intervalNumberAt(indexOf(columnLabel));
-            return IntervalColumnReads.getTime(interval);
-        }
-        return JdbcMarshaling.toTime(engineResultSet.getValue(columnLabel));
-    }
-
-    @Override
-    public Timestamp getTimestamp(final String columnLabel) throws SQLException {
-        checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            intervalNumberAt(indexOf(columnLabel));
-            return IntervalColumnReads.getTimestamp(interval);
-        }
-        return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnLabel));
-    }
-
-    @Override
-    public InputStream getAsciiStream(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public InputStream getUnicodeStream(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public InputStream getBinaryStream(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public SQLWarning getWarnings() throws SQLException {
-        return null;
-    }
-
-    @Override
-    public void clearWarnings() throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public String getCursorName() throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public ResultSetMetaData getMetaData() throws SQLException {
-        return new DirectResultSetMetaData(engineResultSet.getColumns());
-    }
-
-    @Override
-    public int findColumn(final String columnLabel) throws SQLException {
-        final List<ResultSetColumn> columns = engineResultSet.getColumns();
-        for (int i = 0; i < columns.size(); i++) {
-            if (columns.get(i).getName().equalsIgnoreCase(columnLabel)) {
-                return i + 1;
-            }
-        }
-        throw new SQLException("Column not found: " + columnLabel);
-    }
-
-    @Override
-    public Reader getCharacterStream(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Reader getCharacterStream(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public BigDecimal getBigDecimal(final int columnIndex) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(columnIndex - 1));
-        }
-        final Object value = readValue(columnIndex);
-        if (value == null) return null;
-        if (value instanceof BigDecimal) return (BigDecimal) value;
-        return new BigDecimal(value.toString());
-    }
-
-    @Override
-    public BigDecimal getBigDecimal(final String columnLabel) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(indexOf(columnLabel)));
-        }
-        final Object value = readValue(columnLabel);
-        if (value == null) return null;
-        if (value instanceof BigDecimal) return (BigDecimal) value;
-        return new BigDecimal(value.toString());
-    }
-
-    @Override
-    public boolean isBeforeFirst() throws SQLException {
-        return positionRow == 0 && !engineResultSet.getRows().isEmpty();
-    }
-
-    @Override
-    public boolean isAfterLast() throws SQLException {
-        return exhausted && !engineResultSet.getRows().isEmpty();
-    }
-
-    @Override
-    public boolean isFirst() throws SQLException {
-        return positionRow == 1 && !exhausted;
-    }
-
-    @Override
-    public boolean isLast() throws SQLException {
-        return !exhausted && positionRow > 0 && positionRow == engineResultSet.getRows().size();
-    }
-
-    @Override
-    public void beforeFirst() throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void afterLast() throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public boolean first() throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public boolean last() throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public boolean absolute(final int row) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public boolean relative(final int rows) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public boolean previous() throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void setFetchDirection(final int direction) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getFetchDirection() throws SQLException {
-        return FETCH_FORWARD;
-    }
-
-    @Override
-    public void setFetchSize(final int rows) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getFetchSize() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public int getType() throws SQLException {
-        return TYPE_FORWARD_ONLY;
-    }
-
-    @Override
-    public int getConcurrency() throws SQLException {
-        return CONCUR_READ_ONLY;
-    }
-
-    @Override
-    public boolean rowUpdated() throws SQLException {
-        return false;
-    }
-
-    @Override
-    public boolean rowInserted() throws SQLException {
-        return false;
-    }
-
-    @Override
-    public boolean rowDeleted() throws SQLException {
-        return false;
     }
 
     @Override
     public void updateNull(final int columnIndex) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, null);
-        } else {
-            updatedValues.put(columnName, null);
-        }
+        put(getColumnName(columnIndex), null);
     }
 
     @Override
     public void updateBoolean(final int columnIndex, final boolean x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateByte(final int columnIndex, final byte x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateShort(final int columnIndex, final short x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateInt(final int columnIndex, final int x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateLong(final int columnIndex, final long x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateFloat(final int columnIndex, final float x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateDouble(final int columnIndex, final double x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateBigDecimal(final int columnIndex, final BigDecimal x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateString(final int columnIndex, final String x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
-    }
-
-    @Override
-    public void updateBytes(final int columnIndex, final byte[] x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateDate(final int columnIndex, final Date x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateTime(final int columnIndex, final Time x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateTimestamp(final int columnIndex, final Timestamp x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateAsciiStream(final int columnIndex, final InputStream x, final int length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBinaryStream(final int columnIndex, final InputStream x, final int length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateCharacterStream(final int columnIndex, final Reader x, final int length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
@@ -962,167 +328,77 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateObject(final int columnIndex, final Object x) throws SQLException {
         checkUpdatable();
-        final String columnName = getColumnName(columnIndex);
-        if (onInsertRow) {
-            insertRowValues.put(columnName, x);
-        } else {
-            updatedValues.put(columnName, x);
-        }
+        put(getColumnName(columnIndex), x);
     }
 
     @Override
     public void updateNull(final String columnLabel) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), null);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), null);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), null);
     }
 
     @Override
     public void updateBoolean(final String columnLabel, final boolean x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateByte(final String columnLabel, final byte x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateShort(final String columnLabel, final short x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateInt(final String columnLabel, final int x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateLong(final String columnLabel, final long x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateFloat(final String columnLabel, final float x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateDouble(final String columnLabel, final double x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateBigDecimal(final String columnLabel, final BigDecimal x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateString(final String columnLabel, final String x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateBytes(final String columnLabel, final byte[] x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateDate(final String columnLabel, final Date x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateTime(final String columnLabel, final Time x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
     public void updateTimestamp(final String columnLabel, final Timestamp x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
-    }
-
-    @Override
-    public void updateAsciiStream(final String columnLabel, final InputStream x, final int length) throws SQLException {
-        throw new SQLFeatureNotSupportedException("updateAsciiStream not supported");
-    }
-
-    @Override
-    public void updateBinaryStream(final String columnLabel, final InputStream x, final int length) throws SQLException {
-        throw new SQLFeatureNotSupportedException("updateBinaryStream not supported");
-    }
-
-    @Override
-    public void updateCharacterStream(final String columnLabel, final Reader reader, final int length) throws SQLException {
-        throw new SQLFeatureNotSupportedException("updateCharacterStream not supported");
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
@@ -1132,12 +408,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public void updateObject(final String columnLabel, final Object x) throws SQLException {
-        checkUpdatable();
-        if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
-        } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
-        }
+        put(columnLabel.toUpperCase(Locale.ROOT), x);
     }
 
     @Override
@@ -1149,12 +420,9 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (insertRowValues.isEmpty()) {
             throw new SQLException("No values set for insert");
         }
-
-        // Build INSERT statement
         final StringBuilder sql = new StringBuilder("INSERT INTO ");
         sql.append(tableName).append(" (");
         final StringBuilder values = new StringBuilder(" VALUES (");
-
         boolean first = true;
         for (final Map.Entry<String, Object> entry : insertRowValues.entrySet()) {
             if (!first) {
@@ -1165,15 +433,10 @@ public class DirectResultSet implements java.sql.ResultSet {
             values.append(formatValue(entry.getValue()));
             first = false;
         }
-
         sql.append(")");
         values.append(")");
         sql.append(values);
-
-        // Execute INSERT
         executeWriteback(sql.toString());
-
-        // Clear insert row values
         insertRowValues.clear();
     }
 
@@ -1189,11 +452,8 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (keyColumns.isEmpty()) {
             throw new SQLException("No key columns defined for update");
         }
-
-        // Build UPDATE statement
         final StringBuilder sql = new StringBuilder("UPDATE ");
         sql.append(tableName).append(" SET ");
-
         boolean first = true;
         for (final Map.Entry<String, Object> entry : updatedValues.entrySet()) {
             if (!first) {
@@ -1202,25 +462,9 @@ public class DirectResultSet implements java.sql.ResultSet {
             sql.append(entry.getKey()).append(" = ").append(formatValue(entry.getValue()));
             first = false;
         }
-
-        sql.append(" WHERE ");
-        first = true;
-        for (final String keyCol : keyColumns) {
-            if (!first) {
-                sql.append(" AND ");
-            }
-            final Object keyValue = currentRowValues.get(keyCol.toUpperCase());
-            sql.append(keyCol).append(" = ").append(formatValue(keyValue));
-            first = false;
-        }
-
-        // Execute UPDATE
+        sql.append(" WHERE ").append(keyCondition());
         executeWriteback(sql.toString());
-
-        // Update current row values with updated values
         currentRowValues.putAll(updatedValues);
-
-        // Clear updated values
         updatedValues.clear();
     }
 
@@ -1233,28 +477,22 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (keyColumns.isEmpty()) {
             throw new SQLException("No key columns defined for delete");
         }
+        executeWriteback("DELETE FROM " + tableName + " WHERE " + keyCondition());
+    }
 
-        // Build DELETE statement
-        final StringBuilder sql = new StringBuilder("DELETE FROM ");
-        sql.append(tableName).append(" WHERE ");
-
+    /** The current row's key columns, each equal to its value. */
+    private String keyCondition() {
+        final StringBuilder condition = new StringBuilder();
         boolean first = true;
         for (final String keyCol : keyColumns) {
             if (!first) {
-                sql.append(" AND ");
+                condition.append(" AND ");
             }
-            final Object keyValue = currentRowValues.get(keyCol.toUpperCase());
-            sql.append(keyCol).append(" = ").append(formatValue(keyValue));
+            final Object keyValue = currentRowValues.get(keyCol.toUpperCase(Locale.ROOT));
+            condition.append(keyCol).append(" = ").append(formatValue(keyValue));
             first = false;
         }
-
-        // Execute DELETE
-        executeWriteback(sql.toString());
-    }
-
-    @Override
-    public void refreshRow() throws SQLException {
-        throw new SQLFeatureNotSupportedException("refreshRow not supported");
+        return condition.toString();
     }
 
     @Override
@@ -1306,400 +544,4 @@ public class DirectResultSet implements java.sql.ResultSet {
         // Default: treat as string
         return "'" + value.toString().replace("'", "''") + "'";
     }
-
-    @Override
-    public Object getObject(final int columnIndex, final Map<String, Class<?>> map) throws SQLException {
-        return getObject(columnIndex);
-    }
-
-    @Override
-    public Ref getRef(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Blob getBlob(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Clob getClob(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Array getArray(final int columnIndex) throws SQLException {
-        checkClosed();
-        return EngineArray.from(engineResultSet.getValue(columnIndex - 1));
-    }
-
-    @Override
-    public Object getObject(final String columnLabel, final Map<String, Class<?>> map) throws SQLException {
-        return getObject(columnLabel);
-    }
-
-    @Override
-    public Ref getRef(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Blob getBlob(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Clob getClob(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Array getArray(final String columnLabel) throws SQLException {
-        checkClosed();
-        return EngineArray.from(engineResultSet.getValue(columnLabel));
-    }
-
-    @Override
-    public Date getDate(final int columnIndex, final Calendar cal) throws SQLException {
-        return getDate(columnIndex);   // engine values are not zoned; the Calendar is ignored
-    }
-
-    @Override
-    public Date getDate(final String columnLabel, final Calendar cal) throws SQLException {
-        return getDate(columnLabel);
-    }
-
-    @Override
-    public Time getTime(final int columnIndex, final Calendar cal) throws SQLException {
-        return getTime(columnIndex);
-    }
-
-    @Override
-    public Time getTime(final String columnLabel, final Calendar cal) throws SQLException {
-        return getTime(columnLabel);
-    }
-
-    @Override
-    public Timestamp getTimestamp(final int columnIndex, final Calendar cal) throws SQLException {
-        return getTimestamp(columnIndex);
-    }
-
-    @Override
-    public Timestamp getTimestamp(final String columnLabel, final Calendar cal) throws SQLException {
-        return getTimestamp(columnLabel);
-    }
-
-    @Override
-    public URL getURL(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public URL getURL(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateRef(final int columnIndex, final Ref x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateRef(final String columnLabel, final Ref x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBlob(final int columnIndex, final Blob x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBlob(final String columnLabel, final Blob x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateClob(final int columnIndex, final Clob x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateClob(final String columnLabel, final Clob x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateArray(final int columnIndex, final Array x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateArray(final String columnLabel, final Array x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public RowId getRowId(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public RowId getRowId(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateRowId(final int columnIndex, final RowId x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateRowId(final String columnLabel, final RowId x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public int getHoldability() throws SQLException {
-        return HOLD_CURSORS_OVER_COMMIT;
-    }
-
-    @Override
-    public void updateNString(final int columnIndex, final String nString) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNString(final String columnLabel, final String nString) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNClob(final int columnIndex, final NClob nClob) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNClob(final String columnLabel, final NClob nClob) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public NClob getNClob(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public NClob getNClob(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public SQLXML getSQLXML(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public SQLXML getSQLXML(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateSQLXML(final int columnIndex, final SQLXML xmlObject) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateSQLXML(final String columnLabel, final SQLXML xmlObject) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public String getNString(final int columnIndex) throws SQLException {
-        return getString(columnIndex);
-    }
-
-    @Override
-    public String getNString(final String columnLabel) throws SQLException {
-        return getString(columnLabel);
-    }
-
-    @Override
-    public Reader getNCharacterStream(final int columnIndex) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public Reader getNCharacterStream(final String columnLabel) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNCharacterStream(final int columnIndex, final Reader x, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNCharacterStream(final String columnLabel, final Reader reader, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateAsciiStream(final int columnIndex, final InputStream x, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBinaryStream(final int columnIndex, final InputStream x, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateCharacterStream(final int columnIndex, final Reader x, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateAsciiStream(final String columnLabel, final InputStream x, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBinaryStream(final String columnLabel, final InputStream x, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateCharacterStream(final String columnLabel, final Reader reader, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBlob(final int columnIndex, final InputStream inputStream, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBlob(final String columnLabel, final InputStream inputStream, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateClob(final int columnIndex, final Reader reader, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateClob(final String columnLabel, final Reader reader, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNClob(final int columnIndex, final Reader reader, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNClob(final String columnLabel, final Reader reader, final long length) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNCharacterStream(final int columnIndex, final Reader x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNCharacterStream(final String columnLabel, final Reader reader) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateAsciiStream(final int columnIndex, final InputStream x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBinaryStream(final int columnIndex, final InputStream x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateCharacterStream(final int columnIndex, final Reader x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateAsciiStream(final String columnLabel, final InputStream x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBinaryStream(final String columnLabel, final InputStream x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateCharacterStream(final String columnLabel, final Reader reader) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBlob(final int columnIndex, final InputStream inputStream) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateBlob(final String columnLabel, final InputStream inputStream) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateClob(final int columnIndex, final Reader reader) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateClob(final String columnLabel, final Reader reader) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNClob(final int columnIndex, final Reader reader) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public void updateNClob(final String columnLabel, final Reader reader) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
-    }
-
-    @Override
-    public <T> T getObject(final int columnIndex, final Class<T> type) throws SQLException {
-        final IntervalKind interval = intervalKindAt(columnIndex - 1);
-        if (interval != null) {
-            return IntervalColumnReads.getObject(interval, intervalNumberAt(columnIndex - 1), type);
-        }
-        return TypedObjectReads.getObject(this, columnIndex, type);
-    }
-
-    @Override
-    public <T> T getObject(final String columnLabel, final Class<T> type) throws SQLException {
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            return IntervalColumnReads.getObject(interval, intervalNumberAt(indexOf(columnLabel)), type);
-        }
-        return TypedObjectReads.getObject(this, findColumn(columnLabel), type);
-    }
-
-    @Override
-    public <T> T unwrap(final Class<T> iface) throws SQLException {
-        throw new SQLException("Not a wrapper");
-    }
-
-    @Override
-    public boolean isWrapperFor(final Class<?> iface) throws SQLException {
-        return false;
-    }
-
 }

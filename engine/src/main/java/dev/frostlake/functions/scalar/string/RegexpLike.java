@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
@@ -32,12 +33,17 @@ public class RegexpLike extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null || args.get(1) == null) {
             return null;
         }
-        final String subject = args.get(0).toString();
-        final String pattern = args.get(1).toString();
-        final String parameters = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : null;
+        final String subject = SharedFunctionHelpers.textOf(args.get(0));
+        final String pattern = SharedFunctionHelpers.textOf(args.get(1));
+        final String parameters = args.size() > 2 && args.get(2) != null
+            ? SharedFunctionHelpers.textOf(args.get(2)) : null;
         return RegexpHelper.compile(pattern, parameters).matcher(subject).matches();
     }
 

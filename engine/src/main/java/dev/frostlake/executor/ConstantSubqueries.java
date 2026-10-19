@@ -98,7 +98,7 @@ final class ConstantSubqueries {
         }
         final FrostlakeParser.TableReferenceContext reference = from.tableReference(0);
         if (reference.LATERAL() != null || reference.identifierList() != null || reference.pivotClause() != null
-                || reference.unpivotClause() != null || reference.sampleClause() != null) {
+                || reference.unpivotClause() != null || reference.matchRecognizeClause() != null || reference.sampleClause() != null) {
             return false;
         }
         final FrostlakeParser.TableSourceContext source = reference.tableSource();

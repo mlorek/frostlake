@@ -133,13 +133,16 @@
       {"sql": "SELECT CONTAINS(\"definition\", 'COPY INTO') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
     ]},
     {"name": "pipe-with-error-integration",
-     "skip": {"backends": ["snowflake"], "reason": "names an error integration that would have to exist on the account for a real run to accept the statement"},
      "steps": [
       {"sql": "CREATE STAGE ps"},
       {"sql": "CREATE TABLE target (id INTEGER)"},
-      {"sql": "CREATE PIPE error_pipe AUTO_INGEST = TRUE ERROR_INTEGRATION = 'my_error_integration' AS COPY INTO target FROM @ps"},
+      {"sql": "CREATE PIPE error_pipe AUTO_INGEST = TRUE ERROR_INTEGRATION = no_such_error_integration AS COPY INTO target FROM @ps",
+       "expect": {"error": {"messageContains": "Integration 'NO_SUCH_ERROR_INTEGRATION' does not exist or not authorized."}}},
+      {"sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_error_integration ENABLED = TRUE TYPE = QUEUE DIRECTION = OUTBOUND NOTIFICATION_PROVIDER = AWS_SNS AWS_SNS_TOPIC_ARN = 'arn:aws:sns:us-east-2:111122223333:sns_topic' AWS_SNS_ROLE_ARN = 'arn:aws:iam::111122223333:role/error_sns_role'"},
+      {"sql": "CREATE PIPE error_pipe AUTO_INGEST = TRUE ERROR_INTEGRATION = my_error_integration AS COPY INTO target FROM @ps"},
       {"sql": "SHOW PIPES LIKE 'error_pipe'"},
-      {"sql": "SELECT \"error_integration\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "my_error_integration"}}
+      {"sql": "SELECT \"error_integration\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "MY_ERROR_INTEGRATION"}},
+      {"sql": "DROP INTEGRATION my_error_integration"}
     ]},
     {"name": "alter-non-existent-pipe", "steps": [
       {"sql": "ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = TRUE", "expect": {"error": {}}},
@@ -247,13 +250,15 @@
        "expect": {"rows": [["content_pipe", "true", "STAGE", "false"]]}}
     ]},
     {"name": "create-pipe-with-integration",
-     "skip": {"backends": ["snowflake"], "reason": "names a notification integration that would have to exist on the account for a real run to accept the statement"},
+     "skip": {"backends": ["snowflake"], "reason": "the account looks the integration's queue up at its cloud provider when the pipe is created, and there is no such queue"},
      "steps": [
-      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE STAGE paz URL = 'azure://myaccount.blob.core.windows.net/mycontainer/path/'"},
       {"sql": "CREATE TABLE t (id INTEGER)"},
-      {"sql": "CREATE PIPE int_pipe AUTO_INGEST = TRUE INTEGRATION = 'my_notification_int' AS COPY INTO t FROM @ps"},
+      {"sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_int TYPE = QUEUE NOTIFICATION_PROVIDER = AZURE_STORAGE_QUEUE ENABLED = TRUE AZURE_STORAGE_QUEUE_PRIMARY_URI = 'https://myqueue.queue.core.windows.net/mystoragequeue' AZURE_TENANT_ID = 'a123b4c5-1234-123a-a12b-1a23b45678c9'"},
+      {"sql": "CREATE PIPE int_pipe AUTO_INGEST = TRUE INTEGRATION = 'MY_NOTIFICATION_INT' AS COPY INTO t FROM @paz"},
       {"sql": "SHOW PIPES LIKE 'int_pipe'"},
-      {"sql": "SELECT \"integration\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "my_notification_int"}}
+      {"sql": "SELECT \"integration\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "MY_NOTIFICATION_INT"}},
+      {"sql": "DROP INTEGRATION my_notification_int"}
     ]},
     {"name": "describe-pipe-columnar-row", "steps": [
       {"sql": "CREATE STAGE ps"},

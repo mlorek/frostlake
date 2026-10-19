@@ -82,10 +82,14 @@ public final class LiveSnowflake {
     /** Why this run may not use the account — the claim was refused or lost — or null. */
     private static volatile String claimProblem;
 
-    /** The session parameters the harness itself sets, which a reset must leave standing. */
+    /**
+     * The session parameters the harness itself sets, which a reset must leave standing — the connection's JSON
+     * result format among them (see {@link #connect}): unset, the session falls back to Arrow results mid-run, and
+     * the driver then reads a DECFLOAT as a coefficient and an exponent, 1e30 as {@code 1E+30}.
+     */
     private static final Set<String> HARNESS_PARAMETERS = new HashSet<String>(Arrays.asList(
         "CLIENT_RESULT_COLUMN_CASE_INSENSITIVE", "JSON_INDENT", "STATEMENT_TIMEOUT_IN_SECONDS",
-        "MULTI_STATEMENT_COUNT"));
+        "MULTI_STATEMENT_COUNT", "JDBC_QUERY_RESULT_FORMAT"));
 
     private LiveSnowflake() {
     }
@@ -479,12 +483,8 @@ public final class LiveSnowflake {
     }
 
     private static void applySessionParameters(final Statement statement) throws SQLException {
-        // The result format is left at the driver's default (ARROW). It used to be forced to JSON
-        // because Arrow needs the add-opens flag under Java 17 — the surefire argLine supplies it.
-        // Forcing JSON was not free: the JSON payload TRUNCATES every DOUBLE to 10 significant
-        // digits, so the account answered PI() as 3.141592654 where Arrow answers
-        // 3.141592653589793. Frostlake was reported wrong on seven correct trigonometric results
-        // because of it, and any genuine difference below the 10th digit was invisible.
+        // The result format is not set here: the connection asks for JSON results (see connect), and a
+        // reset leaves that standing (see HARNESS_PARAMETERS).
         // Snowflake's findColumn is case-SENSITIVE by default (getString("db_name") misses the
         // DB_NAME label); virtually every other JDBC driver — including Frostlake's — matches
         // case-insensitively, so align the client setting rather than fail on ergonomics.
@@ -501,10 +501,10 @@ public final class LiveSnowflake {
         statement.execute("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300");
         // A test's own QUERY_TAG must not outlive it either.
         statement.execute("ALTER SESSION UNSET QUERY_TAG");
-        // The engine models no secondary roles (CURRENT_SECONDARY_ROLES() is empty), while the account's
-        // users default to ALL, which lengthens every missing-object refusal's privilege hint to "Your
-        // primary role R or one of your secondary roles must have ...". NONE gives the short form the
-        // engine speaks. USE ROLE leaves the secondary roles as they were, so a reset re-applies this too.
+        // A session of the engine starts with no secondary roles, while the account's users default to ALL,
+        // which lengthens every missing-object refusal's privilege hint to "Your primary role R or one of
+        // your secondary roles must have ...". NONE gives the short form both speak without them. USE ROLE
+        // leaves the secondary roles as they were, so a reset re-applies this too.
         statement.execute("USE SECONDARY ROLES NONE");
     }
 

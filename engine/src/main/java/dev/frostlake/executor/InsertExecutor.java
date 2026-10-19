@@ -27,12 +27,12 @@ import dev.frostlake.executor.expressions.JsonObjectExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.MultiColumnScalarSubqueryException;
+import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.metastore.model.Privilege;
-import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -45,16 +45,21 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.GeometryType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StatementResultWidths;
+import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
+import dev.frostlake.values.DecfloatTextNode;
+import dev.frostlake.values.Decfloats;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -94,18 +99,27 @@ final class InsertExecutor {
             // only inside its subqueries.
             final Map<String, ResultSet> cteResults = null;
 
-            final String tableName = ctx.objectName().qualifiedName() == null
+            // A target the current schema does not hold is looked for along the session's SEARCH_PATH.
+            final String tableName = executor.searchPathQualified(ctx.objectName().qualifiedName() == null
                 ? executor.resolveObjectName(ctx.objectName())
-                : executor.getQualifiedName(ctx.objectName().qualifiedName());
+                : executor.getQualifiedName(ctx.objectName().qualifiedName()));
             // A missing source relation is reported ahead of a missing target (live-verified).
             if (ctx.selectStatement() != null) {
                 executor.requireSourceRelations(ctx.selectStatement());
             }
+            DmlTarget.requireTable(executor, tableName, "INSERT");
             final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
+            DmlTarget.refuseEventTable(table, "INSERT");
 
             // Check INSERT permission
             if (executor.getSecurityManager() != null) {
-                executor.getSecurityManager().checkPermission(Privilege.INSERT, SecurableObjectType.TABLE, tableName);
+                // What the source reads is asked for first, then INSERT on the target (live-verified).
+                if (ctx.selectStatement() != null) {
+                    final Set<String> sourceCteNames = new HashSet<>();
+                    QueryExecutor.collectCteNames(ctx.selectStatement(), sourceCteNames);
+                    executor.requireSelectIn(ctx.selectStatement(), sourceCteNames);
+                }
+                executor.requirePrivilege(Privilege.INSERT, "TABLE", tableName);
             }
 
             // OVERWRITE replaces the table's contents, but the truncate must happen only AFTER the source
@@ -129,6 +143,8 @@ final class InsertExecutor {
 
             // Parse values - either from VALUES clause or SELECT statement
             final List<List<Object>> valuesList = new ArrayList<>();
+            // The columns a query writes with a declared width that fits theirs, which no value is measured for.
+            boolean[] fitByDeclaredWidth = null;
 
             if (ctx.valueTupleList() != null) {
                 if (ctx.insertColumnList() != null) {
@@ -175,6 +191,13 @@ final class InsertExecutor {
                         ColumnTypeFamilies.rejectMismatch(target, foldedTypes.get(position));
                     }
                 }
+                // A value a subquery hands out of a projection-restricted column is judged as that projection is:
+                // INSERT INTO t VALUES ((SELECT p FROM pt LIMIT 1)) writes it into t.
+                final List<FrostlakeParser.BooleanExprContext> inserted = new ArrayList<>();
+                for (final FrostlakeParser.ValueTupleContext tuple : tuples) {
+                    inserted.addAll(tuple.valueList().booleanExpr());
+                }
+                executor.rejectRestrictedAssignments(inserted, null, null, null);
                 for (int row = 0; row < tuples.size(); row++) {
                     final List<Object> values = new ArrayList<>();
                     int position = 0;
@@ -193,6 +216,12 @@ final class InsertExecutor {
                             // the text — and evaluating it would raise the refusal live gives a DEFAULT
                             // that is not standing alone.
                             final Expression parsed = ExpressionEvaluator.parse(exprText);
+                            if (!(parsed instanceof DefaultMarkerExpression)) {
+                                // A name stands for nothing in a VALUES row: a date part's word too, which is a
+                                // value only as a function's argument (live-verified: VALUES (s) is invalid
+                                // identifier 'S').
+                                evaluator.validateColumnScope(parsed);
+                            }
                             value = parsed instanceof DefaultMarkerExpression
                                 ? parsed : evaluator.evaluate(exprText, dummyRow);
                         } finally {
@@ -210,8 +239,8 @@ final class InsertExecutor {
                 ProjectionSlot.reset();
                 final ResultSet selectResult;
                 try {
-                    selectResult = executor.executeSelectFromContextWithCTEs(
-                        ctx.selectStatement(), null, cteResults);
+                    // Its values leave the query into the table, so a projection policy judges it as a result's.
+                    selectResult = executor.executeExportedSelect(ctx.selectStatement(), cteResults);
                     // Writing reads every cell, so a fault a relation deferred raises here.
                     DeferredFault.requireNone(selectResult.getRows());
                 } catch (final RuntimeException failed) {
@@ -224,8 +253,10 @@ final class InsertExecutor {
                     requireColumnList(table, ctx.insertColumnList(), selectResult.getColumns().size());
                 }
                 rejectMismatchedSelectColumnTypes(table, columnNames, selectResult.getColumns());
+                fitByDeclaredWidth = fitByDeclaredWidth(table, columnNames, selectResult.getColumns());
+                final boolean[] decfloatMembers = decfloatIntoVariant(table, columnNames, selectResult.getColumns());
                 for (final Row row : selectResult.getRows()) {
-                    valuesList.add(row.getValues());
+                    valuesList.add(asDecfloatMembers(row.getValues(), decfloatMembers));
                 }
             }
 
@@ -238,6 +269,11 @@ final class InsertExecutor {
             // the same transaction-aware path as TRUNCATE: clearing the base store directly left rows this
             // transaction had inserted earlier in place, so the OVERWRITE appended to them.
             if (isOverwrite) {
+                // An INSERT OVERWRITE that removes rows waits for another session's transaction that holds the table,
+                // as a TRUNCATE does, where a plain INSERT never waits (live-verified).
+                if (executor.getStorageEngine().getTableStorage(fullyQualifiedName).getRowCount() > 0) {
+                    executor.requireTableUnlocked(fullyQualifiedName, table.getName());
+                }
                 executor.emptyTableContents(fullyQualifiedName);
                 logger.trace("Truncated table {} due to INSERT OVERWRITE", tableName);
             }
@@ -258,13 +294,20 @@ final class InsertExecutor {
             // query are converted as expressions. The out-of-range refusal prints which of the two
             // happened, so the distinction travels with the row.
             final boolean boundToColumnSlot = ctx.valueTupleList() != null;
+            // A column the statement leaves out is no VALUES item: its DEFAULT is classed as a query's value is.
+            final boolean[] filledByDefault = boundToColumnSlot ? new boolean[table.columnCount()] : null;
             for (final List<Object> values : valuesList) {
-                final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values);
-                insertRowInto(table, fullyQualifiedName, row, guard, boundToColumnSlot, tableName);
+                final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values,
+                    filledByDefault);
+                executor.enforceColumnConstraintsForDml(table, row, boundToColumnSlot, tableName, filledByDefault,
+                    fitByDeclaredWidth);
+                storeInsertedRow(table, fullyQualifiedName, row, guard);
                 rowsInserted++;
             }
 
             logger.trace("Inserted {} row(s) into table: {}", rowsInserted, tableName);
+            // LAST_ALTERED moves for the statement, whether or not a row reached the table.
+            table.markDmlRan(StatementClock.commitInstant());
             return executor.dmlCountResult("number of rows inserted", rowsInserted);
 
         } catch (final SecurityException e) {
@@ -287,6 +330,63 @@ final class InsertExecutor {
      * {@code incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]}. A column with NO audited
      * static type is left alone — the channel never guesses.
      */
+    /**
+     * Which source columns are DECFLOATs written into a VARIANT column, which holds each as the DECFLOAT member it is:
+     * {@code TYPEOF(v)} over such a row is DECFLOAT (live-verified). A runtime DECFLOAT is a decimal like a NUMBER's,
+     * so the source column's type decides.
+     */
+    private static boolean[] decfloatIntoVariant(final Table table, final List<String> columnNames,
+                                                 final List<ResultSetColumn> sourceColumns) {
+        final boolean[] marked = new boolean[sourceColumns.size()];
+        for (int i = 0; i < sourceColumns.size(); i++) {
+            final TableColumn target = columnNames != null
+                ? (i < columnNames.size() ? table.getColumn(columnNames.get(i)) : null)
+                : (i < table.getColumns().size() ? table.getColumns().get(i) : null);
+            marked[i] = target != null && target.getDataType() instanceof VariantType
+                && NumericType.isDecfloat(sourceColumns.get(i).getDataType());
+        }
+        return marked;
+    }
+
+    /** A source row with each marked DECFLOAT as the VARIANT holding it (see decfloatIntoVariant). */
+    private static List<Object> asDecfloatMembers(final List<Object> values, final boolean[] marked) {
+        List<Object> out = values;
+        for (int i = 0; i < marked.length && i < values.size(); i++) {
+            if (marked[i] && values.get(i) instanceof Number && !(values.get(i) instanceof Double)) {
+                if (out == values) {
+                    out = new ArrayList<>(values);
+                }
+                out.set(i, DecfloatTextNode.variantOf(Decfloats.of((Number) values.get(i), "TO_DECFLOAT")));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The text columns a query writes from a column whose declared width fits theirs: the write is judged by that
+     * width and not by the value, so the six characters a table function declared VARCHAR(3) answers are written into
+     * a VARCHAR(3) column (live-verified). One flag per column of the table; null when no column is so written.
+     */
+    private static boolean[] fitByDeclaredWidth(final Table table, final List<String> columnNames,
+                                                final List<ResultSetColumn> sourceColumns) {
+        boolean[] fit = null;
+        final int pairs = columnNames != null
+            ? Math.min(columnNames.size(), sourceColumns.size())
+            : Math.min(table.getColumns().size(), sourceColumns.size());
+        for (int i = 0; i < pairs; i++) {
+            final TableColumn target = columnNames != null
+                ? table.getColumn(columnNames.get(i)) : table.getColumns().get(i);
+            final DataType source = sourceColumns.get(i).getStaticType();
+            if (target != null && target.getDataType() instanceof StringType && source instanceof StringType
+                    && !((StringType) source).isUnsized()
+                    && ((StringType) source).getMaxLength() <= ((StringType) target.getDataType()).getMaxLength()) {
+                fit = fit != null ? fit : new boolean[table.getColumns().size()];
+                fit[table.getColumns().indexOf(target)] = true;
+            }
+        }
+        return fit;
+    }
+
     private void rejectMismatchedSelectColumnTypes(final Table table, final List<String> columnNames,
                                                    final List<ResultSetColumn> sourceColumns) {
         final int pairs = columnNames != null
@@ -306,6 +406,7 @@ final class InsertExecutor {
      * A VALUES column holding a scalar subquery of several columns, where Frostlake reached the value and refused
      * its column count. A single row types it ROW(ANY), a type no column takes; across several rows the column
      * cannot fold it at all: "Invalid data type [ROW(NUMBER(1,0), NUMBER(1,0))] in VALUES clause" (live-verified).
+     * A parenthesized list is ROW(ANY) in one row and in several.
      */
     private static void rejectRowValue(final List<List<Expression>> rowCells, final int position,
                                        final TableColumn target, final ExpressionEvaluator evaluator) {
@@ -315,7 +416,7 @@ final class InsertExecutor {
             if (rowType == null) {
                 continue;
             }
-            if (rowCells.size() > 1) {
+            if (rowCells.size() > 1 && !(cell instanceof RowExpression)) {
                 throw new RuntimeException(SqlCompilationError.of("Invalid data type [" + rowType + "] in VALUES clause"));
             }
             ColumnTypeFamilies.rejectRowValue(target, "ROW(ANY)");
@@ -410,10 +511,14 @@ final class InsertExecutor {
         }
     }
 
-    /** A VALUES item's static type: null for a NULL, a DEFAULT, or an item the channel cannot type. */
+    /**
+     * A VALUES item's static type: null for a NULL, a DEFAULT, a scripting variable written alone that holds NULL —
+     * which fits any column, whatever its declared type (live-verified) — or an item the channel cannot type.
+     */
     private static DataType valueStaticType(final Expression parsed, final ExpressionEvaluator evaluator) {
         if (parsed == null || parsed instanceof DefaultMarkerExpression
-                || parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getType() == LiteralType.NULL) {
+                || parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getType() == LiteralType.NULL
+                || evaluator.isNullVariable(parsed)) {
             return null;
         }
         try {
@@ -501,10 +606,10 @@ final class InsertExecutor {
                 throw new RuntimeException(SqlCompilationError.of("Invalid data type ["
                     + ((CastExpression) ast).getDeclaredTarget().getName() + "] in VALUES clause"));
             }
-            final String target = ((CastExpression) ast).getTargetType().toUpperCase();
+            final String target = ((CastExpression) ast).getTargetType().toUpperCase(Locale.ROOT);
             semiStructured = target.startsWith("VARIANT") || target.startsWith("OBJECT") || target.startsWith("ARRAY");
         } else if (ast instanceof FunctionCallExpression) {
-            final String name = ((FunctionCallExpression) ast).getFunctionName().toUpperCase();
+            final String name = ((FunctionCallExpression) ast).getFunctionName().toUpperCase(Locale.ROOT);
             final BuiltInFunction fn = executor.getFunctionRegistry().getFunction(name);
             semiStructured = fn != null && (fn.getReturnType() instanceof VariantType
                 || fn.getReturnType() instanceof ObjectType || fn.getReturnType() instanceof ArrayType
@@ -537,6 +642,13 @@ final class InsertExecutor {
         if (semiStructured) {
             throw new RuntimeException(SqlCompilationError.of("Invalid expression [" + exprText + "] in VALUES clause"));
         }
+        // A function a handler answers is refused wherever it sits in the item, the item echoed as the plan
+        // prints it: INSERT INTO t VALUES (jcnt(1) + 1) is "Invalid expression [(EXTENSION_FUNC_V(1)) + 1] in
+        // VALUES clause" (live-verified, for Java and JavaScript handlers).
+        final String handled = new HandlerCallEcho(evaluator.scopeVisitor()).echoedIfHandled(ast);
+        if (handled != null) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid expression [" + handled + "] in VALUES clause"));
+        }
         // A division or a math function live does not fold is refused too, echoed as live rewrites it.
         final RuntimeException unfolded = ValuesFoldRule.refusalOf(ast, exprText, evaluator);
         if (unfolded != null) {
@@ -565,7 +677,7 @@ final class InsertExecutor {
     private static boolean containsRejectedFunction(final Expression node) {
         if (node instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) node;
-            if (VALUES_REJECTED_FUNCTIONS.contains(call.getFunctionName().toUpperCase())) {
+            if (VALUES_REJECTED_FUNCTIONS.contains(call.getFunctionName().toUpperCase(Locale.ROOT))) {
                 return true;
             }
             for (final Expression argument : call.getArguments()) {
@@ -591,6 +703,17 @@ final class InsertExecutor {
     Row buildInsertRow(final Table table, final String fullyQualifiedName,
                                final List<String> columnNames, final int[] valueIndexes,
                                final List<Object> values) {
+        return buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values, null);
+    }
+
+    /**
+     * The same row, recording which of its columns the statement left out, so that they took their DEFAULT.
+     *
+     * @param filledByDefault one flag per table column, set for this row; null when the caller has no use for it
+     */
+    private Row buildInsertRow(final Table table, final String fullyQualifiedName,
+                               final List<String> columnNames, final int[] valueIndexes,
+                               final List<Object> values, final boolean[] filledByDefault) {
         // Snowflake requires the value count to match exactly — both with an explicit column list
         // and positionally (live-verified: "Insert value list does not match column list"); defaults
         // apply only to columns omitted from an explicit list.
@@ -612,7 +735,12 @@ final class InsertExecutor {
             // column list (or, positionally, missing trailing columns). A covered column keeps its
             // explicit value — including an explicit NULL (which must NOT be silently replaced by
             // the column default).
-            if (at >= 0 && !(values.get(at) instanceof DefaultMarkerExpression)) {
+            final boolean written = at >= 0 && !(values.get(at) instanceof DefaultMarkerExpression);
+            // Only a column the statement leaves out: a DEFAULT written in the VALUES list sits in the slot.
+            if (filledByDefault != null) {
+                filledByDefault[c] = at < 0;
+            }
+            if (written) {
                 rowValues.add(values.get(at));
             } else {
                 // An OMITTED column and an explicit DEFAULT take the same path — live writes the
@@ -683,6 +811,37 @@ final class InsertExecutor {
                        final DeferredInsertGuard guard, final boolean boundToColumnSlot,
                        final String writtenName) {
         executor.enforceColumnConstraintsForDml(table, row, boundToColumnSlot, writtenName);
+        storeInsertedRow(table, fullyQualifiedName, row, guard);
+    }
+
+    /**
+     * Write rows a load already shaped and checked, as INSERT writes its rows: buffered in the statement's
+     * transaction, begun here when none is, or written at once and logged where the transaction is applied as it
+     * goes. One guard refuses a key the rows repeat.
+     *
+     * @param table              the table loaded
+     * @param fullyQualifiedName its storage name
+     * @param rows               the rows, in load order
+     */
+    void storeLoadedRows(final Table table, final String fullyQualifiedName, final List<Row> rows) {
+        if (!executor.getTransactionManager().hasActiveTransaction()) {
+            executor.getTransactionManager().beginTransaction();
+        }
+        DeferredInsertGuard guard = null;
+        if (executor.isDeferredApply()) {
+            guard = new DeferredInsertGuard(table, executor.getStorageEngine().getTableStorage(fullyQualifiedName),
+                executor.getTransactionManager().getCurrentTransaction().getWriteSet(), fullyQualifiedName,
+                executor.getStorageEngine().isEnforcePrimaryKey(), executor.getStorageEngine().isEnforceUniqueKey());
+        }
+        for (final Row row : rows) {
+            storeInsertedRow(table, fullyQualifiedName, row, guard);
+        }
+    }
+
+    /** Write a row whose constraints have been enforced: buffered in the transaction's write set, or at once. */
+    private void storeInsertedRow(final Table table, final String fullyQualifiedName, final Row row,
+                                  final DeferredInsertGuard guard) {
+        new HybridKeyGuard(executor).refuseOrphanRow(table, fullyQualifiedName, row);
         if (executor.isDeferredApply()) {
             final TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
             final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
@@ -699,7 +858,8 @@ final class InsertExecutor {
                 executor.getTransactionManager().getCurrentTransaction().logInsert(fullyQualifiedName, insertIndex, row);
             }
             if (executor.getStreamManager() != null) {
-                executor.getStreamManager().trackInsert(fullyQualifiedName, row);
+                executor.getStreamManager().trackInsert(fullyQualifiedName, row,
+                    executor.getStorageEngine().getTableStorage(fullyQualifiedName).getRowId(insertIndex));
             }
         }
     }
@@ -721,7 +881,10 @@ final class InsertExecutor {
             // expressions, all before a row is routed, so an empty source still refuses.
             executor.requireSourceRelations(ctx.selectStatement());
             for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
-                executor.getCatalog().resolveTableAsWritten(executor.getQualifiedName(into.qualifiedName()), "Table");
+                final String target = executor.getQualifiedName(into.qualifiedName());
+                DmlTarget.requireTable(executor, target, "INSERT (MULTI-TABLE)");
+                DmlTarget.refuseEventTable(executor.getCatalog().resolveTableAsWritten(target, "Table"),
+                    "INSERT (MULTI-TABLE)");
             }
             final ResultSet source;
             try {
@@ -751,6 +914,15 @@ final class InsertExecutor {
             final Table sourceTable = executor.resultSetToTable(source, "multi_insert_source");
             requireResolvableRoutingExpressions(ctx, sourceTable);
             rejectMistypedRoutedValues(ctx, source, sourceTable);
+            // Each INTO's values are judged by a projection policy as a projection is; the source query itself was,
+            // as a statement's own select.
+            final List<FrostlakeParser.ExpressionContext> routed = new ArrayList<>();
+            for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
+                if (into.expressionList() != null) {
+                    routed.addAll(into.expressionList().expression());
+                }
+            }
+            executor.rejectRestrictedAssignments(routed, sourceTable, null, null);
             final boolean overwrite = ctx.OVERWRITE() != null;
             final boolean first = ctx.FIRST() != null;
             final boolean conditional = !ctx.multiInsertWhen().isEmpty();
@@ -762,6 +934,11 @@ final class InsertExecutor {
                     final String tableName = executor.getQualifiedName(into.qualifiedName());
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
                     if (truncated.add(fqn)) {
+                        // Each target that loses rows waits for a transaction holding it, as INSERT OVERWRITE does.
+                        if (executor.getStorageEngine().getTableStorage(fqn).getRowCount() > 0) {
+                            executor.requireTableUnlocked(fqn,
+                                executor.getCatalog().resolveTableAsWritten(tableName, "Table").getName());
+                        }
                         executor.emptyTableContents(fqn);
                     }
                 }
@@ -803,9 +980,7 @@ final class InsertExecutor {
                     final String tableName = executor.getQualifiedName(into.qualifiedName());
                     final Table target = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
-                    if (executor.getSecurityManager() != null) {
-                        executor.getSecurityManager().checkPermission(Privilege.INSERT, SecurableObjectType.TABLE, tableName);
-                    }
+                    executor.requirePrivilege(Privilege.INSERT, "TABLE", tableName);
                     List<String> columnNames = null;
                     if (into.columnListOptional() != null) {
                         columnNames = new ArrayList<>();
@@ -834,6 +1009,10 @@ final class InsertExecutor {
                 }
             }
             logger.trace("Multi-table INSERT routed {} row insertion(s)", rowsInserted);
+            // LAST_ALTERED moves on every table the statement names, whether or not a row reached it.
+            for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
+                targetOf(into).markDmlRan(StatementClock.commitInstant());
+            }
             return multiTableInsertCounts(insertedInto, targetNames);
         } catch (final SecurityException e) {
             throw e;
@@ -940,8 +1119,11 @@ final class InsertExecutor {
                 }
                 final DataType written;
                 try {
-                    written = scope.inferStaticType(
-                        ExpressionEvaluator.parse(executor.getOriginalText(values.get(i))));
+                    final Expression value = ExpressionEvaluator.parse(executor.getOriginalText(values.get(i)));
+                    if (scope.isNullVariable(value)) {
+                        continue;
+                    }
+                    written = scope.inferStaticType(value);
                 } catch (final RuntimeException untyped) {
                     continue;
                 }
@@ -1136,6 +1318,6 @@ final class InsertExecutor {
         } else {
             return failed;
         }
-        return DmlWriteTarget.failedOnColumn(writtenName, column.toUpperCase(), failed);
+        return DmlWriteTarget.failedOnColumn(writtenName, column.toUpperCase(Locale.ROOT), failed);
     }
 }

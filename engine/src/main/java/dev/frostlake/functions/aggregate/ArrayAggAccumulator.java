@@ -18,6 +18,8 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.values.DecfloatTextNode;
+import dev.frostlake.values.Decfloats;
 
 import tools.jackson.databind.node.ArrayNode;
 
@@ -30,9 +32,17 @@ import java.util.List;
  * {@code ARRAY_AGG(IFF(cond, obj, NULL))} idiom expects an empty array. A VARIANT JSON null (the text
  * {@code "null"}) is a value, not a SQL NULL, and is kept.
  */
-public class ArrayAggAccumulator implements AggregateFunction.Accumulator {
+public class ArrayAggAccumulator implements AggregateFunction.Accumulator, DecfloatAwareAccumulator {
 
     private final List<Object> values = new ArrayList<>();
+
+    /** Whether the aggregated expression is a DECFLOAT, whose members keep their type (see DecfloatTextNode). */
+    private boolean decfloat;
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
 
     @Override
     public void accumulate(final Object value) {
@@ -50,7 +60,9 @@ public class ArrayAggAccumulator implements AggregateFunction.Accumulator {
         // Snowflake's space+FF3 form, and the List's toString wasn't even valid JSON.
         final ArrayNode array = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final Object value : values) {
-            array.add(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
+            array.add(decfloat && value instanceof Number && !(value instanceof Double)
+                ? DecfloatTextNode.of(Decfloats.of((Number) value, "TO_DECFLOAT"))
+                : ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
         return ArrayFunctionHelper.toCanonicalVariant(array);
     }

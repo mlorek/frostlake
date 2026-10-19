@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.executor.NumericConversionException;
+import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
@@ -53,10 +54,34 @@ import java.math.BigDecimal;
  *
  * <p>MIN, MAX, COUNT, MODE and ARRAY_AGG never come here: they hand back an input rather than
  * computing over it, and live answers all five over text.
+ *
+ * <p>★ TWO READINGS OF TEXT, BY AGGREGATE (live-verified). SUM, AVG and SKEW read a text as a cast to FLOAT
+ * reads it ({@link #asApproximate}): {@code SUM('1d')} is 1.0 and {@code AVG('0x10')} 16.0. STDDEV, VARIANCE
+ * and KURTOSIS read it as a decimal number ({@link #asDouble}): {@code STDDEV('1d')} is "Numeric value '1d'
+ * is not recognized".
  */
 public final class NumericAggregateInput {
 
     private NumericAggregateInput() {
+    }
+
+    /**
+     * One aggregated value as a double, a text read as a cast to FLOAT reads it — a type suffix, a hexadecimal
+     * number and the words inf and NaN included (see {@link ApproximateValues#written}) — and refused when it
+     * spells no number.
+     *
+     * @param value the value, never null
+     * @return its double value
+     */
+    public static double asApproximate(final Object value) {
+        if (!(value instanceof CharSequence)) {
+            return asDouble(value);
+        }
+        try {
+            return ApproximateValues.written(value).doubleValue();
+        } catch (final RuntimeException notNumeric) {
+            throw new NumericConversionException("Numeric value '" + value + "' is not recognized");
+        }
     }
 
     /**

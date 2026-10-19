@@ -1,6 +1,6 @@
 {
   "suite": "ddl-describe-objects",
-  "description": "DESCRIBE for FUNCTION (property/value listing with signature/returns/language), USER (property NAME reads the created name), MASKING POLICY and ROW ACCESS POLICY (one row: name/signature/return_type/body, STRING normalized to VARCHAR), a missing function refused, and DESCRIBE RESULT via LAST_QUERY_ID() and via a literal query id (spelled dynamically through SET + EXECUTE IMMEDIATE). Converted 1:1 from ddl/DescribeObjectTest and DescribeResultTest (both now retired).",
+  "description": "DESCRIBE for FUNCTION (property/value listing with signature/returns/language), USER (property NAME reads the created name), MASKING POLICY and ROW ACCESS POLICY (one row: name/signature/return_type/body, STRING normalized to VARCHAR), a missing function refused, and DESCRIBE RESULT via LAST_QUERY_ID() and via a literal query id (spelled dynamically through SET + EXECUTE IMMEDIATE), in DESCRIBE TABLE's thirteen columns. Converted 1:1 from ddl/DescribeObjectTest and DescribeResultTest (both now retired).",
   "tags": ["ddl", "converted"],
   "tests": [
     {"name": "describe-function", "steps": [
@@ -41,7 +41,7 @@
     {"name": "describe-result-via-id", "steps": [
       {"sql": "SELECT 7 AS only_col"},
       {"sql": "SET stmt = 'DESCRIBE RESULT ''' || LAST_QUERY_ID() || ''''"},
-      {"sql": "EXECUTE IMMEDIATE $stmt", "expect": {"rowCount": 1, "rows": [["ONLY_COL", "NUMBER", "Y"]]}}
+      {"sql": "EXECUTE IMMEDIATE $stmt", "expect": {"rowCount": 1, "rows": [["ONLY_COL", "NUMBER(1,0)", "COLUMN", "Y", null, "N", "N", null, null, null, null, null, null]]}}
     ]}
   ]
 }

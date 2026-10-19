@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -43,7 +45,7 @@ public class AlterTableReclusterTest extends BaseDatabaseTest {
 
     private String automaticClustering(final String table) {
         final ResultSet tables = engine.executeQuery("SHOW TABLES LIKE '" + table + "'");
-        return cell(tables, soleRowWhere(tables, "name", table.toUpperCase()), "automatic_clustering");
+        return cell(tables, soleRowWhere(tables, "name", table.toUpperCase(Locale.ROOT)), "automatic_clustering");
     }
 
     @Test

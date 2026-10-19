@@ -124,14 +124,29 @@
             <property name="ignoreComments" value="true"/>
         </module>
 
+        <!-- No case folding in the JVM's DEFAULT locale. toUpperCase() and toLowerCase() without a Locale
+             fold by the language of the host: under tr-TR "insert".toUpperCase() is "İNSERT" and
+             "TITLE".toLowerCase() is "tıtle", so a keyword, a function name or an identifier compared
+             after folding stops matching. Always pass Locale.ROOT. Cleared to zero when added (1,302
+             calls), so it is an error from day one.
+
+             A line pattern cannot tell code from a string literal: the few files that carry JavaScript
+             or Java SOURCE TEXT calling these methods are named in suppressions.xml, by this id. -->
+        <module name="RegexpSinglelineJava">
+            <property name="id" value="LocaleFreeCaseFold"/>
+            <property name="format" value="\.to(Upper|Lower)Case\(\)"/>
+            <property name="message" value="Case folding in the default locale: pass Locale.ROOT."/>
+            <property name="ignoreComments" value="true"/>
+        </module>
+
         <!-- final on every parameter-like binding: method and constructor parameters, and catch
              clauses. The for-each and lambda halves of the rule have no Checkstyle module.
 
              THIS ONE STAYS A WARNING PERMANENTLY. The house rule exempts "any binding reassigned in
-             its body", and FinalParameters cannot express that exemption — ALL FOUR it reports are
-             exactly such reassignments (GetPath.navigatePath walks its node parameter; QueryExecutor
-             strips parentheses from a qualifiedName and trims an expr). Promoting it would demand
-             `final` on parameters the rule itself says must not have it. -->
+             its body", and FinalParameters cannot express that exemption — ALL THREE it reports are
+             exactly such reassignments (QueryExecutor strips parentheses from a qualifiedName, in two
+             methods, and trims an expr). Promoting it would demand `final` on parameters the rule
+             itself says must not have it. -->
         <module name="FinalParameters">
             <property name="tokens" value="METHOD_DEF,CTOR_DEF,LITERAL_CATCH"/>
             <property name="severity" value="warning"/>

@@ -16,23 +16,39 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ClonePoint;
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.TransientRetentionLimit;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.SystemDatabase;
+import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.storage.StorageEngine;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,6 +90,7 @@ public class CreateNamespaceHandler implements CommandHandler {
      */
     private void releaseSchemaStorage(final String databaseName, final Schema schema) {
         final StorageEngine storage = queryExecutor.getStorageEngine();
+        TemporaryObjects.releaseSessionTables(schema, storage, databaseName);
         for (final Table table : schema.getTables()) {
             final String fqn = QualifiedName.key(databaseName, schema.getName(), table.getName());
             if (storage.hasTable(fqn)) {
@@ -88,7 +105,22 @@ public class CreateNamespaceHandler implements CommandHandler {
 
     public Object handleCreateDatabase(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String dbName = getText(ctx.identifier(0));
+        // The SNOWFLAKE database is neither cloned nor replaced (SystemDatabase).
+        if (ctx.CLONE() != null) {
+            SystemDatabase.refuseChange(getText(ctx.identifier(1)));
+        }
+        if (ctx.or_replace() != null) {
+            SystemDatabase.refuseChange(dbName);
+        }
         final NamespaceProperties properties = NamespaceProperties.ofDatabase(ctx.databaseProperty());
+        // AT | BEFORE is resolved, and the source required to have existed then, before anything changes, so a
+        // refused point leaves even a database it would replace in place.
+        final ClonePoint point = ctx.CLONE() != null && ctx.timeTravelClause() != null
+            ? clonePoint(ctx, catalog.databaseExact(getText(ctx.identifier(1)))) : null;
+        if (ctx.CLONE() != null) {
+            requireCloneableTransience(catalog.databaseExact(getText(ctx.identifier(1))).isTransientObject(),
+                ctx.TRANSIENT() != null);
+        }
         if (ctx.or_replace() != null) {
             // Replacing a database needs OWNERSHIP of it.
             queryExecutor.requireOwnership("DATABASE", new String[] {dbName}, null);
@@ -111,7 +143,7 @@ public class CreateNamespaceHandler implements CommandHandler {
                 final String sourceDbName = getText(ctx.identifier(1));
                 catalog.cloneDatabase(sourceDbName, dbName);
                 made = true;
-                ddl.cloneDatabaseData(sourceDbName, dbName);
+                ddl.cloneDatabaseData(sourceDbName, dbName, point);
                 logger.trace("Cloned database: {} from {}", dbName, sourceDbName);
             } else {
                 catalog.createDatabase(dbName);
@@ -137,6 +169,8 @@ public class CreateNamespaceHandler implements CommandHandler {
                 // has to be marked here. Live reports it TRANSIENT like every other schema inside.
                 for (final Schema inherited : db.getAllSchemas()) {
                     inherited.setTransientObject(true);
+                    // And every table a CLONE brought in with them.
+                    markTablesTransient(inherited);
                 }
             }
             final String comment = ddl.extractCommentFromList(properties.comments());
@@ -159,6 +193,69 @@ public class CreateNamespaceHandler implements CommandHandler {
         return null;
     }
 
+    /**
+     * A CLONE's AT | BEFORE point, refused when the database or schema being cloned did not exist yet then. The
+     * documentation says such a clone returns an error naming the object; the account's usual "does not exist"
+     * wording is used for it here, not verified against a live account.
+     *
+     * @param ctx    the statement
+     * @param source the database or schema being cloned
+     * @return the point
+     */
+    private ClonePoint clonePoint(final FrostlakeParser.CreateStatementContext ctx, final SqlObject source) {
+        final ClonePoint point = queryExecutor.clonePoint(ctx.timeTravelClause());
+        if (DDLCommandHandler.createdAfter(source, point)) {
+            final String spelled = source instanceof Schema && ((Schema) source).getDatabaseName() != null
+                ? QualifiedName.join(((Schema) source).getDatabaseName(), source.getName()) : source.getName();
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", spelled));
+        }
+        return point;
+    }
+
+    /** The schema a CREATE SCHEMA ... CLONE copies: a bare name in the session's database. */
+    private Schema cloneSourceSchema(final FrostlakeParser.CreateStatementContext ctx) {
+        final String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
+        final String database = sourceParts.length == 2 ? sourceParts[0] : catalog.getCurrentDatabase();
+        if (database == null) {
+            throw NoCurrentDatabaseRefusal.forStatement();
+        }
+        return catalog.databaseExact(database).schemaExact(sourceParts[sourceParts.length - 1]);
+    }
+
+    /**
+     * A transient database or schema is cloned only to a transient one, as a transient table is (live-verified for
+     * tables, where the sentence is the account's; the same rule is taken for its containers). A permanent source may
+     * be cloned to either.
+     *
+     * @param sourceTransient whether the source is transient
+     * @param cloneTransient  whether the clone will be
+     */
+    private static void requireCloneableTransience(final boolean sourceTransient, final boolean cloneTransient) {
+        if (sourceTransient && !cloneTransient) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Transient object cannot be cloned to a permanent object."));
+        }
+    }
+
+    /**
+     * Every table in a transient schema is transient (documented), so the tables a CLONE brings into one become
+     * transient with it, as a table created there is. A temporary table stays temporary, and a hybrid table, an
+     * Iceberg table and an event table keep their kind.
+     */
+    private static void markTablesTransient(final Schema schema) {
+        final List<Table> tables = new ArrayList<>(schema.getTables());
+        tables.addAll(schema.getShadowedTables());
+        for (final Table table : tables) {
+            if (!table.isTemporary() && !table.isHybrid() && table.getIcebergMetadata() == null
+                    && !table.isEventTable()) {
+                table.markTransient();
+            }
+        }
+        for (final DynamicTable dynamicTable : schema.getDynamicTables()) {
+            dynamicTable.setTransient(true);
+        }
+    }
+
     /** Removes a database this statement made, with its tables' storage. */
     private void discardDatabase(final String dbName) {
         final Database made = catalog.databaseExact(dbName);
@@ -168,15 +265,49 @@ public class CreateNamespaceHandler implements CommandHandler {
         catalog.dropDatabase(dbName, true);
     }
 
+    /**
+     * A comma may stand between two of a schema's properties, but not after WITH MANAGED ACCESS: that one is a syntax
+     * error at the comma, the one line the account gives (live-verified).
+     */
+    private static void rejectCommaAfterManagedAccess(final FrostlakeParser.CreateStatementContext ctx) {
+        for (int i = 0; i + 1 < ctx.getChildCount(); i++) {
+            if (ctx.getChild(i) instanceof FrostlakeParser.SchemaPropertyContext
+                    && ((FrostlakeParser.SchemaPropertyContext) ctx.getChild(i)).MANAGED() != null
+                    && ctx.getChild(i + 1) instanceof TerminalNode
+                    && ((TerminalNode) ctx.getChild(i + 1)).getSymbol().getType() == FrostlakeParser.COMMA) {
+                final Token comma = ((TerminalNode) ctx.getChild(i + 1)).getSymbol();
+                final String line = "syntax error line " + comma.getLine() + " at position "
+                    + comma.getCharPositionInLine() + " unexpected ','.";
+                throw new SqlSyntaxException(SqlCompilationError.of(line), Collections.singletonList(line),
+                    ParseTreeText.getOriginalText(ctx));
+            }
+        }
+    }
+
     public Object handleCreateSchema(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        rejectCommaAfterManagedAccess(ctx);
         rejectUnsupportedSchemaModifier(ctx);
         final NamespaceProperties properties = NamespaceProperties.ofSchema(ctx.schemaProperty());
         final String schemaName = getText(ctx.qualifiedName(0));
         // A schema name has at most two parts (db..s counts three): live refuses a longer one with its
         // generic sentence, IF NOT EXISTS or not, and reads a leading locator of this account.
         final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(0)), 2);
+        // AT | BEFORE is resolved before anything changes, as a database clone's is.
+        final ClonePoint point = ctx.CLONE() != null && ctx.timeTravelClause() != null
+            ? clonePoint(ctx, cloneSourceSchema(ctx)) : null;
         // A schema is contained by a database; creating one needs CREATE SCHEMA on that database.
         final String containerDb = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
+        if (SystemDatabase.is(containerDb) && !(ifNotExists && ctx.or_replace() == null
+                && catalog.databaseExact(containerDb).hasSchemaExact(parts[parts.length - 1]))) {
+            // No schema is created, replaced or cloned into the SNOWFLAKE database (SystemDatabase); IF NOT EXISTS
+            // over one of its own stays the no-op it is.
+            SystemDatabase.refuseChange(containerDb);
+        }
+        if (ctx.CLONE() != null) {
+            // A schema in a transient database is transient too, so the clone may be transient by its container.
+            requireCloneableTransience(cloneSourceSchema(ctx).isTransientObject(), ctx.TRANSIENT() != null
+                || (containerDb != null && catalog.databaseExact(containerDb).isTransientObject()));
+        }
         if (containerDb != null) {
             ddl.checkCreatePrivilege(Privilege.CREATE_SCHEMA, ContainerType.DATABASE, containerDb);
         }
@@ -261,7 +392,27 @@ public class CreateNamespaceHandler implements CommandHandler {
                 } else {
                     throw new RuntimeException("Invalid schema name: " + schemaName);
                 }
-                ddl.cloneSchemaData(sourceDbName, sourceSchema, targetDbName, targetSchema);
+                try {
+                    ddl.cloneSchemaData(sourceDbName, sourceSchema, targetDbName, targetSchema, point);
+                } catch (final RuntimeException refused) {
+                    // A point refused while the rows are read leaves no half-made schema behind.
+                    releaseSchemaStorage(targetDbName, schema);
+                    catalog.databaseExact(targetDbName).dropSchema(schema.getName(), true);
+                    throw refused;
+                }
+                StreamSources.carryClonedStates(catalog,
+                    catalog.databaseExact(sourceDbName).schemaExact(sourceSchema), schema);
+                // The clone's members are granted what the source's are; the clone itself nothing (GrantNames).
+                GrantNames.created(catalog, "SCHEMA", QualifiedName.join(schema.getDatabaseName(), schema.getName()));
+                GrantNames.containerCloned(catalog, new String[] {sourceDbName, sourceSchema},
+                    new String[] {schema.getDatabaseName(), schema.getName()});
+                // The cloning role owns the clone, as it would a schema it created; the clone's children keep their
+                // owners, except that the role that clones a pipe owns the clone (documented).
+                schema.setOwner(FutureGrants.ownerOfNewInDatabase(catalog, "SCHEMA",
+                    schema.getDatabaseName(), schema.getName()));
+                for (final Pipe pipe : schema.getPipes()) {
+                    pipe.setOwner(catalog.currentRoleForOwner());
+                }
                 logger.trace("Cloned schema: {} from {}", schemaName, sourceSchemaName);
             } else {
                 if (parts.length == 1) {
@@ -290,6 +441,9 @@ public class CreateNamespaceHandler implements CommandHandler {
             }
 
             schema.setTransientObject(transientSchema);
+            if (transientSchema) {
+                markTablesTransient(schema);
+            }
             if (retention != null) {
                 schema.setDataRetentionTimeInDays(retention);
             }
@@ -301,7 +455,8 @@ public class CreateNamespaceHandler implements CommandHandler {
                 InlineTags.apply(schema, tags, queryExecutor);
             }
             properties.applyParameters(schema.getParameters());
-            schema.setManagedAccess(properties.managedAccess());
+            // A clone of a managed schema stays managed; WITH MANAGED ACCESS makes any schema managed.
+            schema.setManagedAccess(properties.managedAccess() || schema.isManagedAccess());
             // Snowflake activates a newly created schema: it becomes the session's current schema,
             // in its containing database (live-verified: CURRENT_SCHEMA() changes right after).
             final String activatedDb = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();

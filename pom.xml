@@ -57,7 +57,7 @@
              inherits it via <parent><version>${revision}</version>; bump here (or pass -Drevision=X). The
              flatten-maven-plugin below rewrites ${revision} to a literal in the installed/deployed poms so
              consumers never see the placeholder. -->
-        <revision>0.2.1-SNAPSHOT</revision>
+        <revision>0.3.0-SNAPSHOT</revision>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -78,7 +78,7 @@
              access on 17 (TruffleAttach "unsupported JNI version" warning) and GraalPy datetime interop
              NPEs ("moduleState is null" — see PythonSemiStructuredArgumentTest). The GraalPy venv used
              for numpy/pandas (python.venv) is also built with GraalPy 25.0.2 and must match. -->
-        <graalvm.version>25.0.2</graalvm.version>
+        <graalvm.version>25.0.4.1.1</graalvm.version>
         <!-- Publishing (see the release profile below): SEVEN modules publish to Central, each overriding
              this to false — frostlake-db (the engine) and the six optional packs frostlake-ai,
              frostlake-formats, frostlake-geo, frostlake-rt-js, frostlake-rt-py and frostlake-rt-scala.

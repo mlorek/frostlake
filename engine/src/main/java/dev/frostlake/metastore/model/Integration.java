@@ -34,6 +34,7 @@ public class Integration extends SqlObject {
     private final IntegrationKind kind;
     private boolean enabled;
     private final Map<String, PropertyValue> properties = new LinkedHashMap<>();
+    private String identitySeed;
 
     /**
      * @param name the integration's canonical name
@@ -41,6 +42,9 @@ public class Integration extends SqlObject {
      */
     public Integration(final String name, final IntegrationKind kind) {
         this(name, kind, StatementClock.instant());
+        final Instant start = StatementClock.observedStatementStart();
+        final Instant made = start != null ? start : getCreatedTime();
+        this.identitySeed = made.getEpochSecond() + "." + made.getNano();
     }
 
     /**
@@ -58,6 +62,20 @@ public class Integration extends SqlObject {
     @Override
     public String getObjectType() {
         return "INTEGRATION";
+    }
+
+    /**
+     * What this creation's generated identity is made from: the start of the statement that made it, which no
+     * other statement shares and a replayed log brings back. Null for one restored from a snapshot written before
+     * it was kept.
+     */
+    public String getIdentitySeed() {
+        return identitySeed;
+    }
+
+    /** Restores the seed a snapshot kept. */
+    public void setIdentitySeed(final String identitySeed) {
+        this.identitySeed = identitySeed;
     }
 
     /** The integration's kind. */
@@ -93,7 +111,8 @@ public class Integration extends SqlObject {
 
     /**
      * The type SHOW INTEGRATIONS reports: {@code EXTERNAL_API} for an API integration, {@code CATALOG} for a
-     * catalog integration, and for a notification integration its TYPE, a queue's followed by its provider.
+     * catalog integration, for a notification integration its TYPE, a queue's followed by its provider, and for a
+     * security integration its TYPE.
      */
     public String getType() {
         switch (kind) {
@@ -105,6 +124,8 @@ public class Integration extends SqlObject {
                     return "QUEUE - " + text("NOTIFICATION_PROVIDER");
                 }
                 return type;
+            case SECURITY:
+                return text("TYPE");
             case STORAGE:
                 return "EXTERNAL_STAGE";
             case EXTERNAL_ACCESS:

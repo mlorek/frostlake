@@ -18,6 +18,8 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.values.DecfloatTextNode;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -30,9 +32,17 @@ import java.util.Map;
  * a NULL key or NULL value are omitted (Snowflake). The result is the engine's OBJECT representation:
  * canonical JSON text (keys sorted, numbers normalized).
  */
-public class ObjectAggAccumulator implements AggregateFunction.Accumulator {
+public class ObjectAggAccumulator implements AggregateFunction.Accumulator, DecfloatAwareAccumulator {
 
     private final Map<String, Object> entries = new LinkedHashMap<>();
+
+    /** Whether the aggregated value is a DECFLOAT, whose members keep their type (see DecfloatTextNode). */
+    private boolean decfloat;
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
 
     @Override
     public void accumulate(final Object value) {
@@ -67,7 +77,10 @@ public class ObjectAggAccumulator implements AggregateFunction.Accumulator {
     public Object getResult() {
         final ObjectNode obj = ArrayFunctionHelper.MAPPER.createObjectNode();
         for (final Map.Entry<String, Object> entry : entries.entrySet()) {
-            obj.set(entry.getKey(), ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, entry.getValue()));
+            final Object value = entry.getValue();
+            obj.set(entry.getKey(), decfloat && value instanceof Number && !(value instanceof Double)
+                ? DecfloatTextNode.of(Decfloats.of((Number) value, "TO_DECFLOAT"))
+                : ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
         return ArrayFunctionHelper.toCanonicalVariant(obj);
     }

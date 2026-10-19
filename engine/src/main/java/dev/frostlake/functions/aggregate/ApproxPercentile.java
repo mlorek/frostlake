@@ -66,4 +66,10 @@ public class ApproxPercentile extends AggregateFunction {
     public SemiStructuredRejection temporalRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
+
+    /** A VECTOR is refused as a semi-structured value is (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return semiStructuredRejection(position);
+    }
 }

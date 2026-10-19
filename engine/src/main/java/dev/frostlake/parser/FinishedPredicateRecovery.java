@@ -50,7 +50,17 @@ final class FinishedPredicateRecovery {
     static List<String> stackedLines(final ParseTree operatorNode, final Token operator, final TokenStream tokens,
                                      final String sql) {
         final List<String> lines = new ArrayList<>();
-        if (sql == null || sql.length() != sql.codePointCount(0, sql.length()) || opensWithExists(operatorNode)) {
+        if (sql == null) {
+            return lines;
+        }
+        if (opensWithExists(operatorNode)) {
+            // After an EXISTS nothing is read on — but inside a call's arguments the call's own ')' is then one too
+            // many, and of calls written inside each other the outermost's: f1(ABS(EXISTS (…)::INT)) is the '::' and
+            // the last ')' (live-verified).
+            final Token close = outermostCallClose(operatorNode);
+            if (close != null) {
+                lines.add(SyntaxErrorListener.sentence(close));
+            }
             return lines;
         }
         ParserRuleContext construct = null;
@@ -109,7 +119,32 @@ final class FinishedPredicateRecovery {
         return lines;
     }
 
-    /** Whether the refused operator's left operand is an EXISTS, after which live stacks nothing. */
+    /**
+     * The ')' of the outermost call whose arguments hold the operator, reached through calls and their arguments
+     * alone; null where the operator stands in no call.
+     */
+    private static Token outermostCallClose(final ParseTree operatorNode) {
+        Token close = null;
+        for (ParseTree up = operatorNode.getParent(); up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.FunctionArgContext || up instanceof FrostlakeParser.FunctionArgListContext) {
+                continue;
+            }
+            if (up instanceof FrostlakeParser.FunctionCallExprContext) {
+                final Token stop = ((ParserRuleContext) up).getStop();
+                if (stop == null || stop.getType() != FrostlakeLexer.RPAREN) {
+                    return close;
+                }
+                close = stop;
+            } else if (up instanceof FrostlakeParser.ParenExprContext
+                    || !(up instanceof FrostlakeParser.ExpressionContext)
+                        && !(up instanceof FrostlakeParser.BooleanExprContext)) {
+                return close;
+            }
+        }
+        return close;
+    }
+
+    /** Whether the refused operator's left operand is an EXISTS, after which live reads nothing on. */
     private static boolean opensWithExists(final ParseTree operatorNode) {
         return operatorNode.getChildCount() > 0 && operatorNode.getChild(0) instanceof FrostlakeParser.ExistsExprContext;
     }

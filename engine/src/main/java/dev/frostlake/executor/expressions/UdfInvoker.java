@@ -16,14 +16,35 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.AmbiguousOverload;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.NamedArguments;
+import dev.frostlake.executor.OverloadConversionCosts;
+import dev.frostlake.executor.ParameterReferences;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
-import dev.frostlake.executor.SqlIdentifierSubstitution;
+import dev.frostlake.executor.RoutineBody;
+import dev.frostlake.executor.RoutineSecretsCheck;
+import dev.frostlake.executor.SqlArgumentText;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.commands.DeferredHandlerCheck;
+import dev.frostlake.executor.commands.ExternalFunctions;
 import dev.frostlake.executor.commands.ServiceFunctions;
+import dev.frostlake.executor.udf.GuestResults;
+import dev.frostlake.executor.udf.HandlerResults;
+import dev.frostlake.executor.udf.HandlerStateFactory;
+import dev.frostlake.executor.udf.ImportLocalizer;
 import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
+import dev.frostlake.executor.udf.JavaHandlerArguments;
+import dev.frostlake.executor.udf.JavaHandlerClass;
+import dev.frostlake.executor.udf.JavaHandlerInstance;
+import dev.frostlake.executor.udf.JavaHandlerInstances;
+import dev.frostlake.executor.udf.JavaRuntimeLevel;
+import dev.frostlake.executor.udf.StatementHandlerStates;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
@@ -35,6 +56,8 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.metastore.model.Volatility;
+import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.ArrayType;
@@ -43,26 +66,29 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
-import dev.frostlake.values.VariantJsonText;
-import dev.frostlake.values.VariantText;
+import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import tools.jackson.databind.node.StringNode;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Function / user-defined-function dispatch extracted from {@link ExpressionEvaluatorVisitor}: overload
@@ -73,7 +99,16 @@ import java.util.List;
  */
 final class UdfInvoker {
 
+    /**
+     * What a conversion weighs that no row of {@link OverloadConversionCosts} names: more than any that is named,
+     * so an overload reached that way is chosen last.
+     */
+    private static final int UNNAMED_CONVERSION = 64;
+
     private static final JavaFunctionCompiler javaCompiler = new JavaFunctionCompiler();
+
+    /** Names the state that holds a statement's own load of a Java handler's class. */
+    private static final String JAVA_HANDLER_CLASS = "java-handler-class";
 
     private final Catalog catalog;
     private final FunctionRegistry functionRegistry;
@@ -154,9 +189,10 @@ final class UdfInvoker {
                 // reached the body as its text and the declared type never spoke.
                 if (keepsItsOwnNumber(paramType, value)) {
                     // An exact number reaches an exact NUMBER parameter unconverted, so the parameter's
-                    // SCALE never rounds it: num_p(1.257) into NUMBER(10,2) answers 1.257, and num_p(1)
-                    // answers 1 rather than 1.00. A TEXT argument still converts — and rounds — because
-                    // it has to become a number at all (live-verified both ways).
+                    // SCALE never rounds it: num_p(1.257) into NUMBER(10,2) answers 1.257. One of a smaller
+                    // scale is read at the parameter's where the body names it — 1 is 1.00 there — which is
+                    // the body's text to say (see SqlArgumentText). A TEXT argument still converts — and
+                    // rounds — because it has to become a number at all (live-verified both ways).
                     continue;
                 }
                 Object cast;
@@ -174,11 +210,31 @@ final class UdfInvoker {
                 }
                 continue;
             }
+            if (handlerTakesSqlTypes(function.getUdfLanguage()) && paramType != null) {
+                // A JavaScript, a Java, a Scala or a Python handler's argument becomes its parameter's SQL type as
+                // it arrives, before the handler's own mapping, as a procedure's does (live-verified): a NUMBER
+                // parameter rounds a fraction away (1.5 is 2 for an int handler) and reads a text ('42'), a
+                // NUMBER(10,2) one holds two decimals. For a JavaScript handler: a NUMBER or a text for a FLOAT
+                // parameter is a FLOAT - the handler computes with a number, where a host decimal concatenated
+                // under + - anything scalar for a VARCHAR its text, a text for a BOOLEAN or a DATE that value, and
+                // one that does not convert is the call's refusal, "Numeric value 'abc' is not recognized". A
+                // variant that is no array is a one-element ARRAY, and one that is no object is refused for an
+                // OBJECT: "Failed to cast variant value 1 to OBJECT".
+                final Object arrived = visitor.getQueryExecutor().getProceduralExecutor()
+                    .coerceArgument(value, paramType, false);
+                if (arrived != value) {
+                    if (coerced == null) {
+                        coerced = new ArrayList<>(args);
+                    }
+                    coerced.set(i, arrived);
+                }
+                continue;
+            }
             if (!(paramType instanceof DateTimeType)) {
                 continue;
             }
             final Object converted = SharedFunctionHelpers.toTemporalValue(
-                paramType.getName().toUpperCase(), value);
+                paramType.getName().toUpperCase(Locale.ROOT), value);
             if (converted != value) {
                 if (coerced == null) {
                     coerced = new ArrayList<>(args);
@@ -230,6 +286,19 @@ final class UdfInvoker {
      */
     Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues,
                                        final List<String> argumentFamilies) {
+        return resolveOverloadedFunction(schema, funcName, argValues, argumentFamilies, null);
+    }
+
+    /**
+     * {@link #resolveOverloadedFunction(Schema, String, List, List)} told each argument's static type, so that
+     * an overload the structured binding rule refuses is never chosen: a structured argument goes to the
+     * overload declaring its shape and a plain OBJECT or ARRAY to the plain one, where both rank alike by
+     * family and the first declared used to win, only to be refused once called.
+     *
+     * @param argumentStaticTypes each argument's static type (null where unknown), or null for none
+     */
+    Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues,
+                                       final List<String> argumentFamilies, final List<DataType> argumentStaticTypes) {
         final List<Function> overloads = schema.getFunctionOverloads(funcName);
         if (overloads.isEmpty()) {
             return null;
@@ -261,37 +330,210 @@ final class UdfInvoker {
             return candidatesByCount.get(0);
         }
 
-        // Multiple candidates with same parameter count - take every one that ACCEPTS the arguments and
-        // let the argument's own preference choose between them. The account does not pick the nearest
-        // type (see UdfOverloadPreference), and taking the first declared one answered differently.
-        Function preferred = null;
-        int[] preferredRanks = null;
+        // Several overloads take the count: of those that ACCEPT the arguments the call runs the one whose
+        // conversions weigh least over all its arguments together, and of several that weigh alike the first in
+        // the order of their signatures (see OverloadConversionCosts). The account does not pick the nearest
+        // type argument by argument, and taking the first declared one answered differently.
+        final List<Function> accepting = new ArrayList<>();
         for (final Function func : candidatesByCount) {
             boolean typesMatch = true;
             final List<Parameter> params = func.getParameters();
-            final int[] ranks = new int[params.size()];
-            for (int i = 0; i < params.size(); i++) {
+            // The arguments written are judged; a parameter the call leaves to its default has none.
+            for (int i = 0; typesMatch && i < argValues.size(); i++) {
                 final Parameter param = params.get(i);
-                final Object argValue = argValues.get(i);
-                if (!isCompatibleArgument(argValue, param.getDataType())) {
-                    typesMatch = false;
-                    break;
-                }
-                ranks[i] = argumentFamilies != null
-                    ? UdfOverloadPreference.rankFamily(argumentFamilies.get(i), param.getDataType())
-                    : UdfOverloadPreference.rank(argValue, param.getDataType());
+                typesMatch = isCompatibleArgument(argValues.get(i), param.getDataType())
+                    && (argumentStaticTypes == null || i >= argumentStaticTypes.size()
+                        || StructuredTypes.bindsAsArgument(argumentStaticTypes.get(i), param.getDataType()));
             }
-            if (typesMatch && (preferredRanks == null || preferredArgumentwise(ranks, preferredRanks))) {
-                preferred = func;
-                preferredRanks = ranks;
+            if (typesMatch) {
+                accepting.add(func);
             }
         }
-        if (preferred != null) {
-            return preferred;
+        if (accepting.isEmpty()) {
+            // No overload accepts the arguments: the first one's conversion says why.
+            return candidatesByCount.get(0);
         }
+        return firstBySignature(lightest(accepting, null, argumentFamilies, argValues));
+    }
 
-        // No exact match found, return first candidate as fallback
-        return candidatesByCount.get(0);
+    /**
+     * The overload a call written with named arguments reaches (live-verified): only an overload that declares
+     * every name written and is left no required parameter unfilled is a candidate, each value is judged against
+     * the parameter its name fills — not the one at its place in the call — and of several candidates the one
+     * whose conversions weigh least runs. Candidates that weigh alike are not told apart by a call written so:
+     * it is refused as {@link AmbiguousOverload}.
+     *
+     * @param schema           the schema the function's overloads live in
+     * @param funcName         the function's canonical name
+     * @param spelledName      the name as the call writes it, for the refusal
+     * @param names            the names as written, one per argument, null for a positional one
+     * @param argValues        the arguments' values, in the order written
+     * @param argumentFamilies each argument's family, in the order written, or null to read them off the values
+     * @return the overload, or null when the schema holds none of that name
+     */
+    Function resolveNamedOverload(final Schema schema, final String funcName, final String spelledName,
+                                  final List<String> names, final List<Object> argValues,
+                                  final List<String> argumentFamilies) {
+        final List<Function> fitting = new ArrayList<>();
+        final List<int[]> targets = new ArrayList<>();
+        for (final Function overload : schema.getFunctionOverloads(funcName)) {
+            final int[] filled = NamedArguments.targets(overload.getParameters(), names);
+            if (filled != null) {
+                fitting.add(overload);
+                targets.add(filled);
+            }
+        }
+        if (fitting.isEmpty()) {
+            // No overload takes the names: the call is refused where its names are read.
+            return resolveOverloadedFunction(schema, funcName, argValues, argumentFamilies, null);
+        }
+        if (fitting.size() == 1) {
+            return fitting.get(0);
+        }
+        final List<Function> accepting = new ArrayList<>();
+        final List<int[]> acceptingTargets = new ArrayList<>();
+        for (int c = 0; c < fitting.size(); c++) {
+            final List<Parameter> params = fitting.get(c).getParameters();
+            boolean typesMatch = true;
+            for (int i = 0; typesMatch && i < argValues.size(); i++) {
+                typesMatch = isCompatibleArgument(argValues.get(i), params.get(targets.get(c)[i]).getDataType());
+            }
+            if (typesMatch) {
+                accepting.add(fitting.get(c));
+                acceptingTargets.add(targets.get(c));
+            }
+        }
+        if (accepting.isEmpty()) {
+            return fitting.get(0);
+        }
+        final List<Function> lightest = lightest(accepting, acceptingTargets, argumentFamilies, argValues);
+        if (lightest.size() > 1) {
+            throw new AmbiguousOverload(spelledName);
+        }
+        return lightest.get(0);
+    }
+
+    /**
+     * The candidates whose conversions weigh least over all the arguments together (see
+     * {@link OverloadConversionCosts}), in the order given: one where the call is decided, several where they
+     * weigh alike.
+     *
+     * @param candidates the overloads that take the call
+     * @param targets    per candidate, the parameter each argument fills, or null for arguments read by position
+     * @param families   each argument's family, or null to read them off the values
+     * @param values     the arguments' values, read where {@code families} is null
+     * @return the lightest candidates, never empty for a non-empty list
+     */
+    static List<Function> lightest(final List<Function> candidates, final List<int[]> targets,
+                                   final List<String> families, final List<Object> values) {
+        final int count = families != null ? families.size() : values.size();
+        final List<Function> lightest = new ArrayList<>();
+        long least = Long.MAX_VALUE;
+        for (int c = 0; c < candidates.size(); c++) {
+            final List<Parameter> params = candidates.get(c).getParameters();
+            long total = 0;
+            for (int i = 0; i < count; i++) {
+                final int target = targets == null ? i : targets.get(c)[i];
+                if (target >= params.size()) {
+                    total += UNNAMED_CONVERSION;
+                    continue;
+                }
+                final DataType type = params.get(target).getDataType();
+                final int weight = families != null ? UdfOverloadPreference.rankFamily(families.get(i), type)
+                    : UdfOverloadPreference.rank(values.get(i), type);
+                total += weight == Integer.MAX_VALUE ? UNNAMED_CONVERSION : weight;
+            }
+            if (total < least) {
+                lightest.clear();
+                least = total;
+            }
+            if (total == least) {
+                lightest.add(candidates.get(c));
+            }
+        }
+        return lightest;
+    }
+
+    /**
+     * The first of several overloads in the order of their signatures — the account's internal type names,
+     * parameter by parameter — which is the one a call written by position runs among overloads that weigh alike,
+     * whatever order they were created in (live-verified). Of an OBJECT's or an ARRAY's overloads the plain one
+     * comes first and the structured ones after it by their shapes: {@code f(NULL)} runs {@code f(OBJECT)} beside
+     * {@code f(OBJECT(a INT))}, and that one beside {@code f(OBJECT(a VARCHAR))} and {@code f(OBJECT(b INT))}.
+     *
+     * @param candidates the overloads that weigh alike, never empty
+     * @return the first by signature
+     */
+    static Function firstBySignature(final List<Function> candidates) {
+        Function first = candidates.get(0);
+        for (int c = 1; c < candidates.size(); c++) {
+            if (sortsBefore(candidates.get(c).getParameters(), first.getParameters())) {
+                first = candidates.get(c);
+            }
+        }
+        return first;
+    }
+
+    private static boolean sortsBefore(final List<Parameter> signature, final List<Parameter> other) {
+        for (int i = 0; i < signature.size() && i < other.size(); i++) {
+            final int own = UdfOverloadPreference.signatureOrder(signature.get(i).getDataType());
+            final int others = UdfOverloadPreference.signatureOrder(other.get(i).getDataType());
+            if (own != others) {
+                return own < others;
+            }
+            final int shapes = shapeOrder(signature.get(i).getDataType())
+                .compareTo(shapeOrder(other.get(i).getDataType()));
+            if (shapes != 0) {
+                return shapes < 0;
+            }
+        }
+        return signature.size() < other.size();
+    }
+
+    /** What orders an OBJECT's or an ARRAY's overloads among themselves: its spelled shape, the plain one first. */
+    private static String shapeOrder(final DataType type) {
+        return type instanceof ObjectType || type instanceof ArrayType || StructuredTypes.isStructured(type)
+            ? StructuredTypes.signatureText(type) : "";
+    }
+
+    /**
+     * The overload a call reaches among candidates that take it, chosen by each argument's family alone as
+     * {@link #resolveOverloadedFunction} and {@link #resolveNamedOverload} choose it; null when no candidate's
+     * parameters are named by every argument's row, and for a call written by name that several candidates weigh
+     * alike for.
+     *
+     * @param candidates the overloads that take the call's arguments by their count, or by their names
+     * @param targets    per candidate, the parameter each argument fills, or null for arguments read by position
+     * @param families   each argument's family (see {@link UdfOverloadPreference#familyOf}), none of them null
+     * @return the overload, or null
+     */
+    static Function preferredByFamilies(final List<Function> candidates, final List<int[]> targets,
+                                        final List<String> families) {
+        final List<Function> reachable = new ArrayList<>();
+        final List<int[]> reachableTargets = targets == null ? null : new ArrayList<int[]>();
+        for (int c = 0; c < candidates.size(); c++) {
+            final List<Parameter> params = candidates.get(c).getParameters();
+            boolean reaches = targets != null || params.size() >= families.size();
+            for (int i = 0; reaches && i < families.size(); i++) {
+                final int target = targets == null ? i : targets.get(c)[i];
+                reaches = UdfOverloadPreference.rankFamily(families.get(i), params.get(target).getDataType())
+                    != Integer.MAX_VALUE;
+            }
+            if (reaches) {
+                reachable.add(candidates.get(c));
+                if (reachableTargets != null) {
+                    reachableTargets.add(targets.get(c));
+                }
+            }
+        }
+        if (reachable.isEmpty()) {
+            return null;
+        }
+        final List<Function> lightest = lightest(reachable, reachableTargets, families, null);
+        if (targets != null) {
+            return lightest.size() == 1 ? lightest.get(0) : null;
+        }
+        return firstBySignature(lightest);
     }
 
     /**
@@ -301,7 +543,7 @@ final class UdfInvoker {
      * neither a NUMBER nor a VARIANT one takes a DATE at all (live-verified). Which of several accepting
      * overloads is CHOSEN is a separate question, answered by {@link UdfOverloadPreference}.
      */
-    private boolean isCompatibleArgument(final Object argValue, final DataType expectedType) {
+    static boolean isCompatibleArgument(final Object argValue, final DataType expectedType) {
         if (argValue == null || expectedType == null) {
             return true; // NULL is compatible with all types
         }
@@ -329,8 +571,8 @@ final class UdfInvoker {
     /**
      * Reorder positionally-evaluated argument values to a function's declared parameter order when the call
      * used named arguments — {@code f(b => 2, a => 1)}. Any leading positional arguments (name == null) map
-     * to the first parameters in order; each named argument maps to the parameter whose name matches
-     * (case-insensitive). An unknown name or too many positional arguments is an error.
+     * to the first parameters in order; each named argument maps to the parameter it names, read as an
+     * identifier. An unknown name or too many positional arguments is an error.
      */
     List<Object> reorderNamedArgs(final List<String> names, final List<Object> argValues,
             final List<Parameter> params, final String funcName) {
@@ -347,11 +589,18 @@ final class UdfInvoker {
         }
         for (int j = positional; j < names.size(); j++) {
             final String argName = names.get(j);
+            // A name is read as an identifier is — "A" names the parameter A — and matched exactly; a call no
+            // compile-time rule judged still finds its parameter whatever the case it was written in.
+            final String canonical = SqlIdentifiers.canonicalText(argName);
             int target = -1;
-            for (int p = 0; p < params.size(); p++) {
+            for (int p = 0; p < params.size() && target < 0; p++) {
+                if (params.get(p).getName().equals(canonical)) {
+                    target = p;
+                }
+            }
+            for (int p = 0; p < params.size() && target < 0; p++) {
                 if (params.get(p).getName().equalsIgnoreCase(argName)) {
                     target = p;
-                    break;
                 }
             }
             if (target < 0) {
@@ -371,8 +620,24 @@ final class UdfInvoker {
     }
 
     Object evaluateUserDefinedFunction(final Function function, final List<Object> rawArgs) {
+        return evaluateUserDefinedFunction(function, rawArgs, null);
+    }
+
+    /**
+     * {@link #evaluateUserDefinedFunction(Function, List)} with each argument's own static type, which a SQL
+     * function's parameter takes its exact type and its binary width from (see SqlArgumentText).
+     *
+     * @param function the function
+     * @param rawArgs  the arguments in the parameters' order
+     * @param argTypes the arguments' static types in the same order, or null where they are not known
+     * @return the function's answer
+     */
+    Object evaluateUserDefinedFunction(final Function function, final List<Object> rawArgs,
+                                       final List<DataType> argTypes) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
-        final List<Object> args = coerceArgsToParameterTypes(function, withParameterDefaults(function, rawArgs));
+        RoutineSecretsCheck.require(catalog, function.getEnvironment());
+        final List<Object> given = withParameterDefaults(function, rawArgs);
+        final List<Object> args = coerceArgsToParameterTypes(function, given);
         // RETURNS NULL ON NULL INPUT (a.k.a. STRICT): a NULL in ANY argument short-circuits to NULL and the
         // body is NEVER entered. The clause was parsed and stored but not enforced, so a handler written on
         // that guarantee ran anyway and blew up on the null — e.g. `for k, v in OBJ.items()` raised
@@ -388,30 +653,39 @@ final class UdfInvoker {
         if (function.isServiceFunction()) {
             throw new RuntimeException(ServiceFunctions.cannotCall(function));
         }
+        if (function.isExternalFunction()) {
+            throw new RuntimeException(ExternalFunctions.cannotCall(function));
+        }
         final UdfLanguage language = function.getUdfLanguage();
+        // A temporary handler function's handler is judged as a row first reaches it.
+        DeferredHandlerCheck.require(function);
+        // A handler that is not declared IMMUTABLE may answer otherwise when called again (see CheckpointDebt).
+        if (language != UdfLanguage.SQL && !Volatility.IMMUTABLE.name().equals(function.getVolatility())) {
+            CheckpointDebt.owe();
+        }
 
         if (language == UdfLanguage.JAVA) {
             return evaluateJavaFunction(function, args);
         } else if (language == UdfLanguage.SQL) {
-            return evaluateSqlFunction(function, args);
+            return evaluateSqlFunction(function, args, given, argTypes);
         } else if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
                 || language == UdfLanguage.SCALA) {
-            final Object guestResult = UdfRuntimes.require(language).executeFunction(function, args,
-                catalog, queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
-            return wrapSemiStructuredReturn(function, guestResult);
+            // A handler loaded from IMPORTS finds a file an internal named stage keeps where the engine keeps it.
+            final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+            final Object guestResult;
+            try {
+                guestResult = UdfRuntimes.require(language).executeFunction(function, args,
+                    catalog, queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
+            } finally {
+                JarHandlerLoader.restore(outer);
+            }
+            return GuestResults.declared(function, guestResult);
         } else {
             throw new RuntimeException("Unsupported function language: " + language);
         }
     }
 
 
-    /**
-     * A guest-language handler returns OBJECT / ARRAY values as JSON text; a function DECLARED to
-     * return a semi-structured type hands that text back as a real semi-structured value, so a
-     * container embeds it structurally — OBJECT_CONSTRUCT('k', js_array_fn(...)) nests the array
-     * instead of quoting its text — and a scalar string under a VARIANT declaration becomes a
-     * VARIANT STRING, exactly as the SQL-side cast would make it.
-     */
     /**
      * Whether an argument reaches its parameter as the number it already is, with no conversion and so
      * no rounding to the parameter's declared scale.
@@ -426,27 +700,40 @@ final class UdfInvoker {
                 || value instanceof Short || value instanceof Byte || value instanceof BigInteger);
     }
 
-    private Object wrapSemiStructuredReturn(final Function function, final Object result) {
-        if (!(result instanceof String)) {
-            return result;
-        }
-        final DataType returnType = function.getReturnType();
-        if (!(returnType instanceof ArrayType || returnType instanceof ObjectType
-                || returnType instanceof VariantType)) {
-            return result;
-        }
-        final String text = ((String) result).trim();
-        if (text.startsWith("[") || text.startsWith("{") || text.startsWith("\"")
-                || "null".equals(text)) {
-            return VariantValue.of(text);
-        }
-        if (returnType instanceof VariantType) {
-            return VariantValue.of(VariantText.canonical(StringNode.valueOf((String) result)));
-        }
-        return result;
+    /** Whether a language's handler is given its arguments as its parameters' SQL types. */
+    private static boolean handlerTakesSqlTypes(final UdfLanguage language) {
+        return language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.JAVA || language == UdfLanguage.SCALA
+            || language == UdfLanguage.PYTHON;
     }
 
-    private Object evaluateSqlFunction(final Function function, final List<Object> args) {
+
+    /**
+     * A SQL function's body, run where the function lives: the names it writes without a schema are looked for
+     * in the function's own schema — then along the search path from there — whatever schema the calling
+     * session is in, and CURRENT_SCHEMA() inside it is the function's (live-verified).
+     */
+    private Object evaluateSqlFunction(final Function function, final List<Object> args, final List<Object> given,
+                                       final List<DataType> argTypes) {
+        // A function met again while its own body is evaluated is a cycle no CREATE refused (see SqlFunctionCycle).
+        SqlFunctionCycle.enter(function);
+        try {
+            final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+            if (queryExecutor == null) {
+                return evaluateSqlFunctionBody(function, args, given, argTypes);
+            }
+            return queryExecutor.inRoutineHome(function.getHome(), function.getOwner(), new RoutineBody() {
+                @Override
+                public Object run() {
+                    return evaluateSqlFunctionBody(function, args, given, argTypes);
+                }
+            });
+        } finally {
+            SqlFunctionCycle.exit(function);
+        }
+    }
+
+    private Object evaluateSqlFunctionBody(final Function function, final List<Object> args,
+                                           final List<Object> given, final List<DataType> argTypes) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         // A body that closes its own frame before a semicolon runs what the frame holds (see SqlUdfBodyFrame).
         final String body = SqlUdfBodyFrame.executableBody(function.getBody());
@@ -460,17 +747,40 @@ final class UdfInvoker {
         final String trimmedBody = body.trim();
         if (queryExecutor != null && queryExecutor.isQueryStatement(trimmedBody)) {
             // Substitute parameter placeholders
-            final String sql = substituteParams(trimmedBody, params, args);
+            final String sql = substituteParams(trimmedBody, params, args, given, argTypes);
+            final List<ResultSet> results;
+            // A refusal the body earns is placed in the body as the account frames it, inside parentheses: a
+            // windowless QUALIFY at body position 16 is refused at 17 (live-verified).
+            final SourcePosition displaced = ExpressionSource.begin(new SourcePosition(1, 1));
             try {
-                final List<ResultSet> results = queryExecutor.execute(sql);
-                if (!results.isEmpty() && results.get(0).getRowCount() > 0) {
-                    return results.get(0).getRows().get(0).getValue(0);
-                }
-                return null;
+                // The body is part of the calling query, not a statement of its own: Snowflake inlines it, so
+                // it takes no query ID and adds nothing to QUERY_HISTORY, however many rows call it.
+                results = queryExecutor.executeUnrecorded(sql);
             } catch (final Exception e) {
                 rethrowDeferredConversion(args, e);
+                if (e instanceof RuntimeException && SqlCompilationError.isCompilationError(e.getMessage())) {
+                    // A name the body's query cannot resolve is the statement's own compilation error.
+                    throw (RuntimeException) e;
+                }
+                if (cycleIn(e) != null) {
+                    throw cycleIn(e);
+                }
+                if (privilegeRefusalIn(e) != null) {
+                    // What neither the caller nor the function's owner may read is refused as the statement's own.
+                    throw privilegeRefusalIn(e);
+                }
                 throw new RuntimeException("Error executing SQL function: " + describe(e), e);
+            } finally {
+                ExpressionSource.end(displaced);
             }
+            if (results.isEmpty() || results.get(0).getRowCount() == 0) {
+                return null;
+            }
+            if (results.get(0).getRowCount() > 1) {
+                // The body is the scalar subquery the call inlines, and answers as one (live-verified).
+                throw new RuntimeException("Single-row subquery returns more than one row.");
+            }
+            return results.get(0).getRows().get(0).getValue(0);
         }
 
         // A body that is a Snowflake-Scripting block runs as one — parameters bound as procedural
@@ -514,7 +824,7 @@ final class UdfInvoker {
         // subquery executes through the query engine, where the parameter table's bindings are not
         // visible. Substituting first (lexer-driven, quote-safe) makes the body self-contained; the
         // table binding then covers nothing but is kept as a harmless fallback.
-        final String exprBody = substituteParams(trimmedBody, params, args);
+        final String exprBody = substituteParams(trimmedBody, params, args, given, argTypes);
 
         // Bind all parameters into a single multi-column table row
         if (!params.isEmpty() && queryExecutor != null) {
@@ -536,7 +846,7 @@ final class UdfInvoker {
                 return eval.evaluate(exprBody, paramRow);
             } catch (final Exception e) {
                 rethrowDeferredConversion(args, e);
-                throw new RuntimeException("Error in SQL function body: " + describe(e), e);
+                throw inBody(e);
             }
         }
 
@@ -552,7 +862,50 @@ final class UdfInvoker {
             try {
                 return eval.evaluate(exprBody, emptyRow);
             } catch (final Exception e) {
-                throw new RuntimeException("Error in SQL function body: " + describe(e), e);
+                throw inBody(e);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * A failure of a function's expression body. A name the body cannot resolve is the statement's own
+     * compilation error, as the account reports it; anything else says where it came from.
+     */
+    private RuntimeException inBody(final Exception failure) {
+        if (failure instanceof RuntimeException && SqlCompilationError.isCompilationError(failure.getMessage())) {
+            return (RuntimeException) failure;
+        }
+        if (cycleIn(failure) != null) {
+            return cycleIn(failure);
+        }
+        if (privilegeRefusalIn(failure) != null) {
+            return privilegeRefusalIn(failure);
+        }
+        return new RuntimeException("Error in SQL function body: " + describe(failure), failure);
+    }
+
+    /** The privilege refusal a failure is or was raised for, however the layers between wrapped it, or null. */
+    private static PrivilegeRefusal privilegeRefusalIn(final Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof PrivilegeRefusal) {
+                return (PrivilegeRefusal) cause;
+            }
+            if (cause.getCause() == cause) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** The cycle failure a failure is or was raised for, however the layers between wrapped it, or null. */
+    private static SqlFunctionCycleFailure cycleIn(final Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SqlFunctionCycleFailure) {
+                return (SqlFunctionCycleFailure) cause;
+            }
+            if (cause.getCause() == cause) {
+                return null;
             }
         }
         return null;
@@ -570,7 +923,7 @@ final class UdfInvoker {
         final DataType returnType = function.getReturnType();
         if (returnType != null && returnType.getCategory() == TypeCategory.SEMI_STRUCTURED) {
             throw new RuntimeException("Unsupported return type for Snowscript UDF: "
-                + returnType.getName().toUpperCase());
+                + returnType.getName().toUpperCase(Locale.ROOT));
         }
     }
 
@@ -595,14 +948,13 @@ final class UdfInvoker {
         return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     }
 
-    /** Substitute each parameter NAME in {@code body} with its argument rendered as a SQL literal
-     *  (NULL / numbers and booleans raw / anything else as a quoted, escaped string), via the
-     *  lexer-driven identifier substitution — quote- and comment-safe by construction. A parameter
-     *  DECLARED semi-structured (OBJECT / VARIANT / ARRAY) is wrapped as {@code PARSE_JSON('…')}
-     *  instead of a bare string: bodies apply path access to such parameters ({@code p:field}),
-     *  which must stay parseable and yield the structure, not text. */
-    private String substituteParams(final String body, final List<Parameter> params, final List<Object> args) {
-        String sql = body;
+    /** Substitute each reference to a parameter in {@code body} with its argument written as SQL text that
+     *  answers the value again, of the parameter's type (see {@link SqlArgumentText}): every parameter in one
+     *  pass, and only where the body reads a value (see {@link ParameterReferences}). */
+    private String substituteParams(final String body, final List<Parameter> params, final List<Object> args,
+                                    final List<Object> given, final List<DataType> argTypes) {
+        final List<String> names = new ArrayList<>();
+        final List<String> bound = new ArrayList<>();
         for (int i = 0; i < params.size() && i < args.size(); i++) {
             final Parameter param = params.get(i);
             final Object argVal = args.get(i);
@@ -610,33 +962,9 @@ final class UdfInvoker {
             if (argVal instanceof DeferredConversion) {
                 // The argument the caller passed, converted where the body reads it.
                 final DeferredConversion deferred = (DeferredConversion) argVal;
-                argStr = "CAST(" + rawLiteral(deferred.getRaw()) + " AS "
+                argStr = "CAST(" + SqlArgumentText.ofValue(deferred.getRaw()) + " AS "
                     + SqlTypeNames.canonical(deferred.getType()) + ")";
-            } else if (argVal == null) {
-                argStr = "NULL";
-            } else if (argVal instanceof Number || argVal instanceof Boolean) {
-                argStr = argVal.toString();
-            } else if (argVal instanceof LocalDateTime || argVal instanceof LocalDate
-                    || argVal instanceof LocalTime || argVal instanceof OffsetDateTime
-                    || argVal instanceof ZonedDateTime) {
-                // A temporal substitutes as a typed literal in Snowflake's output text form, not
-                // java.time's T-separated toString — so the body keeps a real temporal (date arithmetic
-                // works) and VARIANT/OBJECT output renders it as '2026-01-03 00:00:00.000'. A
-                // TIMESTAMP_LTZ must name its own flavour, or the body would rebuild it as a naive
-                // TIMESTAMP_NTZ and the offset would be gone by the time the result came back.
-                final String cast = argVal instanceof LocalDate ? "DATE"
-                    : argVal instanceof LocalTime ? "TIME"
-                    : argVal instanceof ZonedDateTime ? "TIMESTAMP_TZ"
-                    : argVal instanceof OffsetDateTime ? "TIMESTAMP_LTZ" : "TIMESTAMP_NTZ";
-                argStr = "'" + SharedFunctionHelpers.textOf(argVal) + "'::" + cast;
-            } else if (param.getDataType() != null
-                    && param.getDataType().getCategory() == TypeCategory.SEMI_STRUCTURED) {
-                // A semi-structured argument substitutes as its own JSON TEXT, not as the bare text of
-                // the value it holds: PARSE_JSON over an unquoted `x` is not JSON at all, where what the
-                // caller passed was the JSON string "x" - which the account answers as "x".
-                argStr = "PARSE_JSON(" + SqlStringLiterals.encode(argVal instanceof VariantValue
-                    ? VariantJsonText.clientTextOf((VariantValue) argVal) : argVal.toString()) + ")";
-            } else if (param.getDataType() instanceof VectorType) {
+            } else if (argVal != null && param.getDataType() instanceof VectorType) {
                 // A VECTOR parameter substitutes as a TYPED vector literal, like the temporals above:
                 // the vector functions' argument rules are compile-time and read the STATIC type, so a
                 // bare string body would fail "Invalid argument types … (VARCHAR(13))" where Snowflake
@@ -647,30 +975,16 @@ final class UdfInvoker {
                 argStr = "PARSE_JSON(" + SqlStringLiterals.encode(argVal.toString()) + ")::"
                     + param.getDataType().getName();
             } else {
-                argStr = SqlStringLiterals.encode(argVal.toString());
+                // The value itself, of its own type and at its full precision (see SqlArgumentText). An
+                // argument the call converted is the parameter's type through and through.
+                argStr = SqlArgumentText.forParameter(argVal, param.getDataType(),
+                    i >= given.size() || given.get(i) != argVal,
+                    argTypes != null && i < argTypes.size() ? argTypes.get(i) : null);
             }
-            sql = SqlIdentifierSubstitution.substitute(sql, param.getName(), argStr);
+            names.add(param.getName());
+            bound.add(argStr);
         }
-        return sql;
-    }
-
-    /** A value as the SQL literal of its OWN type: a VARIANT through PARSE_JSON, a temporal typed, a text quoted. */
-    private static String rawLiteral(final Object value) {
-        if (value instanceof Number || value instanceof Boolean) {
-            return value.toString();
-        }
-        if (value instanceof VariantValue) {
-            return "PARSE_JSON(" + SqlStringLiterals.encode(VariantJsonText.clientTextOf((VariantValue) value)) + ")";
-        }
-        if (value instanceof LocalDateTime || value instanceof LocalDate || value instanceof LocalTime
-                || value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
-            final String type = value instanceof LocalDate ? "DATE"
-                : value instanceof LocalTime ? "TIME"
-                : value instanceof ZonedDateTime ? "TIMESTAMP_TZ"
-                : value instanceof OffsetDateTime ? "TIMESTAMP_LTZ" : "TIMESTAMP_NTZ";
-            return "'" + SharedFunctionHelpers.textOf(value) + "'::" + type;
-        }
-        return SqlStringLiterals.encode(value.toString());
+        return ParameterReferences.bound(body, names, bound);
     }
 
     private Object evaluateJavaFunction(final Function function, final List<Object> args) {
@@ -689,27 +1003,84 @@ final class UdfInvoker {
         final String className = handler.substring(0, dotIndex);
         final String methodName = handler.substring(dotIndex + 1);
 
-        // The handler class comes from the IMPORTS jar(s) if given, else from compiling the inline body.
-        final Class<?> compiledClass;
-        if (!function.getImports().isEmpty()) {
-            compiledClass = JarHandlerLoader.load(function.getImports(), className, catalog,
-                queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
-        } else {
-            final String sourceCode = function.getBody();
-            if (sourceCode == null || sourceCode.trim().isEmpty()) {
-                throw new RuntimeException("Java function must specify an inline body (AS ...) or IMPORTS");
-            }
-            compiledClass = javaCompiler.compile(sourceCode, className);
+        // The handler class comes from the inline body when one is written and holds it, else from the IMPORTS
+        // jar(s): a body may be written beside imports it does not use (live-verified).
+        final String sourceCode = function.getBody();
+        final boolean inline = sourceCode != null && !sourceCode.trim().isEmpty();
+        if (!inline && function.getImports().isEmpty()) {
+            throw new RuntimeException("Java function must specify an inline body (AS ...) or IMPORTS");
         }
+        Class<?> fromBody = null;
+        if (inline) {
+            try {
+                fromBody = handlerClass(function, sourceCode, className);
+            } catch (final RuntimeException notInTheBody) {
+                if (function.getImports().isEmpty()) {
+                    throw notInTheBody;
+                }
+            }
+        }
+        final Class<?> compiledClass = fromBody != null ? fromBody
+            : JarHandlerLoader.load(queryExecutor != null
+                    ? queryExecutor.localImports(function.getImports()) : function.getImports(), className, catalog,
+                queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
 
-        // Convert SQL argument values to Java types
-        final Object[] javaArgs = convertSqlArgsToJava(args);
+        final Method method = javaCompiler.handlerMethod(compiledClass, methodName, args.size());
+        if (method == null) {
+            // No one method of that name and argument count: the method is looked for by the values' own classes.
+            return convertJavaResultToSql(javaCompiler.invokeMethod(compiledClass, methodName,
+                convertSqlArgsToJava(args)));
+        }
+        final String where = " in function " + function.getName() + " with handler " + handler;
+        // Each argument, already of its parameter's SQL type, becomes the Java type the handler declares.
+        final Object[] javaArgs = JavaHandlerArguments.of(method.getParameterTypes(), function.getParameters(), args,
+            where);
+        final Object receiver = Modifier.isStatic(method.getModifiers()) ? null
+            : handlerInstance(function, compiledClass, where);
+        final Object answered = javaCompiler.invokeHandler(compiledClass, method, receiver, javaArgs, where);
+        // What the handler hands back becomes the declared RETURNS type's value, as a procedure's does: bytes a
+        // BINARY, a String[] an ARRAY, a Map an OBJECT, a java.sql value a DATE, a TIME or a timestamp, a
+        // BigDecimal the declared scale's, and a text read as the type reads one.
+        final Object converted = HandlerResults.fromJava(answered, function.getReturnType(), function.getName(),
+            handler);
+        // A value of the engine's own - bytes, a semi-structured value, a date or a time - is the answer as it is.
+        return converted instanceof BinaryValue || converted instanceof VariantValue
+            || converted instanceof TemporalAccessor ? converted : convertJavaResultToSql(converted);
+    }
 
-        // Invoke the method
-        final Object result = javaCompiler.invokeMethod(compiledClass, methodName, javaArgs);
+    /**
+     * The class an inline body's handler runs in: loaded for the statement that is running and the place that
+     * calls the function, so what its static fields hold is there for the statement's later rows and for
+     * nothing else - not for a later statement, nor for another call of the function in the same statement
+     * (live-verified). Outside a statement the one class every such caller shares.
+     */
+    private static Class<?> handlerClass(final Function function, final String sourceCode, final String className) {
+        final int release = JavaRuntimeLevel.of(function.getRuntimeVersion());
+        final String where = " in function " + function.getName() + " with handler " + function.getHandler();
+        final AutoCloseable kept = StatementHandlerStates.state(function, JAVA_HANDLER_CLASS,
+            new HandlerStateFactory() {
+                @Override
+                public AutoCloseable create() {
+                    return new JavaHandlerClass(javaCompiler.load(sourceCode, className, null, release, where));
+                }
+            });
+        return kept != null ? ((JavaHandlerClass) kept).handled()
+            : javaCompiler.compile(sourceCode, className, release, where);
+    }
 
-        // Convert result back to SQL type
-        return convertJavaResultToSql(result);
+    /**
+     * The instance a handler method that is not static is called on: one for the statement that is running and
+     * the place that calls the function, so what it holds is there for the statement's later rows and for
+     * nothing else (live-verified); outside a statement, one for the call.
+     */
+    private static Object handlerInstance(final Function function, final Class<?> handled, final String where) {
+        final AutoCloseable kept = StatementHandlerStates.state(function, handled, new HandlerStateFactory() {
+            @Override
+            public AutoCloseable create() {
+                return new JavaHandlerInstance(JavaHandlerInstances.create(handled, where));
+            }
+        });
+        return kept != null ? ((JavaHandlerInstance) kept).instance() : JavaHandlerInstances.create(handled, where);
     }
 
     private Object[] convertSqlArgsToJava(final List<Object> sqlArgs) {
@@ -718,9 +1089,9 @@ final class UdfInvoker {
             final Object arg = sqlArgs.get(i);
             if (arg == null) {
                 javaArgs[i] = null;
-            } else if (arg instanceof Long) {
-                javaArgs[i] = ((Long) arg).intValue();
             } else if (arg instanceof Number || arg instanceof String || arg instanceof Boolean) {
+                // A number goes as it is: the handler's own parameter type decides which Java number it
+                // becomes (JavaFunctionCompiler.invokeMethod).
                 javaArgs[i] = arg;
             } else {
                 javaArgs[i] = arg.toString();
@@ -740,18 +1111,4 @@ final class UdfInvoker {
             return javaResult.toString();
         }
     }
-
-    /**
-     * Whether one candidate's ranks beat another's, argument by argument in order: the first position
-     * where they differ decides, and an all-equal pair keeps the one declared first.
-     */
-    private static boolean preferredArgumentwise(final int[] candidate, final int[] incumbent) {
-        for (int i = 0; i < candidate.length && i < incumbent.length; i++) {
-            if (candidate[i] != incumbent[i]) {
-                return candidate[i] < incumbent[i];
-            }
-        }
-        return false;
-    }
-
 }

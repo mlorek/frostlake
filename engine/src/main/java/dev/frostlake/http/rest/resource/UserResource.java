@@ -45,8 +45,9 @@ import java.util.Locale;
  * {@code PUT} is a create-or-alter done here, since the SQL has no CREATE OR ALTER USER: the user is created when
  * absent, and otherwise set to the body — the properties it names are SET and the settable ones it leaves out are
  * UNSET, except the password, which a fetched user never carries. A fetched user carries its public keys as
- * DESCRIBE USER prints them, so a fetch sent back keeps them. Body properties the engine's USER statements do not
- * take (network_policy, enable_unredacted_query_syntax_error) are not applied.
+ * DESCRIBE USER prints them, so a fetch sent back keeps them. A body's {@code network_policy} is the statement's
+ * NETWORK_POLICY property, and a fetched user carries the policy its parameters name. The one body property no
+ * USER statement takes, {@code enable_unredacted_query_syntax_error}, is not applied.
  */
 public final class UserResource implements RestResource {
 
@@ -134,9 +135,17 @@ public final class UserResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = call.sql().showNamed("SHOW USERS" + RestShow.likeName(name), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("User '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("User", name);
         }
-        return toJson(rows.get(0), call.sql().show("DESCRIBE USER " + name.sql()));
+        final ObjectNode user = toJson(rows.get(0), call.sql().show("DESCRIBE USER " + name.sql()));
+        // The policy attached to the user is one of its parameters, set at the user's own level.
+        for (final RestRow parameter : call.sql().show("SHOW PARAMETERS LIKE 'NETWORK_POLICY' IN USER "
+                + name.sql())) {
+            if (parameter.nonEmpty("value") != null) {
+                user.put("network_policy", parameter.nonEmpty("value"));
+            }
+        }
+        return user;
     }
 
     private static ObjectNode toJson(final RestRow row, final List<RestRow> described) {
@@ -243,6 +252,10 @@ public final class UserResource implements RestResource {
         for (final String[] p : INTEGER_PROPERTIES) {
             sql.integer(body, p[0], p[1]);
         }
+        final RestIdentifier policy = RestJson.identifier(body, "network_policy", false);
+        if (policy != null) {
+            sql.property("NETWORK_POLICY", policy.sql());
+        }
         final String secondary = RestJson.text(body, "default_secondary_roles");
         if (secondary != null) {
             if ("ALL".equalsIgnoreCase(secondary)) {
@@ -292,6 +305,9 @@ public final class UserResource implements RestResource {
             if (!RestJson.present(body, p[0])) {
                 unset.add(p[1]);
             }
+        }
+        if (!RestJson.present(body, "network_policy")) {
+            unset.add("NETWORK_POLICY");
         }
         if (!unset.isEmpty()) {
             status = call.sql().status("ALTER USER " + name.sql() + " UNSET " + String.join(", ", unset));

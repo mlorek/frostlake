@@ -19,6 +19,8 @@ package dev.frostlake.query;
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -44,8 +46,8 @@ public class SetOperationDeclaredTypeTest extends BaseDatabaseTest {
     /** The declared type of one column as {@code TYPE(precision,scale)}, read back from the catalog. */
     private String declared(final String table, final String column) {
         return value("SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')'"
-            + " FROM test_db.information_schema.columns WHERE table_name = '" + table.toUpperCase()
-            + "' AND column_name = '" + column.toUpperCase() + "'");
+            + " FROM test_db.information_schema.columns WHERE table_name = '" + table.toUpperCase(Locale.ROOT)
+            + "' AND column_name = '" + column.toUpperCase(Locale.ROOT) + "'");
     }
 
     /** The integration-suite fixture shape: a decimal in a later branch must survive the CTE CTAS. */

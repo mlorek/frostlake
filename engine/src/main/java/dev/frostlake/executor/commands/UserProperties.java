@@ -29,6 +29,7 @@ import java.math.BigInteger;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -55,7 +56,8 @@ final class UserProperties {
         "PASSWORD", "LOGIN_NAME", "DISPLAY_NAME", "FIRST_NAME", "MIDDLE_NAME", "LAST_NAME",
         "EMAIL", "DEFAULT_ROLE", "DEFAULT_WAREHOUSE", "DEFAULT_NAMESPACE",
         "DEFAULT_SECONDARY_ROLES", "MUST_CHANGE_PASSWORD", "DISABLED", "COMMENT", "TYPE",
-        "DAYS_TO_EXPIRY", "MINS_TO_UNLOCK", "MINS_TO_BYPASS_MFA", "RSA_PUBLIC_KEY", "RSA_PUBLIC_KEY_2");
+        "DAYS_TO_EXPIRY", "MINS_TO_UNLOCK", "MINS_TO_BYPASS_MFA", "RSA_PUBLIC_KEY", "RSA_PUBLIC_KEY_2",
+        UserNetworkPolicy.PROPERTY);
 
     /** The largest DAYS_TO_EXPIRY: a thousand years. */
     private static final long MAX_DAYS_TO_EXPIRY = 365_000L;
@@ -89,6 +91,8 @@ final class UserProperties {
                 countdownValue(property);
             } else if (isKey(property)) {
                 keyValue(property);
+            } else if (property.NETWORK_POLICY() != null) {
+                UserNetworkPolicy.checkValue(property);
             }
         }
     }
@@ -162,13 +166,13 @@ final class UserProperties {
                 // DEFAULT_WAREHOUSE and DEFAULT_ROLE beside it, which keep the case they were given.
                 user.setDefaultNamespace((property.qualifiedName() != null
                     ? property.qualifiedName().getText()
-                    : text(property.STRING_LITERAL())).toUpperCase());
+                    : text(property.STRING_LITERAL())).toUpperCase(Locale.ROOT));
             } else if (property.DEFAULT_SECONDARY_ROLES() != null) {
                 user.setDefaultSecondaryRoles(rolesJson(property));
             } else if (property.LOGIN_NAME() != null) {
                 // A login name is upper-cased however it is written — `LOGIN_NAME = 'ln'` stores LN.
                 // DISPLAY_NAME beside it keeps the case it was given.
-                user.setLoginName(nameOrLiteral(property).toUpperCase());
+                user.setLoginName(nameOrLiteral(property).toUpperCase(Locale.ROOT));
             } else if (property.DISPLAY_NAME() != null) {
                 user.setDisplayName(nameOrLiteral(property));
             } else if (property.FIRST_NAME() != null) {
@@ -279,13 +283,19 @@ final class UserProperties {
     static void unset(final User user,
             final List<FrostlakeParser.UserUnsetPropertyContext> properties) {
         for (final String name : unsetNames(properties)) {
-            applyUnset(user, name);
+            if (UNSETTABLE.contains(name)) {
+                applyUnset(user, name);
+            } else {
+                // A session parameter set on the user: its sessions inherit the account's again.
+                user.getParameters().unset(name);
+            }
         }
     }
 
     /**
-     * The checks an account makes as it compiles an UNSET list, before it looks the user up: a property users do not
-     * have ({@code invalid property 'X' for 'USER'}) and a property named twice.
+     * The checks an account makes as it compiles an UNSET list, before it looks the user up: a name written twice
+     * ({@code duplicate property 'X';}), then a name that is neither a property users have nor a parameter
+     * ({@code invalid property 'X' for 'USER'}, the name as it is written — a quoted name is always one).
      *
      * @param properties the statement's properties
      */
@@ -293,25 +303,68 @@ final class UserProperties {
         unsetNames(properties);
     }
 
+    /** The names of an UNSET list, upper case, in the order they are judged in: properties and parameters alike. */
     private static List<String> unsetNames(final List<FrostlakeParser.UserUnsetPropertyContext> properties) {
-        final List<String> names = new ArrayList<>();
+        final List<String> written = new ArrayList<>();
         for (final FrostlakeParser.UserUnsetPropertyContext property : properties) {
-            final String name = property.getText().toUpperCase();
-            if (!UNSETTABLE.contains(name)) {
-                throw new RuntimeException(SqlCompilationError.of(
-                    "invalid property '" + name + "' for 'USER'"));
-            }
-            if (names.contains(name)) {
+            written.add(property.getText());
+        }
+        Collections.sort(written);
+        for (int i = 1; i < written.size(); i++) {
+            if (written.get(i).equals(written.get(i - 1))) {
                 // The trailing semicolon is a real account's, not a typo.
-                throw new RuntimeException(SqlCompilationError.of(
-                    "duplicate property '" + name + "';"));
+                throw new RuntimeException(SqlCompilationError.duplicateProperty(written.get(i)));
             }
-            names.add(name);
+        }
+        final List<String> names = new ArrayList<>();
+        for (final String name : written) {
+            final String folded = name.toUpperCase(Locale.ROOT);
+            final boolean known = !name.startsWith("\"") && (UNSETTABLE.contains(folded)
+                || ParameterRegistry.isSessionParameter(folded) || LeveledParameterSettings.typeOf(folded) != null);
+            if (!known) {
+                throw ParameterRegistry.invalidProperty(name, "USER");
+            }
+            names.add(folded);
         }
         return names;
     }
 
-    private static void applyUnset(final User user, final String name) {
+    /**
+     * Gives a text property the word it was written with, as its own form gives it a string.
+     *
+     * @param user the user
+     * @param name the property, upper case
+     * @param text the word as a parameter would hold it: upper case unless it was quoted
+     */
+    static void applyWord(final User user, final String name, final String text) {
+        if ("PASSWORD".equals(name)) {
+            user.setPassword(text);
+        } else if ("LOGIN_NAME".equals(name)) {
+            user.setLoginName(text.toUpperCase(Locale.ROOT));
+        } else if ("DISPLAY_NAME".equals(name)) {
+            user.setDisplayName(text);
+        } else if ("FIRST_NAME".equals(name)) {
+            user.setFirstName(text);
+        } else if ("MIDDLE_NAME".equals(name)) {
+            user.setMiddleName(text);
+        } else if ("LAST_NAME".equals(name)) {
+            user.setLastName(text);
+        } else if ("EMAIL".equals(name)) {
+            user.setEmail(text);
+        } else if ("DEFAULT_ROLE".equals(name)) {
+            user.setDefaultRole(text);
+        } else if ("DEFAULT_WAREHOUSE".equals(name)) {
+            user.setDefaultWarehouse(text);
+        } else if ("DEFAULT_NAMESPACE".equals(name)) {
+            user.setDefaultNamespace(text.toUpperCase(Locale.ROOT));
+        } else if ("TYPE".equals(name)) {
+            user.setUserType(validatedUserType(text));
+        } else if ("COMMENT".equals(name)) {
+            user.setComment(text);
+        }
+    }
+
+    static void applyUnset(final User user, final String name) {
         if ("PASSWORD".equals(name)) {
             user.setPassword(null);
         } else if ("LOGIN_NAME".equals(name)) {
@@ -360,7 +413,7 @@ final class UserProperties {
      * {@code TYPE = ROBOT} read identically.
      */
     private static String validatedUserType(final String value) {
-        final String userType = value == null ? null : value.toUpperCase();
+        final String userType = value == null ? null : value.toUpperCase(Locale.ROOT);
         if (!USER_TYPES.contains(userType)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value '" + value + "' for property 'TYPE'"));
@@ -382,7 +435,7 @@ final class UserProperties {
         String userType = currentType;
         for (final FrostlakeParser.UserPropertyContext property : properties) {
             if (property.TYPE() != null) {
-                userType = nameOrLiteral(property).toUpperCase();
+                userType = nameOrLiteral(property).toUpperCase(Locale.ROOT);
             }
         }
         final boolean service = SERVICE_USER_TYPE.equals(userType);
@@ -450,7 +503,7 @@ final class UserProperties {
                 if (json.length() > 1) {
                     json.append(',');
                 }
-                json.append('"').append(text(role).toUpperCase()).append('"');
+                json.append('"').append(text(role).toUpperCase(Locale.ROOT)).append('"');
             }
         }
         return json.append(']').toString();

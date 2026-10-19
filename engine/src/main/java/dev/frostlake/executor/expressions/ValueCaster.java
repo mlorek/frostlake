@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SessionInputFormats;
 import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SignedStorageWidth;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
@@ -24,6 +25,9 @@ import dev.frostlake.functions.scalar.conversion.TimestampFlavourConversion;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DayTimeInterval;
+import dev.frostlake.values.DecfloatRangeException;
+import dev.frostlake.values.DecfloatTextNode;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantBooleans;
@@ -31,6 +35,7 @@ import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.YearMonthInterval;
 
+import java.util.Locale;
 import java.util.Set;
 
 import java.math.BigDecimal;
@@ -57,12 +62,12 @@ public final class ValueCaster {
      * the type it prints, and only the caller holding the source EXPRESSION can tell a nullable column
      * from a literal. Every other caller reads as not-null, which is what live answers for one.
      */
-    static Object castValue(final Object value, final String targetType, final boolean nullableSource) {
+    public static Object castValue(final Object value, final String targetType, final boolean nullableSource) {
         if (value == null) {
             return null;
         }
 
-        String baseType = targetType.toUpperCase();
+        String baseType = targetType.toUpperCase(Locale.ROOT);
         final int parenIndex = baseType.indexOf('(');
         if (parenIndex > 0) {
             baseType = baseType.substring(0, parenIndex).trim();
@@ -116,6 +121,22 @@ public final class ValueCaster {
                         return hex;
                     }
                     throw numericCastFailure(value, "REAL");
+                }
+
+            case DECFLOAT:
+                // A decimal of 38 significant digits, a FLOAT taken at its exact binary value (see Decfloats).
+                if (value instanceof Number) {
+                    return Decfloats.of((Number) value, "TO_DECFLOAT");
+                }
+                if (variantBooleanNumber(value) != null) {
+                    return Decfloats.of(variantBooleanNumber(value), "TO_DECFLOAT");
+                }
+                try {
+                    return Decfloats.held(toBigDecimalCast(value, "DECFLOAT"));
+                } catch (final DecfloatRangeException outOfRange) {
+                    // A text past DECFLOAT's range spells no number it holds: '1e20000'::DECFLOAT (live-verified).
+                    throw new RuntimeException("Numeric value '" + SharedFunctionHelpers.textOf(value)
+                        + "' is not recognized");
                 }
 
             case DECIMAL:
@@ -179,15 +200,16 @@ public final class ValueCaster {
                 return SemiStructuredCasts.toObjectText(value);
 
             case BINARY:
-                // Snowflake's VARCHAR-to-BINARY cast interprets the string as hex (an illegal hex
-                // string is an error); an existing binary value passes through unchanged.
+                // Snowflake's VARCHAR-to-BINARY cast reads the string as the session's BINARY_INPUT_FORMAT says,
+                // hex unless set (a string that format refuses is an error); an existing binary value passes
+                // through unchanged.
                 if (value instanceof BinaryValue) {
                     return value;
                 }
                 if (value instanceof byte[]) {
                     return BinaryValue.of((byte[]) value);
                 }
-                return BinaryValue.fromHex(value.toString());
+                return SessionInputFormats.binary(value.toString());
 
             default:
                 return value;
@@ -205,7 +227,7 @@ public final class ValueCaster {
      * 9 when it declares none or is not one of those families.
      */
     private static int declaredFractionalPrecision(final String targetType) {
-        final String type = targetType.toUpperCase();
+        final String type = targetType.toUpperCase(Locale.ROOT);
         final int open = type.indexOf('(');
         final int close = type.indexOf(')');
         if (!type.startsWith("TIME") || open < 0 || close <= open) {
@@ -223,6 +245,10 @@ public final class ValueCaster {
         final int open = targetType.indexOf('(');
         final int close = targetType.indexOf(')');
         if (open < 0 || close <= open) {
+            // A bare NUMBER is NUMBER(38,0): a text past it is refused as that one would refuse it.
+            if (source instanceof CharSequence && NumericRangeRefusal.exceeds(number, MAX_NUMBER_PRECISION, 0)) {
+                throw new RuntimeException(rangeRefusal(number, source, MAX_NUMBER_PRECISION, 0, nullableSource));
+            }
             return number.setScale(0, RoundingMode.HALF_UP);
         }
         final String[] parts = targetType.substring(open + 1, close).split(",");
@@ -412,6 +438,9 @@ public final class ValueCaster {
         if (!(value instanceof VariantValue)) {
             return value;
         }
+        if (DecfloatTextNode.holds(((VariantValue) value).node())) {
+            return decfloatMember((VariantValue) value, baseType);
+        }
         final String jsonStringContent = SemiStructuredCasts.quotedJsonStringText(value);
         if (jsonStringContent != null) {
             return jsonStringContent;
@@ -427,6 +456,25 @@ public final class ValueCaster {
             return TimestampFlavourConversion.castVariant(flavour, (VariantValue) value);
         }
         return value;
+    }
+
+    /**
+     * A DECFLOAT member cast out of its VARIANT: to a DECFLOAT it is the number it holds, to text its text, and a
+     * NUMBER, a FLOAT or a BOOLEAN it does not become — {@code TO_VARIANT(1.5::DECFLOAT)::NUMBER(10,2)} is
+     * {@code Failed to cast variant value "1.5" to FIXED}, {@code ::FLOAT} the same to REAL (live-verified).
+     */
+    private static Object decfloatMember(final VariantValue value, final String baseType) {
+        final CastTargetCategory category = CastTargetCategory.fromTypeName(baseType);
+        if (category == CastTargetCategory.DECFLOAT) {
+            return DecfloatTextNode.valueOf(value.node());
+        }
+        final String family = category == CastTargetCategory.INTEGER || category == CastTargetCategory.DECIMAL
+            ? "FIXED" : category == CastTargetCategory.FLOAT ? "REAL"
+            : category == CastTargetCategory.BOOLEAN ? "BOOLEAN" : null;
+        if (family != null) {
+            throw new RuntimeException("Failed to cast variant value " + value.text() + " to " + family);
+        }
+        return value.node().asString();
     }
 
     /** The timestamp flavour a cast target names, the bare word by the session's mapping, or null. */

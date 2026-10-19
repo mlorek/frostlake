@@ -34,6 +34,8 @@ public class FunctionCallExpression implements Expression {
     private final Expression nameExpression;
     /** Where the call starts in its fragment, when the builder recorded it — see {@link SourcePosition}. */
     private SourcePosition position;
+    /** Where each argument's value starts, when the builder recorded it for a call with named arguments. */
+    private List<SourcePosition> argumentPositions;
     // Uppercase column names to omit when a `*` argument is expanded — e.g. OBJECT_CONSTRUCT(* EXCLUDE src).
     private List<String> starExcludes = new ArrayList<>();
     /** The relation a qualified star names ({@code COUNT(t.*)}), canonical, or null for a bare star. */
@@ -56,6 +58,12 @@ public class FunctionCallExpression implements Expression {
     private String operatorSpelling;
     /** Whether that operator was written with NOT. */
     private boolean operatorNegated;
+    /** The call's count among the calls of its name in the expression it was parsed in, or 0 when not counted. */
+    private int callOrdinal;
+    /** The canonical name of the method a call written {@code instance!method(…)} names, or null. */
+    private String methodName;
+    /** The database a built-in's name was written under, {@code DB.INFORMATION_SCHEMA.F(…)}, or null. */
+    private String qualifierDatabase;
 
     public FunctionCallExpression(final String functionName, final List<Expression> arguments) {
         this(functionName, arguments, false, false);
@@ -94,6 +102,8 @@ public class FunctionCallExpression implements Expression {
         copy.withinGroupOrdered = withinGroupOrdered;
         copy.quantifier = quantifier;
         copy.withinGroupKeys = withinGroupKeys;
+        copy.methodName = methodName;
+        copy.qualifierDatabase = qualifierDatabase;
         return copy;
     }
 
@@ -111,7 +121,23 @@ public class FunctionCallExpression implements Expression {
         copy.withinGroupOrdered = withinGroupOrdered;
         copy.quantifier = quantifier;
         copy.withinGroupKeys = withinGroupKeys;
+        copy.qualifierDatabase = qualifierDatabase;
         return copy;
+    }
+
+    /**
+     * The database a built-in function's name was written under, {@code DB.INFORMATION_SCHEMA.F(…)}: looked up
+     * before the call runs, its name being no part of the function's (see InformationSchemaCalls).
+     *
+     * @return the database's canonical name, or null
+     */
+    public String getQualifierDatabase() {
+        return qualifierDatabase;
+    }
+
+    /** @param database the database a built-in's name was written under, or null */
+    public void setQualifierDatabase(final String database) {
+        this.qualifierDatabase = database;
     }
 
     public String getFunctionName() {
@@ -170,6 +196,24 @@ public class FunctionCallExpression implements Expression {
         return argumentNames;
     }
 
+    /**
+     * Where each argument's value starts in the call's fragment, for a call written with named arguments.
+     *
+     * @return the positions, one per argument, or null when the builder recorded none
+     */
+    public List<SourcePosition> getArgumentPositions() {
+        return argumentPositions;
+    }
+
+    /**
+     * Records where each argument's value starts.
+     *
+     * @param positions the positions, one per argument
+     */
+    public void setArgumentPositions(final List<SourcePosition> positions) {
+        this.argumentPositions = positions;
+    }
+
     public boolean isDistinct() {
         return distinct;
     }
@@ -210,6 +254,24 @@ public class FunctionCallExpression implements Expression {
 
     public void setNameParts(final List<String> nameParts) {
         this.nameParts = nameParts;
+    }
+
+    /**
+     * The method of a call written {@code instance!method(…)}; the name parts are then the instance's.
+     *
+     * @return the method's canonical name, or null for an ordinary call
+     */
+    public String getMethodName() {
+        return methodName;
+    }
+
+    /**
+     * Marks the call as a method of the class instance its name parts name.
+     *
+     * @param method the method's canonical name
+     */
+    public void describeMethod(final String method) {
+        this.methodName = method;
     }
 
     @Override
@@ -286,6 +348,21 @@ public class FunctionCallExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /**
+     * The call's count among the calls of its name in the expression it was parsed in: the first call of a name
+     * written there is 1, the next 2 (see {@link CallOrdinalWalk}).
+     *
+     * @return the count, or 0 for a call nobody counted
+     */
+    public int getCallOrdinal() {
+        return callOrdinal;
+    }
+
+    /** Records the call's count among the calls of its name — see {@link #getCallOrdinal()}. */
+    void setCallOrdinal(final int callOrdinal) {
+        this.callOrdinal = callOrdinal;
     }
 
 }

@@ -27,6 +27,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -191,7 +192,7 @@ public class PlannedIntervalFunctionsTest extends BaseDatabaseTest {
         }
         assertEquals(Arrays.asList("A DATE", "B NUMBER(9,0)", "C TIME(9)", "D NUMBER(38,0)"), types);
         assertEquals("DATE_ADDDAYSTODATE(1, TO_DATE('2020-01-31'))", engine.executeQuery(
-            "SELECT DATE_ADDDAYSTODATE(1, TO_DATE('2020-01-31'))").getColumns().get(0).getName().toUpperCase());
+            "SELECT DATE_ADDDAYSTODATE(1, TO_DATE('2020-01-31'))").getColumns().get(0).getName().toUpperCase(Locale.ROOT));
         assertEquals(Arrays.asList("2020-02-01"),
             lines("SELECT TO_VARCHAR(date_adddaystodate(1, " + DATE + "))"));
     }

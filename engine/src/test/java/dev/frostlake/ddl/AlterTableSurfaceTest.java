@@ -18,6 +18,7 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.Test;
@@ -182,5 +183,26 @@ public class AlterTableSurfaceTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("DESC TABLE dsc_t");
         final Row row = rs.getRows().get(0);
         assertEquals("the a column", row.getValue(rs.getColumnIndex("comment")));
+    }
+
+    @Test
+    public void columnsKeepTheirPositionThroughRetypeAndKeyChanges() {
+        engine.execute("CREATE TABLE ord_t (a INTEGER NOT NULL, b VARCHAR(10), c INTEGER NOT NULL, d NUMBER(38,0))");
+        engine.execute("ALTER TABLE ord_t ALTER COLUMN b VARCHAR(20)");
+        engine.execute("ALTER TABLE ord_t ADD CONSTRAINT pk_ord PRIMARY KEY (a, c)");
+        engine.execute("ALTER TABLE ord_t DROP CONSTRAINT pk_ord");
+        engine.execute("ALTER TABLE ord_t ADD COLUMN e INTEGER");
+
+        final StringBuilder byOrdinal = new StringBuilder();
+        for (final Row row : engine.executeQuery("SELECT column_name FROM information_schema.columns"
+                + " WHERE table_name = 'ORD_T' ORDER BY ordinal_position").getRows()) {
+            byOrdinal.append(row.getValue(0));
+        }
+        final StringBuilder physical = new StringBuilder();
+        for (final ResultSetColumn column : engine.executeQuery("SELECT * FROM ord_t").getColumns()) {
+            physical.append(column.getName());
+        }
+        assertEquals("ABCDE", byOrdinal.toString());
+        assertEquals("ABCDE", physical.toString());
     }
 }

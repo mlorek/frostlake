@@ -23,6 +23,7 @@ import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.metastore.model.Account;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.ManagedAccount;
 import dev.frostlake.metastore.model.ObjectParameters;
@@ -31,6 +32,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.UniqueConstraint;
+import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
@@ -49,6 +51,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -74,6 +77,12 @@ final class ShowSessionExecutor {
      * on every run would be worse than one that answers a stable placeholder.
      */
     private static final LocalDateTime ACCOUNT_CREATED_ON = LocalDateTime.of(2020, 1, 1, 0, 0, 0);
+
+    /** The parameters a task carries that an alert does not: the task's own (see {@link #showParametersInTask}). */
+    private static final Set<String> TASK_ONLY = new HashSet<>(Arrays.asList("SERVERLESS_TASK_MAX_STATEMENT_SIZE",
+        "SERVERLESS_TASK_MIN_STATEMENT_SIZE", "SUSPEND_TASK_AFTER_NUM_FAILURES", "TASK_AUTO_RETRY_ATTEMPTS",
+        "USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE", "USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS",
+        "USER_TASK_TIMEOUT_MS"));
 
     private final AccountIdentity identity;
     private final Catalog catalog;
@@ -110,46 +119,69 @@ final class ShowSessionExecutor {
     }
 
     public ResultSet showParameters(final String likePattern) {
+        return showParameters(likePattern, false);
+    }
+
+    /**
+     * SHOW PARAMETERS, IN SESSION or IN ACCOUNT. The session listing reports what the session runs with: its own
+     * setting at level SESSION, else its user's at level USER, else the account's at level ACCOUNT
+     * ({@link AccountParameters}), else the default with an empty level. The account listing leaves the session's
+     * and the user's settings out.
+     *
+     * @param likePattern the LIKE pattern, or null for every row
+     * @param inAccount   whether the statement said IN ACCOUNT
+     */
+    public ResultSet showParameters(final String likePattern, final boolean inAccount) {
         final SecurityManager securityManager = facade.getSecurityManager();
         final List<ResultSetColumn> columns = parameterColumns();
         // Every parameter a real account lists, with its default, description and type word —
         // transcribed rather than invented (see SessionParameterCatalog). Frostlake used to carry a
         // dozen hand-written rows, so SHOW PARAMETERS LIKE 'WEEK_START' returned NOTHING on a
         // parameter live describes perfectly well.
-        final Map<String, Object> sessionParams = securityManager != null
+        final Map<String, Object> sessionParams = securityManager != null && !inAccount
             ? securityManager.getSessionContext().getAllSessionParameters()
             : new LinkedHashMap<>();
 
+        // The user whose sessions these are: what ALTER USER set on it stands between the session and the account.
+        final String sessionUserName = inAccount ? null : catalog.currentUserForDdl();
+        final User sessionUser = sessionUserName != null && catalog.hasUser(sessionUserName)
+            ? catalog.getUser(sessionUserName) : null;
         final List<Row> rows = new ArrayList<>();
         final Set<String> listed = new HashSet<>();
-        for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
+        for (final SessionParameterRow parameter : inAccount ? accountRows() : SessionParameterCatalog.rows()) {
             final String key = parameter.getName();
-            listed.add(key.toUpperCase());
+            listed.add(key.toUpperCase(Locale.ROOT));
             if (!matchesLike(key, likePattern)) {
                 continue;
             }
             final boolean setBySession = sessionParams.containsKey(key);
+            final String setByUser = sessionUser == null ? null : sessionUser.getParameters().get(key);
+            final String setByAccount = AccountParameters.value(catalog, key);
             // JSON_INDENT is the one row whose unset value the ENGINE decides rather than the table:
             // it is a real setting here, and SHOW must report what the renderer is actually using.
             final String inForce;
             if (setBySession) {
                 inForce = String.valueOf(sessionParams.get(key));
+            } else if (setByUser != null) {
+                inForce = setByUser;
+            } else if (setByAccount != null) {
+                inForce = setByAccount;
             } else if ("JSON_INDENT".equals(key)) {
                 inForce = String.valueOf(VariantJsonFormat.indent());
             } else {
                 inForce = parameter.getDefaultValue();
             }
             // The LEVEL is where the value in force came from: a parameter this session has SET reads
-            // SESSION, and one still on its default reads EMPTY — live shows an unset parameter with a
-            // blank level, never ACCOUNT.
+            // SESSION, one the account sets reads ACCOUNT, and one still on its default reads EMPTY.
             rows.add(new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
-                setBySession ? "SESSION" : "", parameter.getDescription(), parameter.getType())));
+                levelOf(setBySession ? "SESSION" : setByUser != null ? "USER" : null, setByAccount),
+                parameter.getDescription(), parameter.getType())));
         }
         // A session parameter the catalog has never heard of still appears once it is set — with no
         // default and no description, because there is nothing to report for either.
         for (final Map.Entry<String, Object> e : sessionParams.entrySet()) {
             final String key = e.getKey();
-            if (!listed.contains(key.toUpperCase()) && matchesLike(key, likePattern)) {
+            if (!listed.contains(key.toUpperCase(Locale.ROOT)) && matchesLike(key, likePattern)) {
                 rows.add(new Row(Arrays.asList(key, e.getValue() != null ? e.getValue().toString() : null,
                     null, "SESSION", null, "TEXT")));
             }
@@ -158,15 +190,37 @@ final class ShowSessionExecutor {
     }
 
     /**
-     * SHOW PARAMETERS IN USER: the parameters a user carries, each at its default, and the network policy attached
-     * to the user, whose level reads USER while one is attached and is empty otherwise. The pattern is a LIKE
-     * pattern, matched case-insensitively.
+     * Every parameter the account lists: a session's own and the ones only the account carries, by name. A session
+     * parameter no longer in use, TELEMETRY_ENABLE_INTERACTIVE_MODE, is a session's alone (live-verified).
+     */
+    private static List<SessionParameterRow> accountRows() {
+        final List<SessionParameterRow> rows = new ArrayList<>();
+        for (final SessionParameterRow row : SessionParameterCatalog.rows()) {
+            if (!"TELEMETRY_ENABLE_INTERACTIVE_MODE".equals(row.getName())) {
+                rows.add(row);
+            }
+        }
+        rows.addAll(SessionParameterCatalog.accountOnlyRows());
+        Collections.sort(rows, new Comparator<SessionParameterRow>() {
+            @Override
+            public int compare(final SessionParameterRow left, final SessionParameterRow right) {
+                return left.getName().compareTo(right.getName());
+            }
+        });
+        return rows;
+    }
+
+    /**
+     * SHOW PARAMETERS IN USER: the parameters a user carries — each as ALTER USER set it, at level USER, else as the
+     * account sets it, else at its default — and the network policy attached to the user, whose level reads USER
+     * while one is attached and is empty otherwise. The pattern is a LIKE pattern, matched case-insensitively.
      *
      * @param userName    the user, canonical
      * @param likePattern the LIKE pattern, or null for every row
      */
     public ResultSet showParametersInUser(final String userName, final String likePattern) {
-        final String user = catalog.getUser(userName).getName();
+        final User listed = catalog.getUserExact(userName);
+        final String user = listed.getName();
         final Map<String, SessionParameterRow> known = new HashMap<>();
         for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
             known.put(parameter.getName(), parameter);
@@ -186,12 +240,32 @@ final class ShowSessionExecutor {
                 row = new Row(Arrays.asList(key, policy == null ? "" : policy, parameter.getDefaultValue(),
                     policy == null ? "" : "USER", parameter.getDescription(), parameter.getType()));
             } else {
-                row = new Row(Arrays.asList(key, parameter.getDefaultValue(), parameter.getDefaultValue(), "",
-                    parameter.getDescription(), parameter.getType()));
+                // The user's own setting, else the account's, else the default.
+                final String setByUser = listed.getParameters().get(key);
+                final String setByAccount = AccountParameters.value(catalog, key);
+                final String inForce = setByUser != null ? setByUser
+                    : setByAccount != null ? setByAccount : parameter.getDefaultValue();
+                row = new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
+                    levelOf(setByUser != null ? "USER" : null, setByAccount), parameter.getDescription(),
+                    parameter.getType()));
             }
             addIfLike(rows, row, likePattern);
         }
         return new ResultSet(parameterColumns(), rows);
+    }
+
+    /**
+     * Where a parameter's value in force came from: the level that set it, else ACCOUNT when the account sets it,
+     * else empty, the default.
+     *
+     * @param ownLevel     the level the listed object set it at, or null when it did not
+     * @param setByAccount the account's value, or null when the account leaves it at its default
+     */
+    private static String levelOf(final String ownLevel, final String setByAccount) {
+        if (ownLevel != null) {
+            return ownLevel;
+        }
+        return setByAccount != null ? "ACCOUNT" : "";
     }
 
     private static void addIfLike(final List<Row> rows, final Row row, final String likePattern) {
@@ -208,16 +282,8 @@ final class ShowSessionExecutor {
         return likePattern == null || ShowResultHelpers.matchesLike(name, likePattern);
     }
 
-    public ResultSet showParametersInTask(final String taskName, final String likePattern) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        if (dbName == null || scName == null) {
-            throw new RuntimeException("No database or schema selected");
-        }
-        final Task task = catalog.getDatabase(dbName).getSchema(scName).getTask(taskName);
-        if (task == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", taskName));
-        }
+    public ResultSet showParametersInTask(final SchemaObjectName written, final String likePattern) {
+        final Task task = written.schema().getTask(written.name());
         final Object[][] params = {
             {"SERVERLESS_TASK_MAX_STATEMENT_SIZE",
                 task.getServerlessTaskMaxStatementSize() != null
@@ -270,8 +336,40 @@ final class ShowSessionExecutor {
                 continue;
             }
             final String set = task.getSessionParameters().get(key);
-            rows.add(new Row(Arrays.asList(key, set != null ? set : row.getDefaultValue(), row.getDefaultValue(),
-                set != null ? "TASK" : "", row.getDescription(), row.getType())));
+            final String setByAccount = AccountParameters.value(catalog, key);
+            final String inherited = setByAccount != null ? setByAccount : row.getDefaultValue();
+            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited, row.getDefaultValue(),
+                levelOf(set != null ? "TASK" : null, setByAccount), row.getDescription(), row.getType())));
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    /**
+     * SHOW PARAMETERS IN ALERT: the session parameters a task carries for its runs, in the task listing's order,
+     * without the task's own (live-verified); an alert sets none of them, so each is the account's value or its
+     * default. SUSPEND_ALERT_AFTER_NUM_FAILURES is a property of the alert and no parameter: it is not listed.
+     *
+     * @param written     the alert as written
+     * @param likePattern the LIKE filter, or null
+     * @return the listing
+     */
+    public ResultSet showParametersInAlert(final SchemaObjectName written, final String likePattern) {
+        if (!written.schema().hasAlert(written.name())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Alert",
+                written.schema().qualifiedName(written.name())));
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final String key : SessionParameterCatalog.taskScopeNames()) {
+            if (TASK_ONLY.contains(key) || !matchesParameterFilter(key, likePattern)) {
+                continue;
+            }
+            final SessionParameterRow row = SessionParameterCatalog.find(key);
+            if (row == null) {
+                continue;
+            }
+            final String setByAccount = AccountParameters.value(catalog, key);
+            rows.add(new Row(Arrays.asList(key, setByAccount != null ? setByAccount : row.getDefaultValue(),
+                row.getDefaultValue(), levelOf(null, setByAccount), row.getDescription(), row.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
     }
@@ -281,11 +379,15 @@ final class ShowSessionExecutor {
      * WAREHOUSE where the warehouse set the parameter itself and empty where it inherits.
      */
     public ResultSet showParametersInWarehouse(final String warehouseName, final String likePattern) {
-        final Warehouse warehouse = catalog.getWarehouse(warehouseName);
+        final Warehouse warehouse = catalog.getWarehouseExact(warehouseName);
         if (warehouse == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", warehouseName));
         }
+        // ENABLE_USE_STABLE_PATH and FALLBACK_WAREHOUSE are listed at their defaults; a warehouse sets neither here.
         final Object[][] params = {
+            {"ENABLE_USE_STABLE_PATH", "false", "false", "BOOLEAN", "Add support for stable path"},
+            {"FALLBACK_WAREHOUSE", "", "", "STRING",
+                "If not null, the warehouse to use as a fallback for statements that timed out"},
             {"MAX_CONCURRENCY_LEVEL", String.valueOf(warehouse.getMaxConcurrencyLevel()), "8", "NUMBER",
                 "Maximum number of SQL statements a warehouse cluster can execute concurrently "
                     + "before queuing them. Small SQL statements count as a fraction of 1."},
@@ -361,6 +463,103 @@ final class ShowSessionExecutor {
         return new ResultSet(parameterColumns(), rows);
     }
 
+    /**
+     * SHOW PARAMETERS IN TABLE: the parameters a table can set on itself, each with the value in force and the
+     * level it comes from, the table's own (level {@code TABLE}), its schema's, its database's or the account
+     * default (level empty). The TABLE and STREAM keywords read alike and the object decides: a table lists its
+     * parameters, while a view and a stream are found and list none (live-verified).
+     */
+    public ResultSet showParametersInTable(final SchemaObjectName written, final String likePattern) {
+        final Schema schema = written.schema();
+        final String name = written.name();
+        final List<Row> rows = new ArrayList<>();
+        if (!schema.hasTable(name) && schema.hasDynamicTable(name)) {
+            // A dynamic table lists its own parameters, a table's less a few and with its log and trace levels
+            // (live-verified).
+            final DynamicTable dynamicTable = schema.getDynamicTable(name);
+            for (final SessionParameterRow parameter : ContainerParameterCatalog.dynamicTableRows()) {
+                if (matchesLike(parameter.getName(), likePattern)) {
+                    rows.add(inheritedRow(parameter, dynamicTableValue(parameter.getName(), dynamicTable), schema,
+                        written.database()));
+                }
+            }
+            return new ResultSet(parameterColumns(), rows);
+        }
+        if (!schema.hasTable(name)) {
+            if (schema.hasView(name) || schema.hasMaterializedView(name) || schema.hasStreamExact(name)) {
+                return new ResultSet(parameterColumns(), rows);
+            }
+            // A missing table is named as the statement wrote it, bare or in full (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table",
+                written.isQualified() ? written.fullName() : name));
+        }
+        final Table table = schema.getTable(name);
+        final Database database = written.database();
+        for (final SessionParameterRow parameter : ContainerParameterCatalog.tableRows()) {
+            final String key = parameter.getName();
+            if (matchesLike(key, likePattern)) {
+                rows.add(inheritedRow(parameter, tableValue(key, table), schema, database));
+            }
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    /**
+     * One parameter's row for a table or a dynamic table: its own value at the TABLE level, else its schema's, else
+     * its database's, else the default.
+     */
+    private static Row inheritedRow(final SessionParameterRow parameter, final String own, final Schema schema,
+                                    final Database database) {
+        final String key = parameter.getName();
+        String value = own;
+        String level = "TABLE";
+        if (value == null) {
+            value = containerValue(key, schema.getDataRetentionTimeInDays(), schema.getParameters());
+            level = "SCHEMA";
+        }
+        if (value == null) {
+            value = containerValue(key, database.getDataRetentionTimeInDays(), database.getParameters());
+            level = "DATABASE";
+        }
+        if (value == null) {
+            value = parameter.getDefaultValue();
+            level = "";
+        }
+        return new Row(Arrays.asList(key, value, parameter.getDefaultValue(), level, parameter.getDescription(),
+            parameter.getType()));
+    }
+
+    /** A dynamic table's own setting of a parameter, or null when it inherits it. */
+    private static String dynamicTableValue(final String key, final DynamicTable dynamicTable) {
+        if ("DATA_RETENTION_TIME_IN_DAYS".equals(key)) {
+            return dynamicTable.isDataRetentionSet() ? String.valueOf(dynamicTable.getDataRetentionDays()) : null;
+        }
+        if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equals(key)) {
+            return dynamicTable.isMaxDataExtensionSet() ? String.valueOf(dynamicTable.getMaxDataExtensionDays())
+                : null;
+        }
+        return dynamicTable.getParameter(key);
+    }
+
+    /** A table's own setting of a parameter, or null when it inherits it. */
+    private static String tableValue(final String key, final Table table) {
+        if ("DATA_RETENTION_TIME_IN_DAYS".equals(key)) {
+            return table.getDataRetentionTimeInDays() == null ? null
+                : String.valueOf(table.getDataRetentionTimeInDays());
+        }
+        if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equals(key)) {
+            return table.getMaxDataExtensionTimeInDays() == null ? null
+                : String.valueOf(table.getMaxDataExtensionTimeInDays());
+        }
+        if ("DEFAULT_DDL_COLLATION".equals(key)) {
+            return table.getDefaultDdlCollation();
+        }
+        if ("DATA_METRIC_SCHEDULE".equals(key)) {
+            return table.getDataMetricSchedule();
+        }
+        return null;
+    }
+
     /** A container's own setting of a parameter, or null when it inherits it; the retention is kept apart. */
     private static String containerValue(final String key, final Integer retention,
                                          final ObjectParameters parameters) {
@@ -370,10 +569,12 @@ final class ShowSessionExecutor {
         return parameters.get(key);
     }
 
-    /** Whether a parameter name survives a SHOW PARAMETERS … LIKE filter. */
+    /**
+     * Whether a container's parameter survives a SHOW PARAMETERS … LIKE filter: a pattern as for every other
+     * listing, so {@code 'CATALOG_SYN_'} names CATALOG_SYNC and {@code 'DATA'} names nothing (live-verified).
+     */
     private boolean matchesParameterFilter(final String key, final String likePattern) {
-        return likePattern == null
-            || key.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""));
+        return matchesLike(key, likePattern);
     }
 
     /**
@@ -559,17 +760,18 @@ final class ShowSessionExecutor {
      * statement touched — UPDATE / DELETE / MERGE / TRUNCATE, while an append-only INSERT holds no
      * lock — with {@code type=PARTITIONS} and {@code status=HOLDING}, the resource as the table's
      * fully qualified name, and the lock's own {@code acquired_on} / {@code query_id} beside the
-     * owning transaction's id and start. {@code IN ACCOUNT} prepends a {@code session} column; the
-     * rows are otherwise identical.
+     * owning transaction's id and start; and one row with {@code status=WAITING}, no {@code acquired_on} and
+     * the waiting statement's query ID for a table a statement waits for (live-verified). {@code IN ACCOUNT}
+     * prepends a {@code session} column; the rows are otherwise identical.
      */
     public ResultSet showLocks(final boolean inAccount) {
         final List<ResultSetColumn> columns = new ArrayList<>();
         if (inAccount) {
-            columns.add(new ResultSetColumn("session", NumericType.BIGINT));
+            columns.add(new ResultSetColumn("session", NumericType.NUMBER));
         }
         columns.add(new ResultSetColumn("resource", StringType.VARCHAR));
         columns.add(new ResultSetColumn("type", StringType.VARCHAR));
-        columns.add(new ResultSetColumn("transaction", NumericType.BIGINT));
+        columns.add(new ResultSetColumn("transaction", NumericType.NUMBER));
         columns.add(new ResultSetColumn("transaction_started_on", ShowResultHelpers.CREATED_ON));
         columns.add(new ResultSetColumn("status", StringType.VARCHAR));
         columns.add(new ResultSetColumn("acquired_on", ShowResultHelpers.CREATED_ON));
@@ -579,7 +781,12 @@ final class ShowSessionExecutor {
             if (txn.getState() != TransactionState.ACTIVE) {
                 continue;
             }
+            final String waitingFor = txn.getWaitingFor();
+            final String waitingQueryId = txn.getWaitingQueryId();
             for (final Map.Entry<String, TableLock> entry : txn.getAllTableLocks().entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(waitingFor)) {
+                    continue;   // the lock its statement waits for is not held yet
+                }
                 final List<Object> cells = new ArrayList<>();
                 if (inAccount) {
                     cells.add(sessionNumberOf(txn));
@@ -591,6 +798,20 @@ final class ShowSessionExecutor {
                 cells.add("HOLDING");
                 cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(entry.getValue().getAcquiredOn())));
                 cells.add(entry.getValue().getQueryId());
+                rows.add(new Row(cells));
+            }
+            if (waitingFor != null) {
+                final List<Object> cells = new ArrayList<>();
+                if (inAccount) {
+                    cells.add(sessionNumberOf(txn));
+                }
+                cells.add(waitingFor);
+                cells.add("PARTITIONS");
+                cells.add(transactionDisplayId(txn));
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));
+                cells.add("WAITING");
+                cells.add(null);
+                cells.add(waitingQueryId);
                 rows.add(new Row(cells));
             }
         }
@@ -606,13 +827,13 @@ final class ShowSessionExecutor {
      */
     public ResultSet showTransactions(final String likePattern) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("id", NumericType.BIGINT),
+            new ResultSetColumn("id", NumericType.NUMBER),
             new ResultSetColumn("user", StringType.VARCHAR),
-            new ResultSetColumn("session", NumericType.BIGINT),
+            new ResultSetColumn("session", NumericType.NUMBER),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("started_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("state", StringType.VARCHAR),
-            new ResultSetColumn("scope", NumericType.BIGINT)
+            new ResultSetColumn("scope", NumericType.NUMBER)
         );
         final List<Row> rows = new ArrayList<>();
         for (final Transaction txn : transactionManager.getActiveTransactions()) {
@@ -673,7 +894,7 @@ final class ShowSessionExecutor {
             return null;
         }
         final String user = securityManager.getSessionContext().getCurrentUser();
-        return user == null ? null : user.toUpperCase();
+        return user == null ? null : user.toUpperCase(Locale.ROOT);
     }
 
     public ResultSet showVariables(final String likePattern) {
@@ -682,7 +903,7 @@ final class ShowSessionExecutor {
         // the variable NAME is folded upper, an unset comment is '', and type names the value's
         // family (fixed / text / boolean).
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("session_id", NumericType.BIGINT),
+            new ResultSetColumn("session_id", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -711,7 +932,7 @@ final class ShowSessionExecutor {
                 currentSessionNumber(),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
-                e.getKey().toUpperCase(),
+                e.getKey().toUpperCase(Locale.ROOT),
                 value != null ? value.toString() : null,
                 type,
                 "")));
@@ -802,7 +1023,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("table_name", StringType.VARCHAR),
             new ResultSetColumn("column_name", StringType.VARCHAR),
-            new ResultSetColumn("key_sequence", NumericType.INTEGER),
+            new ResultSetColumn("key_sequence", ShowResultHelpers.COUNT),
             new ResultSetColumn("constraint_name", StringType.VARCHAR),
             new ResultSetColumn("rely", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR));
@@ -811,21 +1032,21 @@ final class ShowSessionExecutor {
             final String dbName = databaseNameOf(schema);
             for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
                 if (primary) {
+                    // Numbered in the key's own order, which is its declaration's and not the columns'.
                     int seq = 1;
-                    for (final TableColumn col : table.getColumns()) {
-                        if (col.isPrimaryKey()) {
-                            rows.add(keyRow(dbName, schema, table, col.getName(), seq++,
-                                table.primaryKeyConstraintName(), col.getRely()));
+                    for (final String columnName : table.getPrimaryKeys()) {
+                        if (table.hasColumn(columnName)) {
+                            rows.add(keyRow(dbName, schema, table, table.getColumn(columnName).getName(), seq++,
+                                table.primaryKeyConstraintName(), table.getPrimaryKeyRely()));
                         }
                     }
                 } else {
                     for (final UniqueConstraint unique : table.getUniqueConstraints()) {
                         int seq = 1;
+                        // RELY is the key's own, whatever other key spans its columns (live-verified).
                         for (final String columnName : unique.getColumnNames()) {
-                            final Boolean rely = table.hasColumn(columnName)
-                                ? table.getColumn(columnName).getRely() : null;
                             rows.add(keyRow(dbName, schema, table, columnName, seq++,
-                                unique.getConstraintName(), rely));
+                                unique.getConstraintName(), unique.getRely()));
                         }
                     }
                 }
@@ -878,7 +1099,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("fk_schema_name", StringType.VARCHAR),
             new ResultSetColumn("fk_table_name", StringType.VARCHAR),
             new ResultSetColumn("fk_column_name", StringType.VARCHAR),
-            new ResultSetColumn("key_sequence", NumericType.INTEGER),
+            new ResultSetColumn("key_sequence", ShowResultHelpers.COUNT),
             new ResultSetColumn("update_rule", StringType.VARCHAR),
             new ResultSetColumn("delete_rule", StringType.VARCHAR),
             new ResultSetColumn("fk_name", StringType.VARCHAR),
@@ -892,7 +1113,7 @@ final class ShowSessionExecutor {
                 // Inline column-level `REFERENCES parent[(col)]` is a single-column FK held on the
                 // column, not in getForeignKeys() — enumerate those too (the same source
                 // INFORMATION_SCHEMA.TABLE_CONSTRAINTS reads), or SHOW IMPORTED KEYS misses them.
-                for (final dev.frostlake.metastore.model.TableColumn col : table.getColumns()) {
+                for (final TableColumn col : table.getColumns()) {
                     if (col.getReferencedTable() == null) {
                         continue;
                     }
@@ -917,7 +1138,8 @@ final class ShowSessionExecutor {
                         col.getOnUpdate() != null ? col.getOnUpdate() : "NO ACTION",
                         col.getOnDelete() != null ? col.getOnDelete() : "NO ACTION",
                         table.columnForeignKeyConstraintName(col.getName()),
-                        referencedPrimaryKeyName(schema, col.getReferencedTable()),
+                        referencedKeyName(schema, col.getReferencedTable(), col.getReferencedColumn() == null
+                            ? null : Arrays.asList(col.getReferencedColumn())),
                         "NOT DEFERRABLE",
                         relyText(col.getRely()),
                         null)));
@@ -942,7 +1164,7 @@ final class ShowSessionExecutor {
                             fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
                             fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
                             fk.getConstraintName(),
-                            referencedPrimaryKeyName(schema, fk.getReferencedTable()),
+                            referencedKeyName(schema, fk.getReferencedTable(), pkColumns),
                             "NOT DEFERRABLE",
                             relyText(fk.getRely()),
                             null)));
@@ -951,6 +1173,94 @@ final class ShowSessionExecutor {
             }
         }
         return new ResultSet(cols, rows);
+    }
+
+    /**
+     * SHOW EXPORTED KEYS: the foreign keys that reference the tables of the scope, wherever the referencing table
+     * lives — the rows SHOW IMPORTED KEYS lists for the referencing side, read from the referenced one
+     * (live-verified: a table lists the keys other tables import from it, and none it imports itself). The rows
+     * follow the referenced tables, then the referencing ones, and a key of several columns lists them in the
+     * referencing table's column order, where SHOW IMPORTED KEYS lists them in the key's own.
+     */
+    public ResultSet showExportedKeys(final String scopeKind, final String scopeName) {
+        final List<String> referenced = new ArrayList<>();
+        for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
+            final String databaseName = databaseNameOf(schema);
+            for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
+                referenced.add(QualifiedName.join(databaseName, schema.getName(), table.getName()));
+            }
+        }
+        final ResultSet imported = showImportedKeys("ACCOUNT", null);
+        final List<Row> rows = new ArrayList<>();
+        for (final String target : referenced) {
+            final Map<String, List<Row>> byReferencing = new LinkedHashMap<>();
+            for (final Row row : imported.getRows()) {
+                if (target.equals(tableOf(row, 1))) {
+                    final String referencing = tableOf(row, 5);
+                    if (!byReferencing.containsKey(referencing)) {
+                        byReferencing.put(referencing, new ArrayList<Row>());
+                    }
+                    byReferencing.get(referencing).add(row);
+                }
+            }
+            for (final Map.Entry<String, List<Row>> keys : byReferencing.entrySet()) {
+                final List<String> columns = columnNamesOf(keys.getKey());
+                Collections.sort(keys.getValue(), new Comparator<Row>() {
+                    @Override
+                    public int compare(final Row left, final Row right) {
+                        return Integer.compare(columns.indexOf(String.valueOf(left.getValue(8))),
+                            columns.indexOf(String.valueOf(right.getValue(8))));
+                    }
+                });
+                rows.addAll(keys.getValue());
+            }
+        }
+        return new ResultSet(imported.getColumns(), rows);
+    }
+
+    /** The table a key row names in the three columns from {@code first} on, or null when one of them is unset. */
+    private static String tableOf(final Row row, final int first) {
+        if (row.getValue(first) == null || row.getValue(first + 1) == null || row.getValue(first + 2) == null) {
+            return null;
+        }
+        return QualifiedName.join(row.getValue(first).toString(), row.getValue(first + 1).toString(),
+            row.getValue(first + 2).toString());
+    }
+
+    /** A table's column names in their order, or none when the table cannot be found. */
+    private List<String> columnNamesOf(final String qualifiedTable) {
+        final List<String> names = new ArrayList<>();
+        if (qualifiedTable == null) {
+            return names;
+        }
+        final Table table;
+        try {
+            table = catalog.resolveTable(qualifiedTable);
+        } catch (final RuntimeException gone) {
+            return names;
+        }
+        if (table != null) {
+            for (final TableColumn column : table.getColumns()) {
+                names.add(column.getName());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * SHOW GRANTS ON ACCOUNT: the privileges roles hold on the account itself, the account named by its locator
+     * as every grant on it is.
+     */
+    public ResultSet showGrantsOnAccount() {
+        final ResultSet granted = facade.showGrantsOnObject("ACCOUNT", "ACCOUNT", null);
+        final int name = granted.getColumnIndex("name");
+        final List<Row> rows = new ArrayList<>();
+        for (final Row row : granted.getRows()) {
+            final List<Object> values = new ArrayList<>(row.getValues());
+            values.set(name, identity.getAccountLocator());
+            rows.add(new Row(values));
+        }
+        return new ResultSet(granted.getColumns(), rows);
     }
 
     /** The database a scope schema belongs to — Schema itself carries no back-reference to its database. */
@@ -980,7 +1290,7 @@ final class ShowSessionExecutor {
         if (target == null) {
             return null;
         }
-        for (final dev.frostlake.metastore.model.TableColumn col : target.getColumns()) {
+        for (final TableColumn col : target.getColumns()) {
             if (col.isPrimaryKey()) {
                 return col.getName();
             }
@@ -988,7 +1298,12 @@ final class ShowSessionExecutor {
         return null;
     }
 
-    private String referencedPrimaryKeyName(final Schema schema, final String referencedTable) {
+    /**
+     * The name of the key a foreign key references: a UNIQUE key of the referenced columns, or the primary key
+     * (live-verified: a foreign key on a UNIQUE key reports that key's name as its pk_name).
+     */
+    private String referencedKeyName(final Schema schema, final String referencedTable,
+                                     final List<String> referencedColumns) {
         final String bare = QualifiedName.parse(referencedTable).last();
         Table target = schema.hasTable(bare) ? schema.getTable(bare) : null;
         if (target == null) {
@@ -998,7 +1313,7 @@ final class ShowSessionExecutor {
                 return null;   // the referenced table is gone or lives outside this catalog
             }
         }
-        return target != null ? target.primaryKeyConstraintName() : null;
+        return target != null ? target.referencedKeyName(referencedColumns) : null;
     }
 
     /** The schemas a keys listing spans: current schema, a named schema, a database's schemas, all, or none. */
@@ -1010,13 +1325,16 @@ final class ShowSessionExecutor {
             }
         } else if ("DATABASE".equals(scopeKind)) {
             final Database db = scopeName != null
-                ? catalog.getDatabase(scopeName)
-                : catalog.getDatabase(catalog.getCurrentDatabase());
+                ? catalog.databaseExact(scopeName)
+                : catalog.databaseExact(catalog.getCurrentDatabase());
             if (db != null) {
                 schemas.addAll(db.getAllSchemas());
             }
         } else if ("SCHEMA".equals(scopeKind) && scopeName != null) {
             schemas.add(catalog.resolveSchema(scopeName));
+        } else if ("TABLE".equals(scopeKind) && scopeName != null) {
+            // A table named with its schema is listed under that schema, whatever the session's own is.
+            schemas.add(catalog.resolveOwningSchema(scopeName));
         } else if (!"NONE".equals(scopeKind)) {
             schemas.add(resolveDescribeSchema());
         }

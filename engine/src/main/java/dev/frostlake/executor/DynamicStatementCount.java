@@ -40,13 +40,17 @@ public final class DynamicStatementCount {
 
     /**
      * Note the count the request about to run on this thread asks for: the client statement's own, else its session's.
+     * A request of several statements that declares how many runs each one alone, as a request of one — an EXECUTE
+     * IMMEDIATE among them is held to 1 (live-verified: {@code SELECT 1; EXECUTE IMMEDIATE 'SELECT 1; SELECT 2'}
+     * declared 2 refuses the text's two statements against 1) — where one under a count of any number hands that on.
      *
-     * @param desired the count, 0 meaning any number
+     * @param desired    the count, 0 meaning any number
+     * @param statements how many statements the request holds
      * @return the count it displaced, for {@link #endRequest}
      */
-    public static Integer beginRequest(final int desired) {
+    public static Integer beginRequest(final int desired, final int statements) {
         final Integer previous = REQUEST_COUNT.get();
-        REQUEST_COUNT.set(Integer.valueOf(desired));
+        REQUEST_COUNT.set(Integer.valueOf(desired != 0 && statements > 1 ? 1 : desired));
         return previous;
     }
 

@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -31,10 +32,15 @@ public class ArraySlice extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
-        int from = args.get(1) instanceof Number ? ((Number) args.get(1)).intValue() : 0;
-        int to   = args.size() > 2 && args.get(2) instanceof Number ? ((Number) args.get(2)).intValue() : src.size();
+        // A text bound is read as the number it spells, and a fraction rounds (see wholeNumber).
+        int from = isCount(args.get(1)) ? wholeNumber(args.get(1)) : 0;
+        int to = args.size() > 2 && isCount(args.get(2)) ? wholeNumber(args.get(2)) : src.size();
         if (from < 0) from = Math.max(0, src.size() + from);
         if (to < 0) to = Math.max(0, src.size() + to);
         from = Math.min(from, src.size());
@@ -42,6 +48,10 @@ public class ArraySlice extends BuiltInFunction {
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = from; i < to; i++) result.add(src.get(i));
         return VariantValue.ofNode(result);
+    }
+
+    private static boolean isCount(final Object bound) {
+        return bound instanceof Number || bound instanceof CharSequence || bound instanceof VariantValue;
     }
 
     @Override
@@ -53,5 +63,16 @@ public class ArraySlice extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        if (position == 1 || position == 2) {
+            return ArrayArgumentKind.WHOLE_NUMBER;
+        }
+        return null;
     }
 }

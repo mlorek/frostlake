@@ -58,7 +58,7 @@ final class FromListResync {
      */
     static List<String> lines(final String sql, final List<Token> spoken, final int faultIndex,
                               final boolean statementParse) {
-        if (sql == null || !statementParse || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null || !statementParse) {
             return null;
         }
         int fault = -1;
@@ -113,6 +113,7 @@ final class FromListResync {
             return lines;
         }
         depth = faultDepth;
+        boolean strayClose = false;
         for (int i = fault + 1; i < spoken.size(); i++) {
             final Token token = spoken.get(i);
             final int type = token.getType();
@@ -123,7 +124,13 @@ final class FromListResync {
             if (type == FrostlakeLexer.RPAREN) {
                 depth--;
                 if (depth < 0) {
-                    return topLevel ? lines : null;
+                    if (!topLevel) {
+                        return null;
+                    }
+                    // A ')' that closes no group of the statement is read past, and so is a comma after it: the
+                    // next clause's fault is reported all the same (live-verified).
+                    depth = 0;
+                    strayClose = true;
                 }
                 continue;
             }
@@ -139,6 +146,11 @@ final class FromListResync {
                 while (spoken.get(last + 1).getType() == FrostlakeLexer.SEMI) {
                     last++;
                 }
+                if (BlockReadOn.standsInBlock(spoken, i)) {
+                    // A block's statement is given up with its block, and the rest read from what is around it.
+                    lines.addAll(BlockReadOn.linesAfter(spoken, i));
+                    return lines;
+                }
                 lines.addAll(linesAfter(blankedThrough(sql, spoken.get(last)), spoken.get(last)));
                 return lines;
             }
@@ -147,6 +159,9 @@ final class FromListResync {
                 return lines;
             }
             final boolean comma = type == FrostlakeLexer.COMMA;
+            if (comma && strayClose) {
+                continue;
+            }
             if (comma && !firstSlot) {
                 return lines;
             }

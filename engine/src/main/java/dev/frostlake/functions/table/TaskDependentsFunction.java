@@ -18,6 +18,7 @@ package dev.frostlake.functions.table;
 
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -56,6 +57,12 @@ public class TaskDependentsFunction extends TableFunction {
         // Validated in execute, where the task is resolved.
     }
 
+    /** The listing's columns are fixed, so a query over it is planned with their types before any row is read. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return columns();
+    }
+
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
         final String taskName = TaskGraphRuns.text(namedArgs.get("TASK_NAME"));
@@ -67,8 +74,10 @@ public class TaskDependentsFunction extends TableFunction {
         final Schema schema;
         final Task task;
         try {
-            schema = catalog.resolveOwningSchema(taskName);
-            task = schema.getTask(QualifiedName.parse(taskName).last());
+            // The argument names the task as an identifier does: quoted parts kept, the rest folded.
+            final String canonical = SqlIdentifiers.canonicalText(taskName);
+            schema = catalog.resolveOwningSchema(canonical);
+            task = schema.getTaskExact(QualifiedName.parse(canonical).last());
         } catch (final RuntimeException missing) {
             throw notATask(taskName);
         }
@@ -90,19 +99,19 @@ public class TaskDependentsFunction extends TableFunction {
     }
 
     private static List<ResultSetColumn> columns() {
-        return Arrays.asList(
+        return DeclaredColumnTypes.typed(Arrays.asList(
             new ResultSetColumn("CREATED_ON", ShowResultHelpers.CREATED_ON),
-            new ResultSetColumn("NAME", StringType.VARCHAR),
-            new ResultSetColumn("DATABASE_NAME", StringType.VARCHAR),
-            new ResultSetColumn("SCHEMA_NAME", StringType.VARCHAR),
-            new ResultSetColumn("OWNER", StringType.VARCHAR),
-            new ResultSetColumn("COMMENT", StringType.VARCHAR),
-            new ResultSetColumn("WAREHOUSE", StringType.VARCHAR),
-            new ResultSetColumn("SCHEDULE", StringType.VARCHAR),
+            new ResultSetColumn("NAME", TaskGraphRuns.TEXT),
+            new ResultSetColumn("DATABASE_NAME", TaskGraphRuns.TEXT),
+            new ResultSetColumn("SCHEMA_NAME", TaskGraphRuns.TEXT),
+            new ResultSetColumn("OWNER", TaskGraphRuns.TEXT),
+            new ResultSetColumn("COMMENT", TaskGraphRuns.TEXT),
+            new ResultSetColumn("WAREHOUSE", TaskGraphRuns.TEXT),
+            new ResultSetColumn("SCHEDULE", TaskGraphRuns.TEXT),
             new ResultSetColumn("PREDECESSORS", new ArrayType(StringType.VARCHAR)),
-            new ResultSetColumn("STATE", StringType.VARCHAR),
-            new ResultSetColumn("DEFINITION", StringType.VARCHAR),
-            new ResultSetColumn("CONDITION", StringType.VARCHAR));
+            new ResultSetColumn("STATE", TaskGraphRuns.TEXT),
+            new ResultSetColumn("DEFINITION", TaskGraphRuns.TEXT),
+            new ResultSetColumn("CONDITION", TaskGraphRuns.TEXT)));
     }
 
     /** The task's row, its predecessors named fully qualified as SHOW TASKS names them. */

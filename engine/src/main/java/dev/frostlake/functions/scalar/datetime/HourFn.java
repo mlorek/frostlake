@@ -20,6 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 
+import java.time.LocalTime;
 import java.util.List;
 
 public class HourFn extends BuiltInFunction {
@@ -28,6 +29,10 @@ public class HourFn extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        // A TIME carries the part itself; any other value is read as a timestamp.
+        if (args.get(0) instanceof LocalTime) {
+            return (long) ((LocalTime) args.get(0)).getHour();
+        }
         return (long) SharedFunctionHelpers.toLocalDateTime(args.get(0)).getHour();
     }
 

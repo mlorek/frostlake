@@ -40,12 +40,13 @@ import dev.frostlake.types.VariantType;
  * <ul>
  *   <li>a whole item of a VALUES row, and an argument of a date or time function, whatever the declaration;</li>
  *   <li>a DATE a number or an INTERVAL is added to or taken from, and a time or a timestamp an INTERVAL is;</li>
- *   <li>a text anywhere it may meet a number — only where it is read as text does it keep its type.</li>
+ *   <li>a text anywhere it may meet a number — only where it is read as text, or handed whole to a user-defined
+ *       function, whose overloads are chosen by it, does it keep its type.</li>
  * </ul>
  *
- * <p>A declaration of another family — a geography, a vector, a structured type — keeps the bare NULL, and so does a
- * text declared without a length: its declaration is recorded at the described maximum, where live binds such a
- * variable at the width nothing bounds, VARCHAR(134217728).
+ * <p>A declaration of another family — a geography, a vector, a structured type — keeps the bare NULL. A text
+ * declared without a length binds at the width nothing bounds, VARCHAR(134217728), which is the type its
+ * declaration is recorded with.
  */
 final class TypedNullBind {
 
@@ -57,10 +58,11 @@ final class TypedNullBind {
      *
      * @param declared the variable's declared type, or null when it has none
      * @param slot     where the bind stands
+     * @param userFunctionArgument whether the bind is a whole argument of a user-defined function's call
      * @return {@code NULL::<type>}, or a bare {@code NULL}
      */
-    static String spell(final DataType declared, final NullBindSlot slot) {
-        if (!castable(declared) || !keepsType(declared, slot)) {
+    static String spell(final DataType declared, final NullBindSlot slot, final boolean userFunctionArgument) {
+        if (!castable(declared) || !keepsType(declared, slot, userFunctionArgument)) {
             return "NULL";
         }
         // A binary is spelled at the width SYSTEM$TYPEOF names: a BINARY declared without one at the 64MB maximum.
@@ -69,12 +71,13 @@ final class TypedNullBind {
     }
 
     /** Whether live binds the NULL as the declared type where it stands, rather than as no type. */
-    private static boolean keepsType(final DataType declared, final NullBindSlot slot) {
+    private static boolean keepsType(final DataType declared, final NullBindSlot slot,
+                                     final boolean userFunctionArgument) {
         if (slot.isValuesItem() || slot.isDateTimeArgument()) {
             return false;
         }
         if (declared instanceof StringType) {
-            return slot.readsAsText();
+            return slot.readsAsText() || userFunctionArgument;
         }
         if (declared instanceof DateTimeType) {
             return !slot.foldsTemporalArithmetic("DATE".equals(declared.getName()));
@@ -84,8 +87,7 @@ final class TypedNullBind {
 
     private static boolean castable(final DataType declared) {
         if (declared instanceof StringType) {
-            return !(declared instanceof UuidType)
-                && ((StringType) declared).getMaxLength() != SqlTypeNames.DESCRIBED_STRING_MAXIMUM;
+            return !(declared instanceof UuidType);
         }
         if (declared instanceof ArrayType) {
             return !(declared instanceof StructuredArrayType);

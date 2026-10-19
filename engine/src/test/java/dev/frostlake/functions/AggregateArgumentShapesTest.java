@@ -24,6 +24,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -63,7 +65,7 @@ public class AggregateArgumentShapesTest extends BaseDatabaseTest {
     }
 
     private static String bool(final Row row, final int index) {
-        return String.valueOf(row.getValue(index)).toLowerCase();
+        return String.valueOf(row.getValue(index)).toLowerCase(Locale.ROOT);
     }
 
     private void assertRefusal(final String sql, final String... fragments) {
@@ -141,12 +143,12 @@ public class AggregateArgumentShapesTest extends BaseDatabaseTest {
         assertEquals("false", bool(booleans, 1));
         assertEquals("false", bool(booleans, 2));
         assertNull(booleans.getValue(3));
-        assertEquals("true", text("SELECT BOOLXOR_AGG(b) FROM aw WHERE n380 = 7").toLowerCase());
+        assertEquals("true", text("SELECT BOOLXOR_AGG(b) FROM aw WHERE n380 = 7").toLowerCase(Locale.ROOT));
         // A text or a VARIANT is read at row time, strictly.
         assertRefusal("SELECT BOOLOR_AGG(t) FROM aw", "Boolean value 'a' is not recognized");
         assertRefusal("SELECT BOOLOR_AGG(g) FROM aw", "Boolean value 'x' is not recognized");
         assertRefusal("SELECT BOOLOR_AGG(v) FROM aw", "Failed to cast variant value 1 to BOOLEAN");
-        assertEquals("true", text("SELECT BOOLOR_AGG(g) FROM aw WHERE g = 'true'").toLowerCase());
+        assertEquals("true", text("SELECT BOOLOR_AGG(g) FROM aw WHERE g = 'true'").toLowerCase(Locale.ROOT));
     }
 
     @Test

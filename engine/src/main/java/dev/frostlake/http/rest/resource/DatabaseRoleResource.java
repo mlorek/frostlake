@@ -30,6 +30,7 @@ import dev.frostlake.http.rest.RestSql;
 import dev.frostlake.http.rest.RestStatement;
 import dev.frostlake.http.rest.RestTags;
 
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -83,6 +84,7 @@ public final class DatabaseRoleResource implements RestResource {
             case "cloneDatabaseRole":
                 return cloneRole(call);
             case "listGrants":
+                requireCurrentDatabase(call);
                 return GrantRequests.list(call, call.sql().show("SHOW GRANTS TO DATABASE ROLE " + role(call)), false);
             case "grantPrivileges":
                 return call.sql().action(GrantRequests.grant(call.body(), "DATABASE ROLE " + role(call), false));
@@ -99,6 +101,16 @@ public final class DatabaseRoleResource implements RestResource {
                     GrantRequests.mode(call, "mode")));
             default:
                 throw RestException.notImplemented("Operation " + call.operation() + " is not supported.");
+        }
+    }
+
+    /**
+     * A role's grants are listed by a statement that reads the session's current database: where the session has
+     * none the listing is refused for that, before the path's database or its role is looked up (live-verified).
+     */
+    private static void requireCurrentDatabase(final RestCall call) {
+        if (call.sql().session().getCurrentDatabase() == null) {
+            throw RestSql.refusal(NoCurrentDatabaseRefusal.naming("SHOW GRANTS").getMessage());
         }
     }
 
@@ -160,7 +172,7 @@ public final class DatabaseRoleResource implements RestResource {
             }
         }
         if (found == null) {
-            throw RestException.notFound("Database role '" + source + "' does not exist or not authorized.");
+            throw RestException.missing("Database role", source);
         }
         final RestIdentifier name = RestJson.identifier(call.body(), "name", true);
         final String targetDatabase = call.query("targetDatabase") == null ? call.databaseSql()

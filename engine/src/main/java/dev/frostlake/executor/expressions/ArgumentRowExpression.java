@@ -25,7 +25,7 @@ import java.util.List;
  * {@code named arguments [X] do not match any signature for function FX} for a user-defined function. It is no
  * call of its own, so no refusal names it as an unknown function.
  */
-public final class ArgumentRowExpression extends FunctionCallExpression {
+public final class ArgumentRowExpression extends RowExpression {
 
     /**
      * The list's values, in order.
@@ -33,6 +33,6 @@ public final class ArgumentRowExpression extends FunctionCallExpression {
      * @param elements the values
      */
     public ArgumentRowExpression(final List<Expression> elements) {
-        super("ROW", elements);
+        super(elements);
     }
 }

@@ -19,7 +19,9 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
+import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -58,22 +60,22 @@ final class InlineTags {
     }
 
     /**
-     * Apply one tag clause's assignments to {@code target}, keyed by the tag's simple name. A tag given twice
-     * must be given the same value both times; two values are refused, naming them in the order written.
+     * Apply one tag clause's assignments to {@code target}, each to the tag its name resolves to. A tag given
+     * twice must be given the same value both times; two values are refused, naming them in the order written.
      */
     static void apply(final Taggable target, final FrostlakeParser.TagListContext tags,
                       final QueryExecutor queryExecutor) {
         final Map<String, List<String>> valuesByTag = new LinkedHashMap<>();
-        final Map<String, String> simpleNames = new LinkedHashMap<>();
+        final Map<String, Tag> resolved = new LinkedHashMap<>();
         for (final FrostlakeParser.TagAssignmentContext assignment : tags.tagAssignment()) {
-            final QualifiedName tagName = QualifiedName.of(
-                ParseTreeText.qualifiedNameParts(assignment.qualifiedName()));
+            final Tag tag = queryExecutor.getCatalog().getTag(
+                QualifiedName.of(ParseTreeText.qualifiedNameParts(assignment.qualifiedName())).toString());
             final String value = TagValues.text(assignment.qualifiedName(), assignment.tagValue(), queryExecutor);
-            List<String> values = valuesByTag.get(tagName.toString());
+            List<String> values = valuesByTag.get(tag.getId());
             if (values == null) {
                 values = new ArrayList<>();
-                valuesByTag.put(tagName.toString(), values);
-                simpleNames.put(tagName.toString(), tagName.last());
+                valuesByTag.put(tag.getId(), values);
+                resolved.put(tag.getId(), tag);
             }
             values.add(value);
         }
@@ -81,13 +83,13 @@ final class InlineTags {
             final List<String> values = tag.getValue();
             for (final String value : values) {
                 if (!value.equals(values.get(0))) {
-                    throw new RuntimeException("Same tag " + simpleNames.get(tag.getKey())
+                    throw new RuntimeException("Same tag " + resolved.get(tag.getKey()).getName()
                         + " with multiple values provided, values = " + String.join(", ", values));
                 }
             }
         }
         for (final Map.Entry<String, List<String>> tag : valuesByTag.entrySet()) {
-            target.setTag(simpleNames.get(tag.getKey()), tag.getValue().get(0));
+            TagAssignments.set(target, resolved.get(tag.getKey()), tag.getValue().get(0));
         }
     }
 

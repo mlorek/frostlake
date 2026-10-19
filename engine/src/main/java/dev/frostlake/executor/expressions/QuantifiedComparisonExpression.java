@@ -25,6 +25,10 @@ public class QuantifiedComparisonExpression implements Expression {
     private final Quantifier quantifier;
     private final Expression subquery;
     private SourcePosition position;
+    /** Where the quantifier stands: ANY, SOME or ALL. */
+    private SourcePosition quantifierPosition;
+    /** Whether the inequality was written {@code !=} rather than {@code <>}. */
+    private boolean bangSpelled;
 
     public QuantifiedComparisonExpression(final Expression left, final BinaryOperator operator,
                                           final Quantifier quantifier, final Expression subquery) {
@@ -50,6 +54,21 @@ public class QuantifiedComparisonExpression implements Expression {
         return subquery;
     }
 
+    /**
+     * Whether the inequality was written {@code !=} rather than {@code <>}, which a message that echoes the tree
+     * as parsed keeps (live-verified).
+     *
+     * @return true for an inequality written with the exclamation mark
+     */
+    public boolean isBangSpelled() {
+        return bangSpelled;
+    }
+
+    /** Mark the inequality as written {@code !=} — see {@link #isBangSpelled()}. */
+    public void markBangSpelled() {
+        this.bangSpelled = true;
+    }
+
     /** Where the comparison operator stands, which a ROW refusal points at; null when unknown. */
     public SourcePosition getPosition() {
         return position;
@@ -57,6 +76,15 @@ public class QuantifiedComparisonExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /** Where the quantifier stands, which a refusal of the query points at; null when unknown. */
+    public SourcePosition getQuantifierPosition() {
+        return quantifierPosition;
+    }
+
+    public void setQuantifierPosition(final SourcePosition quantifierPosition) {
+        this.quantifierPosition = quantifierPosition;
     }
 
     @Override

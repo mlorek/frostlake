@@ -47,9 +47,11 @@ public class Div0 extends NumericArgumentFunction {
             return null;
         }
         // A FLOAT operand makes the whole division a double, as the operator's does: DIV0(f, 2) is the
-        // double 8.625 and DIV0(f, 0) the double 0.
+        // double 8.625 and DIV0(f, 0) the double 0. So do two texts, each read as a cast to FLOAT reads it:
+        // DIV0('1d', '2f') is 0.5, where beside a NUMBER a text converts to one (live-verified).
         final boolean approximate = ApproximateValues.isApproximate(dividendArg)
-            || (divisorArg != null && ApproximateValues.isApproximate(divisorArg));
+            || (divisorArg != null && ApproximateValues.isApproximate(divisorArg))
+            || dividendArg instanceof CharSequence && divisorArg instanceof CharSequence;
         // DIV0NULL treats a NULL divisor as 0; DIV0 keeps standard division (x / NULL -> NULL).
         if (divisorArg == null) {
             if (!nullDivisorToZero) {
@@ -58,9 +60,9 @@ public class Div0 extends NumericArgumentFunction {
             return approximate ? Double.valueOf(0.0) : zeroAtDerivedScale(dividendArg);
         }
         if (approximate) {
-            final double divisor = Double.parseDouble(divisorArg.toString());
+            final double divisor = ApproximateValues.written(divisorArg).doubleValue();
             return divisor == 0.0 ? Double.valueOf(0.0)
-                : Double.valueOf(Double.parseDouble(dividendArg.toString()) / divisor);
+                : Double.valueOf(ApproximateValues.written(dividendArg).doubleValue() / divisor);
         }
         final BigDecimal divisor = new BigDecimal(divisorArg.toString());
         // Both DIV0 and DIV0NULL return 0 for a zero divisor instead of raising an error.

@@ -38,7 +38,7 @@ import org.antlr.v4.runtime.Token;
  * refused at its SELECT or WITH instead; live's recovery then closes the list at the first ')' after it, and a fault
  * after that still speaks. Where no operator may stand either, the line falls at the IN's own place, and names the IN
  * as written ({@code SHOW VARIABLES IN ACCOUNT} is {@code unexpected 'IN'} at 15), never the equals sign read in its
- * stead.
+ * stead. A SHOW listing that reads no scope is that one line alone, whatever follows its IN.
  */
 final class InListRecovery {
 
@@ -57,7 +57,7 @@ final class InListRecovery {
      */
     static List<String> refusal(final String sql, final List<Token> spoken, final int namedIndex,
                                 final boolean statementParse) {
-        if (sql == null || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null) {
             return null;
         }
         int in = -1;
@@ -68,6 +68,13 @@ final class InListRecovery {
         }
         if (in < 0 || spoken.get(in).getStopIndex() != spoken.get(in).getStartIndex() + 1) {
             return null;
+        }
+        if (opensListing(spoken, in)) {
+            // ★ A LISTING THAT READS NO SCOPE is refused at its IN and nothing more: SHOW VARIABLES IN a.b is the one
+            // line, whatever the IN is followed by.
+            final List<String> alone = new ArrayList<>();
+            alone.add(SyntaxErrorListener.sentence(spoken.get(in)));
+            return alone;
         }
         final char[] text = sql.toCharArray();
         text[spoken.get(in).getStartIndex()] = '=';
@@ -111,5 +118,14 @@ final class InListRecovery {
             lines.add(place != null && inAt != null && place[0] == inAt[0] && place[1] == inAt[1] ? inPlace : line);
         }
         return lines.isEmpty() ? null : lines;
+    }
+
+    /** Whether the statement the token at {@code index} stands in opens on SHOW. */
+    private static boolean opensListing(final List<Token> spoken, final int index) {
+        int first = index;
+        while (first > 0 && spoken.get(first - 1).getType() != FrostlakeLexer.SEMI) {
+            first--;
+        }
+        return spoken.get(first).getType() == FrostlakeLexer.SHOW;
     }
 }

@@ -18,6 +18,7 @@ package dev.frostlake.task;
 
 import dev.frostlake.storage.ResultSet;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Interface for executing SQL statements for tasks
@@ -37,5 +38,38 @@ public interface TaskExecutor {
      */
     default List<ResultSet> executeQuery(final String sql) {
         throw new UnsupportedOperationException("TaskExecutor.executeQuery must be implemented");
+    }
+
+    /**
+     * Evaluate a task's WHEN condition. The scheduler composes the query for itself and it is no statement of the
+     * task's, so an implementation runs it without a query ID or a history row. This default runs it through
+     * {@link #executeQuery}.
+     *
+     * @param sql the composed condition query
+     * @return its result sets
+     */
+    default List<ResultSet> evaluateCondition(final String sql) {
+        return executeQuery(sql);
+    }
+
+    /**
+     * Run one task run or alert evaluation as a session of its own, apart from whatever session started it: its
+     * own transaction, statement history and session settings. This default just runs it.
+     *
+     * @param run the run
+     */
+    default void runInOwnSession(final Runnable run) {
+        run.run();
+    }
+
+    /**
+     * {@link #runInOwnSession(Runnable)} for a session that starts with parameters of its own, as a task's run
+     * starts with the parameters the task sets. This default leaves the parameters aside.
+     *
+     * @param run        the run
+     * @param parameters the parameters the session starts with, by name, each as its text
+     */
+    default void runInOwnSession(final Runnable run, final Map<String, String> parameters) {
+        runInOwnSession(run);
     }
 }

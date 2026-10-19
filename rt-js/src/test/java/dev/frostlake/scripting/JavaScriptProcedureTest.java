@@ -22,6 +22,7 @@ import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.rt.js.JavaScriptProcedureExecutor;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import org.junit.jupiter.api.AfterEach;
@@ -97,7 +98,7 @@ public class JavaScriptProcedureTest {
             return null;
             """;
 
-        final Procedure proc = new Procedure("test_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("test_proc", parameters, NumericType.FLOAT, body, "JAVASCRIPT");
 
         final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
@@ -126,7 +127,7 @@ public class JavaScriptProcedureTest {
             return "" + rs.getColumnValue(1) + "|" + stmt.getColumnCount() + "|" + stmt.getColumnName(1);
             """;
 
-        final Procedure proc = new Procedure("cs_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("cs_proc", parameters, StringType.VARCHAR, body, "JAVASCRIPT");
         final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc, Arrays.asList("x"), engine);
 
@@ -147,7 +148,7 @@ public class JavaScriptProcedureTest {
             return rs.getColumnValue(1);
             """;
 
-        final Procedure proc = new Procedure("bind_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("bind_proc", parameters, NumericType.FLOAT, body, "JAVASCRIPT");
         final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc, Arrays.asList("x"), engine);
 
@@ -277,8 +278,8 @@ public class JavaScriptProcedureTest {
             var rs = snowflake.execute({sqlText: cmd});
             const result = {};
             if (rs.next()) {
-                result.name = rs.getColumnValue('name');
-                result.age = rs.getColumnValue('age');
+                result.name = rs.getColumnValue('NAME');
+                result.age = rs.getColumnValue('AGE');
             }
             return result;
             """;

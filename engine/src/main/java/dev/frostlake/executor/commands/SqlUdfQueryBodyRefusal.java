@@ -18,14 +18,16 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.parser.BareAlias;
 import dev.frostlake.parser.ColdPrediction;
 import dev.frostlake.parser.EndOfInput;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.ParseCancellationException;
@@ -54,8 +56,9 @@ import java.util.Locale;
  * </ul>
  * A body the account reads with a bare select-list alias this grammar lacks — {@code SELECT CASE … END CASE} —
  * stays fail-open, since the account creates and calls it. So does a query this grammar stops reading on a token
- * before the query's end, which the caller leaves alone: the account's grammar reads more than this one, and
- * creates {@code SELECT MAX(n) FROM t ORDER BY ALL}.
+ * before the query's end, which the caller leaves alone — the account's grammar reads more than this one, and
+ * creates {@code SELECT MAX(n) FROM t ORDER BY ALL} — unless the stop is a fault every grammar has (see
+ * {@link #stopsAtSureFault}).
  */
 final class SqlUdfQueryBodyRefusal {
 
@@ -86,20 +89,54 @@ final class SqlUdfQueryBodyRefusal {
     }
 
     /**
+     * Whether the framed body's parse stopped on a fault every grammar has: a word right after a name that is already
+     * an alias or a relation's — {@code SELECT a a a FROM t}, {@code SELECT a b c}, {@code FROM t x y},
+     * {@code FROM t t2 t3} — or a text after TOP, {@code SELECT TOP 'x' a FROM t}. The account refuses such a body
+     * at its first word as it refuses one that runs out (live-verified).
+     *
+     * @param tokens  the framed body's spoken tokens
+     * @param stopped the token the parse stopped on, or null
+     * @return whether the stop is such a fault
+     */
+    static boolean stopsAtSureFault(final List<Token> tokens, final Token stopped) {
+        if (stopped == null) {
+            return false;
+        }
+        Token before = null;
+        for (final Token token : tokens) {
+            if (token.getStartIndex() >= stopped.getStartIndex()) {
+                break;
+            }
+            before = token;
+        }
+        if (before == null) {
+            return false;
+        }
+        final boolean wordAfterName = isName(stopped) && isName(before);
+        final boolean textAfterTop = stopped.getType() == FrostlakeLexer.STRING_LITERAL
+            && before.getType() == FrostlakeLexer.TOP;
+        return wordAfterName || textAfterTop;
+    }
+
+    private static boolean isName(final Token token) {
+        return token.getType() == FrostlakeLexer.IDENTIFIER || token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER;
+    }
+
+    /**
      * Whether the framed body's parse ran out of text rather than stopping on a token it could not place. A query
      * this grammar stops reading before its end may hold a construct only the account's grammar has, and is left
      * alone; one that runs out is refused. The parse runs out when it breaks at the end of the statement or at a
      * closing parenthesis — {@code SELECT 1 +} at the frame's — or when it breaks on a word or an operator that
      * opens what must follow and reads on to a closing parenthesis or the end before giving up: {@code SELECT CASE},
      * {@code SELECT 1 FROM t JOIN}, {@code … WHERE a IN (SELECT a FROM t WHERE)}. The account's {@code ORDER BY ALL}
-     * breaks this grammar on a word that can end a query, and {@code MATCH_RECOGNIZE (…)} where the parse gives up
-     * mid-way. The parse is a cold one, so the answer is the body's own and not the prediction cache's.
+     * breaks this grammar on a word that can end a query. The parse is a cold one, so the answer is the body's own
+     * and not the prediction cache's.
      *
      * @param framed the body inside its frame
      * @return whether the parse ran out of text
      */
     static boolean runsOut(final String framed) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(framed));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(framed));
         lexer.removeErrorListeners();
         final int[] furthest = {0};
         final CommonTokenStream tokens = new CommonTokenStream(lexer) {
@@ -188,7 +225,7 @@ final class SqlUdfQueryBodyRefusal {
     /** Whether the select item alias written without AS at {@code start} is found in {@code tree}. */
     private static boolean isSelectAlias(final ParseTree tree, final int start) {
         if (tree instanceof FrostlakeParser.ExprItemContext) {
-            final FrostlakeParser.IdentifierContext alias = ((FrostlakeParser.ExprItemContext) tree).identifier();
+            final ParserRuleContext alias = BareAlias.of((FrostlakeParser.ExprItemContext) tree);
             if (alias != null && alias.getStart().getStartIndex() == start) {
                 return true;
             }
@@ -349,7 +386,7 @@ final class SqlUdfQueryBodyRefusal {
 
     /** The text's spoken tokens: comments and whitespace dropped, end of input excluded. */
     private static List<Token> spokenTokens(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

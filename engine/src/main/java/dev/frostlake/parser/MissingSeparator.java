@@ -77,6 +77,10 @@ final class MissingSeparator {
         return lines.get(0);
     }
 
+    List<String> lines() {
+        return lines;
+    }
+
     /** The line and position the first line points at. */
     int[] coordinates() {
         return new int[] {line, position};

@@ -16,22 +16,34 @@
 
 package com.snowflake.snowpark_java;
 
+import com.snowflake.snowpark.SnowparkClientException;
+import com.snowflake.snowpark_java.types.Geography;
+import com.snowflake.snowpark_java.types.Geometry;
 import com.snowflake.snowpark_java.types.Variant;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.GeoValue;
 import dev.frostlake.values.VariantValue;
 
+import tools.jackson.databind.JsonNode;
+
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
+import java.math.BigInteger;
 import java.sql.Date;
+import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -39,11 +51,23 @@ import java.util.Map;
  *
  * <p>This is the type a handler written against Snowpark expects — {@code rows[0].getString(0)} — and it
  * is deliberately NOT Frostlake's own {@code storage.Row}, whose only accessor is {@code getValue(int)}.
- * Values arrive from the engine already typed, so each getter coerces rather than parses: a NUMBER cell
- * is some {@link Number} whatever its declared width, and asking for it as an int, a long or a
- * BigDecimal all have to work.
+ * A cell arrives as the class Snowpark hands a handler for its type (see {@link #ofEngineCells}), and an
+ * accessor reads it as Snowpark's does: by a cast, so that a cell of another kind fails the handler here as it
+ * fails it on an account.
  */
 public class Row {
+
+    /** The smallest whole number a cell of no scale may hold and still be handed over. */
+    private static final BigInteger LONG_MIN = BigInteger.valueOf(Long.MIN_VALUE);
+
+    /** The largest whole number a cell of no scale may hold and still be handed over. */
+    private static final BigInteger LONG_MAX = BigInteger.valueOf(Long.MAX_VALUE);
+
+    /** The SQLSTATE of the driver's refusal of a whole number no Long holds. */
+    private static final String NOT_CONVERTED_STATE = "0A000";
+
+    /** The driver's error code for that refusal. */
+    private static final int NOT_CONVERTED_CODE = 200038;
 
     private final Object[] values;
 
@@ -64,213 +88,344 @@ public class Row {
         return values.length;
     }
 
+    /** The cell, a geospatial one as the {@code com.snowflake.snowpark_java.types} class of its kind. */
     public Object get(final int index) {
-        return values[index];
+        return javaValue(values[index]);
     }
 
     public boolean isNullAt(final int index) {
         return values[index] == null;
     }
 
-    public Object[] toArray() {
-        return Arrays.copyOf(values, values.length);
+    /** The row's values, in their order, each as {@link #get} hands it. */
+    public List<Object> toList() {
+        final Object[] read = new Object[values.length];
+        for (int i = 0; i < values.length; i++) {
+            read[i] = javaValue(values[i]);
+        }
+        return Collections.unmodifiableList(Arrays.asList(read));
+    }
+
+    /** A value as the Java surface hands it: a geospatial one as that surface's class, any other as it is. */
+    private static Object javaValue(final Object value) {
+        if (value instanceof com.snowflake.snowpark.types.Geography) {
+            return Geography.fromGeoJSON(((com.snowflake.snowpark.types.Geography) value).asGeoJSON());
+        }
+        if (value instanceof com.snowflake.snowpark.types.Geometry) {
+            return Geometry.fromGeoJSON(value.toString());
+        }
+        return value;
+    }
+
+    @Override
+    public Row clone() {
+        return new Row(Arrays.copyOf(values, values.length));
     }
 
     // --- typed accessors -----------------------------------------------------------------------
-    // Each refuses a NULL the way Snowpark does for a primitive, and coerces otherwise.
+    // Each reads the cell as Snowpark does: a cast to the accessor's own class, so a cell of another kind fails
+    // the handler with the cast's exception; the whole and the real numbers alone are read from one another.
 
     public String getString(final int index) {
         final Object value = values[index];
         if (value == null) {
             return null;
         }
-        if (value instanceof BinaryValue) {
+        if (value instanceof byte[]) {
+            // Bytes are told as the array of numbers they are.
+            final StringBuilder told = new StringBuilder("[");
+            for (final byte one : (byte[]) value) {
+                told.append(told.length() > 1 ? "," : "").append(one);
+            }
+            return told.append(']').toString();
+        }
+        if (value instanceof com.snowflake.snowpark.types.Geography
+                || value instanceof com.snowflake.snowpark.types.Geometry) {
             return value.toString();
         }
-        return String.valueOf(value);
+        return (String) value;
     }
 
     public boolean getBoolean(final int index) {
-        final Object value = required(index, "Boolean");
-        if (value instanceof Boolean) {
-            return ((Boolean) value).booleanValue();
+        final Object value = values[index];
+        if (value == null) {
+            throw new NullPointerException("Value at index " + index + " is null");
         }
-        if (value instanceof Number) {
-            return ((Number) value).longValue() != 0;
-        }
-        return Boolean.parseBoolean(String.valueOf(value));
+        return ((Boolean) value).booleanValue();
     }
 
     public byte getByte(final int index) {
-        return number(index, "Byte").byteValue();
+        return whole(index, "Byte").byteValue();
     }
 
     public short getShort(final int index) {
-        return number(index, "Short").shortValue();
+        return whole(index, "Short").shortValue();
     }
 
     public int getInt(final int index) {
-        return number(index, "Int").intValue();
+        return whole(index, "Int").intValue();
     }
 
     public long getLong(final int index) {
-        return number(index, "Long").longValue();
+        return whole(index, "Long").longValue();
     }
 
     public float getFloat(final int index) {
-        return number(index, "Float").floatValue();
+        return real(index, "Float").floatValue();
     }
 
     public double getDouble(final int index) {
-        return number(index, "Double").doubleValue();
+        return real(index, "Double").doubleValue();
     }
 
     public BigDecimal getDecimal(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof BigDecimal) {
-            return (BigDecimal) value;
-        }
-        if (value instanceof Number) {
-            return new BigDecimal(value.toString());
-        }
-        return new BigDecimal(String.valueOf(value));
+        return (BigDecimal) values[index];
     }
 
     public Date getDate(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Date) {
-            return (Date) value;
-        }
-        if (value instanceof LocalDate) {
-            return Date.valueOf((LocalDate) value);
-        }
-        return Date.valueOf(String.valueOf(value));
+        return (Date) values[index];
     }
 
     public Time getTime(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Time) {
-            return (Time) value;
-        }
-        if (value instanceof LocalTime) {
-            return Time.valueOf((LocalTime) value);
-        }
-        return Time.valueOf(String.valueOf(value));
+        return (Time) values[index];
     }
 
     public Timestamp getTimestamp(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Timestamp) {
-            return (Timestamp) value;
-        }
-        if (value instanceof LocalDateTime) {
-            return Timestamp.valueOf((LocalDateTime) value);
-        }
-        if (value instanceof Instant) {
-            return Timestamp.from((Instant) value);
-        }
-        return Timestamp.valueOf(String.valueOf(value));
+        return (Timestamp) values[index];
     }
 
     public byte[] getBinary(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof byte[]) {
-            return (byte[]) value;
-        }
-        if (value instanceof BinaryValue) {
-            return ((BinaryValue) value).bytes();
-        }
-        return String.valueOf(value).getBytes(StandardCharsets.UTF_8);
+        return (byte[]) values[index];
     }
 
     public Variant getVariant(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
+        final String text = getString(index);
+        if (text == null) {
+            throw new NullPointerException();
         }
-        if (value instanceof Variant) {
-            return (Variant) value;
-        }
-        if (value instanceof VariantValue) {
-            return new Variant(((VariantValue) value).text());
-        }
-        return new Variant(String.valueOf(value));
+        return new Variant(text);
     }
 
-    /** A nested row, for a value that is itself structured. */
-    public Row getStruct(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Row) {
-            return (Row) value;
-        }
-        return new Row(new Object[]{value});
+    /** A structured OBJECT's cell, which is a row: any other cell is none. */
+    public Row getObject(final int index) {
+        return (Row) values[index];
     }
 
-    public List<Object> getList(final int index) {
+    /**
+     * A GEOGRAPHY's cell. Any other cell fails the cast to the class Snowpark holds it as, {@code class
+     * java.lang.Long cannot be cast to class com.snowflake.snowpark.types.Geography}, and a NULL is no value
+     * (live-verified).
+     */
+    public Geography getGeography(final int index) {
         final Object value = values[index];
-        if (value == null) {
-            return null;
+        if (value instanceof Geography) {
+            return (Geography) value;
         }
-        if (value instanceof List) {
-            return new ArrayList<Object>((List<?>) value);
+        final com.snowflake.snowpark.types.Geography held = (com.snowflake.snowpark.types.Geography) value;
+        if (held == null) {
+            throw new NullPointerException();
         }
-        if (value instanceof Object[]) {
-            return Arrays.asList((Object[]) value);
+        return Geography.fromGeoJSON(held.asGeoJSON());
+    }
+
+    /**
+     * A GEOMETRY's cell. Any other cell fails the cast to the class Snowpark holds it as, a GEOGRAPHY's among them
+     * — {@code class com.snowflake.snowpark.types.Geography cannot be cast to class
+     * com.snowflake.snowpark.types.Geometry} — and a NULL is no value (live-verified).
+     */
+    public Geometry getGeometry(final int index) {
+        final Object value = values[index];
+        if (value instanceof Geometry) {
+            return (Geometry) value;
         }
-        final List<Object> single = new ArrayList<Object>();
-        single.add(value);
-        return single;
+        final com.snowflake.snowpark.types.Geometry held = (com.snowflake.snowpark.types.Geometry) value;
+        if (held == null) {
+            throw new NullPointerException();
+        }
+        return Geometry.fromGeoJSON(held.toString());
+    }
+
+    public List<?> getList(final int index) {
+        return (List<?>) values[index];
     }
 
     public Map<?, ?> getMap(final int index) {
-        final Object value = values[index];
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Map) {
-            return (Map<?, ?>) value;
-        }
-        throw new IllegalArgumentException("Value at index " + index + " is not a map: " + value);
+        return (Map<?, ?>) values[index];
     }
 
-    private Object required(final int index, final String asType) {
-        final Object value = values[index];
-        if (value == null) {
-            throw new NullPointerException("Value at index " + index + " is NULL and cannot be read as "
-                + asType + "; check isNullAt(" + index + ") first");
-        }
-        return value;
+    /** The elements of an ARRAY's cell, each a Variant. */
+    public List<Variant> getListOfVariant(final int index) {
+        return new ArrayList<Variant>(getVariant(index).asList());
     }
 
-    private Number number(final int index, final String asType) {
-        final Object value = required(index, asType);
-        if (value instanceof Number) {
+    /** The members of an OBJECT's cell, each value a Variant. */
+    public Map<String, Variant> getMapOfVariant(final int index) {
+        return new HashMap<String, Variant>(getVariant(index).asMap());
+    }
+
+    /**
+     * A whole number's cell, which a NUMBER of no scale is: any other cell is no Int, Long, Short or Byte, and
+     * neither is a number the accessor's type cannot hold — 300 is no Byte.
+     */
+    private Number whole(final int index, final String asType) {
+        final Object value = values[index];
+        if (value == null) {
+            throw new NullPointerException();
+        }
+        if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte) {
+            final long number = ((Number) value).longValue();
+            final long widest = "Byte".equals(asType) ? Byte.MAX_VALUE : "Short".equals(asType) ? Short.MAX_VALUE
+                : "Int".equals(asType) ? Integer.MAX_VALUE : Long.MAX_VALUE;
+            if (number <= widest && number >= -widest - 1) {
+                return (Number) value;
+            }
+        }
+        throw notCast(value, asType);
+    }
+
+    /** A cell read as a Double or a Float: a whole number's and a FLOAT's, and no other. */
+    private Number real(final int index, final String asType) {
+        final Object value = values[index];
+        if (value == null) {
+            throw new NullPointerException();
+        }
+        if (value instanceof Double || value instanceof Float || value instanceof Long || value instanceof Integer
+                || value instanceof Short || value instanceof Byte) {
             return (Number) value;
         }
-        if (value instanceof Boolean) {
-            return Integer.valueOf(((Boolean) value).booleanValue() ? 1 : 0);
-        }
-        return new BigDecimal(String.valueOf(value));
+        throw notCast(value, asType);
     }
 
+    private static SnowparkClientException notCast(final Object value, final String asType) {
+        return new SnowparkClientException("Error Code: 0400, Error message: Cannot cast "
+            + value.getClass().getName() + "(" + value + ") to " + asType + ".");
+    }
+
+    /**
+     * A row of the engine's cells, each as the class Snowpark hands a handler: a NUMBER of no scale a Long and
+     * one with a scale a BigDecimal, a FLOAT a Double, a DATE, a TIME and a TIMESTAMP the java.sql classes, a
+     * BINARY its bytes, a VARIANT, an ARRAY or an OBJECT its JSON text, and a GEOGRAPHY or a GEOMETRY its
+     * GeoJSON (live-verified). A whole number no Long holds is not handed over at all: the driver under Snowpark
+     * reads a NUMBER of no scale as a Long, and the collect fails, {@code Cannot convert value in the driver from
+     * type:FIXED(null,null) to type:Long, value=12345678901234567890.}, as a {@link SQLException} of SQLSTATE
+     * 0A000 and code 200038 — over a table's NUMBER(38,0) column as over a literal, whichever row holds it.
+     *
+     * @param cells the engine's values
+     * @param whole for each cell, whether its column is a NUMBER of no scale; null where no column is known
+     * @return the row a handler reads
+     */
+    static Row ofEngineCells(final List<Object> cells, final boolean[] whole) {
+        final Object[] read = new Object[cells == null ? 0 : cells.size()];
+        for (int i = 0; i < read.length; i++) {
+            final Object cell = cells.get(i);
+            read[i] = whole != null && i < whole.length && whole[i] && cell instanceof Number
+                ? wholeNumber((Number) cell) : handed(cell);
+        }
+        return new Row(read);
+    }
+
+    /** A whole number's cell as a Long, or the driver's refusal when no Long holds it. */
+    private static Long wholeNumber(final Number cell) {
+        final BigInteger whole = cell instanceof BigDecimal ? ((BigDecimal) cell).toBigInteger()
+            : cell instanceof BigInteger ? (BigInteger) cell : BigInteger.valueOf(cell.longValue());
+        if (whole.compareTo(LONG_MIN) < 0 || whole.compareTo(LONG_MAX) > 0) {
+            throw Row.<RuntimeException>unchecked(new SQLException("Cannot convert value in the driver from "
+                + "type:FIXED(null,null) to type:Long, value=" + whole + ".", NOT_CONVERTED_STATE, NOT_CONVERTED_CODE));
+        }
+        return Long.valueOf(whole.longValue());
+    }
+
+    /**
+     * Throws a checked exception where no method declares it, as the Scala code under Snowpark lets the driver's
+     * {@link SQLException} through {@code collect()}.
+     */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> RuntimeException unchecked(final Throwable failure) throws T {
+        throw (T) failure;
+    }
+
+    private static Object handed(final Object cell) {
+        if (cell instanceof LocalDate) {
+            return Date.valueOf((LocalDate) cell);
+        }
+        if (cell instanceof LocalTime) {
+            return Time.valueOf((LocalTime) cell);
+        }
+        if (cell instanceof LocalDateTime) {
+            return Timestamp.valueOf((LocalDateTime) cell);
+        }
+        if (cell instanceof OffsetDateTime) {
+            return Timestamp.from(((OffsetDateTime) cell).toInstant());
+        }
+        if (cell instanceof ZonedDateTime) {
+            return Timestamp.from(((ZonedDateTime) cell).toInstant());
+        }
+        if (cell instanceof Instant) {
+            return Timestamp.from((Instant) cell);
+        }
+        if (cell instanceof BinaryValue) {
+            return ((BinaryValue) cell).bytes();
+        }
+        if (cell instanceof VariantValue) {
+            return ((VariantValue) cell).text();
+        }
+        if (cell instanceof Integer || cell instanceof Short || cell instanceof Byte) {
+            return Long.valueOf(((Number) cell).longValue());
+        }
+        if (cell instanceof BigInteger) {
+            return wholeNumber((BigInteger) cell);
+        }
+        if (cell instanceof BigDecimal) {
+            final BigDecimal number = (BigDecimal) cell;
+            return number.scale() <= 0 ? (Object) wholeNumber(number) : number;
+        }
+        if (cell instanceof Float) {
+            return Double.valueOf(((Float) cell).doubleValue());
+        }
+        if (cell instanceof GeoValue) {
+            final GeoValue geo = (GeoValue) cell;
+            return geo.isGeography() ? (Object) com.snowflake.snowpark.types.Geography.fromGeoJSON(geo.geoJson())
+                : com.snowflake.snowpark.types.Geometry.fromGeoJSON(geometryText(geo.node()));
+        }
+        return cell;
+    }
+
+    /**
+     * A GEOMETRY's GeoJSON as the driver hands it over: its keys in order and every number written with fifteen
+     * decimals and an exponent, {@code {"coordinates":[1.000000000000000e+00,2.000000000000000e+00],"type":"Point"}}
+     * (live-verified).
+     */
+    private static String geometryText(final JsonNode node) {
+        final StringBuilder text = new StringBuilder();
+        writeGeometry(node, text);
+        return text.toString();
+    }
+
+    private static void writeGeometry(final JsonNode node, final StringBuilder text) {
+        if (node.isObject()) {
+            text.append('{');
+            boolean first = true;
+            for (final Map.Entry<String, JsonNode> member : node.properties()) {
+                text.append(first ? "" : ",").append('"').append(member.getKey()).append("\":");
+                writeGeometry(member.getValue(), text);
+                first = false;
+            }
+            text.append('}');
+        } else if (node.isArray()) {
+            text.append('[');
+            for (int i = 0; i < node.size(); i++) {
+                text.append(i > 0 ? "," : "");
+                writeGeometry(node.get(i), text);
+            }
+            text.append(']');
+        } else if (node.isNumber()) {
+            text.append(String.format(Locale.ROOT, "%.15e", node.doubleValue()));
+        } else {
+            text.append(node.toString());
+        }
+    }
+
+    /** The row as Snowpark prints it: its values between brackets, a text between double quotes. */
     @Override
     public String toString() {
         final StringBuilder text = new StringBuilder("Row[");
@@ -278,7 +433,11 @@ public class Row {
             if (i > 0) {
                 text.append(",");
             }
-            text.append(values[i]);
+            if (values[i] instanceof String) {
+                text.append('"').append(values[i]).append('"');
+            } else {
+                text.append(values[i]);
+            }
         }
         return text.append("]").toString();
     }

@@ -16,23 +16,29 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.InformationSchemaGuard;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
@@ -44,6 +50,7 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.WrittenSignatureType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,9 +107,12 @@ public class CommentCommandHandler implements CommandHandler {
         RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         try {
             final boolean ifExists = ctx.if_exists() != null;
-            final String comment = visitor.extractStringLiteral(ctx.STRING_LITERAL());
+            final String comment = ParseTreeText.stringValue(ctx.stringText());
 
-            if (ctx.DATABASE() != null) {
+            if (ctx.SECRET() != null) {
+                // Refused whatever the name, before it is looked up (live-verified).
+                throw new RuntimeException("Unsupported feature 'SECRET'.");
+            } else if (ctx.DATABASE() != null) {
                 // COMMENT ON DATABASE
                 final String dbName = visitor.getText(ctx.identifier());
                 final Database db;
@@ -122,26 +132,21 @@ public class CommentCommandHandler implements CommandHandler {
                     }
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Database", dbName));
                 }
+                SystemDatabase.refuseChange(db.getName());
                 db.setComment(comment);
+                // A comment is DDL like any ALTER: LAST_ALTERED and LAST_DDL move with it.
+                db.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on database: {}", dbName);
 
             } else if (ctx.SCHEMA() != null && ctx.COLUMN() == null) {
                 // COMMENT ON SCHEMA
                 final String schemaName = visitor.getText(ctx.qualifiedName());
                 final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                queryExecutor.requirePrivilege(Privilege.MODIFY, "SCHEMA", parts, null);
 
                 final Schema schema;
                 try {
-                    if (parts.length == 1) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                    } else if (parts.length == 2) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    } else {
-                        throw new RuntimeException("Invalid schema name: " + schemaName);
-                    }
+                    schema = catalog.resolveSchema(QualifiedName.of(parts));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Schema does not exist (IF EXISTS): {}", schemaName);
@@ -157,7 +162,14 @@ public class CommentCommandHandler implements CommandHandler {
                     }
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", schemaName));
                 }
+                if ("INFORMATION_SCHEMA".equals(schema.getName())) {
+                    // A comment is an ALTER, and INFORMATION_SCHEMA takes none.
+                    throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("schema",
+                        "INFORMATION_SCHEMA"));
+                }
+                SystemDatabase.refuseChange(schema.getDatabaseName());
                 schema.setComment(comment);
+                schema.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on schema: {}", schemaName);
 
             } else if (ctx.DYNAMIC() != null) {
@@ -173,14 +185,18 @@ public class CommentCommandHandler implements CommandHandler {
                         catalog.requireOwningSchema(QualifiedName.of(parts)).qualifiedName(parts[parts.length - 1])));
                 }
                 dynamicTable.setComment(comment);
+                dynamicTable.markDdl(catalog.currentUserForDdl());
 
             } else if (ctx.TABLE() != null) {
-                // COMMENT ON TABLE
+                // COMMENT ON TABLE, and COMMENT ON ICEBERG TABLE, which is the same statement (live-verified)
                 final String tableName = visitor.getText(ctx.qualifiedName());
+                InformationSchemaGuard.refuseWrite(catalog, qualifiedNameParts(ctx.qualifiedName()));
+                queryExecutor.requireOnRelation(Privilege.MODIFY, tableName);
                 // A dynamic table is a table to COMMENT ON TABLE too (live-verified).
                 final DynamicTable dynamicTable = dynamicTableOrNull(qualifiedNameParts(ctx.qualifiedName()));
                 if (dynamicTable != null) {
                     dynamicTable.setComment(comment);
+                    dynamicTable.markDdl(catalog.currentUserForDdl());
                     return null;
                 }
                 final Table table;
@@ -202,7 +218,12 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Table",
                         queryExecutor.getFullyQualifiedTableName(tableName)));
                 }
+                // An Iceberg table's comment is set by ALTER ICEBERG TABLE alone (live-verified).
+                if (table.getIcebergMetadata() != null) {
+                    throw IcebergTables.alteredAsTable(table);
+                }
                 table.setComment(comment);
+                table.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on table: {}", tableName);
 
             } else if (ctx.COLUMN() != null) {
@@ -218,6 +239,9 @@ public class CommentCommandHandler implements CommandHandler {
                 // Last part is column name, rest is table name
                 final String columnName = parts[parts.length - 1];
                 final String tableName = String.join(".", Arrays.copyOf(parts, parts.length - 1));
+                // One of INFORMATION_SCHEMA's views is refused before its column is looked for (live-verified).
+                InformationSchemaGuard.refuseWrite(catalog, Arrays.copyOf(parts, parts.length - 1));
+                queryExecutor.requireOnRelation(Privilege.MODIFY, tableName);
 
                 final Table table;
                 try {
@@ -240,6 +264,10 @@ public class CommentCommandHandler implements CommandHandler {
                         queryExecutor.getFullyQualifiedTableName(tableName)));
                 }
 
+                if (table.getIcebergMetadata() != null) {
+                    throw IcebergTables.alteredAsTable(table);
+                }
+
                 // COMMENT ON COLUMN reports a missing column as an OBJECT, the way RENAME COLUMN does —
                 // live: "Object 'NONEXISTENT' does not exist or not authorized." — rather than
                 // the "invalid identifier" a query would answer with.
@@ -252,11 +280,13 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", columnName));
                 }
                 column.setComment(comment);
+                table.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on column: {}", qualifiedColumn);
 
             } else if (ctx.VIEW() != null) {
                 // COMMENT ON VIEW
                 final String viewName = visitor.getText(ctx.qualifiedName());
+                queryExecutor.requireOnRelation(Privilege.MODIFY, viewName);
                 final View view;
                 try {
                     view = catalog.resolveView(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
@@ -276,7 +306,12 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("View",
                         queryExecutor.getFullyQualifiedTableName(viewName)));
                 }
+                if ("INFORMATION_SCHEMA".equals(catalog.resolveOwningSchema(viewName).getName())) {
+                    // Nor do INFORMATION_SCHEMA's views (see ALTER VIEW).
+                    throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("view", view.getName()));
+                }
                 view.setComment(comment);
+                view.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on view: {}", viewName);
 
             } else if (ctx.FUNCTION() != null) {
@@ -287,21 +322,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String funcName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        funcName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        funcName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        funcName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid function name: " + functionName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    funcName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Function schema does not exist (IF EXISTS): {}", functionName);
@@ -312,7 +334,7 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Function function;
                 try {
-                    function = schema.getFunctionBySignature(funcName, writtenSignature(ctx));
+                    function = schema.getFunctionByWrittenSignature(funcName, writtenSignature(ctx));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Function does not exist (IF EXISTS): {}", functionName);
@@ -324,6 +346,7 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Function", schema.qualifiedName(funcName)));
                 }
                 function.setComment(comment);
+                function.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on function: {}", functionName);
 
             } else if (ctx.PROCEDURE() != null) {
@@ -334,21 +357,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String procName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        procName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        procName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        procName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid procedure name: " + procedureName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    procName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Procedure schema does not exist (IF EXISTS): {}", procedureName);
@@ -359,7 +369,7 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Procedure procedure;
                 try {
-                    procedure = schema.getProcedureBySignature(procName, writtenSignature(ctx));
+                    procedure = schema.getProcedureByWrittenSignature(procName, writtenSignature(ctx));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Procedure does not exist (IF EXISTS): {}", procedureName);
@@ -370,6 +380,7 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", schema.qualifiedName(procName)));
                 }
                 procedure.setComment(comment);
+                procedure.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on procedure: {}", procedureName);
 
             } else if (ctx.STREAM() != null) {
@@ -380,21 +391,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String strmName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        strmName = parts[0].toUpperCase();
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        strmName = parts[1].toUpperCase();
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        strmName = parts[2].toUpperCase();
-                    } else {
-                        throw new RuntimeException("Invalid stream name: " + streamName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    strmName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Stream schema does not exist (IF EXISTS): {}", streamName);
@@ -405,16 +403,15 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Stream stream;
                 try {
-                    stream = schema.getStream(strmName);
+                    // Named exactly: a quoted name in another case is another stream, which is not there, refused
+                    // fully qualified like the other schema-object shapes (live-verified).
+                    stream = schema.getStreamExact(strmName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Stream does not exist (IF EXISTS): {}", streamName);
                         return null;
                     }
-                    // Fully qualified, like the other schema-object shapes (live-verified).
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Stream",
-                        ((parts.length == 3 ? parts[0] : catalog.getCurrentDatabase()) + "."
-                            + schema.getName() + "." + strmName).toUpperCase()));
+                    throw e;
                 }
                 stream.setComment(comment);
                 logger.trace("Set comment on stream: {}", streamName);
@@ -427,21 +424,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String tskName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        tskName = parts[0].toUpperCase();
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        tskName = parts[1].toUpperCase();
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        tskName = parts[2].toUpperCase();
-                    } else {
-                        throw new RuntimeException("Invalid task name: " + taskName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    tskName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Task schema does not exist (IF EXISTS): {}", taskName);
@@ -452,7 +436,8 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Task task;
                 try {
-                    task = schema.getTask(tskName);
+                    // Named exactly: a quoted name in another case is another task, which is not there (live-verified).
+                    task = schema.getTaskExact(tskName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Task does not exist (IF EXISTS): {}", taskName);
@@ -468,7 +453,7 @@ public class CommentCommandHandler implements CommandHandler {
                 final String warehouseName = visitor.getText(ctx.identifier());
                 final Warehouse warehouse;
                 try {
-                    warehouse = catalog.getWarehouse(warehouseName);
+                    warehouse = catalog.getWarehouseExact(warehouseName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
@@ -491,7 +476,9 @@ public class CommentCommandHandler implements CommandHandler {
                 final String stageName = visitor.getText(ctx.qualifiedName());
                 final Stage stage;
                 try {
-                    stage = catalog.getStage(stageName);
+                    // Named exactly: a quoted name in another case is another stage, which is not there
+                    // (live-verified).
+                    stage = catalog.getStageExact(stageName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Stage does not exist (IF EXISTS): {}", stageName);
@@ -507,6 +494,7 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", stageName));
                 }
                 stage.setComment(comment);
+                stage.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on stage: {}", stageName);
 
             } else if (ctx.USER() != null) {
@@ -560,7 +548,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final String tagName = visitor.getText(ctx.qualifiedName());
                 final Tag tag;
                 try {
-                    tag = catalog.getTag(tagName);
+                    // Named exactly, as a stage is (live-verified).
+                    tag = catalog.getTagExact(tagName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Tag does not exist (IF EXISTS): {}", tagName);
@@ -580,40 +569,54 @@ public class CommentCommandHandler implements CommandHandler {
             } else if (ctx.SEQUENCE() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
                 try {
-                    commentTargetSchema(ctx.qualifiedName()).getSequence(commentSimpleName(ctx.qualifiedName())).setComment(comment);
+                    // Named exactly, as a stage is (live-verified).
+                    final Sequence sequence = commentTargetSchema(ctx.qualifiedName())
+                        .getSequenceExact(commentSimpleName(ctx.qualifiedName()));
+                    sequence.setComment(comment);
+                    sequence.markDdl();
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
                 }
             } else if (ctx.PIPE() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
                 try {
-                    catalog.getPipe(n).setComment(comment);
+                    final Pipe pipe = catalog.getPipe(n);
+                    pipe.setComment(comment);
+                    pipe.markDdl(catalog.currentUserForDdl());
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
                 }
             } else if (ctx.MASKING() != null && ctx.POLICY() != null) {
-                final String n = visitor.getText(ctx.qualifiedName());
-                final MaskingPolicy p = commentTargetSchema(ctx.qualifiedName()).getMaskingPolicy(commentSimpleName(ctx.qualifiedName()));
+                // Named exactly, as a stage is, and refused by its full path when missing (live-verified).
+                final Schema home = commentTargetSchema(ctx.qualifiedName());
+                final String n = commentSimpleName(ctx.qualifiedName());
+                final MaskingPolicy p = home.getMaskingPolicyExact(n);
                 if (p != null) {
                     p.setComment(comment);
                 } else if (!ifExists) {
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", n));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
+                        home.qualifiedName(n)));
                 }
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
-                final String n = visitor.getText(ctx.qualifiedName());
-                final RowAccessPolicy p = commentTargetSchema(ctx.qualifiedName()).getRowAccessPolicy(commentSimpleName(ctx.qualifiedName()));
+                final Schema home = commentTargetSchema(ctx.qualifiedName());
+                final String n = commentSimpleName(ctx.qualifiedName());
+                final RowAccessPolicy p = home.getRowAccessPolicyExact(n);
                 if (p != null) {
                     p.setComment(comment);
                 } else if (!ifExists) {
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", n));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
+                        home.qualifiedName(n)));
                 }
             } else if (ctx.FILE() != null && ctx.FORMAT() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
-                final FileFormat ff = catalog.getFileFormat(n);
+                // Named exactly, as a stage is, and refused by its full path when missing (live-verified).
+                final FileFormat ff = catalog.getFileFormatExact(n);
                 if (ff != null) {
                     ff.setComment(comment);
+                    ff.markDdl();
                 } else if (!ifExists) {
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("File format", n));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("File format",
+                        catalog.qualifiedExactName(n)));
                 }
             }
 
@@ -629,13 +632,7 @@ public class CommentCommandHandler implements CommandHandler {
     /** Resolve the schema owning a (possibly-qualified) object referenced in a COMMENT ON statement.
      *  Parts come from the parse tree, so a quoted name containing a dot stays one part. */
     private Schema commentTargetSchema(final FrostlakeParser.QualifiedNameContext nameCtx) {
-        final String[] parts = qualifiedNameParts(nameCtx);
-        if (parts.length == 3) {
-            return catalog.getDatabase(parts[0]).getSchema(parts[1]);
-        } else if (parts.length == 2) {
-            return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-        }
-        return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+        return catalog.requireOwningSchema(QualifiedName.of(qualifiedNameParts(nameCtx)));
     }
 
     /**
@@ -646,7 +643,8 @@ public class CommentCommandHandler implements CommandHandler {
         final List<DataType> argumentTypes = new ArrayList<>();
         if (ctx.dataTypeList() != null) {
             for (final FrostlakeParser.DataTypeNameContext typeCtx : ctx.dataTypeList().dataTypeName()) {
-                argumentTypes.add(visitor.parseDataType(typeCtx, null));
+                argumentTypes.add(WrittenSignatureType.of(visitor.parseDataType(typeCtx, RoutineSignatureForm.parametersOf(typeCtx)),
+                    RoutineSignatureForm.parametersOf(typeCtx) != null));
             }
         }
         return argumentTypes;

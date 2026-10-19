@@ -25,6 +25,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
@@ -244,10 +245,10 @@ final class TaskProperties {
                 if (value.isNumeric() || value.isBoolean()) {
                     throw invalidKind(key, value);
                 }
-                // A quoted name is echoed as written, a bare one upper-cased (live-verified).
-                if (!catalog.hasWarehouse(value.text())) {
-                    throw new RuntimeException("Nonexistent warehouse " + (value.isQuoted() ? value.text()
-                        : value.text().toUpperCase(Locale.ROOT)) + " was specified.");
+                // A name reaches the warehouse of exactly its canonical spelling; a string is echoed as written
+                // (live-verified).
+                if (value.isQuoted() ? !catalog.hasWarehouse(value.text()) : !catalog.hasWarehouseExact(value.text())) {
+                    throw new RuntimeException("Nonexistent warehouse " + value.text() + " was specified.");
                 }
                 return;
             case "SUCCESS_INTEGRATION":
@@ -257,9 +258,11 @@ final class TaskProperties {
                     throw invalidKind(key, value);
                 }
                 // A quoted name is the integration's exact name; a bare one folds as an identifier does.
-                if (catalog.getIntegrations().find(value.text()) == null) {
+                final Integration named = catalog.getIntegrations().find(value.text());
+                if (named == null) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Integration", value.text()));
                 }
+                IntegrationReferences.requireTaskNotification(named);
                 return;
             default:
                 break;
@@ -736,7 +739,7 @@ final class TaskProperties {
         if (sessionUser != null && sessionUser.equalsIgnoreCase(userName)) {
             return;
         }
-        final User user = catalog.getUser(userName);
+        final User user = catalog.getUserExact(userName);
         final String owner = task.getOwner();
         if (owner != null && !reaches(user, owner)) {
             throw new RuntimeException("Task execution failed because the user " + user.getName()

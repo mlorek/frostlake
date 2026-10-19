@@ -21,9 +21,50 @@ import dev.frostlake.storage.ResultSet;
 public class ResultSetVariable {
     private final String selectQuery;
     private ResultSet resultSet;
+    private AsyncJob job;
+    private String name;
+    private int[] parenthesisLead;
 
     public ResultSetVariable(final String selectQuery) {
         this.selectQuery = selectQuery;
+    }
+
+    /**
+     * How far a query assigned in parentheses, {@code res := (SELECT …)}, stands from its opening parenthesis: the
+     * lines between the two, and the columns the places of its first line count before the query's own. Null for a
+     * RESULTSET that is declared with its query, whose places are the query's.
+     *
+     * @return the lines and the columns, or null
+     */
+    public int[] getParenthesisLead() {
+        return parenthesisLead;
+    }
+
+    public void setParenthesisLead(final int[] parenthesisLead) {
+        this.parenthesisLead = parenthesisLead;
+    }
+
+    /** The name the RESULTSET was declared or assigned under, upper-cased, or null. */
+    public String getName() {
+        return name;
+    }
+
+    public void setName(final String name) {
+        this.name = name;
+    }
+
+    /** Whether nothing has been given to the RESULTSET: no statement, no job, no rows. */
+    public boolean isEmpty() {
+        return selectQuery == null && resultSet == null && job == null;
+    }
+
+    /** The asynchronous job that fills this RESULTSET, or null when a statement filled it where it stands. */
+    public AsyncJob getJob() {
+        return job;
+    }
+
+    public void setJob(final AsyncJob job) {
+        this.job = job;
     }
 
     public String getSelectQuery() {

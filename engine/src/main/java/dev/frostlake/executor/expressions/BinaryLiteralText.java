@@ -17,10 +17,12 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.values.BinaryValue;
 
 /**
- * A hex BINARY literal's text, {@code X'..'}, read the way live reads it: SPACES inside the quotes are
+ * A hex BINARY literal's text, {@code X'..'}, read the way live reads it: the text between the quotes is a
+ * string literal's, so its escapes are read first; SPACES, line feeds and carriage returns are then
  * dropped wherever they fall ({@code X'00 11'} is two bytes, {@code X'0 0'} one), and what remains
  * must be pairs of hexadecimal digits. Anything else — an odd count, a letter past F, a tab — is
  * refused while the statement compiles, echoing the literal as written:
@@ -38,7 +40,10 @@ public final class BinaryLiteralText {
      * @return its value
      */
     public static BinaryValue decode(final String token) {
-        final String body = token.substring(2, token.length() - 1).replace(" ", "");
+        // The text between the quotes is a string literal's: its escapes are read first, and a blank, a line feed
+        // or a carriage return — written out or escaped — is no part of the digits (x'4\n1' is one byte).
+        final String body = SqlStringLiterals.decodeContent(token.substring(2, token.length() - 1))
+            .replace(" ", "").replace("\n", "").replace("\r", "");
         boolean valid = body.length() % 2 == 0;
         for (int i = 0; valid && i < body.length(); i++) {
             valid = Character.digit(body.charAt(i), 16) >= 0;

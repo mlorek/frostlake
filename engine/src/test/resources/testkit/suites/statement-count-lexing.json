@@ -1,0 +1,45 @@
+{
+  "suite": "statement-count-lexing",
+  "description": "The one-statement gate counts a text as it is read to run it: two dollars inside a name open no dollar-quoted body, a carriage return ends a line comment, a block's word used as a name opens no block - so a second statement cannot ride in behind any of them - and a semicolon inside a string, a quoted name, a dollar-quoted body or a comment ends no statement.",
+  "tags": ["session", "multi-statement"],
+  "tests": [
+    {"name": "dollars-inside-a-name-open-no-body", "skip": {"backends": ["engine"], "reason": "the engine's own API takes a script whatever MULTI_STATEMENT_COUNT says; the one-statement gate is the driver's and the HTTP endpoint's"}, "steps": [
+      {"sql": "CREATE TABLE sc (a INTEGER)"},
+      {"sql": "INSERT INTO sc VALUES (1), (2), (3)"},
+      {"sql": "ALTER SESSION SET MULTI_STATEMENT_COUNT = 1"},
+      {"sql": "SELECT 1 AS a$$b; DELETE FROM sc", "expect": {"error": {"messageContains": "Actual statement count 2 did not match the desired statement count 1"}}},
+      {"sql": "SELECT COUNT(*) FROM sc", "expect": {"value": "3"}},
+      {"sql": "SELECT 1 AS a$$b /* $$ */; DELETE FROM sc", "expect": {"error": {"messageContains": "Actual statement count 2 did not match the desired statement count 1"}}},
+      {"sql": "SELECT COUNT(*) FROM sc", "expect": {"value": "3"}}
+    ]},
+    {"name": "a-carriage-return-ends-a-line-comment", "skip": {"backends": ["engine"], "reason": "the engine's own API takes a script whatever MULTI_STATEMENT_COUNT says; the one-statement gate is the driver's and the HTTP endpoint's"}, "steps": [
+      {"sql": "CREATE TABLE sc (a INTEGER)"},
+      {"sql": "INSERT INTO sc VALUES (1), (2), (3)"},
+      {"sql": "ALTER SESSION SET MULTI_STATEMENT_COUNT = 1"},
+      {"sql": "SELECT 1 -- x\r; DELETE FROM sc", "expect": {"error": {"messageContains": "Actual statement count 2 did not match the desired statement count 1"}}},
+      {"sql": "SELECT COUNT(*) FROM sc", "expect": {"value": "3"}},
+      {"sql": "SELECT 1 // c\r; DELETE FROM sc", "expect": {"error": {"messageContains": "Actual statement count 2 did not match the desired statement count 1"}}},
+      {"sql": "SELECT COUNT(*) FROM sc", "expect": {"value": "3"}}
+    ]},
+    {"name": "a-block-word-used-as-a-name-opens-no-block", "skip": {"backends": ["engine"], "reason": "the engine's own API takes a script whatever MULTI_STATEMENT_COUNT says; the one-statement gate is the driver's and the HTTP endpoint's"}, "steps": [
+      {"sql": "CREATE TABLE sc (a INTEGER)"},
+      {"sql": "INSERT INTO sc VALUES (1), (2), (3)"},
+      {"sql": "ALTER SESSION SET MULTI_STATEMENT_COUNT = 1"},
+      {"sql": "SELECT 1 AS begin, 2 AS b; DELETE FROM sc", "expect": {"error": {"messageContains": "Actual statement count 2 did not match the desired statement count 1"}}},
+      {"sql": "SELECT COUNT(*) FROM sc", "expect": {"value": "3"}}
+    ]},
+    {"name": "what-the-lexer-keeps-whole-ends-no-statement", "steps": [
+      {"sql": "CREATE TABLE sc (a INTEGER)"},
+      {"sql": "INSERT INTO sc VALUES (1), (2), (3)"},
+      {"sql": "ALTER SESSION SET MULTI_STATEMENT_COUNT = 1"},
+      {"sql": "SELECT 'a;b'", "expect": {"value": "a;b"}},
+      {"sql": "SELECT $$a;b$$", "expect": {"value": "a;b"}},
+      {"sql": "SELECT 1 AS \"a;b\"", "expect": {"value": "1"}},
+      {"sql": "SELECT 1 -- c; DELETE FROM sc", "expect": {"value": "1"}},
+      {"sql": "SELECT 1 /* c; */", "expect": {"value": "1"}},
+      {"sql": "SELECT 1 AS a$$b", "expect": {"value": "1"}},
+      {"sql": "SELECT 1 -- x\rAS c", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM sc", "expect": {"value": "3"}}
+    ]}
+  ]
+}

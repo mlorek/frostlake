@@ -163,13 +163,18 @@
      "sql": "CREATE ROLE IF NOT EXISTS sr_b"
     },
     {
-     "sql": "CREATE USER IF NOT EXISTS sr_user"
+     "sql": "USE SECONDARY ROLES sr_a, sr_b",
+     "expect": {
+      "error": {
+       "messageContains": "is not assigned to the executing user"
+      }
+     }
     },
     {
-     "sql": "GRANT ROLE sr_a TO USER sr_user"
+     "sql": "GRANT ROLE sr_a TO ROLE ACCOUNTADMIN"
     },
     {
-     "sql": "GRANT ROLE sr_b TO USER sr_user"
+     "sql": "GRANT ROLE sr_b TO ROLE ACCOUNTADMIN"
     },
     {
      "sql": "USE SECONDARY ROLES sr_a, sr_b"
@@ -182,15 +187,6 @@
     },
     {
      "sql": "USE SECONDARY ROLES NONE"
-    },
-    {
-     "sql": "REVOKE ROLE sr_a FROM USER sr_user"
-    },
-    {
-     "sql": "REVOKE ROLE sr_b FROM USER sr_user"
-    },
-    {
-     "sql": "DROP USER IF EXISTS sr_user"
     },
     {
      "sql": "DROP ROLE IF EXISTS sr_a"

@@ -48,6 +48,11 @@ public final class ExactValues {
         if (value == null || type == null || NumericType.isApproximate(type) || type.getScale() < 0) {
             return value;
         }
+        if (NumericType.isDecfloat(type)) {
+            // A DECFLOAT column holds 38 significant digits wherever the value puts its point (see Decfloats).
+            return value instanceof Number && !isCarrier(value, type) ? Decfloats.written((Number) value, "TO_DECFLOAT")
+                : value;
+        }
         if (isCarrier(value, type)) {
             return value;
         }
@@ -75,6 +80,9 @@ public final class ExactValues {
      * @return true when the cell can be stored as it is
      */
     public static boolean isCarrier(final Object value, final NumericType type) {
+        if (NumericType.isDecfloat(type)) {
+            return value instanceof BigDecimal && Decfloats.held((BigDecimal) value).equals(value);
+        }
         if (type.getScale() == 0) {
             if (value instanceof Long) {
                 return true;

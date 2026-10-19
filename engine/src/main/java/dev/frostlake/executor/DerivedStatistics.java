@@ -35,6 +35,7 @@ final class DerivedStatistics implements MergedRelationStatistics {
     private final CountStatisticsBound clauseBound;
     private final Table source;
     private final List<String> columnSources;
+    private final String sourceAlias;
 
     /**
      * @param executor      the executor that reads the table's rows
@@ -45,10 +46,24 @@ final class DerivedStatistics implements MergedRelationStatistics {
      */
     DerivedStatistics(final QueryExecutor executor, final CountStatisticsBound clauseBound, final Table source,
                       final List<String> columnSources) {
+        this(executor, clauseBound, source, columnSources, null);
+    }
+
+    /**
+     * @param executor      the executor that reads the table's rows
+     * @param clauseBound   the reading clause's statistics bound, or null when every row reaches the result
+     * @param source        the relation the clause reads: a catalog table, or a relation keeping its statistics
+     * @param columnSources each result column's select item as written, or null when every column is the
+     *                      source's own
+     * @param sourceAlias   the name the clause reads the source under, or null for none of its own
+     */
+    DerivedStatistics(final QueryExecutor executor, final CountStatisticsBound clauseBound, final Table source,
+                      final List<String> columnSources, final String sourceAlias) {
         this.executor = executor;
         this.clauseBound = clauseBound;
         this.source = source;
         this.columnSources = columnSources;
+        this.sourceAlias = sourceAlias;
     }
 
     @Override
@@ -76,6 +91,11 @@ final class DerivedStatistics implements MergedRelationStatistics {
     @Override
     public Table sourceRelation() {
         return source;
+    }
+
+    @Override
+    public String sourceAlias() {
+        return sourceAlias;
     }
 
     /** Null where every column is the source's own, the column at the same position ({@link #passesStoredColumn}). */

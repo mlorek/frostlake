@@ -63,7 +63,9 @@ public class DatabaseHttpServer {
     public DatabaseHttpServer(final EngineConfig config) throws IOException {
         this.config = config;
         this.port = config.getHttpPort();
-        this.engine = new ConcurrentDatabaseEngine();
+        // The engine runs on the server's own configuration, so a file named on the command line sets the engine's
+        // properties (database.default, http.session.idleTimeoutMinutes, ...) as well as the server's.
+        this.engine = new ConcurrentDatabaseEngine(config);
         enableNoDelay();
 
         final String host = config.getHttpHost();
@@ -71,14 +73,20 @@ public class DatabaseHttpServer {
 
         // Set up handlers. Each is wrapped, so a fault its own handling does not answer is still answered
         // instead of leaving the client to time out.
-        server.createContext("/api/execute", new ErrorAnsweringHandler(new ExecuteSqlHandler(engine)));
-        server.createContext("/api/health", new ErrorAnsweringHandler(new HealthCheckHandler(engine)));
-        server.createContext("/api/sessions", new ErrorAnsweringHandler(new SessionInfoHandler(engine)));
+        // Every request passes the guard first: the host it names, the origin it comes from, and for the SQL
+        // endpoints the kind of body it carries (see RequestGuard).
+        final RequestGuard guard = new RequestGuard(server.getAddress().getAddress(), host,
+            config.getCorsAllowedOrigins());
+        server.createContext("/api/execute", new ErrorAnsweringHandler(new ExecuteSqlHandler(engine), guard, true));
+        server.createContext("/api/health", new ErrorAnsweringHandler(new HealthCheckHandler(engine), guard, false));
+        server.createContext("/api/sessions", new ErrorAnsweringHandler(new SessionInfoHandler(engine), guard, true));
         this.restResults = new RestResults(config.getRestSyncWaitMs(), config.getRestResultRetentionMs());
         server.createContext(RestApiHandler.CONTEXT,
-            new ErrorAnsweringHandler(new RestApiHandler(engine, restResults)));
-        server.createContext(PresignedUrls.CONTEXT, new ErrorAnsweringHandler(new PresignedFileHandler()));
-        server.createContext(BuildStageFileUrl.CONTEXT, new ErrorAnsweringHandler(new StageFileUrlHandler(engine)));
+            new ErrorAnsweringHandler(new RestApiHandler(engine, restResults), guard, false));
+        server.createContext(PresignedUrls.CONTEXT, new ErrorAnsweringHandler(new PresignedFileHandler(), guard,
+            false));
+        server.createContext(BuildStageFileUrl.CONTEXT, new ErrorAnsweringHandler(new StageFileUrlHandler(engine),
+            guard, false));
         // The engine names this server in the presigned and file URLs it hands out.
         engine.getEngine().getConfig().setProperty(EngineConfig.PROP_HTTP_HOST, host);
         engine.getEngine().getConfig().setProperty(EngineConfig.PROP_HTTP_PORT, String.valueOf(port));
@@ -159,38 +167,17 @@ public class DatabaseHttpServer {
      */
     public static void main(final String[] args) {
         try {
-            // Load configuration
-            EngineConfig config = new EngineConfig();
-            String initFile = null;
-
             // Parse arguments: [port] [configFile] [-f|--file <sqlFile>]
-            int positional = 0;
-            for (int i = 0; i < args.length; i++) {
-                if ("-f".equals(args[i]) || "--file".equals(args[i])) {
-                    if (i + 1 >= args.length) {
-                        System.err.println("Error: -f/--file requires a file path argument");
-                        System.exit(1);
-                    }
-                    initFile = args[++i];
-                } else {
-                    switch (positional) {
-                        case 0:
-                            try {
-                                final int port = Integer.parseInt(args[i]);
-                                config.setProperty(EngineConfig.PROP_HTTP_PORT, String.valueOf(port));
-                                logger.info("Port overridden via command line: {}", port);
-                            } catch (final NumberFormatException e) {
-                                logger.warn("Invalid port number argument, using configured value: {}", config.getHttpPort());
-                            }
-                            break;
-                        case 1:
-                            config = new EngineConfig(args[i]);
-                            logger.info("Configuration loaded from: {}", args[i]);
-                            break;
-                    }
-                    positional++;
-                }
+            final ServerArguments arguments;
+            try {
+                arguments = ServerArguments.parse(args);
+            } catch (final IllegalArgumentException malformed) {
+                System.err.println("Error: " + malformed.getMessage());
+                System.exit(1);
+                return;
             }
+            final EngineConfig config = arguments.config();
+            final String initFile = arguments.initFile();
 
             final DatabaseHttpServer server = new DatabaseHttpServer(config);
 

@@ -20,18 +20,22 @@ import dev.frostlake.types.DataType;
 
 /**
  * A built-in that NAVIGATES a semi-structured value — reads a key, an index, a size, or splices a new
- * element in — and therefore refuses a GEOSPATIAL one in EVERY argument position, while taking a plain
- * OBJECT or ARRAY and a STRUCTURED one alike.
+ * element in — and therefore refuses a GEOSPATIAL one in EVERY argument position. What it takes besides is
+ * its own: the OBJECT accessors read a plain OBJECT and a structured one alike, while the ARRAY ones read an
+ * ARRAY, and a plain OBJECT only where they read a VARIANT (see below).
  *
  * <p>This family is the reason {@link BuiltInFunction#geoRejection} exists as a question of its own.
  * The accessors are precisely the surface both semi-structured declarations leave alone — they read a
  * structured value quite happily, so they are not {@link StructuredArgumentFunction}s, and they read a
  * plain OBJECT, so they declare no {@code semiStructuredRejection} either — which makes the inherited
- * union default answer NONE for them. Live disagrees, and only for geo. Measured over one
- * table carrying an OBJECT column and a GEOGRAPHY column: {@code GET(o, 'k')} returns {@code "v"} while
- * {@code GET(g, 'type')} is "Invalid argument types for function 'GET': (GEOGRAPHY, VARCHAR(4))"
- * (SQLSTATE 42P13), and {@code GET_PATH}, {@code OBJECT_KEYS}, {@code OBJECT_INSERT},
- * {@code ARRAY_SIZE}, {@code ARRAY_APPEND} and {@code ARRAY_TO_STRING} each split the same way.
+ * union default answer NONE for them. Live disagrees for geo. Measured over one table carrying an OBJECT
+ * column and a GEOGRAPHY column: {@code GET(o, 'k')} returns {@code "v"} while {@code GET(g, 'type')} is
+ * "Invalid argument types for function 'GET': (GEOGRAPHY, VARCHAR(4))" (SQLSTATE 42P13), and
+ * {@code GET_PATH}, {@code OBJECT_KEYS} and {@code OBJECT_INSERT} each split the same way. {@code ARRAY_SIZE},
+ * {@code ARRAY_APPEND} and {@code ARRAY_TO_STRING} refuse the geo value too, but not because they take the
+ * OBJECT: live, {@code ARRAY_APPEND({'a': 1}::OBJECT, 1)} is refused by its argument types at compile time,
+ * where ARRAY_SIZE answers NULL and ARRAY_TO_STRING refuses the object only when the row is read (all
+ * live-verified; the ARRAY-position rule is {@code ExpressionEvaluatorVisitor.rejectObjectInArrayPosition}).
  *
  * <p>Every position, not merely the semi-structured-shaped one: live refuses
  * {@code OBJECT_INSERT(o, 'a', g)} and {@code ARRAY_APPEND(ARRAY_CONSTRUCT(1), g)} — a geo value in the

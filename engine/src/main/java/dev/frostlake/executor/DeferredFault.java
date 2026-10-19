@@ -39,11 +39,64 @@ public final class DeferredFault {
     private static final Map<Throwable, Boolean> HELD =
         Collections.synchronizedMap(new WeakHashMap<Throwable, Boolean>());
 
+    /** The held faults a write raises bare, with no DML sentence around them (see {@link #isHeldBare}). */
+    private static final Map<Throwable, Boolean> BARE =
+        Collections.synchronizedMap(new WeakHashMap<Throwable, Boolean>());
+
     private final RuntimeException fault;
+    /** The answer a CALL handed out, which a plain star over its scan hands out too; null for any other cell. */
+    private final Object answered;
+    /** Whether the cell holds such an answer. */
+    private final boolean holdsAnswer;
 
     public DeferredFault(final RuntimeException fault) {
+        this(fault, null, false);
+    }
+
+    private DeferredFault(final RuntimeException fault, final Object answered, final boolean holdsAnswer) {
         this.fault = fault;
+        this.answered = answered;
+        this.holdsAnswer = holdsAnswer;
         HELD.put(fault, Boolean.TRUE);
+    }
+
+    /**
+     * A cell of a CALL's scan holding the answer the CALL handed out and the fault reading it raises: a statement
+     * that reads the cell is refused, a plain {@code SELECT * FROM TABLE(RESULT_SCAN(…))} hands the answer out as
+     * the CALL did (see {@code ScanStar}), and a write over the scan of an answer wider than its RETURNS column raises
+     * the fault as it is, where a view's too-long value is worded as the write's (live-verified).
+     *
+     * @param fault    the fault
+     * @param answered the answer
+     * @param bare     whether a write raises the fault with no DML sentence around it
+     * @return the cell
+     */
+    public static DeferredFault heldAnswer(final RuntimeException fault, final Object answered, final boolean bare) {
+        final DeferredFault cell = new DeferredFault(fault, answered, true);
+        if (bare) {
+            BARE.put(fault, Boolean.TRUE);
+        }
+        return cell;
+    }
+
+    /** Whether the cell holds an answer a CALL handed out (see {@link #heldAnswer}). */
+    public boolean holdsAnswer() {
+        return holdsAnswer;
+    }
+
+    /** The answer the cell holds, or null. */
+    public Object getAnswered() {
+        return answered;
+    }
+
+    /**
+     * Whether a failure is a held fault a write raises bare (see {@link #heldAnswer}).
+     *
+     * @param failure the failure caught
+     * @return whether it is such a fault
+     */
+    public static boolean isHeldBare(final Throwable failure) {
+        return failure != null && BARE.containsKey(failure);
     }
 
     /**

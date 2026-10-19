@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -67,7 +68,7 @@ public class ShowBuiltinFunctionsTest extends BaseDatabaseTest {
     private Set<String> names(final ResultSet rs) {
         final Set<String> names = new HashSet<String>();
         for (final Row row : rs.getRows()) {
-            names.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+            names.add(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT));
         }
         return names;
     }
@@ -139,7 +140,7 @@ public class ShowBuiltinFunctionsTest extends BaseDatabaseTest {
     public void likeFiltersTheBuiltInCatalog() {
         final ResultSet rs = engine.executeQuery("SHOW BUILTIN FUNCTIONS LIKE 'ROW_NUMBER'");
         assertEquals(1, rs.getRowCount(), "LIKE 'ROW_NUMBER' matches exactly one built-in");
-        assertEquals("ROW_NUMBER", String.valueOf(rs.getRows().get(0).getValue(NAME)).toUpperCase());
+        assertEquals("ROW_NUMBER", String.valueOf(rs.getRows().get(0).getValue(NAME)).toUpperCase(Locale.ROOT));
     }
 
     @Test

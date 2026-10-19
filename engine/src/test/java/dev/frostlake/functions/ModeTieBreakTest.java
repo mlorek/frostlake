@@ -23,6 +23,7 @@ import dev.frostlake.storage.Row;
 import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -104,7 +105,7 @@ public class ModeTieBreakTest extends BaseDatabaseTest {
         assertEquals("a", String.valueOf(table.getValue(1)));
         assertEquals("2", String.valueOf(table.getValue(2)));
         assertEquals("2020-01-01", String.valueOf(table.getValue(3)));
-        assertEquals("true", String.valueOf(table.getValue(4)).toLowerCase());
+        assertEquals("true", String.valueOf(table.getValue(4)).toLowerCase(Locale.ROOT));
         assertEquals("1.5", String.valueOf(table.getValue(5)));
         assertEquals("1", String.valueOf(table.getValue(6)));
     }

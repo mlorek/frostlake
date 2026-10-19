@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import org.antlr.v4.runtime.BufferedTokenStream;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
@@ -163,7 +162,7 @@ public final class PositionNeedleSyntax {
         if (node instanceof FrostlakeParser.QuantifiedComparisonExprContext) {
             final FrostlakeParser.QuantifiedComparisonExprContext comparison =
                 (FrostlakeParser.QuantifiedComparisonExprContext) node;
-            final Token left = refusedIn(comparison.expression());
+            final Token left = refusedIn(comparison.expression(0));
             return left != null ? left : comparison.op;
         }
         if (node instanceof FrostlakeParser.LikeExprContext) {
@@ -276,7 +275,7 @@ public final class PositionNeedleSyntax {
         if (sql == null || faultIndex < 1) {
             return null;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();

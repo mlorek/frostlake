@@ -21,6 +21,8 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -54,7 +56,7 @@ public class RowAccessPolicyAttachmentTest extends BaseDatabaseTest {
                     engine.execute(add);
                 }
             });
-            assertEquals("Object " + object.toUpperCase() + " already has a ROW_ACCESS_POLICY."
+            assertEquals("Object " + object.toUpperCase(Locale.ROOT) + " already has a ROW_ACCESS_POLICY."
                 + " Only one ROW_ACCESS_POLICY is allowed at a time.", ex.getMessage());
         } else {
             engine.execute(add);
@@ -234,7 +236,7 @@ public class RowAccessPolicyAttachmentTest extends BaseDatabaseTest {
                     engine.execute("ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (" + column[0] + ")");
                 }
             });
-            assertEquals("SQL compilation error: Column '" + column[0].toUpperCase() + "' data type '"
+            assertEquals("SQL compilation error: Column '" + column[0].toUpperCase(Locale.ROOT) + "' data type '"
                 + column[1] + "' does not match with Row access policy data type"
                 + " 'VARCHAR(134217728)'.", ex.getMessage());
         }

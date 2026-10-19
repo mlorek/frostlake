@@ -196,7 +196,7 @@
       {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"},
       {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh2"}
     ]},
-    {"name": "alter-sets-and-unsets-the-comment",
+    {"name": "alter-sets-the-comment-and-has-no-unset-for-it",
      "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
      "steps": [
       {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
@@ -206,9 +206,10 @@
       {"sql": "ALTER CORTEX SEARCH SERVICE s1 SET COMMENT = 'now commented'"},
       {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
       {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "now commented"}},
-      {"sql": "ALTER CORTEX SEARCH SERVICE s1 UNSET COMMENT"},
+      {"sql": "ALTER CORTEX SEARCH SERVICE s1 UNSET COMMENT",
+       "expect": {"error": {"messageContains": "unexpected 'COMMENT'"}}},
       {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
-      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NULL"}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "now commented"}},
       {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
     ]},
     {"name": "alter-missing-service-is-an-error",

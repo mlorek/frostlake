@@ -16,27 +16,39 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.DefinitionCompile;
+import dev.frostlake.executor.GrantedObject;
+import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ReturnColumnTypes;
+import dev.frostlake.executor.RoutineReferenceText;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
-import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.TagAssignment;
+import dev.frostlake.metastore.TagAssignments;
+import dev.frostlake.metastore.Taggable;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AppObject;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.CheckConstraint;
+import dev.frostlake.metastore.model.ConstraintNames;
 import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.IcebergTableMetadata;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.MaterializedView;
@@ -44,35 +56,34 @@ import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ProjectionPolicy;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObject;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.SequenceDefault;
 import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.metastore.model.View;
-import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.IcebergTypes;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
-import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.misc.ParseCancellationException;
-import org.antlr.v4.runtime.tree.ParseTree;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * {@code GET_DDL('<object_type>', '<object_name>' [, <use_fully_qualified_names>])} — reconstructs the
@@ -101,12 +112,21 @@ public class GetDdl extends BuiltInFunction {
      */
     private static final ThreadLocal<Boolean> DERIVING = new ThreadLocal<Boolean>();
 
+    /** Every object type the call takes, the ones it finds and then cannot recreate among them. */
+    private static final Set<String> OBJECT_TYPES = Set.of(
+        "SCHEMA", "DATABASE", "TABLE", "VIEW", "MATERIALIZED_VIEW", "DYNAMIC_TABLE", "EVENT_TABLE", "FUNCTION",
+        "PROCEDURE", "SEQUENCE", "STREAM", "TASK", "PIPE", "TAG", "POLICY", "FILE_FORMAT", "ALERT", "CONTACT",
+        "STREAMLIT", "STAGE", "WAREHOUSE", "INTEGRATION", "TYPE", "SEMANTIC_VIEW", "CORTEX_AGENT", "FAILOVER_GROUP",
+        "REPLICATION_GROUP", "NOTEBOOK", "ICEBERG_TABLE", "ROLE", "DBT_PROJECT", "CORTEX_SEARCH_SERVICE", "ACCOUNT");
+
     private final Catalog catalog;
     /**
      * Answers a defining query's SHAPE — its columns and no row — without running it, to derive a view's, a
      * materialized view's or a dynamic table's output column names; null until the executor wires it.
      */
     private final QueryRunner queryRunner;
+    private final RelationNameResolver relationNames;
+    private final DefinitionOwnership ownership;
     /** The recursive text of a schema and a database, built from this function's renderers. */
     private final SchemaDdl containers = new SchemaDdl(this);
 
@@ -115,39 +135,126 @@ public class GetDdl extends BuiltInFunction {
     }
 
     public GetDdl(final Catalog catalog, final QueryRunner queryRunner) {
+        this(catalog, queryRunner, null);
+    }
+
+    /**
+     * @param catalog       the catalog the objects are read from
+     * @param queryRunner   plans a relation's defining query, or null
+     * @param relationNames finds a relation by a bare name along the session's search path, or null to look in
+     *                      the current schema alone
+     */
+    public GetDdl(final Catalog catalog, final QueryRunner queryRunner, final RelationNameResolver relationNames) {
+        this(catalog, queryRunner, relationNames, null);
+    }
+
+    /**
+     * @param catalog       the catalog the objects are read from
+     * @param queryRunner   plans a relation's defining query, or null
+     * @param relationNames finds a relation by a bare name along the session's search path, or null to look in
+     *                      the current schema alone
+     * @param ownership     says whether the session may act as an object's owner, or null to show everything
+     */
+    public GetDdl(final Catalog catalog, final QueryRunner queryRunner, final RelationNameResolver relationNames,
+                  final DefinitionOwnership ownership) {
         super("GET_DDL", StringType.VARCHAR);
         this.catalog = catalog;
         this.queryRunner = queryRunner;
+        this.relationNames = relationNames;
+        this.ownership = ownership;
+    }
+
+    /**
+     * Whether the session may not act as an object's owner. Only its owner — a role the session holds or inherits —
+     * is shown how a SECURE function, procedure or view is defined, and a procedure's body, secure or not: to any
+     * other role the secure object is {@code Object does not exist, or operation cannot be performed.}, a schema's
+     * DDL leaves it out, and a procedure's DDL carries an empty body (live-verified).
+     *
+     * @param owner the object's owner role
+     * @return whether the definition is another role's
+     */
+    boolean isAnothers(final String owner) {
+        return ownership != null && !ownership.actsAsOwner(owner);
+    }
+
+    private void requireShown(final boolean secure, final String owner) {
+        if (secure && isAnothers(owner)) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+    }
+
+    /**
+     * Whether the session sees an object of a schema: its roles own it or hold a privilege on it, or hold MANAGE
+     * GRANTS. GET_DDL needs what DESCRIBE and SHOW need to show the object (documented), and answers one the
+     * session does not see as one that does not exist.
+     */
+    private boolean sees(final String grantKind, final Schema schema, final String name, final String objectOwner) {
+        return ownership == null || ownership.sees(grantKind, schema.qualifiedName(name), objectOwner);
     }
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A definition compiled to be kept computes nothing: the lookup waits for whoever runs it.
+        return DefinitionCompile.isActive() ? null : ddl(args, false);
+    }
+
+    /**
+     * Finds the object a call names and renders nothing: the lookup a statement's compilation makes, so that a
+     * missing object, or a type GET_DDL cannot recreate, is refused before anything runs and wherever the call
+     * stands. A NULL type or name names nothing.
+     *
+     * @param type the object type argument's value
+     * @param name the object name argument's value
+     */
+    public void requireObject(final Object type, final Object name) {
+        ddl(Arrays.asList(type, name), true);
+    }
+
+    /** The named object's text, or, for a lookup alone, null once the object is found. */
+    private Object ddl(final List<Object> args, final boolean lookupOnly) {
         for (final Object arg : args) {
             if (arg == null) {
                 return null;
             }
         }
-        final String typeText = args.get(0).toString().toUpperCase();
+        final String typeText = args.get(0).toString().toUpperCase(Locale.ROOT);
         final String objectType = typeText.replace(' ', '_');
+        if (!OBJECT_TYPES.contains(objectType)) {
+            throw invalidObjectType(typeText);
+        }
         final DdlNames names = new DdlNames(args.size() > 2 ? args.get(2) : null);
         final String written = args.get(1).toString();
         switch (objectType) {
-            case "SCHEMA":
-                return containers.schema(
-                    catalog.resolveSchema(QualifiedName.of(SqlIdentifiers.canonicalTextParts(written))), names);
-            case "DATABASE":
-                return containers.database(databaseNamed(written), names);
+            case "SCHEMA": {
+                final Schema schema =
+                    catalog.resolveSchema(QualifiedName.of(SqlIdentifiers.canonicalTextParts(written)));
+                return lookupOnly ? null : containers.schema(schema, names);
+            }
+            case "DATABASE": {
+                final Database database = databaseNamed(written);
+                return lookupOnly ? null : containers.database(database, names);
+            }
             case "TABLE":
+            case "ICEBERG_TABLE":
             case "VIEW":
             case "MATERIALIZED_VIEW":
             case "DYNAMIC_TABLE":
-                return relationDdl(objectType, written, names);
+                return relationDdl(objectType, relationNames == null ? written : relationNames.resolve(written), names,
+                    lookupOnly);
             case "EVENT_TABLE":
                 throw new RuntimeException("Unsupported feature 'EVENT_TABLE'.");
-            case "FUNCTION":
-                return functionDdl((Function) routine(written.trim(), false), routineOwner(written.trim()), names);
-            case "PROCEDURE":
-                return procedureDdl((Procedure) routine(written.trim(), true), routineOwner(written.trim()), names);
+            case "FUNCTION": {
+                final Function function = (Function) routine(written.trim(), false);
+                requireSeen(QueryExecutor.functionGrant(routineOwner(written.trim()), function), written);
+                requireShown(function.isSecure(), function.getOwner());
+                return lookupOnly ? null : functionDdl(function, routineOwner(written.trim()), names);
+            }
+            case "PROCEDURE": {
+                final Procedure procedure = (Procedure) routine(written.trim(), true);
+                requireSeen(QueryExecutor.procedureGrant(routineOwner(written.trim()), procedure), written);
+                requireShown(procedure.isSecure(), procedure.getOwner());
+                return lookupOnly ? null : procedureDdl(procedure, routineOwner(written.trim()), names);
+            }
             case "SEQUENCE":
             case "STREAM":
             case "TASK":
@@ -161,6 +268,12 @@ public class GetDdl extends BuiltInFunction {
             case "STAGE":
                 return memberDdl(objectType, typeText, written, names);
             case "WAREHOUSE":
+                // A warehouse is looked up before anything else is said about it.
+                if (!catalog.hasWarehouseExact(SqlIdentifiers.canonicalTextParts(written)[0])) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse",
+                        SqlIdentifiers.canonicalTextParts(written)[0]));
+                }
+                throw new RuntimeException("GET_DDL does not support object type: " + objectType);
             case "INTEGRATION":
             case "TYPE":
             case "SEMANTIC_VIEW":
@@ -168,7 +281,6 @@ public class GetDdl extends BuiltInFunction {
             case "FAILOVER_GROUP":
             case "REPLICATION_GROUP":
             case "NOTEBOOK":
-            case "ICEBERG_TABLE":
             case "ROLE":
             case "DBT_PROJECT":
             case "CORTEX_SEARCH_SERVICE":
@@ -177,6 +289,20 @@ public class GetDdl extends BuiltInFunction {
             default:
                 throw invalidObjectType(typeText);
         }
+    }
+
+    /**
+     * The refusal for a name written as a whole number, which names no object: a type GET_DDL does not know is
+     * refused as ever, and a known one is then refused as the object, spelled as written —
+     * {@code GET_DDL('table', 1)} is {@code Object 'table' does not exist or not authorized.}
+     *
+     * @param type the object type argument's value
+     * @return the refusal
+     */
+    public RuntimeException numberedObject(final Object type) {
+        final String typeText = type.toString().toUpperCase(Locale.ROOT);
+        return OBJECT_TYPES.contains(typeText.replace(' ', '_')) ? objectDoesNotExist(type.toString())
+            : invalidObjectType(typeText);
     }
 
     private static RuntimeException invalidObjectType(final String typeText) {
@@ -219,33 +345,75 @@ public class GetDdl extends BuiltInFunction {
         return actual != null && actual.equals(name);
     }
 
-    /** TABLE, VIEW, MATERIALIZED VIEW or DYNAMIC TABLE: whichever relation of the four holds the name. */
-    private String relationDdl(final String objectType, final String written, final DdlNames names) {
+    /**
+     * TABLE, ICEBERG_TABLE, VIEW, MATERIALIZED VIEW or DYNAMIC TABLE: whichever relation holds the name — an
+     * ICEBERG_TABLE asked of a plain table answers the table's DDL (live-verified).
+     */
+    private String relationDdl(final String objectType, final String written, final DdlNames names,
+                               final boolean lookupOnly) {
         final String[] parts = nameParts(written);
         final Schema owner = owner(parts);
         final String name = parts[parts.length - 1];
         final Table table = owner.tableExact(name);
         if (table != null) {
-            return tableDdl(table, owner, names);
+            requireSeen(objectType, "TABLE", parts, owner, table.getOwner());
+            return lookupOnly ? null : tableDdl(table, owner, names);
         }
         if (owner.hasView(name) && named(owner.getView(name).getName(), name)) {
-            return viewDdl(owner.getView(name), owner, names);
+            if (InformationSchemaGuard.SCHEMA.equals(owner.getName())) {
+                // INFORMATION_SCHEMA's own views have no definition to give, whichever kind is asked for
+                // (live-verified).
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            requireSeen(objectType, "VIEW", parts, owner, owner.getView(name).getOwner());
+            requireShown(owner.getView(name).isSecure(), owner.getView(name).getOwner());
+            return lookupOnly ? null : viewDdl(owner.getView(name), owner, names);
         }
         if (owner.hasMaterializedView(name) && named(owner.getMaterializedView(name).getName(), name)) {
-            return materializedViewDdl(owner.getMaterializedView(name), owner, names);
+            requireSeen(objectType, "MATERIALIZED_VIEW", parts, owner, owner.getMaterializedView(name).getOwner());
+            requireShown(owner.getMaterializedView(name).isSecure(), owner.getMaterializedView(name).getOwner());
+            return lookupOnly ? null : materializedViewDdl(owner.getMaterializedView(name), owner, names);
         }
         if (owner.hasDynamicTable(name) && named(owner.getDynamicTable(name).getName(), name)) {
-            return dynamicTableDdl(owner.getDynamicTable(name), owner, names);
+            requireSeen(objectType, "DYNAMIC_TABLE", parts, owner, owner.getDynamicTable(name).getOwner());
+            return lookupOnly ? null : dynamicTableDdl(owner.getDynamicTable(name), owner, names);
         }
+        throw missingRelation(objectType, parts, owner);
+    }
+
+    /**
+     * Refuses a routine overload the session does not see as a missing one: its roles neither own it nor hold a
+     * privilege on its signature, nor hold MANAGE GRANTS (documented).
+     */
+    private void requireSeen(final GrantedObject routine, final String written) {
+        if (ownership != null && !ownership.sees(routine.getKind(), routine.getName(), routine.getOwner())) {
+            throw objectDoesNotExist(written);
+        }
+    }
+
+    /** Refuses a relation the session does not see as the missing one of the kind asked for. */
+    private void requireSeen(final String objectType, final String grantKind, final String[] parts,
+                             final Schema owner, final String objectOwner) {
+        if (!sees(grantKind, owner, parts[parts.length - 1], objectOwner)) {
+            throw missingRelation(objectType, parts, owner);
+        }
+    }
+
+    /** The refusal for a relation that is not there, in the words of the kind asked for. */
+    private static RuntimeException missingRelation(final String objectType, final String[] parts,
+                                                    final Schema owner) {
         switch (objectType) {
             case "VIEW":
-                throw missing(parts, owner, "View", false);
+                return missing(parts, owner, "View", false);
             case "MATERIALIZED_VIEW":
-                throw missing(parts, owner, "Materialized view", false);
+                return missing(parts, owner, "Materialized view", false);
             case "DYNAMIC_TABLE":
-                throw missing(parts, owner, "Dynamic table", true);
+                return missing(parts, owner, "Dynamic table", true);
+            case "ICEBERG_TABLE":
+                // An Iceberg table is looked up as a table is, and a missing one named in full (live-verified).
+                return missing(parts, owner, "Iceberg table", true);
             default:
-                throw missing(parts, owner, "Table", false);
+                return missing(parts, owner, "Table", false);
         }
     }
 
@@ -257,34 +425,38 @@ public class GetDdl extends BuiltInFunction {
         final String name = parts[parts.length - 1];
         switch (objectType) {
             case "SEQUENCE":
-                if (!owner.hasSequenceExact(name)) {
+                if (!owner.hasSequenceExact(name)
+                        || !sees("SEQUENCE", owner, name, owner.getSequence(name).getOwner())) {
                     throw missing(parts, owner, "Sequence", false);
                 }
                 return sequenceDdl(owner.getSequence(name), names.object(owner, name));
             case "STREAM": {
                 final Stream stream = find(owner, name, objectType);
-                if (stream == null) {
+                if (stream == null || !sees("STREAM", owner, name, stream.getOwner())) {
                     throw missing(parts, owner, "Stream", false);
                 }
-                return ObjectDdl.stream(stream, names.object(owner, name));
+                final boolean gone = stream.getSourceType() == StreamSourceType.TABLE
+                    && StreamSources.sourceOf(catalog, owner, stream) == null;
+                return ObjectDdl.stream(stream, names.object(owner, name),
+                    gone ? StreamSources.fullName(owner, stream) : null);
             }
             case "TASK": {
                 final Task task = find(owner, name, objectType);
-                if (task == null) {
+                if (task == null || !sees("TASK", owner, name, task.getOwner())) {
                     throw missing(parts, owner, "Task", false);
                 }
-                return ObjectDdl.task(task, owner, names.object(owner, name));
+                return ObjectDdl.task(task, owner, names.object(owner, name), tagAssignments(task, owner));
             }
             case "PIPE": {
                 final Pipe pipe = find(owner, name, objectType);
-                if (pipe == null) {
+                if (pipe == null || !sees("PIPE", owner, name, pipe.getOwner())) {
                     throw missing(parts, owner, "Pipe", true);
                 }
                 return ObjectDdl.pipe(pipe, names.object(owner, name));
             }
             case "TAG": {
                 final Tag tag = find(owner, name, objectType);
-                if (tag == null) {
+                if (tag == null || !sees("TAG", owner, name, tag.getOwner())) {
                     throw missing(parts, owner, "Tag", false);
                 }
                 return ObjectDdl.tag(tag, names.object(owner, name));
@@ -293,21 +465,23 @@ public class GetDdl extends BuiltInFunction {
                 return policyDdl(owner, parts, names);
             case "FILE_FORMAT": {
                 final FileFormat format = owner.getFileFormat(name);
-                if (format == null || !named(format.getName(), name)) {
+                if (format == null || !named(format.getName(), name)
+                        || !sees("FILE_FORMAT", owner, name, format.getOwner())) {
                     throw missing(parts, owner, "File format", false);
                 }
                 return ObjectDdl.fileFormat(format, names.object(owner, name));
             }
             case "ALERT": {
                 final Alert alert = find(owner, name, objectType);
-                if (alert == null) {
+                if (alert == null || !sees("ALERT", owner, name, alert.getOwner())) {
                     throw missing(parts, owner, "Alert", false);
                 }
                 return ObjectDdl.alert(alert, names.object(owner, name));
             }
             case "CONTACT": {
                 final Contact contact = owner.getContact(name);
-                if (contact == null || !named(contact.getName(), name)) {
+                if (contact == null || !named(contact.getName(), name)
+                        || !sees("CONTACT", owner, name, contact.getOwner())) {
                     throw missing(parts, owner, "Contact", true);
                 }
                 return ObjectDdl.contact(contact, names.object(owner, name));
@@ -321,7 +495,7 @@ public class GetDdl extends BuiltInFunction {
                 throw missing(parts, owner, "Streamlit", true);
             default:
                 // A stage is looked up and then refused as a type GET_DDL cannot recreate.
-                if (!owner.hasStageExact(name)) {
+                if (!owner.hasStageExact(name) || !sees("STAGE", owner, name, owner.getStageExact(name).getOwner())) {
                     throw missing(parts, owner, "Stage", true);
                 }
                 throw invalidObjectType(typeText);
@@ -365,33 +539,44 @@ public class GetDdl extends BuiltInFunction {
     private String policyDdl(final Schema owner, final String[] parts, final DdlNames names) {
         final String name = parts[parts.length - 1];
         for (final MaskingPolicy policy : owner.getMaskingPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("MASKING_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.maskingPolicy(policy, names.object(owner, name));
             }
         }
         for (final RowAccessPolicy policy : owner.getRowAccessPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("ROW_ACCESS_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.rowAccessPolicy(policy, names.object(owner, name));
             }
         }
         for (final AggregationPolicy policy : owner.getAggregationPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("AGGREGATION_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.aggregationPolicy(policy, names.object(owner, name));
             }
         }
         for (final ProjectionPolicy policy : owner.getProjectionPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("PROJECTION_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.projectionPolicy(policy, names.object(owner, name));
             }
         }
         for (final JoinPolicy policy : owner.getJoinPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("JOIN_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.joinPolicy(policy, names.object(owner, name));
             }
         }
         for (final SecurityObject policy : owner.getSecurityObjects().list(SecurityObjectKind.PASSWORD_POLICY)) {
             if (named(policy.getName(), name)) {
                 return ObjectDdl.passwordPolicy(policy, names.object(owner, name));
+            }
+        }
+        for (final SecurityObject policy : owner.getSecurityObjects().list(SecurityObjectKind.SESSION_POLICY)) {
+            if (named(policy.getName(), name)) {
+                return ObjectDdl.sessionPolicy(policy, names.object(owner, name));
+            }
+        }
+        for (final SecurityObject policy
+                : owner.getSecurityObjects().list(SecurityObjectKind.AUTHENTICATION_POLICY)) {
+            if (named(policy.getName(), name)) {
+                return ObjectDdl.authenticationPolicy(policy, names.object(owner, name));
             }
         }
         throw missing(parts, owner, "Policy", true);
@@ -419,49 +604,137 @@ public class GetDdl extends BuiltInFunction {
         } else if (table.isTransient() || schema.isTransientObject()) {
             sb.append("TRANSIENT ");
         }
-        sb.append("TABLE ").append(name);
-        // A clustering key is spelled between the name and the column list, the paren following it directly.
+        final IcebergTableMetadata iceberg = table.getIcebergMetadata();
+        sb.append(iceberg != null ? "ICEBERG TABLE " : "TABLE ").append(name);
+        // A clustering key is spelled between the name and the column list, as its statement wrote it, the paren
+        // following it directly.
         if (!table.getClusterKeys().isEmpty()) {
-            sb.append(" cluster by (").append(String.join(", ", table.getClusterKeys())).append(")(");
+            sb.append(" cluster by ").append(table.getClusterByText()).append("(");
         } else {
             sb.append(" (");
         }
 
-        // A UNIQUE constraint spanning several columns is ONE constraint, so it renders as a table-level
-        // line; re-emitting it as an inline UNIQUE per column would recreate it as several independent
-        // single-column constraints. A single-column UNIQUE keeps the inline form Snowflake prints.
-        final List<UniqueConstraint> multiColumnUniques = new ArrayList<UniqueConstraint>();
-        for (final UniqueConstraint unique : table.getUniqueConstraints()) {
-            if (unique.getColumnNames().size() > 1) {
-                multiColumnUniques.add(unique);
-            }
-        }
-
         final List<String> lines = new ArrayList<String>();
         for (final TableColumn col : table.getColumns()) {
-            lines.add(columnLine(col, spannedByMultiColumnUnique(multiColumnUniques, col.getName()), schema));
+            if (col.getDefaultValue() instanceof SequenceDefault
+                    && ((SequenceDefault) col.getDefaultValue()).sequenceIn(catalog) == null) {
+                // A default whose sequence is gone cannot be written out: the table has no DDL (live-verified).
+                throw SequenceDefault.lost(SqlIdentifiers.spellCanonical(schema.getDatabaseName()) + "."
+                    + SqlIdentifiers.spellCanonical(schema.getName()) + "."
+                    + SqlIdentifiers.spellCanonical(table.getName()), SqlIdentifiers.spellCanonical(col.getName()));
+            }
+            lines.add(columnLine(col, schema, iceberg != null && col.isFormatTyped()));
         }
-        for (final UniqueConstraint unique : multiColumnUniques) {
-            lines.add("unique (" + spelledNames(unique.getColumnNames()) + ")");
+        // Every key and check follows the columns as a TABLE-level line, however it was written: the unique keys
+        // — a column's own first, then the table-level ones as declared — the checks, the primary key, and the
+        // foreign keys, a column's own first. A key an ALTER TABLE added comes after those the CREATE TABLE
+        // declared, in the order the keys were created. A name of the constraint's own is spelled and a generated
+        // one is not, and RELY ends the line with a space after it (live-verified).
+        final List<String> keyNames = new ArrayList<String>();
+        final List<String> keyLines = new ArrayList<String>();
+        final List<UniqueConstraint> declared = table.getDeclaredUniqueConstraints();
+        for (final UniqueConstraint unique : table.getUniqueConstraints()) {
+            if (!declaredAs(declared, unique)) {
+                keyNames.add(unique.getConstraintName());
+                keyLines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames())
+                    + ")", Boolean.TRUE.equals(unique.getRely())));
+            }
         }
-        if (!table.getPrimaryKeys().isEmpty()) {
-            lines.add("primary key (" + spelledNames(table.getPrimaryKeys()) + ")");
+        for (final UniqueConstraint unique : table.getUniqueConstraints()) {
+            if (declaredAs(declared, unique)) {
+                keyNames.add(unique.getConstraintName());
+                keyLines.add(keyLine(unique.getConstraintName(), "unique (" + spelledNames(unique.getColumnNames())
+                    + ")", Boolean.TRUE.equals(unique.getRely())));
+            }
         }
-        for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
-            lines.add("foreign key (" + String.join(", ", fk.getColumnNames()) + ") references "
-                + fk.getReferencedTable() + " (" + String.join(", ", fk.getReferencedColumns()) + ")");
-        }
-        // Every CHECK constraint renders as a TABLE-level line, even one written on the column, and in
-        // declaration order (live-verified). An explicit name is spelled, a generated one is not.
         for (final CheckConstraint check : table.getCheckConstraints()) {
-            lines.add((check.isAutoNamed() ? "" : "constraint " + check.getName() + " ")
+            keyNames.add(null);
+            keyLines.add((check.isAutoNamed() ? "" : "constraint " + check.getName() + " ")
                 + "check (" + check.getExpression() + ")");
         }
+        if (!table.getPrimaryKeys().isEmpty()) {
+            keyNames.add(table.primaryKeyConstraintName());
+            keyLines.add(keyLine(table.primaryKeyConstraintName(), "primary key ("
+                + spelledNames(table.getPrimaryKeys()) + ")", Boolean.TRUE.equals(table.getPrimaryKeyRely())));
+        }
+        for (final TableColumn col : table.getColumns()) {
+            if (col.getReferencedTable() != null) {
+                keyNames.add(table.columnForeignKeyConstraintName(col.getName()));
+                keyLines.add(keyLine(table.columnForeignKeyConstraintName(col.getName()), "foreign key ("
+                    + SqlIdentifiers.spellCanonicalEscaped(col.getName()) + ") references "
+                    + parentName(schema, col.getReferencedTable())
+                    + (col.getReferencedColumn() == null ? ""
+                        : "(" + SqlIdentifiers.spellCanonicalEscaped(col.getReferencedColumn()) + ")"),
+                    Boolean.TRUE.equals(col.getRely())));
+            }
+        }
+        for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
+            final StringBuilder referenced = new StringBuilder();
+            for (final String column : fk.getReferencedColumns()) {
+                referenced.append(referenced.length() > 0 ? "," : "").append(SqlIdentifiers.spellCanonicalEscaped(column));
+            }
+            keyNames.add(fk.getConstraintName());
+            keyLines.add(keyLine(fk.getConstraintName(), "foreign key (" + spelledNames(fk.getColumnNames())
+                + ") references " + parentName(schema, fk.getReferencedTable()) + "(" + referenced + ")",
+                Boolean.TRUE.equals(fk.getRely())));
+        }
+        lines.addAll(keysInCreationOrder(keyNames, keyLines, table.constraintCreationOrder()));
         for (int i = 0; i < lines.size(); i++) {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(lines.get(i));
         }
         sb.append("\n)");
-        return sb.append(tableTail(table, schema)).toString();
+        final String tail = tableTail(table, schema);
+        if (iceberg == null) {
+            return sb.append(tail).toString();
+        }
+        return sb.append(tail, 0, tail.length() - 1).append(icebergTail(iceberg)).toString();
+    }
+
+    /**
+     * The key lines in GET_DDL's order: those the CREATE TABLE declared, and the checks, where they stand, then the
+     * keys an ALTER TABLE added, in the order they were created.
+     *
+     * @param names   each line's constraint name, null for a check
+     * @param lines   the lines, in the CREATE TABLE's order
+     * @param created the names of the keys an ALTER TABLE added, upper-cased, in the order they were created
+     * @return the lines in order
+     */
+    private static List<String> keysInCreationOrder(final List<String> names, final List<String> lines,
+                                                    final List<String> created) {
+        final List<String> ordered = new ArrayList<String>();
+        final String[] added = new String[created.size()];
+        for (int i = 0; i < lines.size(); i++) {
+            final int place = names.get(i) == null ? -1 : created.indexOf(names.get(i).toUpperCase(Locale.ROOT));
+            if (place < 0) {
+                ordered.add(lines.get(i));
+            } else {
+                added[place] = lines.get(i);
+            }
+        }
+        for (final String line : added) {
+            if (line != null) {
+                ordered.add(line);
+            }
+        }
+        return ordered;
+    }
+
+    /**
+     * What ends an Iceberg table's DDL in place of the semicolon, each property on a line of its own led by a space:
+     * the external volume, the format version and the catalog, then the base location — a clone's in
+     * Snowflake-managed storage, and any table's on a volume of its own (live-verified for managed storage; its
+     * storage serialization policy, its retention and its change tracking are never spelled).
+     */
+    private static String icebergTail(final IcebergTableMetadata iceberg) {
+        final StringBuilder tail = new StringBuilder("\n EXTERNAL_VOLUME = ")
+            .append(ObjectDdl.quoted(iceberg.getExternalVolume()))
+            .append("\n ICEBERG_VERSION = 2\n CATALOG = ").append(ObjectDdl.quoted(iceberg.getCatalog()));
+        if ((iceberg.isBaseLocationSpelled()
+                || !IcebergTableMetadata.MANAGED_VOLUME.equalsIgnoreCase(iceberg.getExternalVolume()))
+                && iceberg.getBaseLocation() != null) {
+            tail.append("\n BASE_LOCATION = ").append(ObjectDdl.quoted(iceberg.getBaseLocation()));
+        }
+        return tail.append(';').toString();
     }
 
     /**
@@ -484,8 +757,9 @@ public class GetDdl extends BuiltInFunction {
         if (table.hasJoinPolicy()) {
             attachments.add("WITH JOIN POLICY " + table.getJoinPolicyName());
         }
-        if (!table.getTagValues().isEmpty()) {
-            attachments.add("WITH TAG (" + tagAssignments(table.getTagValues(), schema) + ")");
+        final String tableTags = tagAssignments(table, schema);
+        if (!tableTags.isEmpty()) {
+            attachments.add("WITH TAG (" + tableTags + ")");
         }
         final StringBuilder tail = new StringBuilder();
         for (int i = 0; i < attachments.size(); i++) {
@@ -568,14 +842,36 @@ public class GetDdl extends BuiltInFunction {
         return names;
     }
 
-    /** True when a multi-column UNIQUE already renders the column, so its inline UNIQUE must be skipped. */
-    private boolean spannedByMultiColumnUnique(final List<UniqueConstraint> uniques, final String columnName) {
-        for (final UniqueConstraint unique : uniques) {
-            if (unique.covers(columnName)) {
+    /** A key's line: the name it was given, the key, and {@code rely} with a space after it. */
+    private static String keyLine(final String constraintName, final String key, final boolean rely) {
+        return (ConstraintNames.isGenerated(constraintName) ? ""
+            : "constraint " + SqlIdentifiers.spellCanonicalEscaped(constraintName) + " ") + key + (rely ? " rely " : "");
+    }
+
+    /** Whether a unique key is one a table-level clause declared, as against a column's own UNIQUE. */
+    private static boolean declaredAs(final List<UniqueConstraint> declared, final UniqueConstraint unique) {
+        for (final UniqueConstraint candidate : declared) {
+            if (candidate.getConstraintName().equals(unique.getConstraintName())) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** A foreign key's parent in full, whatever the key's statement wrote: DATABASE.SCHEMA.TABLE. */
+    private static String parentName(final Schema schema, final String referencedTable) {
+        final String[] parts = QualifiedName.parse(referencedTable).parts();
+        final StringBuilder name = new StringBuilder();
+        if (parts.length < 3) {
+            name.append(SqlIdentifiers.spellCanonical(schema.getDatabaseName())).append('.');
+        }
+        if (parts.length < 2) {
+            name.append(SqlIdentifiers.spellCanonical(schema.getName())).append('.');
+        }
+        for (int i = 0; i < parts.length; i++) {
+            name.append(i > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(parts[i]));
+        }
+        return name.toString();
     }
 
     /** Column names as SQL text, joined by commas: {@code "c""d", X}. */
@@ -587,15 +883,27 @@ public class GetDdl extends BuiltInFunction {
         return spelled.toString();
     }
 
-    private String columnLine(final TableColumn col, final boolean uniqueRenderedAtTableLevel, final Schema schema) {
+    /**
+     * One column's line: its name and type, then its collation, nullability, default or identity, policies, tags and
+     * COMMENT. An Iceberg table's column a column definition typed is spelled in the format's names
+     * ({@code IcebergTypes.ddlName}).
+     */
+    private String columnLine(final TableColumn col, final Schema schema, final boolean formatNames) {
         final StringBuilder c = new StringBuilder();
-        c.append(SqlIdentifiers.spellCanonicalEscaped(col.getName())).append(" ").append(renderType(col.getDataType()));
+        c.append(SqlIdentifiers.spellCanonicalEscaped(col.getName())).append(" ")
+         .append(formatNames ? IcebergTypes.ddlName(col.getFormatType()) : renderType(col.getDataType()));
         if (col.getCollation() != null && !col.getCollation().isEmpty()) {
             c.append(" COLLATE '").append(col.getCollation()).append("'");
         }
         if (col.isAutoIncrement()) {
-            c.append(" NOT NULL autoincrement start ").append(col.getIdentityStart())
-             .append(" increment ").append(col.getIdentityIncrement());
+            // An identity column is NOT NULL only when declared so, and its generator ends in order or noorder
+            // (live-verified).
+            if (!col.isNullable()) {
+                c.append(" NOT NULL");
+            }
+            c.append(" autoincrement start ").append(col.getIdentityStart())
+             .append(" increment ").append(col.getIdentityIncrement())
+             .append(col.isIdentityOrdered() ? " order" : " noorder");
         } else {
             if (!col.isNullable()) {
                 c.append(" NOT NULL");
@@ -603,9 +911,6 @@ public class GetDdl extends BuiltInFunction {
             if (col.getDefaultValue() != null) {
                 c.append(" DEFAULT ").append(renderDefault(col.getDefaultValue()));
             }
-        }
-        if (col.isUnique() && !col.isPrimaryKey() && !uniqueRenderedAtTableLevel) {
-            c.append(" UNIQUE");
         }
         // A projection policy renders before a masking one when a column carries both (live-verified).
         if (col.hasProjectionPolicy()) {
@@ -616,9 +921,19 @@ public class GetDdl extends BuiltInFunction {
         // before COMMENT — and refuses that order reversed, so the position is the measured one.
         if (col.getMaskingPolicyName() != null && !col.getMaskingPolicyName().isEmpty()) {
             c.append(" WITH MASKING POLICY ").append(col.getMaskingPolicyName());
+            // A conditional policy's USING columns, as the attachment named them.
+            final List<String> using = col.getMaskingPolicyArguments();
+            if (!using.isEmpty()) {
+                c.append(" USING (");
+                for (int u = 0; u < using.size(); u++) {
+                    c.append(u > 0 ? ", " : "").append(SqlIdentifiers.spellCanonicalEscaped(using.get(u)));
+                }
+                c.append(')');
+            }
         }
-        if (!col.getTagValues().isEmpty()) {
-            c.append(" WITH TAG (").append(tagAssignments(col.getTagValues(), schema)).append(")");
+        final String columnTags = tagAssignments(col, schema);
+        if (!columnTags.isEmpty()) {
+            c.append(" WITH TAG (").append(columnTags).append(")");
         }
         if (col.getComment() != null && !col.getComment().isEmpty()) {
             c.append(" COMMENT ").append(ObjectDdl.quoted(col.getComment()));
@@ -637,48 +952,18 @@ public class GetDdl extends BuiltInFunction {
     }
 
     /**
-     * {@code DB.S.T='v', …} — the tags an object or a column carries, each named where it is defined, in the order
-     * of those full names; a value is printed between quotes exactly as stored, its own quotes and backslashes too.
+     * {@code DB.S.T='v', …} — the tags an object or a column carries, each named where it lives, in the order of
+     * those full names; a value is printed between quotes exactly as stored, its own quotes and backslashes too.
+     * Empty when the object carries no tag that still exists.
      */
-    private String tagAssignments(final Map<String, String> tags, final Schema schema) {
-        final Map<String, String> byPath = new TreeMap<String, String>();
-        for (final Map.Entry<String, String> tag : tags.entrySet()) {
-            byPath.put(tagPath(tag.getKey(), schema), String.valueOf(tag.getValue()));
-        }
+    String tagAssignments(final Taggable object, final Schema schema) {
         final StringBuilder out = new StringBuilder();
-        for (final Map.Entry<String, String> tag : byPath.entrySet()) {
-            out.append(out.length() > 0 ? ", " : "").append(tag.getKey()).append("='").append(tag.getValue())
+        for (final TagAssignment tag : TagAssignments.on(catalog, object, schema.getDatabaseName(),
+                schema.getName())) {
+            out.append(out.length() > 0 ? ", " : "").append(tag.path()).append("='").append(tag.getValue())
                .append('\'');
         }
         return out.toString();
-    }
-
-    /**
-     * The fully qualified name of the tag an assignment names: the tag of that name in the object's own schema, else
-     * in another schema of its database, spelled as the tag itself is named.
-     */
-    private String tagPath(final String key, final Schema schema) {
-        final String[] written = QualifiedName.parse(key).parts();
-        if (written.length == 3) {
-            return SqlIdentifiers.spellCanonicalEscaped(written[0]) + "." + SqlIdentifiers.spellCanonicalEscaped(written[1])
-                + "." + SqlIdentifiers.spellCanonicalEscaped(written[2]);
-        }
-        final String name = written[written.length - 1];
-        Schema home = schema;
-        if (!schema.hasTag(name)) {
-            try {
-                for (final Schema other : catalog.getDatabase(schema.getDatabaseName()).getAllSchemas()) {
-                    if (other.hasTag(name)) {
-                        home = other;
-                        break;
-                    }
-                }
-            } catch (final RuntimeException noDatabase) {
-                // The object's own schema names the tag.
-            }
-        }
-        final String spelled = home.hasTag(name) ? home.getTag(name).getName() : name;
-        return DdlNames.path(home) + "." + SqlIdentifiers.spellCanonicalEscaped(spelled);
     }
 
     // ─────────────────────────── VIEW ───────────────────────────
@@ -707,6 +992,7 @@ public class GetDdl extends BuiltInFunction {
         sb.append("view ").append(name).append("(");
         for (int i = 0; i < columns.size(); i++) {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i)))
+              .append(columnPolicies(view.getResolvedColumns(), columns.get(i)))
               .append(columnComment(view.getResolvedColumns(), columns.get(i)));
         }
         sb.append("\n)");
@@ -714,11 +1000,45 @@ public class GetDdl extends BuiltInFunction {
             sb.append(' ').append(rowAccessPolicy(view.getRowAccessPolicyName(), view.getRowAccessPolicyColumns(),
                 columns, schema)).append('\n');
         }
-        if (!view.getTagValues().isEmpty()) {
-            sb.append(" WITH TAG (").append(tagAssignments(view.getTagValues(), schema)).append(")\n");
+        final String viewTags = tagAssignments(view, schema);
+        if (!viewTags.isEmpty()) {
+            sb.append(" WITH TAG (").append(viewTags).append(")\n");
         }
         sb.append(commentClause(view.getComment())).append(" as ");
         return sb.append(SqlObject.withoutTrailingSemicolon(view.getShownBody())).append(";").toString();
+    }
+
+    /**
+     * The policies ALTER VIEW set on a view's column, as a table's column carries them: {@code  WITH MASKING POLICY
+     * DB.S.MP} (live-verified), a projection policy before it and a conditional policy's USING columns after it;
+     * nothing for a column that carries none.
+     */
+    private static String columnPolicies(final List<TableColumn> resolved, final String column) {
+        if (resolved == null) {
+            return "";
+        }
+        for (final TableColumn candidate : resolved) {
+            if (!candidate.getName().equals(column)) {
+                continue;
+            }
+            final StringBuilder clauses = new StringBuilder();
+            if (candidate.hasProjectionPolicy()) {
+                clauses.append(" WITH PROJECTION POLICY ").append(candidate.getProjectionPolicyName());
+            }
+            if (candidate.hasMaskingPolicy()) {
+                clauses.append(" WITH MASKING POLICY ").append(candidate.getMaskingPolicyName());
+                final List<String> using = candidate.getMaskingPolicyArguments();
+                if (!using.isEmpty()) {
+                    clauses.append(" USING (");
+                    for (int u = 0; u < using.size(); u++) {
+                        clauses.append(u > 0 ? ", " : "").append(SqlIdentifiers.spellCanonicalEscaped(using.get(u)));
+                    }
+                    clauses.append(')');
+                }
+            }
+            return clauses.toString();
+        }
+        return "";
     }
 
     /** {@code  COMMENT 'c'} for a derived column that carries a comment, else nothing. */
@@ -787,8 +1107,9 @@ public class GetDdl extends BuiltInFunction {
     }
 
     /**
-     * {@code create or replace [secure ]materialized view M(\n\tX\n)[ COMMENT='…'\n] as SELECT …;} — the column
-     * list as a view's, from the declared names or the columns the definition resolved to.
+     * {@code create or replace [secure ]materialized view M(\n\tX COMMENT 'c'\n)[ COMMENT='…'\n] as SELECT …;}
+     * — the column list as a view's, from the declared names or the columns the definition resolved to, each with
+     * the comment it declares (live-verified).
      */
     String materializedViewDdl(final MaterializedView view, final Schema schema, final DdlNames names) {
         final String name = names.object(schema, view.getName());
@@ -809,8 +1130,16 @@ public class GetDdl extends BuiltInFunction {
         if (view.isSecure()) {
             sb.append("secure ");
         }
-        sb.append("materialized view ").append(name).append(columnList(columns)).append(commentClause(view.getComment()))
-          .append(" as ");
+        sb.append("materialized view ").append(name).append("(");
+        for (int i = 0; i < columns.size(); i++) {
+            sb.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i)))
+              .append(columnComment(view.getResolvedColumns(), columns.get(i)));
+        }
+        sb.append("\n)").append(commentClause(view.getComment()));
+        if (!view.getClusterKeys().isEmpty()) {
+            sb.append(" cluster by (").append(String.join(", ", view.getClusterKeys())).append(")");
+        }
+        sb.append(" as ");
         return sb.append(SqlObject.withoutTrailingSemicolon(view.getDefinition()).trim()).append(";").toString();
     }
 
@@ -826,9 +1155,13 @@ public class GetDdl extends BuiltInFunction {
             sb.append("transient ");
         }
         sb.append("dynamic table ").append(name);
-        final List<String> columns = queryColumns(table.getQuery(), schema);
-        if (columns != null && !columns.isEmpty()) {
-            sb.append(columnList(columns));
+        if (!table.getDeclaredColumns().isEmpty()) {
+            sb.append(declaredColumnList(table.getDeclaredColumns()));
+        } else {
+            final List<String> columns = queryColumns(table.getQuery(), schema);
+            if (columns != null && !columns.isEmpty()) {
+                sb.append(columnList(columns));
+            }
         }
         sb.append(" target_lag = ").append(ObjectDdl.doubledQuotes(String.valueOf(table.getTargetLag())))
           .append(" refresh_mode = ").append(table.getRefreshMode())
@@ -842,6 +1175,21 @@ public class GetDdl extends BuiltInFunction {
         }
         return sb.append(" as ").append(SqlObject.withoutTrailingSemicolon(table.getQuery()).trim()).append(";")
             .toString();
+    }
+
+    /**
+     * {@code (\n\tX COMMENT 'c',\n\tY\n)} — the columns a dynamic table declares, each with its comment; a declared
+     * type is not written (live-verified).
+     */
+    private static String declaredColumnList(final List<DynamicTableColumn> columns) {
+        final StringBuilder list = new StringBuilder("(");
+        for (int i = 0; i < columns.size(); i++) {
+            list.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i).getName()));
+            if (columns.get(i).getComment() != null) {
+                list.append(" COMMENT ").append(ObjectDdl.quoted(columns.get(i).getComment()));
+            }
+        }
+        return list.append("\n)").toString();
     }
 
     /** {@code (\n\tA,\n\tB\n)} — a derived relation's output columns, one tab-indented name per line. */
@@ -874,87 +1222,125 @@ public class GetDdl extends BuiltInFunction {
      * each on a line of their own when set, then a handler's RUNTIME_VERSION and HANDLER, MEMOIZABLE
      * prefixing whatever line follows it, and the body re-quoted as ONE single-quoted literal whatever
      * quoting the CREATE used. CALLED ON NULL INPUT, a NOT NULL return and TEMPORARY are not rendered at
-     * all (live-verified).
+     * all, and an aggregate function is a CREATE OR REPLACE AGGREGATE FUNCTION (live-verified).
      */
     String functionDdl(final Function function, final Schema schema, final DdlNames names) {
         final StringBuilder sb = new StringBuilder("CREATE OR REPLACE ");
         if (function.isSecure()) {
             sb.append("SECURE ");
         }
+        if (function.isAggregate()) {
+            sb.append("AGGREGATE ");
+        }
         sb.append("FUNCTION ").append(names.routine(schema, function.getName()))
           .append(routineParameters(function.getParameters())).append("\n");
         sb.append("RETURNS ").append(function.isTableFunction()
             ? "TABLE (" + returnColumns(function.getReturnColumns()) + ")"
-            : routineTypeText(function.getReturnType())).append("\n");
-        sb.append("LANGUAGE ").append(function.getLanguage().toUpperCase()).append("\n");
+            : SqlTypeNames.routineType(function.getReturnType(), function.getReturnSized())).append("\n");
+        sb.append("LANGUAGE ").append(function.getLanguage().toUpperCase(Locale.ROOT)).append("\n");
         if ("RETURNS NULL ON NULL INPUT".equals(function.getNullHandling())) {
             sb.append("STRICT\n");
         }
         if ("IMMUTABLE".equals(function.getVolatility())) {
             sb.append("IMMUTABLE\n");
         }
-        sb.append(handlerProperties(function.getRuntimeVersion(), null, function.getHandler()));
+        sb.append(handlerProperties(function.getLanguage(), function.getRuntimeVersion(),
+            function.getEnvironment().getPackages(), function.getHandler(), function.getImports(),
+            function.getEnvironment()));
         final String memoizable = function.isMemoizable() ? "MEMOIZABLE " : "";
         if (function.getComment() != null && !function.getComment().isEmpty()) {
-            sb.append(memoizable).append("COMMENT=").append(ObjectDdl.quoted(function.getComment()))
-              .append("\n").append("AS ");
+            sb.append(memoizable).append("COMMENT=").append(ObjectDdl.quoted(function.getComment())).append("\n");
         } else {
-            sb.append(memoizable).append("AS ");
+            sb.append(memoizable);
         }
-        return sb.append(quotedBody(function.getBody())).append(";").toString();
+        return sb.append(bodyClause(function.getBody())).toString();
     }
 
     /**
-     * A procedure's DDL, which adds EXECUTE AS where a function has nothing: LANGUAGE, STRICT and IMMUTABLE each on
-     * a line of their own when declared, a handler's RUNTIME_VERSION, PACKAGES and HANDLER, then COMMENT, then
-     * EXECUTE AS, then the body (live-verified).
+     * A procedure's DDL, which adds EXECUTE AS where a function has nothing: SECURE before the kind, then LANGUAGE,
+     * STRICT and IMMUTABLE each on a line of their own when declared, a handler's RUNTIME_VERSION, PACKAGES and
+     * HANDLER, then COMMENT, then EXECUTE AS, then the body (live-verified).
      */
     String procedureDdl(final Procedure procedure, final Schema schema, final DdlNames names) {
-        final StringBuilder sb = new StringBuilder("CREATE OR REPLACE PROCEDURE ");
+        final StringBuilder sb = new StringBuilder("CREATE OR REPLACE ");
+        if (procedure.isSecure()) {
+            sb.append("SECURE ");
+        }
+        sb.append("PROCEDURE ");
         sb.append(names.routine(schema, procedure.getName())).append(routineParameters(procedure.getParameters()))
           .append("\n");
         sb.append("RETURNS ").append(procedure.returnsTable()
             ? "TABLE (" + returnColumns(procedure.getReturnColumns()) + ")"
-            : routineTypeText(procedure.getReturnType())).append("\n");
-        sb.append("LANGUAGE ").append(procedure.getLanguage().toUpperCase()).append("\n");
+            : SqlTypeNames.routineType(procedure.getReturnType(), procedure.getReturnSized())).append("\n");
+        sb.append("LANGUAGE ").append(procedure.getLanguage().toUpperCase(Locale.ROOT)).append("\n");
         if ("RETURNS NULL ON NULL INPUT".equals(procedure.getNullHandling())) {
             sb.append("STRICT\n");
         }
         if ("IMMUTABLE".equals(procedure.getVolatility())) {
             sb.append("IMMUTABLE\n");
         }
-        sb.append(handlerProperties(procedure.getRuntimeVersion(), procedure.getPackages(), procedure.getHandler()));
+        sb.append(handlerProperties(procedure.getLanguage(), procedure.getRuntimeVersion(), procedure.getPackages(),
+            procedure.getHandler(), procedure.getImports(), procedure.getEnvironment()));
         if (procedure.getComment() != null && !procedure.getComment().isEmpty()) {
             sb.append("COMMENT=").append(ObjectDdl.quoted(procedure.getComment())).append("\n");
         }
         sb.append("EXECUTE AS ").append(procedure.getExecuteAs() == null ? "OWNER"
-            : procedure.getExecuteAs().toUpperCase()).append("\n");
-        return sb.append("AS ").append(quotedBody(procedure.getBody())).append(";").toString();
+            : procedure.getExecuteAs().toUpperCase(Locale.ROOT)).append("\n");
+        // A procedure's body is its owner's to read: any other role is given an empty one.
+        return sb.append(bodyClause(procedure.getBody() != null && isAnothers(procedure.getOwner())
+            ? "" : procedure.getBody())).toString();
+    }
+
+    /**
+     * How a routine's DDL ends: {@code AS '<body>';}, and for a routine whose handler comes from an import and
+     * which so has no body, the semicolon alone on a line of its own (live-verified).
+     */
+    private String bodyClause(final String body) {
+        return body == null ? ";" : "AS " + quotedBody(body) + ";";
     }
 
     /**
      * The properties a handler-backed routine (Java, Python, Scala) carries, each on a line of its own in
-     * the account's order: {@code RUNTIME_VERSION = '3.11'}, {@code PACKAGES = ('a','b')} with no space
-     * after a comma, {@code HANDLER = 'run'}. Each is left out when the routine has none, so a SQL or
-     * JavaScript routine renders nothing here (live-verified).
+     * the account's order: {@code RUNTIME_VERSION = '3.11'}, a Python routine's {@code ARTIFACT_REPOSITORY},
+     * {@code PACKAGES = ('a','b')} with no space after a comma, {@code HANDLER = 'run'}, {@code IMPORTS} and
+     * {@code TARGET_PATH}. Each is left out when the routine has none, so a SQL or JavaScript routine renders
+     * nothing here; the secrets and integrations a routine names are not rendered at all (live-verified).
      */
-    private static String handlerProperties(final String runtimeVersion, final List<String> packages,
-                                            final String handler) {
+    private static String handlerProperties(final String language, final String runtimeVersion,
+                                            final List<String> packages, final String handler,
+                                            final List<String> imports, final RoutineEnvironment environment) {
         final StringBuilder out = new StringBuilder();
         if (runtimeVersion != null) {
             out.append("RUNTIME_VERSION = ").append(quotedText(runtimeVersion)).append("\n");
         }
-        if (packages != null && !packages.isEmpty()) {
-            out.append("PACKAGES = (");
-            for (int i = 0; i < packages.size(); i++) {
-                out.append(i > 0 ? "," : "").append(quotedText(packages.get(i)));
+        if ("PYTHON".equalsIgnoreCase(language)) {
+            final RoutineEnvironment described = environment.copy();
+            described.setPackages(packages);
+            if (described.describedArtifactRepository() != null) {
+                out.append("ARTIFACT_REPOSITORY = ").append(described.describedArtifactRepository()).append("\n");
             }
-            out.append(")\n");
         }
+        out.append(quotedList("PACKAGES", packages));
         if (handler != null) {
             out.append("HANDLER = ").append(quotedText(handler)).append("\n");
         }
+        out.append(quotedList("IMPORTS", imports));
+        if (environment.getTargetPath() != null) {
+            out.append("TARGET_PATH = ").append(quotedText(environment.getTargetPath())).append("\n");
+        }
         return out.toString();
+    }
+
+    /** A property whose value is a list of strings, on a line of its own; nothing for an empty list. */
+    private static String quotedList(final String property, final List<String> items) {
+        if (items == null || items.isEmpty()) {
+            return "";
+        }
+        final StringBuilder out = new StringBuilder(property).append(" = (");
+        for (int i = 0; i < items.size(); i++) {
+            out.append(i > 0 ? "," : "").append(quotedText(items.get(i)));
+        }
+        return out.append(")\n").toString();
     }
 
     /** A property value as one single-quoted literal, its own quotes doubled. */
@@ -969,8 +1355,9 @@ public class GetDdl extends BuiltInFunction {
      * nothing, and is refused echoing the argument AS WRITTEN, which is how the account echoes it.
      */
     private Object routine(final String written, final boolean procedure) {
-        final FrostlakeParser.RoutineReferenceContext reference = routineReference(written);
-        final List<DataType> types = reference == null ? null : writtenTypes(reference.dataTypeList());
+        final FrostlakeParser.RoutineReferenceContext reference = RoutineReferenceText.parse(written);
+        final List<DataType> types = reference == null ? null
+            : RoutineReferenceText.writtenTypes(reference.dataTypeList());
         if (types == null) {
             throw objectDoesNotExist(written);
         }
@@ -978,8 +1365,8 @@ public class GetDdl extends BuiltInFunction {
         try {
             final Schema owner = owner(parts);
             return procedure
-                ? owner.getProcedureBySignature(parts[parts.length - 1], types)
-                : owner.getFunctionBySignature(parts[parts.length - 1], types);
+                ? owner.getProcedureByWrittenSignature(parts[parts.length - 1], types)
+                : owner.getFunctionByWrittenSignature(parts[parts.length - 1], types);
         } catch (final RuntimeException missing) {
             throw objectDoesNotExist(written);
         }
@@ -987,42 +1374,7 @@ public class GetDdl extends BuiltInFunction {
 
     /** The schema a routine argument places its routine in; {@code routine} has already found the routine there. */
     private Schema routineOwner(final String written) {
-        return owner(ParseTreeText.qualifiedNameParts(routineReference(written).qualifiedName()));
-    }
-
-    /** The routine reference a GET_DDL argument spells, or null when the text is not exactly one. */
-    private static FrostlakeParser.RoutineReferenceContext routineReference(final String written) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(written));
-        lexer.removeErrorListeners();
-        final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
-        parser.removeErrorListeners();
-        parser.setErrorHandler(new BailErrorStrategy());
-        try {
-            return parser.routineReference();
-        } catch (final ParseCancellationException notAReference) {
-            return null;
-        }
-    }
-
-    /** The types a reference lists, in order, or null when an argument is written with a name or is no type. */
-    private static List<DataType> writtenTypes(final FrostlakeParser.DataTypeListContext list) {
-        final List<DataType> types = new ArrayList<DataType>();
-        if (list == null) {
-            return types;
-        }
-        for (int i = 0; i < list.getChildCount(); i++) {
-            final ParseTree child = list.getChild(i);
-            if (child instanceof FrostlakeParser.IdentifierContext) {
-                return null;
-            }
-            if (child instanceof FrostlakeParser.DataTypeNameContext) {
-                final ParseTree next = i + 1 < list.getChildCount() ? list.getChild(i + 1) : null;
-                types.add(DataTypeParser.parse((FrostlakeParser.DataTypeNameContext) child,
-                    next instanceof FrostlakeParser.TypeParametersContext
-                        ? (FrostlakeParser.TypeParametersContext) next : null));
-            }
-        }
-        return types;
+        return owner(ParseTreeText.qualifiedNameParts(RoutineReferenceText.parse(written).qualifiedName()));
     }
 
     private static RuntimeException objectDoesNotExist(final String written) {
@@ -1030,7 +1382,11 @@ public class GetDdl extends BuiltInFunction {
             "Object '" + written + "' does not exist or not authorized."));
     }
 
-    /** {@code ("X" NUMBER(38,0) DEFAULT 1, …)} — every parameter quoted, its default kept. */
+    /**
+     * {@code ("X" NUMBER(38,0) DEFAULT 1, …)} — every parameter quoted, its default as the plan it compiled to
+     * prints it: {@code DEFAULT CAST('2020-01-01' AS DATE)} for {@code '2020-01-01'::DATE}, {@code DEFAULT null}
+     * for {@code NULL} (live-verified).
+     */
     private String routineParameters(final List<Parameter> parameters) {
         final StringBuilder out = new StringBuilder("(");
         for (int i = 0; parameters != null && i < parameters.size(); i++) {
@@ -1038,10 +1394,11 @@ public class GetDdl extends BuiltInFunction {
                 out.append(", ");
             }
             final Parameter parameter = parameters.get(i);
+            // A text or a binary declared with no length reads bare, and one declared with its length keeps it.
             out.append(quotedName(parameter.getName())).append(" ")
-               .append(routineTypeText(parameter.getDataType()));
+               .append(SqlTypeNames.routineType(parameter.getDataType(), Boolean.valueOf(!parameter.isUnsized())));
             if (parameter.hasDefault()) {
-                out.append(" DEFAULT ").append(parameter.getDefaultValue());
+                out.append(" DEFAULT ").append(parameter.getToldDefault());
             }
         }
         return out.append(")").toString();
@@ -1055,19 +1412,11 @@ public class GetDdl extends BuiltInFunction {
                 out.append(", ");
             }
             out.append(quotedName(columns.get(i).getName())).append(" ")
-               .append(routineTypeText(columns.get(i).getDataType()));
+               .append(ReturnColumnTypes.ddlText(columns.get(i).getDataType()));
         }
         return out.toString();
     }
 
-    /**
-     * A routine's type as the account spells it: the canonical name, except that a string of the
-     * default width is spelled BARE - live renders {@code RETURNS VARCHAR} for a bare declaration and
-     * {@code VARCHAR(10)} for a sized one.
-     */
-    private String routineTypeText(final DataType type) {
-        return SqlTypeNames.routineType(type);
-    }
 
     /** The body as one single-quoted literal, its own quotes doubled, whatever quoting the CREATE used. */
     private String quotedBody(final String body) {
@@ -1078,5 +1427,4 @@ public class GetDdl extends BuiltInFunction {
     private String quotedName(final String name) {
         return "\"" + name + "\"";
     }
-
 }

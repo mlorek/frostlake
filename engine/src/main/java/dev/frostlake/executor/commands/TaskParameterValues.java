@@ -16,11 +16,11 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.task.IntervalSchedule;
 import dev.frostlake.task.TaskGraphConfig;
 
-import java.time.ZoneId;
 import java.util.Locale;
 
 /**
@@ -42,8 +42,6 @@ final class TaskParameterValues {
     /** The isolation levels the account knows and refuses as unsupported; READ COMMITTED is the one it runs. */
     private static final String[] OTHER_ISOLATION_LEVELS = {"READ UNCOMMITTED", "REPEATABLE READ", "SERIALIZABLE",
         "SNAPSHOT"};
-    /** Time zone names the zone database keeps that the JDK's zone list leaves out; matched exactly. */
-    private static final String[] LEGACY_ZONES = {"EST", "MST", "HST", "ROC"};
     /** The longest TARGET_COMPLETION_INTERVAL: a day. */
     private static final long MAXIMUM_COMPLETION_INTERVAL_SECONDS = 24L * 60L * 60L;
     /** LANGUAGE is matched exactly. */
@@ -211,7 +209,7 @@ final class TaskParameterValues {
                 requireVpceName(key, text);
                 return;
             case "TIMEZONE":
-                if (!ZoneId.getAvailableZoneIds().contains(text) && !matchesExactly(text, LEGACY_ZONES)) {
+                if (!SessionZone.knows(text)) {
                     throw new RuntimeException(SqlCompilationError.invalidValueForParameter(text, key));
                 }
                 return;

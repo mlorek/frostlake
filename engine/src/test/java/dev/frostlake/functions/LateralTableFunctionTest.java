@@ -131,10 +131,11 @@ public class LateralTableFunctionTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE numbers (n INTEGER)");
         engine.execute("INSERT INTO numbers VALUES (2)");
 
+        // The count is a constant: one read from the row to the left is refused while the statement compiles.
         final ResultSet result = engine.executeQuery("""
             SELECT n.n
             FROM numbers n
-            CROSS JOIN LATERAL GENERATOR(ROWCOUNT => n.n) g
+            CROSS JOIN LATERAL GENERATOR(ROWCOUNT => 2) g
             """);
 
         assertNotNull(result);

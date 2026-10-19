@@ -18,6 +18,8 @@ package dev.frostlake.functions.file;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -65,7 +67,7 @@ public class FlGetFileTypeTest extends FileFunctionTestSupport {
     @Test
     public void aviIsVideoDespiteAlsoBeingAudio() {
         assertEquals("video", fileType("video/x-msvideo"));
-        assertEquals("TRUE", scalar("SELECT FL_IS_AUDIO(" + fileOf("video/x-msvideo") + ")").toUpperCase());
+        assertEquals("TRUE", scalar("SELECT FL_IS_AUDIO(" + fileOf("video/x-msvideo") + ")").toUpperCase(Locale.ROOT));
     }
 
     /**

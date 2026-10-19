@@ -143,13 +143,11 @@ public final class ServiceResource implements RestResource {
     /** The service's DESCRIBE row, or {@code 404}. */
     private static RestRow describe(final RestCall call, final RestIdentifier name) {
         if (call.sql().showNamed(show(call, RestShow.likeName(name)), name).isEmpty()) {
-            throw RestException.notFound("Service '"
-                + UserDefinedFunctionResource.qualified(call, name) + "' does not exist or not authorized.");
+            throw RestException.missing("Service", UserDefinedFunctionResource.qualified(call, name));
         }
         final List<RestRow> rows = call.sql().show("DESCRIBE SERVICE " + call.qualifiedSql(name));
         if (rows.isEmpty()) {
-            throw RestException.notFound("Service '"
-                + UserDefinedFunctionResource.qualified(call, name) + "' does not exist or not authorized.");
+            throw RestException.missing("Service", UserDefinedFunctionResource.qualified(call, name));
         }
         return rows.get(0);
     }
@@ -425,7 +423,7 @@ public final class ServiceResource implements RestResource {
                 return RestResponse.json(200, RestJson.array());
             }
         }
-        throw RestException.notFound("Service role '" + role + "' does not exist or not authorized.");
+        throw RestException.missing("Service role", role);
     }
 
     private static RestResponse endpoints(final RestCall call) {

@@ -45,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -95,7 +96,7 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
      * zero rows (so it is cheap) while still carrying the projection's columns.
      */
     private ResultSetMetaData prepareResultMetaData() throws SQLException {
-        final String head = sql.trim().toUpperCase();
+        final String head = sql.trim().toUpperCase(Locale.ROOT);
         if (!(head.startsWith("SELECT") || head.startsWith("WITH") || head.startsWith("SHOW")
                 || head.startsWith("DESC") || head.startsWith("EXPLAIN") || head.startsWith("CALL"))) {
             return null;
@@ -170,12 +171,14 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
 
     @Override
     public void setTime(final int parameterIndex, final Time x) throws SQLException {
-        parameters.put(parameterIndex, x);
+        // The time its moment shows in UTC, whatever the client's zone or the session's (live-verified).
+        parameters.put(parameterIndex, JdbcMarshaling.timeAtUtc(x));
     }
 
     @Override
     public void setTimestamp(final int parameterIndex, final Timestamp x) throws SQLException {
-        parameters.put(parameterIndex, x);
+        // Its moment, as the account's driver binds it (see JdbcMarshaling.boundMoment).
+        parameters.put(parameterIndex, JdbcMarshaling.boundMoment(x));
     }
 
     @Override
@@ -185,7 +188,8 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
 
     @Override
     public void setObject(final int parameterIndex, final Object x) throws SQLException {
-        parameters.put(parameterIndex, x);
+        JdbcMarshaling.requireBindable(x);
+        parameters.put(parameterIndex, JdbcMarshaling.boundObject(x));
     }
 
     // Unsupported methods
@@ -207,7 +211,7 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
 
     @Override
     public void setObject(final int parameterIndex, final Object x, final int targetSqlType) throws SQLException {
-        setObject(parameterIndex, x);
+        parameters.put(parameterIndex, x);
     }
 
     @Override
@@ -301,17 +305,20 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
 
     @Override
     public void setDate(final int parameterIndex, final Date x, final Calendar cal) throws SQLException {
-        setDate(parameterIndex, x);
+        // The day the value's moment falls on in the Calendar's zone (live-verified).
+        parameters.put(parameterIndex, JdbcMarshaling.dateAtCalendar(x, cal));
     }
 
     @Override
     public void setTime(final int parameterIndex, final Time x, final Calendar cal) throws SQLException {
-        setTime(parameterIndex, x);
+        // The account's driver reads no Calendar here: the time its moment shows in UTC (live-verified).
+        parameters.put(parameterIndex, JdbcMarshaling.timeAtUtc(x));
     }
 
     @Override
     public void setTimestamp(final int parameterIndex, final Timestamp x, final Calendar cal) throws SQLException {
-        setTimestamp(parameterIndex, x);
+        // The Calendar's wall clock, bound as the account's driver binds it (see CalendarBoundInstant).
+        parameters.put(parameterIndex, JdbcMarshaling.boundAtCalendar(x, cal));
     }
 
     @Override
@@ -371,7 +378,7 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
 
     @Override
     public void setObject(final int parameterIndex, final Object x, final int targetSqlType, final int scaleOrLength) throws SQLException {
-        setObject(parameterIndex, x);
+        parameters.put(parameterIndex, x);
     }
 
     @Override

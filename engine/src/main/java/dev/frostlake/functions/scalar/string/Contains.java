@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
@@ -35,7 +36,7 @@ public class Contains extends TextArgumentFunction {
             }
         }
         if (args.get(0) == null || args.get(1) == null) return false;
-        return args.get(0).toString().contains(args.get(1).toString());
+        return SharedFunctionHelpers.textOf(args.get(0)).contains(SharedFunctionHelpers.textOf(args.get(1)));
     }
 
     /** Under a collation the needle is looked for as the collation matches it, not byte for byte. */
@@ -44,7 +45,8 @@ public class Contains extends TextArgumentFunction {
         if (collation == null || args.get(0) == null || args.get(1) == null) {
             return evaluate(args);
         }
-        return CollationMatching.containsUnder(collation, args.get(0).toString(), args.get(1).toString());
+        return CollationMatching.containsUnder(collation, SharedFunctionHelpers.textOf(args.get(0)),
+            SharedFunctionHelpers.textOf(args.get(1)));
     }
 
     @Override

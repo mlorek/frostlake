@@ -33,6 +33,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * What the user-defined function and the procedure endpoints share: a routine's JSON from its SHOW row and its
@@ -47,6 +48,9 @@ public final class RoutineSupport {
     private static final String DEFAULT_FUNCTION_DESCRIPTION = "user-defined function";
     /** The description SHOW reports for a procedure created without a comment. */
     private static final String DEFAULT_PROCEDURE_DESCRIPTION = "user-defined procedure";
+
+    /** How a listing's {@code arguments} cell marks an argument that has a default. */
+    private static final String DEFAULTED = "DEFAULT ";
 
     /** Static helpers only. */
     private RoutineSupport() {
@@ -64,6 +68,26 @@ public final class RoutineSupport {
                                          final List<String> types) {
         return call.sql().show("DESCRIBE " + kind + " " + call.qualifiedSql(name) + "(" + String.join(", ", types)
             + ")");
+    }
+
+    /**
+     * The default each argument of one overload declares, in order, as its DDL spells it: null for an argument
+     * that declares none, and nothing at all when the DDL cannot be read.
+     *
+     * @param kind {@code FUNCTION} or {@code PROCEDURE}
+     */
+    public static List<String> defaults(final RestCall call, final String kind, final RestIdentifier name,
+                                        final List<String> types) {
+        try {
+            final ResultSet ddl = call.sql().query("SELECT GET_DDL(" + RestSql.literal(kind) + ", "
+                + RestSql.literal(call.qualifiedSql(name) + "(" + String.join(", ", types) + ")") + ")");
+            if (ddl.getRows().isEmpty() || ddl.getRows().get(0).getValue(0) == null) {
+                return new ArrayList<>();
+            }
+            return RoutineArgumentDefaults.of(ddl.getRows().get(0).getValue(0).toString());
+        } catch (final RuntimeException unreadable) {
+            return new ArrayList<>();
+        }
     }
 
     /** A DESCRIBE property's value, or null when the answer has no such row. */
@@ -90,7 +114,11 @@ public final class RoutineSupport {
         }
         final int close = closing(arguments, open);
         for (final String item : RoutineSignature.splitList(arguments.substring(open + 1, close))) {
-            final String plain = item.replace("[", "").replace("]", "").trim();
+            String plain = item.replace("[", "").replace("]", "").trim();
+            if (plain.startsWith(DEFAULTED)) {
+                // An argument that has a default is listed as DEFAULT <type>.
+                plain = plain.substring(DEFAULTED.length()).trim();
+            }
             if (!plain.isEmpty()) {
                 types.add(RoutineSignature.typeOf(plain).toUpperCase(Locale.ROOT));
             }
@@ -184,6 +212,16 @@ public final class RoutineSupport {
      */
     public static ObjectNode toJson(final RestRow show, final List<RestRow> describe, final boolean procedure,
                                     final boolean listing) {
+        return toJson(show, describe, procedure, listing, new ArrayList<String>());
+    }
+
+    /**
+     * A routine as its schema describes it, each argument with the default it declares.
+     *
+     * @param defaults each argument's default, in order (see {@link #defaults})
+     */
+    public static ObjectNode toJson(final RestRow show, final List<RestRow> describe, final boolean procedure,
+                                    final boolean listing, final List<String> defaults) {
         final ObjectNode node = RestJson.object();
         RestJson.name(node, "name", show, "name");
         if (!procedure) {
@@ -206,7 +244,8 @@ public final class RoutineSupport {
             final String name = RoutineSignature.nameOf(item);
             RestJson.put(argument, "name", name);
             argument.put("datatype", RoutineSignature.typeOf(item));
-            RestJson.nulls(argument, "default_value");
+            RestJson.put(argument, "default_value",
+                arguments.size() < defaults.size() ? defaults.get(arguments.size()) : null);
             arguments.add(argument);
         }
         node.set("arguments", arguments);
@@ -298,16 +337,23 @@ public final class RoutineSupport {
             RestJson.put(config, "runtime_version", property(describe, "runtime_version"));
             RestJson.put(config, "handler", property(describe, "handler"));
             config.set("packages", textList(property(describe, "packages")));
-            final String imports = property(describe, "imports");
-            if (imports != null) {
-                config.set("imports", textList(imports));
+            // A Python routine tells an empty list of imports, a Java or Scala one none at all.
+            final ArrayNode imports = textList(property(describe, "imports"));
+            if ("PYTHON".equals(language) || !imports.isEmpty()) {
+                config.set("imports", imports);
             }
             RestJson.put(config, "target_path", property(describe, "target_path"));
+            config.set("external_access_integrations", jsonList(show.nonEmpty("external_access_integrations")));
+            config.set("secrets", secrets(show));
             if ("PYTHON".equals(language)) {
-                RestJson.nulls(config, "external_access_integrations", "secrets", "artifact_repository",
-                    "artifact_repository_packages");
-            } else if ("JAVA".equals(language)) {
-                RestJson.nulls(config, "external_access_integrations", "secrets");
+                RestJson.put(config, "artifact_repository", property(describe, "artifact_repository"));
+                if (property(describe, "artifact_repository_packages") != null) {
+                    config.set("artifact_repository_packages",
+                        textList(property(describe, "artifact_repository_packages")));
+                }
+                RestJson.nulls(config, "artifact_repository", "artifact_repository_packages");
+            } else {
+                RestJson.nulls(config, "imports", "runtime_version", "target_path");
             }
         }
         RestJson.nulls(config, "called_on_null_input");
@@ -315,6 +361,52 @@ public final class RoutineSupport {
             RestJson.nulls(config, "is_volatile");
         }
         return config;
+    }
+
+    /** A listing cell that holds a JSON array, as that array; an empty array for an empty cell. */
+    private static ArrayNode jsonList(final String cell) {
+        if (cell != null) {
+            try {
+                final JsonNode parsed = RestJson.mapper().readTree(cell);
+                if (parsed instanceof ArrayNode) {
+                    return (ArrayNode) parsed;
+                }
+            } catch (final RuntimeException notJson) {
+                return RestJson.array();
+            }
+        }
+        return RestJson.array();
+    }
+
+    /**
+     * The secrets a routine names, each by its full name: a listing names a secret from the routine's own
+     * schema, bare within it and with its schema within the routine's database.
+     */
+    private static ObjectNode secrets(final RestRow show) {
+        final ObjectNode out = RestJson.object();
+        final String cell = show.nonEmpty("secrets");
+        if (cell == null) {
+            return out;
+        }
+        final JsonNode parsed;
+        try {
+            parsed = RestJson.mapper().readTree(cell);
+        } catch (final RuntimeException notJson) {
+            return out;
+        }
+        if (!(parsed instanceof ObjectNode)) {
+            return out;
+        }
+        final String database = show.string("catalog_name");
+        final String schema = show.string("schema_name");
+        for (final Map.Entry<String, JsonNode> secret : parsed.properties()) {
+            final String variable = secret.getKey();
+            final String named = secret.getValue().asString();
+            final int dots = named.length() - named.replace(".", "").length();
+            out.put(variable, dots >= 2 ? named : dots == 1 ? database + "." + named
+                : database + "." + schema + "." + named);
+        }
+        return out;
     }
 
     /** A list DESCRIBE writes as {@code ['a', 'b']} or {@code [a, b]}, as a JSON array of its items. */
@@ -353,8 +445,9 @@ public final class RoutineSupport {
         final RestIdentifier name = RestJson.identifier(body, "name", true);
         final RestCreateMode mode = call.createMode();
         final StringBuilder sql = new StringBuilder("CREATE").append(mode.orReplace());
-        if (Boolean.TRUE.equals(RestJson.bool(body, "is_aggregate"))) {
-            throw RestException.notImplemented("Aggregate user-defined functions are not supported.");
+        final boolean aggregate = Boolean.TRUE.equals(RestJson.bool(body, "is_aggregate"));
+        if (procedure && aggregate) {
+            throw RestException.notImplemented("Aggregate procedures are not supported.");
         }
         if (procedure) {
             if (Boolean.TRUE.equals(RestJson.bool(body, "is_secure"))) {
@@ -368,7 +461,7 @@ public final class RoutineSupport {
             if (Boolean.TRUE.equals(RestJson.bool(body, "is_secure"))) {
                 sql.append(" SECURE");
             }
-            sql.append(" FUNCTION");
+            sql.append(aggregate ? " AGGREGATE FUNCTION" : " FUNCTION");
         }
         sql.append(mode.ifNotExists()).append(' ').append(call.qualifiedSql(name)).append('(');
         final JsonNode arguments = body.get("arguments");
@@ -415,11 +508,41 @@ public final class RoutineSupport {
         if (runtime != null) {
             sql.append(" RUNTIME_VERSION = ").append(RestSql.literal(runtime));
         }
-        appendList(sql, config, "packages", "PACKAGES");
-        appendList(sql, config, "imports", "IMPORTS");
+        final String repository = RestJson.text(config, "artifact_repository");
+        if (repository != null) {
+            sql.append(" ARTIFACT_REPOSITORY = ").append(namePath(repository, "artifact_repository"));
+        }
+        // A Python routine's packages are written in one list, whichever of the two the body names them in.
+        final List<String> packages = new ArrayList<>();
+        addAll(packages, RestJson.strings(config, "packages"));
+        addAll(packages, RestJson.strings(config, "artifact_repository_packages"));
+        appendList(sql, packages, "PACKAGES");
+        appendList(sql, RestJson.strings(config, "imports"), "IMPORTS");
         final String handler = RestJson.text(config, "handler");
         if (handler != null) {
             sql.append(" HANDLER = ").append(RestSql.literal(handler));
+        }
+        final String targetPath = RestJson.text(config, "target_path");
+        if (targetPath != null) {
+            sql.append(" TARGET_PATH = ").append(RestSql.literal(targetPath));
+        }
+        final List<String> integrations = RestJson.strings(config, "external_access_integrations");
+        if (integrations != null && !integrations.isEmpty()) {
+            sql.append(" EXTERNAL_ACCESS_INTEGRATIONS = (");
+            for (int i = 0; i < integrations.size(); i++) {
+                sql.append(i > 0 ? ", " : "").append(namePath(integrations.get(i), "external_access_integrations"));
+            }
+            sql.append(')');
+        }
+        final JsonNode secrets = config.get("secrets");
+        if (secrets != null && secrets.isObject() && !secrets.isEmpty()) {
+            sql.append(" SECRETS = (");
+            int written = 0;
+            for (final Map.Entry<String, JsonNode> secret : secrets.properties()) {
+                sql.append(written++ > 0 ? ", " : "").append(RestSql.literal(secret.getKey())).append(" = ")
+                    .append(namePath(secret.getValue().asString(), "secrets"));
+            }
+            sql.append(')');
         }
         final String comment = RestJson.text(body, "comment");
         if (comment != null) {
@@ -429,7 +552,7 @@ public final class RoutineSupport {
             final String executeAs = RestJson.text(body, "execute_as");
             if (executeAs != null) {
                 final String owner = executeAs.trim().toUpperCase(Locale.ROOT);
-                if (!"OWNER".equals(owner) && !"CALLER".equals(owner)) {
+                if (!"OWNER".equals(owner) && !"CALLER".equals(owner) && !"RESTRICTED CALLER".equals(owner)) {
                     throw RestException.notImplemented("EXECUTE AS " + owner + " is not supported.");
                 }
                 sql.append(" EXECUTE AS ").append(owner);
@@ -450,9 +573,36 @@ public final class RoutineSupport {
         return value;
     }
 
-    private static void appendList(final StringBuilder sql, final JsonNode config, final String property,
-                                   final String keyword) {
-        final List<String> values = RestJson.strings(config, property);
+    private static void addAll(final List<String> into, final List<String> values) {
+        if (values != null) {
+            into.addAll(values);
+        }
+    }
+
+    /**
+     * A dotted name a body gives - an artifact repository, an integration, a secret - as the statement writes it:
+     * each part a plain identifier, so nothing but a name reaches the statement.
+     *
+     * @throws RestException {@code 400} for a value that is no such name
+     */
+    private static String namePath(final String value, final String property) {
+        final String name = value == null ? "" : value.trim();
+        boolean plain = !name.isEmpty();
+        for (final String part : name.split("\\.", -1)) {
+            plain = plain && !part.isEmpty();
+            for (int i = 0; i < part.length(); i++) {
+                final char c = part.charAt(i);
+                plain = plain && (c == '_' || c == '$' && i > 0 || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+                    || c >= '0' && c <= '9' && i > 0);
+            }
+        }
+        if (!plain) {
+            throw RestException.badRequest("Invalid value '" + name + "' for property '" + property + "'.");
+        }
+        return name;
+    }
+
+    private static void appendList(final StringBuilder sql, final List<String> values, final String keyword) {
         if (values == null || values.isEmpty()) {
             return;
         }

@@ -50,6 +50,12 @@ final class ContainerRest {
     /** A fourth cell marking a property the API reports but ignores in a request body, as the account does. */
     static final String IGNORED = "ignored";
 
+    /**
+     * A fourth cell marking a property a body may set but whose absence resets nothing: the account refuses to unset
+     * it on a container that cannot hold it, as a catalog's namespace properties on a database not linked to one.
+     */
+    static final String NOT_RESET = "not-reset";
+
     /** Type marks of the property tables: text, integer, boolean, object name. */
     static final String TEXT = "S";
     static final String INTEGER = "I";
@@ -285,7 +291,8 @@ final class ContainerRest {
                 continue;
             }
             final RestRow row = parameter(parameters, property[1]);
-            if (row == null || ownLevel.equalsIgnoreCase(row.string("level"))) {
+            final boolean reset = property.length <= 3 || !NOT_RESET.equals(property[3]);
+            if (reset && (row == null || ownLevel.equalsIgnoreCase(row.string("level")))) {
                 status = call.sql().status(alterHead + " UNSET " + property[1]);
             }
         }

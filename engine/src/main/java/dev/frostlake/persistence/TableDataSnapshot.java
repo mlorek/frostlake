@@ -30,4 +30,8 @@ public class TableDataSnapshot implements Serializable {
     public String schema;
     public String table;
     public List<List<Object>> rows = new ArrayList<>();
+    /** Each row's identity, in the rows' order; null in a snapshot written before identities were kept. */
+    public List<Long> rowIds;
+    /** The table's time-travel history; null in a snapshot written before history was kept, which restores none. */
+    public TableHistorySnapshot history;
 }

@@ -40,6 +40,39 @@ public class RestStageTest extends BaseRestTest {
         sql("CREATE SCHEMA " + database + ".s");
     }
 
+    /**
+     * A listed stage is the body a fetch of it answers — its file format, its copy options and every directory
+     * table property — and an external stage's cloud is spelled as SHOW STAGES spells it, an internal one's
+     * null; the directory table carries no moment of its last refresh (live-verified).
+     */
+    @Test
+    public void aListedStageCarriesItsWholeBody() throws Exception {
+        schema("stg_listed");
+        sql("CREATE STAGE stg_listed.s.plain DIRECTORY = (ENABLE = TRUE)");
+        sql("ALTER STAGE stg_listed.s.plain REFRESH");
+        sql("CREATE STAGE stg_listed.s.fmt FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) COPY_OPTIONS = (ON_ERROR ="
+            + " CONTINUE)");
+        sql("CREATE STAGE stg_listed.s.ext URL = 's3://bucket/path/'");
+        sql("CREATE STAGE stg_listed.s.az URL = 'azure://account.blob.core.windows.net/c/p/'");
+
+        final JsonNode listed = ok(get(stages("stg_listed")));
+        assertEquals("AZ,EXT,FMT,PLAIN", names(listed));
+        for (final JsonNode stage : listed) {
+            assertEquals(ok(get(stages("stg_listed") + "/" + stage.path("name").asString())), stage);
+            assertEquals(5, stage.path("directory_table").size(), stage.toString());
+            assertTrue(stage.path("directory_table").has("refresh_on_create"), stage.toString());
+            assertTrue(stage.path("copy_options").has("on_error"), stage.toString());
+            assertEquals("CSV", stage.path("file_format").path("type").asString());
+        }
+        assertEquals("AZURE", listed.get(0).path("cloud").asString());
+        assertEquals("AWS", listed.get(1).path("cloud").asString());
+        assertTrue(listed.get(2).path("cloud").isNull(), listed.get(2).toString());
+        assertEquals(1, listed.get(2).path("file_format").path("skip_header").asInt());
+        assertEquals("CONTINUE", listed.get(2).path("copy_options").path("on_error").asString());
+        assertEquals("ABORT_STATEMENT", listed.get(3).path("copy_options").path("on_error").asString());
+        assertTrue(listed.get(3).path("directory_table").path("enable").asBoolean(), listed.get(3).toString());
+    }
+
     @Test
     public void aStageIsCreatedFetchedListedAndDropped() throws Exception {
         schema("stg_basic");
@@ -82,7 +115,10 @@ public class RestStageTest extends BaseRestTest {
             + "\"encryption\":{\"type\":\"AWS_SSE_S3\"}}"));
         final JsonNode fetched = ok(get(stages("stg_ext") + "/ext"));
         assertEquals("s3://bucket/path/", fetched.path("url").asString());
-        assertEquals("aws", fetched.path("cloud").asString());
+        // The body relays SHOW STAGES' cells: the provider as the listing spells it, and the two flags.
+        assertEquals("AWS", fetched.path("cloud").asString());
+        assertTrue(fetched.path("has_credentials").asBoolean(), fetched.toString());
+        assertEquals("PERMANENT", fetched.path("kind").asString());
         assertTrue(fetched.get("credentials").isNull(), "credentials are write-only: " + fetched);
     }
 
@@ -95,8 +131,11 @@ public class RestStageTest extends BaseRestTest {
         assertEquals("first", ok(get(stages("stg_modes") + "/m")).path("comment").asString());
         ok(post(stages("stg_modes") + "?createMode=orReplace", "{\"name\":\"m\",\"comment\":\"third\"}"));
         assertEquals("third", ok(get(stages("stg_modes") + "/m")).path("comment").asString());
-        ok(post(stages("stg_modes"), "{\"name\":\"tmp\",\"kind\":\"TEMPORARY\"}"));
-        ok(get(stages("stg_modes") + "/tmp"));
+        // A temporary stage is its session's alone: the create and the read share the session kept for one token,
+        // where a request without one is a session of its own that reaches none of another's.
+        ok(asToken("POST", stages("stg_modes"), "{\"name\":\"tmp\",\"kind\":\"TEMPORARY\"}"));
+        assertEquals("TEMPORARY", ok(asToken("GET", stages("stg_modes") + "/tmp", null)).path("kind").asString());
+        error(404, get(stages("stg_modes") + "/tmp"));
         error(400, post(stages("stg_modes"), "{\"name\":\"bad\",\"kind\":\"TRANSIENT\"}"));
         error(400, post(stages("stg_modes"), "{\"comment\":\"no name\"}"));
         error(400, post(stages("stg_modes"), "{\"name\":\"bad\",\"file_format\":{\"type\":\"CSV\",\"x y\":1}}"));
@@ -157,5 +196,17 @@ public class RestStageTest extends BaseRestTest {
         assertEquals(403, forged.statusCode());
         error(404, post(stages("stg_url") + "/nope/files/data.csv:presigned-url", null));
         error(400, post(stages("stg_url") + "/u/files/data.csv:presigned-url", "{\"expiration_time\":0}"));
+    }
+    /** A request in the session the REST API keeps for one bearer token, which every request carrying it shares. */
+    private HttpResponse<String> asToken(final String method, final String path, final String body) throws Exception {
+        final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(baseUrl + path))
+            .header("Accept", "application/json").header("Authorization", "Bearer stage-modes");
+        if (body != null) {
+            builder.header("Content-Type", "application/json");
+            builder.method(method, HttpRequest.BodyPublishers.ofString(body));
+        } else {
+            builder.method(method, HttpRequest.BodyPublishers.noBody());
+        }
+        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 }

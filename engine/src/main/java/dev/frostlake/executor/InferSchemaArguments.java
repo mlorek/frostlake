@@ -166,11 +166,28 @@ final class InferSchemaArguments {
      * @return the file format
      */
     static FileFormat resolveFileFormat(final Catalog catalog, final String name) {
+        return resolveFileFormat(catalog, name, false);
+    }
+
+    /**
+     * {@link #resolveFileFormat(Catalog, String)}, where {@code completed} names a missing schema-qualified format
+     * with the session's database before it, as a staged file's query names one (live-verified:
+     * {@code FILE_FORMAT => test_schema."ff"} is {@code File format 'TEST_DB.TEST_SCHEMA."ff"' does not exist}).
+     *
+     * @param catalog   the catalog
+     * @param name      the format's name as written
+     * @param completed whether a refusal completes a schema-qualified name
+     * @return the format
+     */
+    static FileFormat resolveFileFormat(final Catalog catalog, final String name, final boolean completed) {
         final String[] parts = SqlIdentifiers.canonicalTextParts(name);
         final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String last = parts[parts.length - 1];
-        if (!owner.hasFileFormat(last)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", QualifiedName.join(parts)));
+        // A quoted name names the format of exactly its case: '"ff_csv"' is not FF_CSV (live-verified).
+        if (!owner.hasFileFormatExact(last)) {
+            final String[] named = completed && parts.length == 2 && catalog.getCurrentDatabase() != null
+                ? new String[] {catalog.getCurrentDatabase(), parts[0], parts[1]} : parts;
+            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", QualifiedName.join(named)));
         }
         return owner.getFileFormat(last);
     }
@@ -180,7 +197,7 @@ final class InferSchemaArguments {
      * table-function rules refuse it first ({@code unexpected argument ["LOCATION"] at position 1,}).
      */
     static String parameterName(final FrostlakeParser.NamedArgumentContext argument) {
-        return argument.identifier().getText().toUpperCase(Locale.ROOT);
+        return argument.variableName().getText().toUpperCase(Locale.ROOT);
     }
 
     private void requirePresent(final FrostlakeParser.NamedArgumentContext argument, final String name,

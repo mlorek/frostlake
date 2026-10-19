@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
@@ -24,6 +25,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /**
  * Every SELECT operand is planned whole and then run as one operator pipeline, end to end: the plan names
@@ -155,7 +157,7 @@ public class SelectPlanTest extends BaseDatabaseTest {
             shape("SELECT t.a FROM t JOIN (u JOIN t t2 ON u.a = t2.a) ON t.a = u.a"));
         // The group's own pipeline reads inside the join stage that runs it.
         final String plan = engine.getExecutor().describeLastSelectPlan();
-        assertTrue(plan.contains("{SCAN[U] -> INNER JOIN[U x T ON u.a = t2.a]{SCAN[T]}}"), plan);
+        assertTrue(plan.contains("{SCAN[U] -> INNER JOIN[U x T ON u.a = t2.a | HASH A=A]{SCAN[T]}}"), plan);
     }
 
     @Test
@@ -165,8 +167,8 @@ public class SelectPlanTest extends BaseDatabaseTest {
         assertEquals("Plan[SCAN[T] -> PROJECT[a]]", plan);
         // A join's right side is read inside the join stage that runs it.
         assertEquals("SCAN -> INNER JOIN -> PROJECT = 2 rows", shape("SELECT t.a FROM t JOIN u ON t.a = u.a"));
-        assertTrue(engine.getExecutor().describeLastSelectPlan().contains("INNER JOIN[T x U ON t.a = u.a]{SCAN[U]}"),
-            engine.getExecutor().describeLastSelectPlan());
+        final String joinPlan = engine.getExecutor().describeLastSelectPlan();
+        assertTrue(joinPlan.contains("INNER JOIN[T x U ON t.a = u.a | HASH A=A]{SCAN[U]}"), joinPlan);
     }
 
     @Test
@@ -262,7 +264,14 @@ public class SelectPlanTest extends BaseDatabaseTest {
                 + " SELECT n FROM r ORDER BY n"));
         assertEquals("4", cell("WITH RECURSIVE r (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 4)"
             + " SELECT MAX(n) FROM r"));
-        assertEquals("3", cell("WITH RECURSIVE r (n) AS (SELECT 1 UNION SELECT (n % 3) + 1 FROM r)"
-            + " SELECT COUNT(*) FROM r"));
+        // A recursion is a UNION ALL: a distinct UNION is refused (live-verified).
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                cell("WITH RECURSIVE r (n) AS (SELECT 1 UNION SELECT (n % 3) + 1 FROM r) SELECT COUNT(*) FROM r");
+            }
+        });
+        assertTrue(String.valueOf(refused.getMessage()).contains("UNION not yet supported within a Recursive CTE"),
+            refused.getMessage());
     }
 }

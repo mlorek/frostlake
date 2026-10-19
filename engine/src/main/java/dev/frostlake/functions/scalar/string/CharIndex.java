@@ -40,14 +40,14 @@ public class CharIndex extends TextArgumentFunction {
             }
         }
         if (args.get(0) == null || args.get(1) == null) return 0L;
-        int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
+        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
         startPos = Math.max(0, startPos);
         if (args.get(0) instanceof BinaryValue && args.get(1) instanceof BinaryValue) {
             return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
                 ((BinaryValue) args.get(0)).bytes(), startPos);
         }
-        final String needle = args.get(0).toString();
-        final String haystack = args.get(1).toString();
+        final String needle = SharedFunctionHelpers.textOf(args.get(0));
+        final String haystack = SharedFunctionHelpers.textOf(args.get(1));
         final int idx = CodePointText.indexOf(haystack, needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
     }
@@ -59,11 +59,11 @@ public class CharIndex extends TextArgumentFunction {
                 || args.get(0) instanceof BinaryValue || args.get(1) instanceof BinaryValue) {
             return evaluate(args);
         }
-        int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
+        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
         startPos = Math.max(0, startPos);
-        final String haystack = args.get(1).toString();
+        final String haystack = SharedFunctionHelpers.textOf(args.get(1));
         final int[] found = CollationMatching.findUnder(collation, haystack,
-            args.get(0).toString(), CodePointText.offset(haystack, startPos));
+            SharedFunctionHelpers.textOf(args.get(0)), CodePointText.offset(haystack, startPos));
         return found == null ? 0L : (long) (CodePointText.characterIndex(haystack, found[0]) + 1);
     }
 

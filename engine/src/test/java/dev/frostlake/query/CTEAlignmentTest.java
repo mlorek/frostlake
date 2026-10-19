@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -49,8 +51,8 @@ public class CTEAlignmentTest extends BaseDatabaseTest {
             SELECT a, b FROM cte
             """);
         assertEquals(1, rs.getRowCount());
-        assertEquals("a", rs.getColumns().get(0).getName().toLowerCase());
-        assertEquals("b", rs.getColumns().get(1).getName().toLowerCase());
+        assertEquals("a", rs.getColumns().get(0).getName().toLowerCase(Locale.ROOT));
+        assertEquals("b", rs.getColumns().get(1).getName().toLowerCase(Locale.ROOT));
         logger.info("CTE column aliases work: {}", rs.getRows().get(0).getValues());
     }
 
@@ -66,7 +68,7 @@ public class CTEAlignmentTest extends BaseDatabaseTest {
             SELECT val_a, val_b FROM cte
             """);
         assertEquals(1, rs.getRowCount());
-        assertEquals("val_a", rs.getColumns().get(0).getName().toLowerCase());
+        assertEquals("val_a", rs.getColumns().get(0).getName().toLowerCase(Locale.ROOT));
         assertEquals(10L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 
@@ -82,8 +84,8 @@ public class CTEAlignmentTest extends BaseDatabaseTest {
             SELECT department, total FROM dept_totals ORDER BY department
             """);
         assertEquals(2, rs.getRowCount());
-        assertEquals("department", rs.getColumns().get(0).getName().toLowerCase());
-        assertEquals("total", rs.getColumns().get(1).getName().toLowerCase());
+        assertEquals("department", rs.getColumns().get(0).getName().toLowerCase(Locale.ROOT));
+        assertEquals("total", rs.getColumns().get(1).getName().toLowerCase(Locale.ROOT));
     }
 
     // ── Recursive CTEs ────────────────────────────────────────────────────────

@@ -108,6 +108,38 @@ public class StatementClockTest extends BaseDatabaseTest {
     }
 
     /**
+     * The clock reads milliseconds, as the account's does: a CURRENT_TIMESTAMP() stored in a TIMESTAMP_NTZ(3)
+     * column equals the variable it was read into, which a procedure may compare.
+     */
+    @Test
+    public void theClockReadsMilliseconds() {
+        assertEquals("0", text("SELECT DATE_PART(NANOSECOND, CURRENT_TIMESTAMP()) % 1000000"));
+        engine.execute("CREATE TABLE ms_stamp (ts TIMESTAMP_NTZ(3))");
+        assertEquals("1", text("""
+            EXECUTE IMMEDIATE $$
+            DECLARE ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
+            BEGIN
+              INSERT INTO ms_stamp VALUES (:ts);
+              LET n INT := (SELECT COUNT(*) FROM ms_stamp WHERE ts = :ts);
+              RETURN n;
+            END;
+            $$"""));
+    }
+
+    /**
+     * Successive statements on a thread read successive instants, as they do on the account, where a statement
+     * takes at least a millisecond — even when the engine runs several within one millisecond of wall time.
+     */
+    @Test
+    public void successiveStatementsReadSuccessiveInstants() {
+        engine.execute("CREATE TABLE stamps (ts TIMESTAMP_NTZ(3))");
+        for (int i = 0; i < 50; i++) {
+            engine.execute("INSERT INTO stamps SELECT SYSDATE()");
+        }
+        assertEquals("50", text("SELECT COUNT(DISTINCT ts) FROM stamps"));
+    }
+
+    /**
      * Statement-stable, NOT transaction-stable: live, two statements inside one BEGIN…COMMIT get
      * different times, so the pin must not span the transaction.
      */

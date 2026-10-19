@@ -120,11 +120,45 @@ public class ChangeTrackingTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aChangesPointMustBeConstant() {
+    public void aChangesPointReadsNoFunctionWhoseValueMoves() {
         engine.execute("CREATE TABLE ct_const (id INTEGER) CHANGE_TRACKING = TRUE");
-        assertTrue(refusal("SELECT * FROM ct_const CHANGES (INFORMATION => DEFAULT)"
-            + " AT (TIMESTAMP => DATEADD(minute, -30, CURRENT_TIMESTAMP()))")
-            .getMessage().contains("argument TIMESTAMP to function AT needs to be constant"),
-            "expected the constant-argument refusal");
+        final String head = "SELECT * FROM ct_const CHANGES (INFORMATION => DEFAULT) ";
+        final String moving = "', but change tracking is not supported on queries with non-deterministic functions in"
+            + " versions. (inside a view).";
+        assertEquals("SQL compilation error: line 1 at position 94:\nQuery contains time travel to a version containing"
+            + " function 'CURRENT_TIMESTAMP" + moving,
+            refusal(head + "AT (TIMESTAMP => DATEADD(minute, -30, CURRENT_TIMESTAMP()))").getMessage());
+        assertEquals("SQL compilation error: line 1 at position 73:\nQuery contains time travel to a version containing"
+            + " function 'CURRENT_DATE" + moving,
+            refusal(head + "AT (TIMESTAMP => CURRENT_DATE()::TIMESTAMP_LTZ)").getMessage());
+        assertEquals("SQL compilation error: line 1 at position 75:\nQuery contains time travel to a version containing"
+            + " function 'RANDOM" + moving, refusal(head + "AT (OFFSET => -ABS(RANDOM()) % 2)").getMessage());
+        assertEquals("SQL compilation error: line 1 at position 111:\nQuery contains time travel to a version"
+            + " containing function 'CURRENT_TIMESTAMP" + moving, refusal(head
+            + "AT (OFFSET => 0) END (TIMESTAMP => DATEADD(minute, 30, CURRENT_TIMESTAMP()))").getMessage(),
+            "the END point is judged as the start is");
+        assertEquals("SQL compilation error: line 1 at position 56:\nQuery contains time travel to a version containing"
+            + " function 'RANDOM', but change tracking is not supported on queries with non-deterministic functions in"
+            + " versions.", refusal("CREATE STREAM ct_s ON TABLE ct_const AT (OFFSET => -ABS(RANDOM()) % 2)")
+            .getMessage(), "a stream's point likewise, its sentence ending there");
+    }
+
+    @Test
+    public void aChangesPointMayBeComputedFromWhatDoesNotMove() {
+        engine.execute("CREATE TABLE ct_fold (id INTEGER) CHANGE_TRACKING = TRUE");
+        final String head = "SELECT * FROM ct_fold CHANGES (INFORMATION => DEFAULT) ";
+        assertEquals(0, engine.executeQuery(head + "AT (OFFSET => -60 + 60)").getRowCount());
+        assertEquals(0, engine.executeQuery(head + "AT (OFFSET => (SELECT 0))").getRowCount());
+        final String unavailable = "Time travel data is not available for table CT_FOLD. The requested time is either"
+            + " beyond the allowed time travel period or before the object creation time.";
+        assertEquals(unavailable, refusal(head + "AT (TIMESTAMP => TO_TIMESTAMP_LTZ('2020-01-01 00:00:00'))")
+            .getMessage());
+        assertEquals(unavailable, refusal(head + "AT (TIMESTAMP => '2020-01-01 00:00:00')").getMessage());
+        assertEquals(unavailable, refusal(head + "AT (TIMESTAMP => DATEADD(day, 1, '2020-01-01 00:00:00'"
+            + "::TIMESTAMP_LTZ))").getMessage());
+        assertEquals(unavailable, refusal(head + "AT (OFFSET => -1 * 60 * 60 * 24)").getMessage());
+        assertTrue(refusal(head + "AT (OFFSET => '0')").getMessage().contains(
+            "Invalid data type ['0'] in AT(OFFSET => '0')"));
+        assertEquals("Statement xy not found", refusal(head + "AT (STATEMENT => 'x' || 'y')").getMessage());
     }
 }

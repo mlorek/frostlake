@@ -119,6 +119,25 @@ final class DeclaredWidthRules {
     }
 
     /**
+     * A DECFLOAT's precision, which is 38 and no other: any other number written after the type, a negative one
+     * among them, is refused by the number as written — {@code Unsupported DECFLOAT precision: 5.} — after a
+     * compilation prefix that ends in a blank before its line break (live-verified).
+     *
+     * @param typeParams the type's parameter list, null when the type was written bare
+     */
+    static void checkDecfloatPrecision(final FrostlakeParser.TypeParametersContext typeParams) {
+        final TerminalNode written = parameter(typeParams, 0);
+        if (written == null) {
+            return;
+        }
+        final String precision = (isNegated(typeParams, 0) ? "-" : "") + written.getText();
+        if (!"38".equals(precision)) {
+            throw new RuntimeException(SqlCompilationError.PREFIX + " \nUnsupported DECFLOAT precision: "
+                + precision + ".");
+        }
+    }
+
+    /**
      * The fractional-seconds scale of a TIME.
      *
      * @param typeParams the type's parameter list, null when the type was written bare

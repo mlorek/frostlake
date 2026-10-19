@@ -104,7 +104,7 @@ public final class StoredColumnValues {
         }
         final int index = stored.getColumnIndex(declared.getName());
         final boolean text = declared.getDataType() instanceof StringType && declared.getCollation() == null;
-        final List<Row> rows = executor.readTableRowsForTransaction(qualifiedName);
+        final List<Row> rows = executor.statisticsRowsFor(qualifiedName);
         boolean holdsNull = false;
         boolean same = !rows.isEmpty() && keepsStatistics(declared.getDataType());
         Object first = null;

@@ -37,8 +37,8 @@
        "expect": {"rows": [["true"]]}},
       {"sql": "SELECT query_id = $insert_qid FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'INSERT INTO test_qid VALUES (1)'",
        "expect": {"rows": [["true"]]}},
-      {"sql": "SELECT query_type FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_id IN ($create_qid, $insert_qid) ORDER BY start_time ASC",
-       "expect": {"rows": [["CREATE"], ["INSERT"]], "ordered": true}}
+      {"sql": "SELECT query_type FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_id IN ($create_qid, $insert_qid) ORDER BY query_type ASC",
+       "expect": {"rows": [["CREATE_TABLE"], ["INSERT"]], "ordered": true}}
     ]},
     {"name": "query-id-not-null",
      "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
@@ -64,7 +64,7 @@
      "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
      "steps": [
       {"sql": "SELECT * FROM qid_table_that_does_not_exist", "expect": {"error": {}}},
-      {"sql": "SELECT COUNT_IF(query_id IS NOT NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED' AND query_text LIKE '%qid_table_that_does_not_exist%'",
+      {"sql": "SELECT COUNT_IF(query_id IS NOT NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED_WITH_ERROR' AND query_text LIKE '%qid_table_that_does_not_exist%'",
        "expect": {"value": "1"}}
     ]}
   ]

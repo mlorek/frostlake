@@ -16,29 +16,34 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.RowAccessPolicy;
-import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.security.SecurityManager;
+import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.values.ExactValues;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
-import org.antlr.v4.runtime.CharStreams;
+import java.util.Map;
+import java.util.Set;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Column-masking and row-access-policy query stage extracted from {@link QueryExecutor}. Masking
- * rewrites each projection expression that references a masked column, wrapping the reference in the
- * policy body; row-access policies filter the input rows through the policy predicate. NEITHER has a
+ * replaces each masked column's value with the policy's answer as a table's rows enter the query;
+ * row-access policies filter the input rows through the policy predicate. NEITHER has a
  * role that bypasses it: the account applies both bodies to every role, ACCOUNTADMIN included, and a
  * body that means to exempt a role says so ITSELF through CURRENT_ROLE(). The catalog and (nullable)
  * security manager are read live from the owning
@@ -47,8 +52,6 @@ import org.slf4j.LoggerFactory;
  */
 final class MaskingPolicyApplier {
 
-    private static final Logger logger = LoggerFactory.getLogger(MaskingPolicyApplier.class);
-
     private final QueryExecutor executor;
 
     MaskingPolicyApplier(final QueryExecutor executor) {
@@ -56,127 +59,158 @@ final class MaskingPolicyApplier {
     }
 
     /**
-     * For each projection expression that is a direct reference to a masked column,
-     * wrap it with the masking policy body — substituting the policy parameter with the column name.
-     * Every role is masked; a body that exempts one names it, as a CURRENT_ROLE() body does.
+     * Whether a relation holds a column a masking policy is attached to, so that its rows are masked as a query
+     * reads them.
+     *
+     * @param relation the relation
+     * @return whether any of its columns is masked
      */
-    List<String> applyMaskingPolicies(final List<String> exprs, final Table table) {
-        final SecurityManager securityManager = executor.getSecurityManager();
-        if (securityManager == null) return exprs;
-
-        // Collect the table's masked columns once; the common case (none) costs one scan.
-        final List<TableColumn> maskedColumns = new ArrayList<>();
-        for (final TableColumn col : table.getColumns()) {
-            if (col.hasMaskingPolicy()) {
-                maskedColumns.add(col);
+    boolean masks(final Table relation) {
+        if (executor.getSecurityManager() == null) {
+            return false;
+        }
+        for (final TableColumn column : relation.columnsView()) {
+            if (column.hasMaskingPolicy()) {
+                return true;
             }
         }
-        if (maskedColumns.isEmpty()) return exprs;
-
-        // Rewrite every REFERENCE to a masked column inside each projection expression — not just
-        // expressions that consist solely of the column name. Without this, wrapping the column in
-        // any expression (UPPER(ssn), ssn || '', ssn + 0) returned raw, unmasked data.
-        final List<String> result = new ArrayList<>(exprs.size());
-        for (final String expr : exprs) {
-            String rewritten = expr;
-            for (final TableColumn col : maskedColumns) {
-                rewritten = rewriteMaskedColumnReferences(rewritten, col, table);
-            }
-            result.add(rewritten);
-        }
-        return result;
+        return false;
     }
 
     /**
-     * Replace each reference to {@code column} inside {@code expr} with its masking-policy body
-     * (the policy parameter bound to the reference text). Handles bare ({@code ssn}) and
-     * alias-qualified ({@code e.ssn}) references; skips string literals and same-named function
-     * calls ({@code ssn(...)}). A qualified reference whose column part differs is copied verbatim
-     * so its parts are never re-matched as bare names.
+     * A table's rows as a query reads them: each column a masking policy is attached to holds the policy's answer
+     * for the reading role, the policy evaluated over the row as stored. Every role is masked; a body that exempts
+     * one names it, as a CURRENT_ROLE() body does.
+     *
+     * <p>The rows are masked where they enter the query, not by rewriting the references the query writes, so every
+     * reference reads the masked value (documented: the policy applies wherever the column appears in the query:
+     * projections, JOIN predicates, WHERE predicates, ORDER BY and GROUP BY). That covers the column however it is
+     * spelled, quoted or not, qualified or not, in any expression, and through a view, a subquery, a CTE, a UDF's
+     * arguments, OBJECT_CONSTRUCT(*) or an unload. The rewrite this replaces read every quoted reference raw, and
+     * every clause but the select list.
+     *
+     * <p>A policy body that reads the very table it masks reads it as stored: masking it there too would never end.
+     *
+     * @param rows     the rows as stored, laid out in {@code relation}'s columns
+     * @param relation the relation the rows are laid out in: the table itself, or a stream's or a CHANGES clause's
+     *                 relation, which carry the table's own columns first
+     * @param owner    the table the masked columns belong to, which their attachments are read for
+     * @return the rows with every masked column masked; {@code rows} itself when no column is
      */
-    private String rewriteMaskedColumnReferences(final String expr, final TableColumn column, final Table table) {
-        final String name = column.getName();
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expr));
-        lexer.removeErrorListeners();
-        final CommonTokenStream stream = new CommonTokenStream(lexer);
-        stream.fill();
-        final List<Token> toks = stream.getTokens();   // structural tokens only (WS / comments are skipped)
-
-        final StringBuilder out = new StringBuilder(expr.length());
-        int cursor = 0;
-        for (int i = 0; i < toks.size(); i++) {
-            final Token t = toks.get(i);
-            if (t.getType() == Token.EOF) {
-                break;
-            }
-            if (!SqlTokens.isWord(t)) {
-                continue;   // string literals, quoted identifiers, numbers, operators — never a column ref
-            }
-
-            // Qualified reference: word '.' word — mask when the column part is the masked column.
-            if (i + 2 < toks.size() && toks.get(i + 1).getType() == FrostlakeLexer.DOT
-                    && SqlTokens.isWord(toks.get(i + 2))
-                    && adjacent(t, toks.get(i + 1)) && adjacent(toks.get(i + 1), toks.get(i + 2))) {
-                final Token col = toks.get(i + 2);
-                if (col.getText().equalsIgnoreCase(name) && !isFunctionCall(toks, i + 2)) {
-                    final String reference = expr.substring(t.getStartIndex(), col.getStopIndex() + 1);
-                    final String body = resolveMaskingPolicyBody(column.getMaskingPolicyName(), reference, table.getName());
-                    out.append(expr, cursor, t.getStartIndex());
-                    out.append(body != null ? body : reference);
-                    cursor = col.getStopIndex() + 1;
+    List<Row> maskRows(final List<Row> rows, final Table relation, final Table owner) {
+        if (rows.isEmpty() || !masks(relation) || MASKING.get().contains(owner)) {
+            return rows;
+        }
+        final List<TableColumn> columns = relation.getColumns();
+        final List<Integer> slots = new ArrayList<>();
+        final List<Expression> bodies = new ArrayList<>();
+        final List<DeferredFault> unreadable = new ArrayList<>();
+        for (int i = 0; i < columns.size(); i++) {
+            final TableColumn column = columns.get(i);
+            if (column.hasMaskingPolicy()) {
+                slots.add(i);
+                // An attachment whose policy is gone refuses every read of the column, and only of the column: the
+                // cells hold the refusal, which reading one raises (DeferredFault).
+                Expression body = null;
+                DeferredFault refusal = null;
+                try {
+                    body = ExpressionEvaluator.parse(maskingPolicyBody(column, owner));
+                } catch (final RuntimeException gone) {
+                    refusal = new DeferredFault(gone);
                 }
-                i += 2;   // the qualified reference is consumed whether or not it was rewritten
-                continue;
-            }
-
-            // Bare reference: a lone identifier equal to the masked column (and not a function name).
-            if (t.getText().equalsIgnoreCase(name) && !isFunctionCall(toks, i)) {
-                final String body = resolveMaskingPolicyBody(column.getMaskingPolicyName(), t.getText(), table.getName());
-                out.append(expr, cursor, t.getStartIndex());
-                out.append(body != null ? body : t.getText());
-                cursor = t.getStopIndex() + 1;
+                bodies.add(body);
+                unreadable.add(refusal);
             }
         }
-        out.append(expr, cursor, expr.length());
-        return out.toString();
-    }
-
-    /** Whether token {@code b} starts immediately after token {@code a} (no intervening characters). */
-    private static boolean adjacent(final Token a, final Token b) {
-        return b.getStartIndex() == a.getStopIndex() + 1;
-    }
-
-    /** Whether the identifier at {@code idx} is immediately followed by '(' — i.e. it names a function. */
-    private static boolean isFunctionCall(final List<Token> toks, final int idx) {
-        final int next = idx + 1;
-        return next < toks.size() && toks.get(next).getType() == FrostlakeLexer.LPAREN
-            && adjacent(toks.get(idx), toks.get(next));
-    }
-
-    private String resolveMaskingPolicyBody(final String policyQualifiedName, final String columnExpr, final String tableName) {
-        final Catalog catalog = executor.getCatalog();
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(relation, executor.getFunctionRegistry(),
+            executor.getCatalog(), executor);
+        MASKING.get().add(owner);
+        // The bodies read the objects they name, never a CTE of the statement reading the table (live-verified).
+        final Map<String, ResultSet> outerCtes = executor.suspendCteScope();
         try {
-            final String[] parts = QualifiedName.parse(policyQualifiedName).parts();
-            final Schema schema = parts.length == 1 ? catalog.getDatabase(catalog.getCurrentDatabase())
-                    .getSchema(catalog.getCurrentSchema())
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String pname = parts[parts.length - 1].toUpperCase();
-            final MaskingPolicy policy = schema.getMaskingPolicy(pname);
-            if (policy == null) return null;
-            // Substitute the first parameter name with the actual column expression
-            String body = policy.getBody();
-            if (!policy.getParameters().isEmpty()) {
-                final String paramName = policy.getParameters().get(0).getName();
-                body = SqlIdentifierSubstitution.substitute(body, paramName, columnExpr);
+            final List<Row> masked = new ArrayList<>(rows.size());
+            for (final Row row : rows) {
+                final List<Object> values = new ArrayList<>(row.getValues());
+                for (int k = 0; k < slots.size(); k++) {
+                    final int slot = slots.get(k);
+                    if (slot < values.size()) {
+                        values.set(slot, unreadable.get(k) != null ? unreadable.get(k)
+                            : maskedValue(evaluator, bodies.get(k), row, columns.get(slot)));
+                    }
+                }
+                masked.add(new Row(values));
             }
-            // Resolve tag-context functions against the column/table being masked.
-            body = rewriteCurrentTagFunctions(body, tableName, columnExpr);
-            return "(" + body + ")";
-        } catch (final Exception e) {
-            logger.debug("Could not resolve masking policy {}: {}", policyQualifiedName, e.getMessage());
-            return null;
+            return masked;
+        } finally {
+            executor.setCurrentCteContext(outerCtes);
+            MASKING.get().remove(owner);
         }
+    }
+
+    /**
+     * The policy's answer for one row, or the fault its body raised there, held in the cell so that only a read of
+     * the masked column raises it, as an unreadable cell of a FROM relation does. The stored value never takes its
+     * place.
+     */
+    private static Object maskedValue(final ExpressionEvaluator evaluator, final Expression body, final Row row,
+                                      final TableColumn column) {
+        try {
+            return inColumnCarrier(evaluator.evaluate(body, row), column);
+        } catch (final SecurityException refused) {
+            throw refused;
+        } catch (final RuntimeException failed) {
+            return new DeferredFault(failed);
+        }
+    }
+
+    /** The tables whose rows this thread is masking right now, which a policy body reading them reads as stored. */
+    private static final ThreadLocal<Set<Table>> MASKING = new ThreadLocal<Set<Table>>() {
+        @Override
+        protected Set<Table> initialValue() {
+            return Collections.newSetFromMap(new IdentityHashMap<Table, Boolean>());
+        }
+    };
+
+    /**
+     * A masked value in the carrier its column holds, as every stored value is: a scale-0 exact column's Long, a scaled
+     * one's BigDecimal at its scale. Anything else is kept as the policy answered it.
+     */
+    private static Object inColumnCarrier(final Object value, final TableColumn column) {
+        final DataType type = column.getDataType();
+        if (!(value instanceof Number) || !(type instanceof NumericType) || NumericType.isApproximate(type)
+                || ExactValues.isCarrier(value, (NumericType) type)) {
+            return value;
+        }
+        try {
+            return ExactValues.written(value, (NumericType) type);
+        } catch (final RuntimeException keepAnswered) {
+            return value;
+        }
+    }
+
+    /**
+     * The masking policy's body, its first parameter bound to the masked reference. The policy is the one the
+     * column's attachment names in full, wherever the session is. An attachment whose policy is gone refuses the
+     * query rather than returning the column unmasked.
+     */
+    private String maskingPolicyBody(final TableColumn column, final Table table) {
+        final MaskingPolicy policy = PolicyReferences.maskingPolicy(executor.getCatalog(),
+            column.getMaskingPolicyName(), table);
+        // The first parameter is the column itself; a conditional policy's further ones are the columns its USING
+        // names, in order. One USING left out binds NULL, which no condition reads as permission, rather than
+        // whichever column happens to share the parameter's name.
+        final String columnExpr = SqlIdentifiers.spellCanonicalEscaped(column.getName());
+        final List<String> using = column.getMaskingPolicyArguments();
+        final List<String> names = new ArrayList<>();
+        final List<String> bound = new ArrayList<>();
+        for (int i = 0; i < policy.getParameters().size(); i++) {
+            names.add(policy.getParameters().get(i).getName());
+            bound.add(i == 0 ? columnExpr : i < using.size() ? SqlIdentifiers.spellCanonicalEscaped(using.get(i)) : "NULL");
+        }
+        String body = SqlIdentifierSubstitution.substituteParameters(policy.getBody(), names, bound);
+        // Resolve tag-context functions against the column/table being masked.
+        body = rewriteCurrentTagFunctions(body, table.getName(), columnExpr);
+        return "(" + body + ")";
     }
 
     /** Rewrite SYSTEM$GET_TAG_ON_CURRENT_COLUMN/TABLE in a masking body into concrete GET_TAG calls for the masked column/table. */
@@ -192,8 +226,25 @@ final class MaskingPolicyApplier {
      * on an escaped quote inside the tag literal ({@code 'o''brien_tag'}) and on a comment before
      * the argument, both of which the lexer handles for free.
      */
-    private String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+    static String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain) {
+        return rewriteTagFn(body, fnName, objectName, domain, null, null);
+    }
+
+    /**
+     * {@link #rewriteTagFn(String, String, String, String)}, each call read for the object, and for {@code fallback}
+     * when the object carries no value of the tag: {@code COALESCE(SYSTEM$GET_TAG(…), SYSTEM$GET_TAG(…))}.
+     *
+     * @param body           the policy's body
+     * @param fnName         the tag function's name after SYSTEM$
+     * @param objectName     the object the call reads
+     * @param domain         its domain
+     * @param fallback       the object read when the first holds no value, or null
+     * @param fallbackDomain its domain
+     * @return the body rewritten
+     */
+    static String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain,
+                               final String fallback, final String fallbackDomain) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
@@ -217,8 +268,9 @@ final class MaskingPolicyApplier {
             }
             final String tagArg = toks.get(i + 2).getText();
             out.append(body, cursor, t.getStartIndex());
-            out.append("SYSTEM$GET_TAG(").append(tagArg).append(", '").append(objectName)
-                .append("', '").append(domain).append("')");
+            final String own = "SYSTEM$GET_TAG(" + tagArg + ", '" + objectName + "', '" + domain + "')";
+            out.append(fallback == null ? own : "COALESCE(" + own + ", SYSTEM$GET_TAG(" + tagArg + ", '" + fallback
+                + "', '" + fallbackDomain + "'))");
             cursor = toks.get(i + 3).getStopIndex() + 1;
             i += 3;
         }
@@ -229,38 +281,52 @@ final class MaskingPolicyApplier {
     /**
      * Apply row access policy filtering: evaluate the policy predicate for each row,
      * keeping only rows where the predicate returns true. Every role is filtered.
+     *
+     * <p>The policy is the one the attachment names in full, wherever the session is. An attachment whose policy
+     * is gone, or a body that fails to evaluate, refuses the query: returning the rows unfiltered would hand out
+     * exactly what the policy withholds.
      */
     List<Row> applyRowAccessPolicy(final List<Row> rows, final Table table) {
+        return applyRowAccessPolicy(rows, table, table);
+    }
+
+    /**
+     * {@link #applyRowAccessPolicy(List, Table)} with the policy one relation carries, over rows of another shape
+     * that holds its columns: a stream's or a CHANGES clause's rows filtered by their table's policy.
+     *
+     * @param rows  the rows
+     * @param table the relation carrying the policy
+     * @param shape the relation the rows are rows of
+     * @return the rows the policy keeps, the same row objects
+     */
+    List<Row> applyRowAccessPolicy(final List<Row> rows, final Table table, final Table shape) {
         if (!table.hasRowAccessPolicy()) return rows;
         final SecurityManager securityManager = executor.getSecurityManager();
         if (securityManager == null) return rows;
 
-        final Catalog catalog = executor.getCatalog();
+        final RowAccessPolicy policy = PolicyReferences.rowAccessPolicy(executor.getCatalog(),
+            table.getRowAccessPolicyName(), table);
+
+        // Build the predicate by binding each parameter to the column the attachment names, in one pass, so a column
+        // bound to one parameter is never read again for the next.
+        final List<String> policyCols = table.getRowAccessPolicyColumns();
+        final List<Parameter> params = policy.getParameters();
+        final List<String> names = new ArrayList<>();
+        final List<String> bound = new ArrayList<>();
+        for (int i = 0; i < Math.min(params.size(), policyCols.size()); i++) {
+            names.add(params.get(i).getName());
+            bound.add(policyCols.get(i));
+        }
+        // A row access policy reads a tag of the table it protects as a masking policy does.
+        final String body = rewriteTagFn(
+            SqlIdentifierSubstitution.substituteParameters(policy.getBody(), names, bound),
+            "GET_TAG_ON_CURRENT_TABLE", table.getName(), "TABLE");
+        // The body reads the objects it names, never a CTE of the statement reading the table (live-verified).
+        final Map<String, ResultSet> outerCtes = executor.suspendCteScope();
         try {
-            final String[] parts = table.getRowAccessPolicyName().split("\\.");
-            final Schema schema = parts.length == 1 ? catalog.getDatabase(catalog.getCurrentDatabase())
-                    .getSchema(catalog.getCurrentSchema())
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String pname = parts[parts.length - 1].toUpperCase();
-            final RowAccessPolicy policy = schema.getRowAccessPolicy(pname);
-            if (policy == null) return rows;
-
-            // Build predicate by substituting policy parameters with actual column names
-            String body = policy.getBody();
-            final List<String> policyCols = table.getRowAccessPolicyColumns();
-            final List<Parameter> params = policy.getParameters();
-            for (int i = 0; i < Math.min(params.size(), policyCols.size()); i++) {
-                final String paramName = params.get(i).getName();
-                final String colRef = policyCols.get(i);
-                body = SqlIdentifierSubstitution.substitute(body, paramName, colRef);
-            }
-
-            final String predicate = body;
-            return executor.filterRows(rows, table, predicate);
-        } catch (final Exception e) {
-            logger.warn("Row access policy evaluation failed for table {}: {}", table.getName(), e.getMessage());
-            return rows;
+            return executor.filterRows(rows, shape, body);
+        } finally {
+            executor.setCurrentCteContext(outerCtes);
         }
     }
 }

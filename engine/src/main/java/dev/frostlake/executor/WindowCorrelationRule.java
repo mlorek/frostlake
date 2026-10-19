@@ -22,6 +22,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -113,7 +114,7 @@ final class WindowCorrelationRule {
                     return false;
                 }
             }
-            return outerNames.containsKey(column.toUpperCase());
+            return outerNames.containsKey(column.toUpperCase(Locale.ROOT));
         }
         if (parts.length != 2) {
             return false;
@@ -127,7 +128,7 @@ final class WindowCorrelationRule {
         } else if (table != null && table.getName().equalsIgnoreCase(parts[0])) {
             return false;
         }
-        return outerNames.containsKey((parts[0] + "." + column).toUpperCase());
+        return outerNames.containsKey((parts[0] + "." + column).toUpperCase(Locale.ROOT));
     }
 
     private List<Table> relations() {

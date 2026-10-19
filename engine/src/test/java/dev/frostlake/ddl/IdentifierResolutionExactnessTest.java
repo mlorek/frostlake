@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -139,7 +140,7 @@ public class IdentifierResolutionExactnessTest extends BaseDatabaseTest {
         assertEquals(1, engine.executeQuery("SELECT * FROM IDENTIFIER('PLAIN')").getRowCount());
         assertEquals(1, engine.executeQuery("SELECT * FROM TABLE('plain')").getRowCount());
         assertTrue(String.valueOf(engine.executeQuery("SELECT GET_DDL('TABLE', 'plain')")
-            .getRows().get(0).getValue(0)).toUpperCase().contains("PLAIN"));
+            .getRows().get(0).getValue(0)).toUpperCase(Locale.ROOT).contains("PLAIN"));
     }
 
     /** SHOW TABLES / VIEWS / STAGES / FILE FORMATS / DYNAMIC TABLES / OBJECTS: live does not say what was missing. */

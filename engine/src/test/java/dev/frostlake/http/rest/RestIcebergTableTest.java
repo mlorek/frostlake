@@ -72,6 +72,9 @@ public class RestIcebergTableTest extends BaseRestTest {
         ok(post(BASE + "/ice1:resume-recluster", ""));
         error(400, post(BASE + "/ice1:refresh", "{}"));
         error(400, post(BASE + "/ice1:convert-to-managed", "{\"base_location\":\"x\"}"));
+        assertEquals("091352", json(post(BASE + "/ice1:refresh", "{}")).path("code").asString());
+        assertEquals("091352", json(post(BASE + "/ice1:convert-to-managed", "{\"base_location\":\"x\"}")).path("code")
+            .asString());
 
         ok(delete(BASE + "/ice1"));
         error(404, get(BASE + "/ice1"));

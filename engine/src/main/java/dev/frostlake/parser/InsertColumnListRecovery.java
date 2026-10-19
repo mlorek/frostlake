@@ -19,7 +19,6 @@ package dev.frostlake.parser;
 import java.util.ArrayList;
 import java.util.List;
 import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
@@ -66,7 +65,7 @@ final class InsertColumnListRecovery {
      */
     static List<String> refusal(final String sql, final List<Token> spoken, final int namedIndex,
                                 final boolean statementParse) {
-        if (sql == null || namedIndex < 0 || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null || namedIndex < 0) {
             return null;
         }
         final int open = listOpen(sql, spoken, namedIndex);
@@ -174,7 +173,7 @@ final class InsertColumnListRecovery {
                 faults[0]++;
             }
         };
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         lexer.addErrorListener(counter);
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));

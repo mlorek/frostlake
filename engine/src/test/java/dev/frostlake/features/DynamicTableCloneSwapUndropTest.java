@@ -81,7 +81,7 @@ public class DynamicTableCloneSwapUndropTest extends BaseDatabaseTest {
         engine.execute("CREATE OR REPLACE DYNAMIC TABLE dt_b CLONE dt_a WAREHOUSE = wh_dtc");
         assertEquals(List.of("LINEAR(x)"), cells("test_db.test_schema", "DT_B", "\"cluster_by\""));
         assertTrue(refusal("CREATE DYNAMIC TABLE dt_d CLONE nosuch")
-            .contains("Object 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."));
+            .contains("Object 'NOSUCH' does not exist or not authorized."));
     }
 
     @Test

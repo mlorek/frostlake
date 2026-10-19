@@ -18,6 +18,7 @@ package dev.frostlake.functions.table;
 
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.TableFunction;
+import dev.frostlake.functions.scalar.ExtractionPath;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -25,6 +26,7 @@ import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.UuidTextNode;
@@ -55,7 +57,7 @@ import java.util.Set;
  * <p>The measured row rules:
  * <ul>
  *   <li>SEQ numbers the INPUT RECORD, not the element: every row of one call carries the same SEQ,
- *       starting at 1.</li>
+ *       starting at 1 (see {@link InputRecordSequence}).</li>
  *   <li>Only a container expands. A VARIANT holding a scalar — a string, a number, a JSON null —
  *       contributes NO rows, so {@code FLATTEN(PARSE_JSON('"abc"'))} is empty rather than one row, and
  *       a string that merely LOOKS like JSON is not re-read as JSON.</li>
@@ -63,8 +65,11 @@ import java.util.Set;
  *       object's members are neither emitted nor followed, which is why
  *       {@code FLATTEN(PARSE_JSON('{"arr":[1,2,3]}'), MODE => 'ARRAY', RECURSIVE => TRUE)} is
  *       empty.</li>
- *   <li>PATH prefixes the reported path rather than replacing it: {@code PATH => 'a.b'} reports
- *       {@code a.b[0]}. A path that matches nothing, or matches a scalar, yields no rows.</li>
+ *   <li>PATH is an {@link ExtractionPath} and prefixes the reported path rather than replacing it:
+ *       {@code PATH => 'a.b'} reports {@code a.b[0]}. A path that matches nothing, or matches a scalar,
+ *       yields no rows; one that cannot be read is refused.</li>
+ *   <li>The PATH column spells a member that is no plain name between brackets and quotes:
+ *       {@code ['a b'].c[0]}.</li>
  *   <li>OUTER's stand-in row is all NULL. For an empty container it still reports the container as
  *       THIS and an empty PATH; for a scalar or NULL input both are NULL.</li>
  * </ul>
@@ -72,12 +77,6 @@ import java.util.Set;
 public class Flatten extends TableFunction {
 
     private static final ObjectMapper JACKSON = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
-
-    /**
-     * Snowflake's SEQ is a sequence number for the INPUT RECORD, so one call numbers all its rows
-     * alike. Live increments it across the rows of a scanned column; a single call always reports 1.
-     */
-    private static final long INPUT_SEQUENCE = 1L;
 
     /** The order the positional form fills FLATTEN's parameters in. */
     private static final String[] POSITIONAL_PARAMETERS = {"INPUT", "PATH", "OUTER", "RECURSIVE", "MODE"};
@@ -112,7 +111,8 @@ public class Flatten extends TableFunction {
         final Object input = namedArgs.get("INPUT");
 
         // Get optional parameters
-        final String path = namedArgs.containsKey("PATH") ? namedArgs.get("PATH").toString() : null;
+        // A NULL path is no path, as an empty one is (live-verified).
+        final String path = namedArgs.get("PATH") != null ? namedArgs.get("PATH").toString() : null;
         final boolean outer = namedArgs.containsKey("OUTER") &&
                        Boolean.parseBoolean(namedArgs.get("OUTER").toString());
         final boolean recursive = namedArgs.containsKey("RECURSIVE") &&
@@ -132,12 +132,18 @@ public class Flatten extends TableFunction {
         // renders XML-shaped variants as XML text, which is not parseable JSON)
         JsonNode jsonInput = parseInput(input);
 
-        // Apply path filter if specified. The path also PREFIXES every reported path — live answers
-        // "a.b[0]" for PATH => 'a.b', not "[0]".
+        // Apply path filter if specified. The path also PREFIXES every reported path, in the spelling the
+        // PATH column gives every path rather than the one it was written in — live answers "a.b[0]" for
+        // PATH => 'a.b' and for PATH => 'a["b"]' alike. A path that cannot be read is refused whatever the
+        // input holds.
         String pathPrefix = "";
         if (path != null && !path.isEmpty()) {
-            jsonInput = navigatePath(jsonInput, path);
-            pathPrefix = path;
+            final ExtractionPath selected = ExtractionPath.read(path);
+            if (selected == null) {
+                throw new RuntimeException(ExtractionPath.malformed(path, getName()));
+            }
+            jsonInput = selected.in(jsonInput);
+            pathPrefix = selected.canonical();
         }
 
         // Flatten the JSON structure
@@ -156,7 +162,7 @@ public class Flatten extends TableFunction {
         // NULL, and a path that matched nothing all leave THIS and PATH null too.
         if (outer && rows.isEmpty()) {
             final List<Object> values = new ArrayList<>();
-            values.add(INPUT_SEQUENCE);              // SEQ
+            values.add(InputRecordSequence.current());   // SEQ
             values.add(null);                        // KEY
             values.add(expandable ? pathPrefix : null);   // PATH
             values.add(null);                        // INDEX
@@ -188,46 +194,6 @@ public class Flatten extends TableFunction {
         }
     }
 
-    private JsonNode navigatePath(final JsonNode element, final String path) {
-        if (path == null || path.isEmpty() || element == null) {
-            return element;
-        }
-
-        // Simple path navigation (e.g., "field1.field2" or "array[0]")
-        final String[] parts = path.split("\\.");
-        JsonNode current = element;
-
-        for (final String part : parts) {
-            if (current == null || current.isNull()) {
-                return null;
-            }
-
-            // Handle array index
-            if (part.matches(".*\\[\\d+\\]")) {
-                final String fieldName = part.substring(0, part.indexOf('['));
-                final int index = Integer.parseInt(part.substring(part.indexOf('[') + 1, part.indexOf(']')));
-
-                if (!fieldName.isEmpty() && current.isObject()) {
-                    current = current.get(fieldName);
-                }
-
-                if (current != null && current.isArray()) {
-                    if (index >= 0 && index < current.size()) {
-                        current = current.get(index);
-                    } else {
-                        return null;
-                    }
-                }
-            } else if (current.isObject()) {
-                current = current.get(part);
-            } else {
-                return null;
-            }
-        }
-
-        return current;
-    }
-
     /**
      * Walk one container, emitting the rows its MODE calls for.
      *
@@ -256,7 +222,7 @@ public class Flatten extends TableFunction {
                 for(final Map.Entry<String, JsonNode> entry : fields) {
                     final String key = entry.getKey();
                     final JsonNode value = entry.getValue();
-                    final String newPath = currentPath.isEmpty() ? key : currentPath + "." + key;
+                    final String newPath = ExtractionPath.member(currentPath, key);
                     final boolean emitted = mode == FlattenMode.OBJECT || mode == FlattenMode.BOTH;
 
                     if (emitted) {
@@ -307,7 +273,7 @@ public class Flatten extends TableFunction {
     private void addRow(final List<Row> rows, final String key, final String path, final Long index,
                        final Object value, final VariantValue thisValue) {
         final List<Object> values = new ArrayList<>();
-        values.add(INPUT_SEQUENCE);
+        values.add(InputRecordSequence.current());
         values.add(key);
         // An empty path stays EMPTY rather than becoming NULL: the OUTER stand-in row for a container
         // that held nothing is the only row that has one, and live reports '' there.
@@ -346,7 +312,7 @@ public class Flatten extends TableFunction {
             return typed;
         }
         // A UUID member stays the VARIANT that remembers its type (see UuidTextNode).
-        if (UuidTextNode.holds(node)) {
+        if (UuidTextNode.holds(node) || DecfloatTextNode.holds(node)) {
             return VariantValue.ofNode(node);
         }
         if (node.isTextual()) {

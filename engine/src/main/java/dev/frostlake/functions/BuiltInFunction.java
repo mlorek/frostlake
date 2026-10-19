@@ -18,6 +18,8 @@ package dev.frostlake.functions;
 
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.types.DataType;
+
+import java.math.BigDecimal;
 import java.util.List;
 
 public abstract class BuiltInFunction {
@@ -36,6 +38,52 @@ public abstract class BuiltInFunction {
 
     public DataType getReturnType() {
         return returnType;
+    }
+
+    /**
+     * Whether a call holds a SQL NULL among its arguments. A function that answers NULL over a NULL in any place —
+     * its count, its position, its pattern, its filler as much as its subject — asks this before it reads them.
+     *
+     * @param args the argument values, in call order
+     * @return whether one of them is NULL
+     */
+    protected static boolean anyNull(final List<Object> args) {
+        for (final Object arg : args) {
+            if (arg == null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The whole number a position, a length or a count argument gives (see {@link WholeNumbers}): a text is read as
+     * the number it spells, and a fraction goes to the nearest whole number, a half away from zero -
+     * {@code SUBSTR('abcdef', 1.6)} starts at the second character (live-verified).
+     *
+     * @param value the argument's value, a number or a text
+     * @return the whole number, held to the range of an int
+     */
+    protected static int wholeNumber(final Object value) {
+        return WholeNumbers.wholeNumber(value);
+    }
+
+    /**
+     * @param value a number
+     * @return the nearest whole number, a half away from zero, held to the range of an int
+     */
+    protected static int wholeNumber(final BigDecimal value) {
+        return WholeNumbers.wholeNumber(value);
+    }
+
+    /**
+     * The number a position, a length or a count argument gives, before it is rounded (see {@link WholeNumbers}).
+     *
+     * @param value the argument's value, a number or a text
+     * @return the number
+     */
+    protected static BigDecimal decimalOf(final Object value) {
+        return WholeNumbers.decimalOf(value);
     }
 
     /**
@@ -244,6 +292,18 @@ public abstract class BuiltInFunction {
     }
 
     /**
+     * What argument {@code position} of an array function is declared to take, which decides the statically
+     * typed arguments the statement's compilation refuses there (see {@link ArrayArgumentKind}). Undeclared for
+     * every other function, and for a position that takes any value.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the position's kind, or null when it constrains nothing
+     */
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        return null;
+    }
+
+    /**
      * The refusal this position gives a VECTOR argument.
      *
      * <p>A vector is not semi-structured and is not binary, so it needs its own declaration: the
@@ -353,6 +413,73 @@ public abstract class BuiltInFunction {
      * @return true when the refusal lists the argument types; false by default
      */
     public boolean refusesMissingArgumentsByType() {
+        return false;
+    }
+
+    /**
+     * Whether a call with exactly {@code count} arguments — a count within the function's bounds — is
+     * refused by its argument types all the same. One function's middle count belongs to no signature:
+     * live counts {@code NORMAL(0)} against two arguments and refuses {@code NORMAL(0, 1)} as "Invalid
+     * argument types for function 'NORMAL': (NUMBER(1,0), NUMBER(1,0))".
+     *
+     * @param count how many arguments the call carries
+     * @return true when that count is refused by the argument types; false by default
+     */
+    public boolean refusesArgumentCountByType(final int count) {
+        return false;
+    }
+
+    /**
+     * The signature a call with {@code count} arguments is judged against, for a function that has more than one:
+     * its name as the account's refusals spell it — live judges {@code TIMESTAMP_FROM_PARTS(2024, 3, 15)} as
+     * TIMESTAMP_NTZ_FROM_PARTS and a call of two arguments as TIMESTAMP_NTZ_FROM_DATE_TIME.
+     *
+     * @param count how many arguments the call carries
+     * @return the signature's name, or null for a function of one signature
+     */
+    public String signatureName(final int count) {
+        return null;
+    }
+
+    /**
+     * The fewest arguments of the signature a call with {@code count} arguments falls short of.
+     *
+     * @param count how many arguments the call carries
+     * @return that signature's least count, or -1 when the count falls short of none
+     */
+    public int signatureMinimum(final int count) {
+        return -1;
+    }
+
+    /**
+     * Whether the signature a call of these argument types is judged against takes no such types.
+     *
+     * @param types the declared types of the call's arguments, in order
+     * @return true when the signature refuses them; false by default
+     */
+    public boolean refusesSignatureTypes(final List<DataType> types) {
+        return false;
+    }
+
+    /**
+     * Whether a structured OBJECT in the first position takes only string literals naming its fields as the keys
+     * that follow it: {@code OBJECT_PICK} and {@code OBJECT_DELETE} refuse any other key there by its argument
+     * number, and a literal naming none of its fields by the field (live-verified).
+     *
+     * @return true for the functions naming an object's keys; false by default
+     */
+    public boolean namesStructuredKeysByLiteral() {
+        return false;
+    }
+
+    /**
+     * Whether the function's first argument must be a VARIANT and nothing that merely converts to one: live
+     * refuses any other declared type there — a number, a text, an OBJECT, the bare word NULL — as "invalid
+     * type [NUMBER(1,0)] for parameter 'AS_INTEGER(variantValue...)'".
+     *
+     * @return true for the casts of a VARIANT that take nothing else; false by default
+     */
+    public boolean takesVariantOnly() {
         return false;
     }
 

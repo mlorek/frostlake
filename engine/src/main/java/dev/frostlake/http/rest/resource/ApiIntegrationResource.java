@@ -245,7 +245,10 @@ public final class ApiIntegrationResource implements RestResource {
         if (!RestJson.present(body, "comment")) {
             unset.add("COMMENT");
         }
-        status = call.sql().status("ALTER API INTEGRATION " + name.sql() + " UNSET " + String.join(", ", unset));
+        if (!unset.isEmpty()) {
+            // A body that names every optional property leaves nothing to unset.
+            status = call.sql().status("ALTER API INTEGRATION " + name.sql() + " UNSET " + String.join(", ", unset));
+        }
         return RestResponse.success(status);
     }
 }

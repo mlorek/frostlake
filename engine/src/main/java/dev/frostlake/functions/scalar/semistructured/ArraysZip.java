@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -65,5 +66,10 @@ public class ArraysZip extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        return ArrayArgumentKind.ARRAY;
     }
 }

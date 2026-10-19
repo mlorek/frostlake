@@ -16,10 +16,20 @@
 
 package dev.frostlake.functions.table;
 
+import dev.frostlake.executor.ColumnLengthException;
+import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.QueryResultCache;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.storage.Row;
+import dev.frostlake.storage.StatementResults;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantJsonText;
+import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.node.StringNode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,7 +65,7 @@ public class ResultScan extends TableFunction {
      * @return ResultSet from the cached query
      */
     public ResultSet execute(final String queryId) {
-        final ResultSet result = queryId == null ? null : resultCache.getResult(queryId);
+        final ResultSet result = resultFor(queryId);
         if (result == null) {
             // A statement that failed has an ID but never a result, and live says so in those words.
             if (queryId != null && resultCache.hasFailed(queryId)) {
@@ -69,12 +79,90 @@ public class ResultScan extends TableFunction {
         // SYSTEM$TYPEOF and a table built over the scan see a type rather than nothing.
         final List<ResultSetColumn> declared = new ArrayList<>();
         for (final ResultSetColumn column : result.getColumns()) {
-            declared.add(column.getStaticType() != null ? column
+            declared.add(column.getStaticType() != null && column.getStaticType() != column.getDataType()
+                    && column.getDataType() instanceof NumericType && column.getStaticType() instanceof NumericType
+                // The scan declares the width the result itself reported, a rewritten SUM's included.
+                ? new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
+                    column.getDataType(), column.isNullable(), column.isNullabilityKnown(), column.getValueRange())
+                : column.getStaticType() != null ? column
                 : new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
                     column.getDataType(), column.isNullable(), column.isNullabilityKnown(),
                     column.getValueRange()));
         }
-        return new ResultSet(declared, result.getRows());
+        return new ResultSet(declared, withinDeclaredWidths(declared, result.getRows()));
+    }
+
+    /**
+     * The result a query ID names: the one a replayed statement first read in its place (see
+     * {@link StatementResults}), else the cached one, which a statement the write-ahead log may keep notes as read.
+     *
+     * @param queryId the query ID, or null
+     * @return the result, or null when there is none
+     */
+    public ResultSet resultFor(final String queryId) {
+        final ResultSet replayed = StatementResults.replayed(queryId);
+        if (replayed != null) {
+            return replayed;
+        }
+        final ResultSet result = queryId == null ? null : resultCache.getResult(queryId);
+        if (result != null) {
+            StatementResults.record(queryId, result);
+        }
+        return result;
+    }
+
+    /**
+     * A procedure's one answer held against the width its RETURNS declared. A handler may answer a text longer
+     * than {@code RETURNS VARCHAR(2)} allows: the CALL hands it out, and the scan of that CALL refuses to read
+     * it — {@code String 'abc' is too long and would be truncated} — where a count of the scan's rows, which
+     * reads no value, answers (live-verified). The refusal waits in the cell for whatever reads it.
+     */
+    private static List<Row> withinDeclaredWidths(final List<ResultSetColumn> columns, final List<Row> rows) {
+        if (columns.size() != 1 || rows == null || rows.size() != 1 || rows.get(0) == null) {
+            return rows;
+        }
+        if (columns.get(0).getDataType() instanceof ObjectType) {
+            return asObjects(rows);
+        }
+        if (!(columns.get(0).getDataType() instanceof StringType)) {
+            return rows;
+        }
+        final int width = ((StringType) columns.get(0).getDataType()).getMaxLength();
+        final Object answer = rows.get(0).getValues().isEmpty() ? null : rows.get(0).getValues().get(0);
+        if (width <= 0 || !(answer instanceof String)
+                || ((String) answer).codePointCount(0, ((String) answer).length()) <= width) {
+            return rows;
+        }
+        final List<Row> held = new ArrayList<>();
+        // A write over the scan raises it as it is, with no DML sentence around it (live-verified).
+        held.add(new Row(DeferredFault.heldAnswer(new ColumnLengthException(width, (String) answer), answer, true)));
+        return held;
+    }
+
+    /**
+     * A procedure's one OBJECT answer held to its type. A JavaScript handler may answer what is no object for
+     * {@code RETURNS OBJECT} — a Uint8Array's hex, a String object's text, a Date's timestamp — and the CALL hands
+     * it out, while a statement that reads it from the CALL's scan is refused: {@code Failed to cast variant value
+     * "01" to OBJECT} (live-verified). The refusal waits in the cell for whatever reads it.
+     */
+    private static List<Row> asObjects(final List<Row> rows) {
+        final Object answer = rows.get(0).getValues().isEmpty() ? null : rows.get(0).getValues().get(0);
+        final String text;
+        if (answer instanceof VariantValue) {
+            final VariantValue value = (VariantValue) answer;
+            if (value.node() == null || value.node().isObject() || value.node().isNull()) {
+                return rows;
+            }
+            text = VariantJsonText.clientTextOf(value);
+        } else if (answer instanceof String) {
+            text = StringNode.valueOf((String) answer).toString();
+        } else {
+            return rows;
+        }
+        final List<Row> held = new ArrayList<>();
+        held.add(new Row(DeferredFault.heldAnswer(
+            new RuntimeException("Failed to cast variant value " + text + " to OBJECT"), answer, false)));
+        return held;
     }
 
     @Override

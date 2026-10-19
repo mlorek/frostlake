@@ -28,6 +28,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -63,8 +64,8 @@ import java.util.Set;
  */
 final class TableFunctionCorrelationRule {
 
-    /** The default names {@code planTableReference} gives an unaliased table-function source. */
-    private static final String FLATTEN_DEFAULT_ALIAS = "flatten";
+    /** The names an unaliased table-function source answers to: its function's, or this one for a table literal. */
+    private static final String FLATTEN_DEFAULT_ALIAS = "FLATTEN";
     private static final String TABLE_FUNCTION_DEFAULT_ALIAS = "table_function";
 
     private final FunctionRegistry functions;
@@ -123,10 +124,10 @@ final class TableFunctionCorrelationRule {
             if (produced0 == null) {
                 continue;
             }
-            final String qualifier = aliasOf(reference, defaultAlias).toUpperCase();
+            final String qualifier = aliasOf(reference, defaultAlias).toUpperCase(Locale.ROOT);
             for (final TableColumn column : produced0.getColumns()) {
-                produced.add(column.getName().toUpperCase());
-                produced.add(qualifier + "." + column.getName().toUpperCase());
+                produced.add(column.getName().toUpperCase(Locale.ROOT));
+                produced.add(qualifier + "." + column.getName().toUpperCase(Locale.ROOT));
             }
         }
         return produced;
@@ -141,17 +142,34 @@ final class TableFunctionCorrelationRule {
             return FLATTEN_DEFAULT_ALIAS;
         }
         if (source.TABLE() != null && source.expression() != null) {
-            return TABLE_FUNCTION_DEFAULT_ALIAS;
+            final FrostlakeParser.FunctionNameContext called = calledName(source.expression());
+            final String[] parts = called == null ? null : ParseTreeText.functionNameParts(called);
+            return parts == null || parts.length == 0 ? TABLE_FUNCTION_DEFAULT_ALIAS
+                : parts[parts.length - 1].toUpperCase(Locale.ROOT);
+        }
+        return null;
+    }
+
+    /** The name of the function a TABLE( … ) operand calls, or null when the operand is no call. */
+    private static FrostlakeParser.FunctionNameContext calledName(final FrostlakeParser.ExpressionContext operand) {
+        if (operand instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ((FrostlakeParser.FunctionCallExprContext) operand).functionName();
+        }
+        if (operand instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallNamedArgsExprContext) operand).functionName();
+        }
+        if (operand instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallMixedArgsExprContext) operand).functionName();
         }
         return null;
     }
 
     private String aliasOf(final FrostlakeParser.TableReferenceContext reference, final String fallback) {
         if (reference.aliasName() != null) {
-            return ParseTreeText.getIdentifier(reference.aliasName()).toUpperCase();
+            return ParseTreeText.getIdentifier(reference.aliasName()).toUpperCase(Locale.ROOT);
         }
         if (reference.nonJoinKeywordIdentifier() != null) {
-            return reference.nonJoinKeywordIdentifier().getText().toUpperCase();
+            return reference.nonJoinKeywordIdentifier().getText().toUpperCase(Locale.ROOT);
         }
         return fallback;
     }
@@ -177,7 +195,7 @@ final class TableFunctionCorrelationRule {
         final List<FrostlakeParser.FunctionNameContext> names = new ArrayList<>();
         collectFunctionNames(selectList, names);
         for (final FrostlakeParser.FunctionNameContext name : names) {
-            if (functions.hasAggregateFunction(name.getText().toUpperCase())) {
+            if (functions.hasAggregateFunction(name.getText().toUpperCase(Locale.ROOT))) {
                 return true;
             }
         }
@@ -208,7 +226,7 @@ final class TableFunctionCorrelationRule {
         final List<FrostlakeParser.QualifiedNameExprContext> references = new ArrayList<>();
         collectQualifiedNames(subquery, references);
         for (final FrostlakeParser.QualifiedNameExprContext reference : references) {
-            final String name = reference.qualifiedName().getText().toUpperCase();
+            final String name = reference.qualifiedName().getText().toUpperCase(Locale.ROOT);
             if (produced.contains(name) && !shadowed.contains(name)) {
                 return true;
             }
@@ -240,7 +258,7 @@ final class TableFunctionCorrelationRule {
                 continue;
             }
             for (final TableColumn column : inner.getColumns()) {
-                names.add(column.getName().toUpperCase());
+                names.add(column.getName().toUpperCase(Locale.ROOT));
             }
         }
         return names;

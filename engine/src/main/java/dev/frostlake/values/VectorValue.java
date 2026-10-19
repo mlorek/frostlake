@@ -94,9 +94,9 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
     }
 
     /**
-     * One element narrowed to the declared width. INT wraps like a 32-bit two's-complement integer —
-     * live, {@code [2147483648,0,0]::VECTOR(INT,3)} is {@code [-2147483648,0,0]} and
-     * {@code [9007199254740993,0,0]} is {@code [1,0,0]}.
+     * One element of a function's computed result narrowed to the declared width: INT wraps like a 32-bit
+     * two's-complement integer, FLOAT rounds to the nearest float32. A cast checks its elements first
+     * ({@link #convertElement}).
      */
     private static double narrow(final VectorElementType elementType, final double value) {
         if (elementType == VectorElementType.INT) {
@@ -114,13 +114,13 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
         if (value instanceof VectorValue) {
             final VectorValue source = (VectorValue) value;
             if (!source.type().equals(target)) {
-                throw new RuntimeException(NOT_A_VECTOR);
+                throw new VectorCastRefusal(NOT_A_VECTOR);
             }
             return source;
         }
         final List<JsonNode> raw = readElements(value);
         if (raw.size() != target.getDimension()) {
-            throw new RuntimeException(NOT_A_VECTOR);
+            throw new VectorCastRefusal(NOT_A_VECTOR);
         }
         final double[] converted = new double[raw.size()];
         for (int i = 0; i < raw.size(); i++) {
@@ -136,29 +136,40 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
      * "Array-like value being cast to an integer vector has elements that are not integers", while a
      * whole-valued {@code [1.0,2.0,3.0]} converts to {@code [1,2,3]}.
      *
-     * <p>An INT element is read as an exact {@code long} before it wraps, because {@code double} cannot
-     * carry every 64-bit integer: live, {@code [9007199254740993,0,0]::VECTOR(INT,3)} is {@code [1,0,0]}
-     * — the low 32 bits of 2^53+1 — which a float64 round-trip would turn into 0.
+     * <p>An element too wide for the type is refused, not cut (live-verified): {@code [1, 1e39]} and
+     * {@code [1, 3.4028235e38]} as a {@code VECTOR(FLOAT,2)}, past float32's greatest value, are "Array-like value
+     * being cast to a float vector has elements that overflow", and {@code [1, 2147483648]} as a
+     * {@code VECTOR(INT,2)} its integer counterpart. A FLOAT NaN or infinity is kept, and reads as {@code "NaN"},
+     * {@code "Infinity"} or {@code "-Infinity"}.
      */
     private static double convertElement(final JsonNode element, final VectorType target) {
         if (!element.isNumber()) {
-            throw new RuntimeException(elementError(target));
+            throw new VectorCastRefusal(elementError(target));
         }
         if (target.getElementType() != VectorElementType.INT) {
-            return (float) element.doubleValue();
+            final double value = element.doubleValue();
+            // Past float32's greatest value is past its range, even where rounding would come back to it.
+            if (Double.isFinite(value) && Math.abs(value) > Float.MAX_VALUE) {
+                throw new VectorCastRefusal("Array-like value being cast to a float vector has elements that overflow");
+            }
+            return (float) value;
         }
         final double asDouble = element.doubleValue();
         if (Double.isNaN(asDouble) || Double.isInfinite(asDouble) || asDouble != Math.rint(asDouble)) {
-            throw new RuntimeException(elementError(target));
+            throw new VectorCastRefusal(elementError(target));
         }
-        return (int) element.longValue();
+        // An exact whole number, however wide, before its range is judged: a double cannot carry every one.
+        if (element.bigIntegerValue().bitLength() > 31) {
+            throw new VectorCastRefusal("Array-like value being cast to an integer vector has elements that overflow");
+        }
+        return element.intValue();
     }
 
     /** The source value's elements, or the "not a vector" error when it is not array-shaped. */
     private static List<JsonNode> readElements(final Object value) {
         final JsonNode array = arrayNode(value);
         if (array == null) {
-            throw new RuntimeException(NOT_A_VECTOR);
+            throw new VectorCastRefusal(NOT_A_VECTOR);
         }
         final List<JsonNode> raw = new ArrayList<JsonNode>();
         for (final JsonNode element : array) {
@@ -225,6 +236,13 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
      * @return the element's text
      */
     private static String sixPlaces(final float element) {
+        // A NaN or an infinity has no decimal digits: it reads as the JSON text live writes for it.
+        if (Float.isNaN(element)) {
+            return "\"NaN\"";
+        }
+        if (Float.isInfinite(element)) {
+            return element > 0 ? "\"Infinity\"" : "\"-Infinity\"";
+        }
         return new BigDecimal(Double.valueOf(element).doubleValue())
             .setScale(6, RoundingMode.HALF_UP).toPlainString();
     }

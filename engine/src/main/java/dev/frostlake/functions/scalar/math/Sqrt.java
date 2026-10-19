@@ -28,6 +28,9 @@ public class Sqrt extends NumericArgumentFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final double num = ((Number) args.get(0)).doubleValue();
+        if (num < 0) {
+            throw FloatingPointRefusal.of("sqrt(" + FloatingPointRefusal.number(num) + ")");
+        }
         return Math.sqrt(num);
     }
 

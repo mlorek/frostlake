@@ -24,6 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.io.File;
 import java.io.IOException;
@@ -31,12 +32,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Querying staged files directly: {@code SELECT ... FROM @stage[/path] [(FILE_FORMAT => 'name',
  * PATTERN => 'regex')]} with $1..$n positional fields and the metadata$filename /
- * metadata$file_row_number columns (present by name, hidden from {@code SELECT *}), plus the
+ * metadata$file_row_number columns (present by name, read by no star, as a named stage's fields are not), plus the
  * {@code DIRECTORY(@stage)} directory table. A PATTERN must match a file's whole stored path, not its
  * bare name, so these select a file with {@code '.*a[.]csv'}.
  */
@@ -74,12 +76,19 @@ public class StageQueryTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void selectStarExposesPositionalFieldsOnly() {
-        final ResultSet rs = q("SELECT * FROM @q_stage (PATTERN => '.*a[.]csv') ORDER BY 1");
+    public void aStarReadsNoFieldOfANamedStage() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT * FROM @q_stage (PATTERN => '.*a[.]csv')");
+            }
+        });
+        assertEquals("SQL compilation error: error line 1 at position 0\nSELECT with no columns", refused.getMessage());
+        final ResultSet rs = q("SELECT *, $1, $2, $3 FROM @q_stage (PATTERN => '.*a[.]csv') ORDER BY 1");
         assertEquals(2, rs.getRowCount());
-        assertEquals(3, rs.getColumns().size(), "SELECT * must expose the field columns but no METADATA$ columns");
+        assertEquals(3, rs.getColumns().size(), "the star must add no field column and no METADATA$ column");
         for (final ResultSetColumn col : rs.getColumns()) {
-            assertTrue(col.getName().startsWith("COLUMN"), "unexpected star column: " + col.getName());
+            assertTrue(col.getName().startsWith("$"), "unexpected column: " + col.getName());
         }
         assertEquals("alpha", rs.getRows().get(0).getValue(1));
     }

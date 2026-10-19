@@ -52,8 +52,15 @@ public class EventTableStatementsTest extends BaseDatabaseTest {
             .get(0) + ", " + column("DESCRIBE TABLE events1", "type").get(3) + ", "
             + column("DESCRIBE TABLE events1", "type").get(11) + ", "
             + column("DESCRIBE TABLE events1", "type").get(12) + "]");
-        engine.executeQuery("INSERT INTO events1 (RECORD_TYPE, VALUE) SELECT 'LOG', PARSE_JSON('\"hello\"')");
-        assertEquals("[LOG]", column("SELECT RECORD_TYPE FROM events1", "RECORD_TYPE").toString());
+        // The account writes an event table's rows itself: a statement's INSERT is refused, and the table reads empty.
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("INSERT INTO events1 (RECORD_TYPE, VALUE) SELECT 'LOG', PARSE_JSON('\"hello\"')");
+            }
+        });
+        assertEquals("SQL compilation error:\nINSERT statement's target must be a table", refused.getMessage());
+        assertEquals("[]", column("SELECT RECORD_TYPE FROM events1", "RECORD_TYPE").toString());
     }
 
     @Test

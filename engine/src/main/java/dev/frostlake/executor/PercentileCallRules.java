@@ -20,12 +20,14 @@ import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -103,7 +105,7 @@ final class PercentileCallRules {
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call =
                 (FrostlakeParser.FunctionCallExprContext) node;
-            final String name = SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase();
+            final String name = SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase(Locale.ROOT);
             if (CONTINUOUS.equals(name) || DISCRETE.equals(name)) {
                 validateCall(call, name, table, aliasToTable, allTables);
             } else if (MEDIAN.equals(name)) {
@@ -181,10 +183,10 @@ final class PercentileCallRules {
         // that does not exist. An invalid identifier outranks every other complaint here, as it does
         // everywhere else, so it is judged first.
         executor.validateClauseScope(
-            ParseTreeText.getOriginalText(withinGroup.orderItem(0).expression()),
+            ParseTreeText.getOriginalText(KeyContexts.of(withinGroup.orderItem(0))),
             table, aliasToTable, allTables, siblingSelectAliases(call),
-            withinGroup.orderItem(0).expression());
-        rejectTemporalKey(call, withinGroup.orderItem(0).expression(), table, aliasToTable, allTables);
+            KeyContexts.of(withinGroup.orderItem(0)));
+        rejectTemporalKey(call, KeyContexts.of(withinGroup.orderItem(0)), table, aliasToTable, allTables);
         final List<FrostlakeParser.BooleanExprContext> args =
             ParseTreeText.functionBooleanArgs(call.functionArgList());
         if (args.size() > 1) {

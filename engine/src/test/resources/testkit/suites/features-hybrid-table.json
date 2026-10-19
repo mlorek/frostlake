@@ -1,6 +1,6 @@
 {
   "suite": "features-hybrid-table",
-  "description": "CREATE HYBRID TABLE (Snowflake's OLTP row-store table type) parses and is created as an ordinary table - Frostlake does not model hybrid storage, so the HYBRID keyword is accepted and ignored: defaults, NOT NULL and the named PRIMARY KEY constraint are kept (ONE TABLE_CONSTRAINTS row per constraint), the form works inside EXECUTE IMMEDIATE dynamic SQL, SHOW HYBRID TABLES lists only hybrid tables (kind HYBRID TABLE), SHOW TABLES reports the kind, and 'hybrid' stays usable as a plain identifier. Converted 1:1 from features/HybridTableTest (now retired). The hybrid-creating tests skip the snowflake backend: hybrid tables are not available on every account (unsupported on trial editions).",
+  "description": "CREATE HYBRID TABLE (Snowflake's OLTP row-store table type) parses and is created as an ordinary table - Frostlake does not model hybrid storage, but a hybrid table needs a PRIMARY KEY (refused without one, live-verified): defaults, NOT NULL and the named PRIMARY KEY constraint are kept (ONE TABLE_CONSTRAINTS row per constraint), the form works inside EXECUTE IMMEDIATE dynamic SQL, SHOW HYBRID TABLES lists only hybrid tables (kind HYBRID TABLE), SHOW TABLES reports the kind, and 'hybrid' stays usable as a plain identifier. Converted 1:1 from features/HybridTableTest (now retired). The hybrid-creating tests skip the snowflake backend: hybrid tables are not available on every account (unsupported on trial editions).",
   "tags": [
     "features",
     "converted"
@@ -65,7 +65,7 @@
       },
       "steps": [
         {
-          "sql": "CREATE HYBRID TABLE hyb (a INT)"
+          "sql": "CREATE HYBRID TABLE hyb (a INT PRIMARY KEY)"
         },
         {
           "sql": "CREATE TABLE plain (a INT)"
@@ -98,7 +98,7 @@
       },
       "steps": [
         {
-          "sql": "CREATE HYBRID TABLE hyb (a INT)"
+          "sql": "CREATE HYBRID TABLE hyb (a INT PRIMARY KEY)"
         },
         {
           "sql": "CREATE TABLE plain (a INT)"
@@ -132,6 +132,19 @@
           "sql": "SELECT hybrid FROM k",
           "expect": {
             "value": "7"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-hybrid-table-needs-a-primary-key",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE HYBRID TABLE nopk (a INT)",
+          "expect": {
+            "error": {
+              "messageContains": "A hybrid table must contain primary key."
+            }
           }
         }
       ]

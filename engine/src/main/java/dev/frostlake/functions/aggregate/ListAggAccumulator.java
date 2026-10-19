@@ -18,6 +18,7 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.values.Decfloats;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,9 +29,17 @@ import java.util.List;
  * is overridden from the optional second LISTAGG argument via {@link #setDelimiter}. Extracted to its
  * own file (rather than nested in {@link ListAgg}) so the executor can set the delimiter on it.
  */
-public class ListAggAccumulator implements AggregateFunction.Accumulator {
+public class ListAggAccumulator implements AggregateFunction.Accumulator, DecfloatAwareAccumulator {
     private final List<String> values = new ArrayList<>();
     private String delimiter = "";
+
+    /** Whether the aggregated expression is a DECFLOAT, which joins as its own text (live-verified). */
+    private boolean decfloat;
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
 
     /** Set the separator placed between values; a null is treated as the empty string. */
     public void setDelimiter(final String delimiter) {
@@ -41,7 +50,8 @@ public class ListAggAccumulator implements AggregateFunction.Accumulator {
     public void accumulate(final Object value) {
         if (value != null) {
             // Snowflake output text for temporals (space + FF3), not java.time's T-separated form.
-            values.add(SharedFunctionHelpers.textOf(value));
+            values.add(decfloat && value instanceof Number && !(value instanceof Double)
+                ? Decfloats.text(Decfloats.of((Number) value, "TO_DECFLOAT")) : SharedFunctionHelpers.textOf(value));
         }
     }
 

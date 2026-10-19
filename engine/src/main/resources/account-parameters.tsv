@@ -1,0 +1,164 @@
+# The parameters SHOW PARAMETERS IN ACCOUNT lists that a session does not carry, transcribed from a real account.
+# name<TAB>default<TAB>description<TAB>type   (\n in a description is a real newline)
+# A default that names a network address is left empty.
+ACCOUNT_LEVEL_FILE_EXTENSIONS_ALLOW_LIST_FOR_PRIVATE_WORKSPACES		File extensions that are allowed in private workspaces for the account. Format: '.ext1, .ext2'. Use '<NO_EXTENSION>' to allow files without extensions. If empty, all extensions are allowed	STRING
+ACCOUNT_LEVEL_FILE_EXTENSIONS_ALLOW_LIST_FOR_SHARED_WORKSPACES		File extensions that are allowed in shared workspaces for the account. Format: '.ext1, .ext2'. Use '<NO_EXTENSION>' to allow files without extensions. If empty, all extensions are allowed	STRING
+AI_SETTINGS		YAML configuration for AI settings. Supports guardrails with advanced_prompt_injection rules and pii_detection legs.	STRING
+ALLOWED_NOTEBOOKS_RUNTIMES		Comma-separated allowlist of notebook runtime container image refs an account admin permits notebooks to run on. Empty means no allowlist. Each entry must match an existing notebook runtime environment.	STRING
+ALLOWED_SPCS_WORKLOAD_TYPES	ALL	Comma separated list of allowed workload types on SPCS. Valid workload types are as follows: ALL, USER, NOTEBOOK, MODEL_SERVING, STREAMLIT, ML_JOB	STRING
+ALLOW_BIND_VALUES_ACCESS	true	Allow any form of bind value access to users. This parameter should be set to false at the ACCOUNT level for customers who want to disable bind value access altogether. Each access path (e.g., BIND_VALUE table function, QUERY_HISTORY, etc.) also has its own parameter guarding access (these parameters have 'and' semantics: both this parameter and the access-path specific parameter must be enabled in order for a user to get access).	BOOLEAN
+ALLOW_CLIENT_MFA_CACHING	false	Allows client to cache MFA Authentication	BOOLEAN
+ALLOW_DOCKERHUB_PACKAGE_DOWNLOAD	false	Allow remote build services to pull base images from Docker Hub. When true, egress to Docker Hub endpoints is automatically granted to REMOTE_BUILD jobs without requiring an explicit EAI.	BOOLEAN
+ALLOW_ID_TOKEN	false	Whether the account can have ID Tokens issued	BOOLEAN
+ALLOW_NPM_PACKAGE_DOWNLOAD	true	Allow remote build services to download npm packages and frontend CDN assets (Google Fonts). When true, egress to registry.npmjs.org, fonts.googleapis.com, and fonts.gstatic.com is automatically granted to REMOTE_BUILD jobs without requiring an explicit EAI.	BOOLEAN
+ALLOW_ROW_TIMESTAMP	false	Support row timestamp on table. If set on schema level and higher, the callbacks below will not perform table specific validations and not affect existing tables.  New tables will be created with row timestamp enabled.	BOOLEAN
+ALLOW_V3_EXPRESSION_DEFAULTS	false	When true, allows non-constant expression default values on V3 Iceberg columns. Expression defaults are evaluated by Snowflake at write time only. External engines see no default and must supply values or get NULL.	BOOLEAN
+APPSTREAM_IP_LIST		List of IPs used by Appstream to access customer accounts.	STRING
+BASE_LOCATION_PREFIX		The base location prefix for managed or converted Iceberg table data relative to the Iceberg tables' external volume active storage location	STRING
+BUDGETS_DATABASE		Configured value of the database to be used for all budgets purposes for an account.	STRING
+CATALOG		Name of the catalog integration to use for iceberg tables	STRING
+CATALOG_SYNC		Name of the catalog integration to sync this table	STRING
+CHANGE_TRACKING_DEFAULT	false	When true, CREATE TABLE / CTAS that omit the CHANGE_TRACKING clause create the table with change tracking enabled. An explicit CHANGE_TRACKING clause in the DDL still wins.	BOOLEAN
+CLIENT_ENCRYPTION_KEY_SIZE	128	Client-side encryption key size in bits. Either 128 or 256.	NUMBER
+COCO_CLOUD_AGENTS_NON_SNOWFLAKE_EGRESS_DISABLED	false	If true, disable non-Snowflake network egress from CoCo Cloud Agents for the entire account. Defaults to false (egress allowed). Account admins can set this to true to block non-Snowflake destinations from Cloud Agent tool executions.	BOOLEAN
+COCO_SNOWSIGHT_ALLOW_ALL_PERMISSION_OPTIONS_DISABLED	false	If true, disable the allow-all behavior for permission options in CoCo Snowsight for the entire account. Defaults to false (allow-all enabled). Account admins can set this to true to require explicit permission checks for CoCo Snowsight tool executions.	BOOLEAN
+CORTEX_CODE_CLI_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for Cortex Code CLI usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+CORTEX_CODE_DESKTOP_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for Cortex Code Desktop usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+CORTEX_CODE_SNOWSIGHT_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for Cortex Code Snowsight usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+CORTEX_ENABLED_CROSS_REGION	DISABLED	Comma separated list of allowed cortex cross regions. Order does not matter.	STRING
+CORTEX_MCP_SERVER_FORCE_SQL_EXEC_READ_ONLY	false	When true, forces SQL execution tool to be read-only at the account level, overriding any per-tool config. This allows account admins to guarantee that MCP SQL execution cannot perform writes.	BOOLEAN
+CORTEX_MODELS_ALLOWLIST	ALL	Can be ALL, NONE, or a comma separated list of model names	STRING
+DATA_METRIC_SCHEDULE	60 MINUTES	Specify the schedule that data metric functions associated to the table must be executed in order to be used for evaluation.	STRING
+DATA_RETENTION_TIME_IN_DAYS	1	number of days to retain the old version of deleted/updated data	NUMBER
+DEFAULT_DBT_VERSION	1.9.4	Default dbt version to use when creating and executing dbt projects	STRING
+DEFAULT_DDL_COLLATION		Collation that is used for all the new columns created by the DDL statements (if not specified)	STRING
+DEFAULT_MAX_PER_USER_CONCURRENT_STATEMENT_LIMIT	2500	When set to a non-zero value and ENABLE_FEATURE_WAREHOUSE_CONCURRENT_STATEMENT_LIMIT is enabled for the account, warehouses without an explicit max_per_user_concurrent_statement_limit will use this as their effective limit at runtime, provided ENABLE_DEFAULT_WAREHOUSE_CONCURRENT_STATEMENT_LIMIT is also enabled.	NUMBER
+DEFAULT_METADATA_WRITE_FORMAT	SNOWFLAKE	Default metadata write format for tables created in this database or schema. Valid values: SNOWFLAKE, ICEBERG. Note: catalog-linked databases (CLDs) always promote CREATE TABLE DDLs to Iceberg implicitly, regardless of this parameter's stored value. The parameter cannot be modified on a CLD.	STRING
+DEFAULT_NOTEBOOK_COMPUTE_POOL_CPU	SYSTEM_COMPUTE_POOL_CPU	The default CPU compute pool used to run Notebooks.	STRING
+DEFAULT_NOTEBOOK_COMPUTE_POOL_GPU	SYSTEM_COMPUTE_POOL_GPU	The default GPU compute pool used to run Notebooks.	STRING
+DEFAULT_PYTHON_ARTIFACT_REPOSITORY		Default Python artifact repository for account workloads	STRING
+DEFAULT_SNOWFLAKE_APPS_BUILD_COMPUTE_POOL		Default compute pool for building Snowflake Apps Docker images.	STRING
+DEFAULT_SNOWFLAKE_APPS_BUILD_EXTERNAL_ACCESS_INTEGRATION		Default external access integration for Snowflake Apps builds that require external network access. Empty string means build without external access.	STRING
+DEFAULT_SNOWFLAKE_APPS_DESTINATION_DATABASE		Default database where Snowflake Apps are created. Empty string means the CLI uses the personal database (USER$<login_name>).	STRING
+DEFAULT_SNOWFLAKE_APPS_DESTINATION_SCHEMA		Default schema within the destination database for Snowflake Apps. Empty string means the CLI uses PUBLIC.	STRING
+DEFAULT_SNOWFLAKE_APPS_QUERY_WAREHOUSE		Default warehouse for Snowflake Apps SQL queries during deployment. Empty string means the CLI uses the current session warehouse.	STRING
+DEFAULT_SNOWFLAKE_APPS_SERVICE_COMPUTE_POOL		Default compute pool for running deployed Snowflake Apps services.	STRING
+DEFAULT_STREAMLIT_APP_IDLE_TIMEOUT_SECONDS	0	Account-admin-configurable default idle-timeout (seconds) for Streamlit apps that have not set IDLE_AUTO_SHUTDOWN_TIME_SECONDS. 0 = system default. Valid non-zero range: 86400 (1 day) to 604800 (7 days). Requires ENABLE_STREAMLIT_LIFECYCLE_CONTROLS_FEATURE.	NUMBER
+DEFAULT_STREAMLIT_COMPUTE_POOL	SYSTEM_COMPUTE_POOL_CPU	Specifies the default compute pool for Streamlit applications.	STRING
+DEFAULT_STREAMLIT_NOTEBOOK_WAREHOUSE	SYSTEM$STREAMLIT_NOTEBOOK_WH	The warehouse to run streamlits/notebooks if the WAREHOUSE property is not explicitly specified on the streamlit/notebook objects	STRING
+DISABLE_MFA_ENROLLMENT_PROMPT	true	When true, users with a local password who are unenrolled with multifactor authentication (MFA) will not receive a dismissable prompt at login to enroll in MFA.	BOOLEAN
+DISABLE_SNOWFLAKE_LOCAL_APPLICATION_INTEGRATION	false	When set, disables the SNOWFLAKE$LOCAL_APPLICATION integration	BOOLEAN
+DISABLE_UI_DOWNLOAD_BUTTON	false	Disables the Classic UI download button	BOOLEAN
+DISABLE_USER_PRIVILEGE_GRANTS	false	If true, disallow granting privileges to a user.	BOOLEAN
+DISALLOWED_SPCS_WORKLOAD_TYPES		Comma separated list of disallowed workload types on SPCS. Valid workload types are as follows: ALL, USER, NOTEBOOK, MODEL_SERVING, STREAMLIT, ML_JOB	STRING
+ENABLE_AUTOMATIC_SENSITIVE_DATA_CLASSIFICATION_LOG	true	If true, events from automatic sensitive data classification will get logged in user event table	BOOLEAN
+ENABLE_BUDGET_EVENT_LOGGING	true	When true, enable budget event logging feature	BOOLEAN
+ENABLE_CORTEX_AGENTS_ANSWERS	false	Is the Cortex Answers feature enabled in Agent API.	BOOLEAN
+ENABLE_CORTEX_ANALYST	false	Is Cortex Analyst enabled.	BOOLEAN
+ENABLE_CORTEX_ANALYST_MODEL_AZURE_OPENAI	false	Whether to allow models from Azure OpenAI (e.g. GPT-4) when serving Cortex Analyst API requests or to only use Snowflake-hosted models.	BOOLEAN
+ENABLE_CORTEX_AUTOMATIC_DATABASE_DESCRIPTIONS	false	When true, enables automatic Cortex-powered database descriptions. Account admins can set this to false to disable the feature for their account.	BOOLEAN
+ENABLE_CORTEX_AUTOMATIC_SCHEMA_DESCRIPTIONS	false	When true, enables automatic Cortex-powered schema descriptions. Account admins can set this to false to disable the feature for their account.	BOOLEAN
+ENABLE_CORTEX_AUTOMATIC_TABLE_DESCRIPTIONS	true	When true, enables automatic Cortex-powered table descriptions. Account admins can set this to false to disable the feature for their account.	BOOLEAN
+ENABLE_CORTEX_WEBSEARCH	false	Set to true to allow Cortex products to use web search	BOOLEAN
+ENABLE_DATA_COMPACTION	true	User-visible parameter that controls table storage optimization for managed Iceberg tables.	BOOLEAN
+ENABLE_DUAL_STACK_LOAD_BALANCER	false	Enables dual-stack load balancer for public traffic	BOOLEAN
+ENABLE_EGRESS_COST_OPTIMIZER	true	If true, replication cache will get applied automatically for the account	BOOLEAN
+ENABLE_ICEBERG_MERGE_ON_READ	true	Deprecated. Use ICEBERG_MERGE_ON_READ_BEHAVIOR to control merge-on-read on Iceberg tables.	BOOLEAN
+ENABLE_IDENTIFIER_FIRST_LOGIN	false	Identifier First Flow support	BOOLEAN
+ENABLE_INTERNAL_STAGES_PRIVATELINK	false	Enables privatelink access to Snowflake internal stages	BOOLEAN
+ENABLE_LISTING_SHARE_RESTRICTIONS	false	If true, enable share restrictions for all private external listings owned by this account, which will block new data sharing from BUSINESS_CRITICAL+ edition to lower edition accounts, or from HIPAA to non-HIPAA accounts.	BOOLEAN
+ENABLE_NOTEBOOK_CREATION_IN_PERSONAL_DB	false	If enabled, notebook can be created in personal DB	BOOLEAN
+ENABLE_NOTEBOOK_SERVICE_BLOCK_STORAGE_VOLUME	true	Enable the persistent block-storage volume on notebook services.	BOOLEAN
+ENABLE_NOTEBOOK_SERVICE_REMOTE_VS_CODE_ACCESS	true	Enable remote access development on notebook services with vs code.	BOOLEAN
+ENABLE_PERSONAL_DATABASE	true	Enable Personal Database Feature	BOOLEAN
+ENABLE_PER_ACCOUNT_APP_SERVICE_PRIVATELINK_URL	false	If true, privatelink app service traffic like SiS, SPCS or any service using *.snowflake.app will use hostnames containing the account name	BOOLEAN
+ENABLE_PER_ACCOUNT_APP_SERVICE_URL	false	If true, public app service traffic like SiS, SPCS or any service using *.snowflake.app will use hostnames containing the account name	BOOLEAN
+ENABLE_PYPI_REPOSITORY_USER_PUBLIC_GRANT	true	If true (default), grant pypi_repository_user to PUBLIC. Set to false to opt out.	BOOLEAN
+ENABLE_QUOTA_EVENT_LOGGING	true	When true, enable quota event logging feature	BOOLEAN
+ENABLE_SELECTIVE_EXTERNAL_VOLUME_REPLICATION_PUPR	false	This parameter enables selective external volume replication PuPr	BOOLEAN
+ENABLE_SNOWFLAKE_INTELLIGENCE_ARTIFACT_SHARING	false	Enable or disable all sharing (link and user-based) for Snowflake Intelligence artifacts at the account level.	BOOLEAN
+ENABLE_SNOWFLAKE_MANAGED_STORAGE_VOLUME_PRIVATELINK	false	Enables privatelink access to Snowflake managed storage external volumes	BOOLEAN
+ENABLE_SPCS_BLOCK_STORAGE_SNOWFLAKE_FULL_ENCRYPTION_ENFORCEMENT	false	Enable enforcement of SNOWFLAKE_FULL encryption for SPCS block-storage volumes and snapshots.	BOOLEAN
+ENABLE_STAGE_S3_PRIVATELINK_FOR_US_EAST_1	false	set to true to generate aws s3 regional URL instead of global s3 urls.	BOOLEAN
+ENABLE_SYSTEM_SET_APP_VERSION_IN_CURRENT_CALL_CONTEXT	false	If enabled for an app package, allow usage of the system function SYSTEM$SET_APP_VERSION_IN_CURRENT_CALL_CONTEXT in its app code	BOOLEAN
+ENABLE_TAG_PROPAGATION_EVENT_LOGGING	false	A public param to enable logging events during automatic tag propagation	BOOLEAN
+ENABLE_TRI_SECRET_AND_REKEY_OPT_OUT_FOR_IMAGE_REPOSITORY	true	If false, image registry creation will fail for accounts who enabled tri-secret or rekey	BOOLEAN
+ENABLE_TRI_SECRET_AND_REKEY_OPT_OUT_FOR_SPCS_BLOCK_STORAGE	false	Enables block storage and snapshot support for accounts who have enabled tri secret encryption	BOOLEAN
+ENABLE_UNREDACTED_QUERY_SYNTAX_ERROR	false	Enable View Malformed SQL Text feature when parse error occurs	BOOLEAN
+ENABLE_UNREDACTED_SECURE_OBJECT_ERROR	false	Enable viewing error messages coming from secure objects	BOOLEAN
+ENABLE_WORKSPACE_FILE_CONTENT_SEARCH	true	When true, Universal Search indexes the contents of workspace files, enabling it to search within workspace files, return more complete results, and better rank them by relevance.	BOOLEAN
+ENFORCE_NETWORK_RULES_FOR_INTERNAL_STAGES	false	Enable the INTERNAL_STAGE mode for type AwsVpceId and IPv4.	BOOLEAN
+ENFORCE_NETWORK_RULES_FOR_INTERNAL_STAGES_ON_USER	false	The user lineage version of the customer facing account parameter ENFORCE_NETWORK_RULES_FOR_INTERNAL_STAGES used by managed policy migration. Users with this parameter enabled will have managed policy enforced on internal stage. We will deprecate it manually after customer migration is finished.	BOOLEAN
+ENFORCE_NETWORK_RULES_FOR_SNOWFLAKE_MANAGED_STORAGE_VOLUME	false	Enable enforcement the SNOWFLAKE_MANAGED_STORAGE_VOLUME network rule mode for type AwsVpceId.	BOOLEAN
+ENFORCE_TAG_PROPAGATION_FOR_DATA_MOVEMENT_POLICIES	true	If enabled, blocks ALTER TAG SET DATA MOVEMENT POLICY and ALTER TAG SET PROPAGATE when the propagation mode is incompatible with data movement policies, instead of emitting a warning.	BOOLEAN
+EVENT_TABLE	snowflake.telemetry.events	Event destination for the given target.	STRING
+EXEMPT_DISABLE_RISKY_USER	false	When true, exempts the target from automatic disablement of risky users	BOOLEAN
+EXTERNAL_OAUTH_ADD_PRIVILEGED_ROLES_TO_BLOCKED_LIST	true	If true, automatically adds the ACCOUNTADMIN and SECURITYADMIN roles the blocked roles set	BOOLEAN
+EXTERNAL_VOLUME		Name of an external volume that will be used for persisted Iceberg metadata and data files.	STRING
+FEATURE_COMMENT_PROPAGATION	DISABLED	When ENABLED, column comments propagate automatically along column lineage. Account admins set DISABLED to turn the feature off for their account, which also turns off the producer-side emission and consumer-side handler gates for COLUMN_COMMENT_CHANGED and LINEAGE_NODE_CREATED.	STRING
+FEATURE_CORTEX_CODE_SANDBOX	DISABLED_PRIVATE_PREVIEW	Enable Cortex Code sandbox (microVM isolation for code execution). When ENABLED or ENABLED_PUBLIC_PREVIEW, the Cortex Code CLI auto-activates sandbox mode for the account without requiring the CORTEX_CODE_EXPERIMENTAL_FEATURES environment variable.	STRING
+FEATURE_ENABLE_REQUEST_ACCESS_FOR_WORKSPACES	DISABLED	Enables the workspace access request system functions. Setting this to ENABLED also enables ENABLE_GRANT_APPROVAL, ENABLE_LINEAGE_AWARE_RECIPIENT_CASCADE, ENABLE_REQUEST_ACCESS_FOR_WORKSPACES, ENABLE_ACCESS_REQUEST_HIERARCHICAL_APPROVER_ROUTING, ENABLE_ACCESS_REQUEST_REVIEWER_NOMINATION, and UI_ENABLE_WORKSPACE_ACCESS_REQUESTS. ENABLE_GRANT_APPROVAL_EXPIRY_CLEANER must be set separately at system level.	STRING
+FEATURE_RBAC_INHERITED_GRANTS	DISABLED	This is feature parameter for RBAC Inherited Grants	STRING
+FORCE_WORKSHEET_MIGRATION_FOR_ACCOUNT	false	When enabled, all users in the account are automatically advanced to the final worksheet migration (skipping the manual 'Migrate to Workspaces' click) by the PEP background job.	BOOLEAN
+GRANT_APPROVAL_REQUEST_EXPIRY_DAYS	7	Number of days after which a PENDING grant approval request automatically expires. Set to 0 to disable expiry. Maximum value is 30.	NUMBER
+ICEBERG_DEFAULT_DDL_COLLATION		Collation that is used for all new columns created by DDL statements on Snowflake-managed Iceberg tables (if not specified).	STRING
+ICEBERG_MERGE_ON_READ_BEHAVIOR	auto	Controls merge-on-read behavior on Iceberg tables. Valid values are auto, enabled, and disabled. For 'auto' setting, MoR is enabled by default EXCEPT for v2 managed tables.	STRING
+ICEBERG_VERSION_DEFAULT	2	Default Iceberg version for new managed Iceberg table creation. Overridden by table-level ICEBERG_VERSION property if specified. Note: the default value must be synced with the default value of ICEBERG_VERSION	NUMBER
+INCLUDE_PROTECTED_USER_DATA	true	When true, ALL_USER_DETAILS returns the display name, the first name, the last name and the email. When false it returns the user names only.	BOOLEAN
+INITIAL_REPLICATION_SIZE_LIMIT_IN_TB	10.0	Soft limit for the size of initial replication operation in terabytes. If set to zero, replication operation is not blocked based on size.	FLOAT
+LISTING_AUTO_FULFILLMENT_INITIAL_REFRESH_SIZE_LIMIT_IN_TB	10.0	Limit on the total size in terabytes allowed for an initial listing auto-fulfillment refresh. Setting this to 0 disables the limit.	FLOAT
+LISTING_AUTO_FULFILLMENT_REPLICATION_REFRESH_SCHEDULE	1440 MINUTE	Listing auto fulfillment replication refresh schedule for listings that do not have a defined refresh schedule	STRING
+LOGIN_IDP_REDIRECT		Mapping between interfaces and IdP to redirect to when authenticating into a specific Snowflake interface such as Streamlit or Snowflake Intelligence. The format is a JSON object where keys are interface names (e.g., 'SNOWFLAKE_INTELLIGENCE', 'STREAMLIT') and values are IdP names as defined in the SSO integration (e.g., 'Okta', 'AzureAD'). Example: '{"SNOWFLAKE_INTELLIGENCE": "Okta", "STREAMLIT": "AzureAD"}'. This is a parameter that will only be set when LOGIN_IDP_REDIRECT account property is set.	STRING
+MAP_SCIM_USERNAME_TO_ENTERPRISE_ATTR	false	If true, user name needs to be specified as an enterprise attribute snowflakeUserName instead of reading the value from userName attribute. However, login_name of an user will be always mapped to userName attribute.	BOOLEAN
+MAX_CONCURRENCY_LEVEL	8	Maximum number of SQL statements a warehouse cluster can execute concurrently before queuing them. Small SQL statements count as a fraction of 1.	NUMBER
+MAX_DATA_EXTENSION_TIME_IN_DAYS	14	Maximum number of days to extend data retention beyond the retention period to prevent a stream becoming stale.	NUMBER
+MIN_DATA_RETENTION_TIME_IN_DAYS	0	Minimum allowable data retention time for an account. The effective retention time for any entity in the account is the max of this value and the DATA_RETENTION_TIME_IN_DAYS value for that entity.	NUMBER
+MIN_STAGE_UNDROP_RETENTION_TIME_IN_DAYS	0	Minimum allowable STAGE_UNDROP_RETENTION_TIME_IN_DAYS for an account. Effective named-stage undrop retention is max(this, STAGE_UNDROP_RETENTION_TIME_IN_DAYS). Capped by MAX_DATA_RETENTION_TIME_IN_DAYS.	NUMBER
+NETWORK_POLICY		Network policy assigned for the given target.	STRING
+NOTEBOOK_VNEXT_IDLE_TIMEOUT_OPTIONS_MINUTES	1440,15,30,60,120,240,480,2160,2880,4320	Comma-separated list of idle timeout options in minutes for notebooks in workspaces. The first value is the default option pre-selected in the UI.	STRING
+OAUTH_ADD_PRIVILEGED_ROLES_TO_BLOCKED_LIST	true	If true, automatically adds the ACCOUNTADMIN and SECURITYADMIN roles the blocked roles set	BOOLEAN
+OAUTH_AUTHORIZATION_SERVER		Name of the External OAuth security integration whose issuer authenticates bearer tokens for API resources in this scope. When unset, Snowflake OAuth is used.	STRING
+OAUTH_SCOPES_SUPPORTED		Comma-separated list of OAuth scopes clients should request when authenticating to API resources in this scope. When unset, Snowflake OAuth defaults to session:role:all.	STRING
+OBJECT_DESCRIPTION_UI_LANGUAGE	en	Language for Cortex-generated object descriptions in BCP-47 format (e.g., 'en', 'es', 'fr', 'ja', 'zh-Hans'). Supported languages: en (English), es (Spanish), fr (French), de (German), it (Italian), pt (Portuguese), ja (Japanese), ko (Korean), zh-Hans (Chinese), zh-Hant (Traditional Chinese), ru (Russian), ar (Arabic), hi (Hindi), nl (Dutch), pl (Polish), sv (Swedish), da (Danish), fi (Finnish), no (Norwegian), tr (Turkish), and their regional variants (e.g., en-US, es-MX, zh-CN).	STRING
+OBJECT_DESCRIPTION_UI_MODEL	llama3.1-8b	Cortex LLM model used for generating object descriptions (e.g., 'llama3.1-8b', 'mistral-7b'). See https://docs.snowflake.com/user-guide/snowflake-cortex/llm-functions#complete for available models.	STRING
+OPTIMIZE_DATA_LAYOUT	true	Enable writing Iceberg data files with random subpaths in the data directory for an Iceberg table	BOOLEAN
+PERIODIC_DATA_REKEYING	false	If true, Snowflake will re-encrypt data that was encrypted more than a year ago.	BOOLEAN
+PIPE_EXECUTION_PAUSED	false	Pause processing of files for a pipe	BOOLEAN
+PREVENT_LOAD_FROM_INLINE_URL	false	prevent copy load from inline url (copy into <table> from s3://mybucket/path/f1).	BOOLEAN
+PREVENT_UNLOAD_TO_INLINE_URL	false	prevent copy into inline url (copy into s3://mybucket/path/f1).	BOOLEAN
+PREVENT_UNLOAD_TO_INTERNAL_STAGES	false	Prevent unload sensitive data to non-external stages (user stage, table stage, named stage).	BOOLEAN
+PURGE_ON_DROP_TABLE	false	When set to TRUE on a table, schema, or database in a catalog-linked database, DROP TABLE automatically purges the table's data and metadata files from the external Iceberg catalog.	BOOLEAN
+QUERY_ACCELERATION_MAX_STATEMENT_SCALE_FACTOR	0	Maximum scale factor per statement for query acceleration. Limits how many QAS workers a single request can use, expressed as a multiple of warehouse size. Value of 0 means no per-statement limit (warehouse-level limit still applies).	NUMBER
+READ_CONSISTENCY_MODE	SESSION	If set to 'GLOBAL', guarantees that changes from different sessions are immediately visible. This option incurs a slight performance impact.	STRING
+REPLACE_INVALID_CHARACTERS	false	Replace invalid UTF-8 characters found in Iceberg table external data files with the Unicode replacement character	BOOLEAN
+REPLICATION_AUTO_RESOLVER_MAX_SIZE_LIMIT_IN_TB	10.0	Soft limit for the size of the replication auto-resolver operation in terabytes. If set to zero, replication auto-resolver operation is not blocked based on size.	FLOAT
+REQUIRE_CORTEX_SEARCH_INHERIT_DATA_GOVERNANCE_POLICIES	false	If true, CREATE CORTEX SEARCH SERVICE implicitly sets INHERIT_DATA_GOVERNANCE_POLICIES = TRUE when not explicitly specified. Can be set by the account administrator.	BOOLEAN
+REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION	false	If true, only credential-less stage creations are allowed. Can be set by the customer.	BOOLEAN
+REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_OPERATION	false	If true, only credential-less stages are allowed to be used.  Can be set by the customer.	BOOLEAN
+ROW_TIMESTAMP_DEFAULT	false	When set to true, new tables are created with row timestamp enabled.	BOOLEAN
+SAML_IDENTITY_PROVIDER		Authentication attributes for the SAML Identity provider	STRING
+SERVERLESS_TASK_MAX_STATEMENT_SIZE	X2Large	The maximum warehouse size to use for a serverless Task	STRING
+SERVERLESS_TASK_MIN_STATEMENT_SIZE	XSMALL	The minimum warehouse size to use for a serverless Task	STRING
+SERVICE_CALLER_TOKEN_VALIDITY_SECS	120	Maximum validity period in seconds for service caller tokens. Can be set at the service, schema, database, or account level.	NUMBER
+SNOWFLAKE_LEARNING_ENVIRONMENT_OPT_OPTIONS	unset	Snowflake Learning Environment opt options	STRING
+SNOWSIGHT_USE_DASHED_CLASSIC_UI_URL	false	Use dashed version of account or alias when constructing classic-ui url	BOOLEAN
+SNOWSIGHT_USE_REGIONLESS_CLASSIC_UI_URL	false	Use regionless mode when constructing classic-ui url	BOOLEAN
+SNOWWORK_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for SnowWork usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+SQL_TRACE_QUERY_TEXT	OFF	If set to be 'on', we allow collecting query text in sql tracing	STRING
+SSO_LOGIN_PAGE	false	Enable federated authentication for console login and redirects preview page to console login	BOOLEAN
+STAGE_UNDROP_RETENTION_TIME_IN_DAYS	0	Number of days a dropped stage can be restored with UNDROP STAGE	NUMBER
+STORAGE_SERIALIZATION_POLICY	OPTIMIZED	Storage serialization policy used for managed Iceberg table. This include encodings and compressions	STRING
+STREAMLIT_APP_MAX_IDLE_TIMEOUT_SECONDS	0	Account-admin-configurable maximum idle-timeout (seconds) for Streamlit apps. 0 = no additional cap (system max of 604800 s applies). Valid non-zero range: 86400 (1 day) to 604800 (7 days). Requires ENABLE_STREAMLIT_LIFECYCLE_CONTROLS_FEATURE.	NUMBER
+STREAMLIT_EMBEDDING_CONTROLS		YAML document configuring Streamlit embedding controls. Currently accepts an allowed_embedding_domains list; the YAML shape allows additional controls to be added without new parameters. Entries must be https origins, except loopback hosts (localhost, *.localhost, 127.0.0.0/8, ::1), which may also use http (e.g. http://localhost:3000) for local testing. Gated by ENABLE_STREAMLIT_EMBEDDING_FEATURE.	STRING
+SUSPEND_ALERT_AFTER_NUM_FAILURES	0	Customer-configurable threshold for the number of consecutive failures before auto-suspending an alert. Can be set at ACCOUNT, DATABASE, or SCHEMA level.	NUMBER
+SUSPEND_TASK_AFTER_NUM_FAILURES	10	How many times a task must fail in a row before it is automatically suspended. 0 disables auto-suspending.	NUMBER
+TARGET_FILE_SIZE	AUTO	Target file size for iceberg tables.	STRING
+TASK_AUTO_RETRY_ATTEMPTS	0	Maximum Automatic Retries Allowed For A User Task	NUMBER
+UI_ENABLE_TUTORIALS_PAGE	false	Enables tutorials content on the Learn Page.	BOOLEAN
+UI_FORCE_S3_REGIONAL_DOTTED_ENDPOINTS	false	UI param to force resolving to S3 dotted regional endpoints	BOOLEAN
+UI_NOTIFICATIONS	false	Whether UI notifications are shown in the UI	BOOLEAN
+USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE	Medium	The initial size of warehouse to use for managed warehouses in the absence of history	STRING
+USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS	30	Minimum amount of time between Triggered Task executions in seconds	NUMBER
+USER_TASK_TIMEOUT_MS	3600000	User task execution timeout in milliseconds	NUMBER
+USE_WORKSPACES_FOR_SQL	unset	Set Workspaces as the default SQL editor	STRING
+VENDED_CREDENTIAL_STORAGE_REGION		GCS region for credential-vended Iceberg tables; bypasses getBucketLocation()	STRING

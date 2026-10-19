@@ -16,10 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantUndefined;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -64,9 +67,24 @@ public class ArrayToString extends VariantAccessorFunction {
                 // rides along inside that element's JSON text, so `[{"a":null}]` and `[[null]]` join fine.
                 throw new RuntimeException("Failed to cast variant value from array to string");
             }
-            parts.add(el.isTextual() ? el.asText() : el.toString());
+            parts.add(elementText(el));
         }
         return String.join(delimiter, parts);
+    }
+
+    /**
+     * One element as the join spells it: its text when it is text, a DOUBLE as a FLOAT is cast to text
+     * ({@code 0.1234567016}, {@code 3}, {@code 1e+20}), and a nested array or object as the variant itself displays,
+     * its DOUBLEs in their fifteen-decimal form (live-verified).
+     */
+    private static String elementText(final JsonNode element) {
+        if (element.isTextual()) {
+            return element.asText();
+        }
+        if (element.isDouble() || element.isFloat()) {
+            return SharedFunctionHelpers.floatText(element.doubleValue());
+        }
+        return element.isArray() || element.isObject() ? VariantJsonText.render(element) : element.toString();
     }
 
     @Override
@@ -81,5 +99,16 @@ public class ArrayToString extends VariantAccessorFunction {
     @Override
     public SemiStructuredRejection predicateRejection(final int position) {
         return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.VALUE;
+        }
+        if (position == 1) {
+            return ArrayArgumentKind.SCALAR;
+        }
+        return null;
     }
 }

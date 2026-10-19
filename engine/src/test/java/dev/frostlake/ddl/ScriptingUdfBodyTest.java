@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import java.math.BigDecimal;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -284,32 +285,32 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
     // ---------------------------------------------------------------- the restricted body language
 
     /**
-     * Live: DML in a function body is refused at CREATE —
-     * {@code Unsupported statement type for Snowscript UDF: query statement}. This is how Snowflake keeps
+     * Live: DML in a function body is refused at CREATE, each statement by the name of its kind —
+     * {@code Unsupported statement type for Snowscript UDF: INSERT}. This is how Snowflake keeps
      * a UDF side-effect-free, and the table is verifiably untouched afterwards.
      */
     @Test
     public void dmlInAFunctionBodyIsRejected() {
         engine.execute("CREATE TABLE dml_src (v INTEGER)");
         engine.execute("INSERT INTO dml_src VALUES (1), (2), (3)");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("INSERT",
             "CREATE FUNCTION f_dml() RETURNS INT AS $$ BEGIN INSERT INTO dml_src VALUES (99); RETURN 1; END $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("UPDATE",
             "CREATE FUNCTION f_upd() RETURNS INT AS $$ BEGIN UPDATE dml_src SET v = 0; RETURN 1; END $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("CREATE_TABLE",
             "CREATE FUNCTION f_ddl() RETURNS INT AS $$ BEGIN CREATE TABLE zz (a INT); RETURN 1; END $$");
         assertEquals(3, intResult("SELECT COUNT(*) FROM dml_src"));
     }
 
-    /** Live: a bare query statement, EXECUTE IMMEDIATE and CALL are all "query statement" too — every
+    /** Live: a bare query statement and a CALL are SELECT, an EXECUTE IMMEDIATE is UNKNOWN — every
      *  route by which a body could reach arbitrary SQL is closed. */
     @Test
     public void arbitrarySqlInAFunctionBodyIsRejected() {
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE FUNCTION f_select() RETURNS INT AS $$ BEGIN SELECT 1; RETURN 2; END $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("UNKNOWN",
             "CREATE FUNCTION f_exec() RETURNS INT AS $$ BEGIN EXECUTE IMMEDIATE 'SELECT 1'; RETURN 1; END $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE FUNCTION f_call() RETURNS INT AS $$ BEGIN CALL some_proc(); RETURN 1; END $$");
     }
 
@@ -465,7 +466,7 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
             seen = engine.executeQuery("CALL p_owner()").getRows().get(0).getValue(0);
         } catch (final RuntimeException invalidIdentifier) {
             // Snowflake's answer: the name simply does not resolve inside the function.
-            assertTrue(invalidIdentifier.getMessage().toUpperCase().contains("ZZ"),
+            assertTrue(invalidIdentifier.getMessage().toUpperCase(Locale.ROOT).contains("ZZ"),
                 invalidIdentifier.getMessage());
             return;
         }
@@ -588,21 +589,21 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
      */
     @Test
     public void aTerminatedQueryBodyIsReadAsASnowscriptUdf() {
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t1() RETURNS NUMBER AS $$ SELECT 1; $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t2() RETURNS NUMBER AS $$ WITH c AS (SELECT 1 AS a) SELECT a FROM c; $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t3() RETURNS NUMBER AS $$ SELECT 1 ; $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t4() RETURNS NUMBER AS $$ (SELECT 1); $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t5() RETURNS NUMBER AS 'SELECT 1;'");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t6() RETURNS NUMBER AS $$ SELECT 1; -- c $$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t7() RETURNS NUMBER AS $$  SELECT 1;$$");
-        assertUnsupportedStatement("query statement",
+        assertUnsupportedStatement("SELECT",
             "CREATE OR REPLACE FUNCTION f_t8() RETURNS NUMBER AS $$ SELECT 1;; $$");
     }
 

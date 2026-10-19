@@ -72,6 +72,17 @@ public class SqlIdentifierSubstitutionTest {
     }
 
     @Test
+    public void substitutesObjectConstantValues() {
+        assertEquals("SELECT {'t': 42, 'u': [42]}",
+            SqlIdentifierSubstitution.substitute("SELECT {'t': val, 'u': [val]}", "val", "42"));
+    }
+
+    @Test
+    public void leavesPathKeysInsideObjectConstantsUntouched() {
+        assertEquals("{'t': 42:val}", SqlIdentifierSubstitution.substitute("{'t': val:val}", "val", "42"));
+    }
+
+    @Test
     public void substitutesWithColumnExpression() {
         assertEquals("t.salary * 2",
             SqlIdentifierSubstitution.substitute("val * 2", "val", "t.salary"));

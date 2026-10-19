@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.ExpressionCollation;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import java.util.List;
@@ -87,6 +88,42 @@ public final class KeyCollations {
                 continue;
             }
             rules[i] = evaluator.keyCollation(ExpressionEvaluator.parse(key));
+        }
+        return rules;
+    }
+
+    /**
+     * The collation each projected expression carries, with the level it holds it at.
+     *
+     * @param sources   the expressions as written, null where a column has none
+     * @param evaluator the evaluator that resolves their columns
+     * @return one entry per expression, null where it has none to ask
+     */
+    public static ExpressionCollation[] held(final List<String> sources, final ExpressionEvaluator evaluator) {
+        final ExpressionCollation[] held = new ExpressionCollation[sources.size()];
+        for (int i = 0; i < sources.size(); i++) {
+            final String source = sources.get(i);
+            if (source == null || source.isEmpty()) {
+                continue;
+            }
+            held[i] = evaluator.heldCollation(ExpressionEvaluator.parse(source));
+        }
+        return held;
+    }
+
+    /**
+     * The rules each held collation compares by.
+     *
+     * @param held the collations, or null
+     * @return one entry per collation, null where there is none, or null for no collations at all
+     */
+    public static CollationSpec[] rules(final ExpressionCollation[] held) {
+        if (held == null) {
+            return null;
+        }
+        final CollationSpec[] rules = new CollationSpec[held.length];
+        for (int i = 0; i < held.length; i++) {
+            rules[i] = held[i] == null ? null : held[i].toRules();
         }
         return rules;
     }

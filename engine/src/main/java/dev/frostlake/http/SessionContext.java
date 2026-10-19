@@ -16,6 +16,7 @@
 
 package dev.frostlake.http;
 
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.executor.StatementCount;
 import dev.frostlake.security.SessionSettings;
 
@@ -35,6 +36,9 @@ public class SessionContext {
 
     private volatile String currentDatabase;
     private volatile String currentSchema;
+    // The session's current warehouse, once one of its statements has run; before that the engine's applies.
+    private volatile String currentWarehouse;
+    private volatile boolean warehouseSettled;
     private volatile boolean autoCommit;
     // The autocommit mode the session's client last declared on a request, or null before one did.
     private Boolean clientAutoCommit;
@@ -42,7 +46,12 @@ public class SessionContext {
     // How many statements a request of this session may hold when it declares no count of its own.
     // It starts at 1, as the account's does, and follows an ALTER SESSION that moves it.
     private volatile int multiStatementCount = 1;
+    // Whether the session was opened read-only: its requests may only read, whatever each one says.
+    private volatile boolean readOnly;
     private volatile Long transactionId;
+    // The token of the request running in the session now, which a cancel reaches without waiting for the request;
+    // null between requests.
+    private volatile StatementCancellation running;
 
     // Session-specific variables (for stored procedures)
     private final Map<String, Object> sessionVariables;
@@ -111,6 +120,22 @@ public class SessionContext {
 
     public void setCurrentSchema(final String currentSchema) {
         this.currentSchema = currentSchema;
+    }
+
+    /** The session's current warehouse, or null for none; meaningful once {@link #isWarehouseSettled()}. */
+    public String getCurrentWarehouse() {
+        return currentWarehouse;
+    }
+
+    /** Whether a statement of this session has run, so that the warehouse it left current is the session's own. */
+    public boolean isWarehouseSettled() {
+        return warehouseSettled;
+    }
+
+    /** Records the warehouse a statement of this session left current; null for none. */
+    public void setCurrentWarehouse(final String currentWarehouse) {
+        this.currentWarehouse = currentWarehouse;
+        this.warehouseSettled = true;
     }
 
     /** How many statements a request may hold when it declares no count of its own; 0 means any. */
@@ -182,5 +207,23 @@ public class SessionContext {
 
     public synchronized void clearVariables() {
         sessionVariables.clear();
+    }
+
+    /** Whether the session was opened read-only, so that every request in it must only read. */
+    public boolean isReadOnly() {
+        return readOnly;
+    }
+
+    public void setReadOnly(final boolean readOnly) {
+        this.readOnly = readOnly;
+    }
+
+    /** The token of the request running in the session now, or null between requests. */
+    public StatementCancellation getRunning() {
+        return running;
+    }
+
+    public void setRunning(final StatementCancellation running) {
+        this.running = running;
     }
 }

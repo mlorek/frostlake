@@ -56,6 +56,11 @@ final class MergedDerivedColumn {
         }
         ExpressionEvaluatorVisitor reading = visitor;
         Table relation = visitor.declaredOwner(ref);
+        if (relation == null || !(relation.getRelationStatistics() instanceof MergedRelationStatistics)) {
+            // Over a join the reference is read in the side that holds it.
+            final Table side = visitor.joinedOwner(ref);
+            relation = side != null ? side : relation;
+        }
         String name = ref.getColumnName();
         MergedDerivedColumn found = null;
         for (int depth = 0; depth < MAX_DEPTH && relation != null && !relation.isCatalogResident(); depth++) {
@@ -71,7 +76,7 @@ final class MergedDerivedColumn {
             if (item == null) {
                 return found;
             }
-            reading = reading.overRelation(source);
+            reading = reading.overRelation(source, statistics.sourceAlias());
             found = new MergedDerivedColumn(item, reading);
             if (!found.isColumn() || !source.hasColumn(((ColumnReferenceExpression) item).getColumnName())) {
                 return found;

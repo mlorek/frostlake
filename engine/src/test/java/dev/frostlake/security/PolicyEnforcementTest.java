@@ -297,7 +297,8 @@ public class PolicyEnforcementTest {
         engine.execute("ALTER TABLE employees ADD ROW ACCESS POLICY dept_policy ON (department)");
         final var table = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES");
         assertTrue(table.hasRowAccessPolicy());
-        assertEquals("DEPT_POLICY", table.getRowAccessPolicyName());
+        // Recorded in full, as every policy attachment is, so it resolves the same from any schema.
+        assertEquals("TEST_DB.PUBLIC.DEPT_POLICY", table.getRowAccessPolicyName());
     }
 
     @Test

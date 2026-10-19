@@ -16,9 +16,9 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.executor.expressions.ImpliedTextNumber;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
@@ -34,19 +34,22 @@ public class Left extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         final Object value = args.get(0);
         if (value == null) return null;
         // A text count is read as the number it spells, and refused on the row where it spells none.
         final Object count = args.get(1);
-        final int length = count instanceof CharSequence
-            ? ImpliedTextNumber.read((CharSequence) count).intValue() : ((Number) count).intValue();
+        final int length = wholeNumber(count);
         if (value instanceof BinaryValue) {
             final byte[] bytes = ((BinaryValue) value).bytes();
             if (length < 0) return BinaryValue.of(new byte[0]);
             if (length >= bytes.length) return value;
             return BinaryValue.of(Arrays.copyOfRange(bytes, 0, length));
         }
-        final String str = value.toString();
+        final String str = SharedFunctionHelpers.textOf(value);
         if (length < 0) return "";
         return CodePointText.slice(str, 0, length);
     }

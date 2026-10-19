@@ -39,6 +39,10 @@ public class Position extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
         for (int i = 0; i < Math.min(args.size(), 2); i++) {
             if (i < args.size() && args.get(i) == null) {
@@ -46,14 +50,14 @@ public class Position extends TextArgumentFunction {
             }
         }
         if (args.get(0) == null || args.get(1) == null) return 0L;
-        int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
+        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
         startPos = Math.max(0, startPos);
         if (args.get(0) instanceof BinaryValue && args.get(1) instanceof BinaryValue) {
             return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
                 ((BinaryValue) args.get(0)).bytes(), startPos);
         }
-        final String needle = args.get(0).toString();
-        final String haystack = args.get(1).toString();
+        final String needle = SharedFunctionHelpers.textOf(args.get(0));
+        final String haystack = SharedFunctionHelpers.textOf(args.get(1));
         final int idx = CodePointText.indexOf(haystack, needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
     }
@@ -61,15 +65,19 @@ public class Position extends TextArgumentFunction {
     /** Under a collation the needle is found where the collation matches it, not byte for byte. */
     @Override
     public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (collation == null || args.get(0) == null || args.get(1) == null
                 || args.get(0) instanceof BinaryValue || args.get(1) instanceof BinaryValue) {
             return evaluate(args);
         }
-        int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
+        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
         startPos = Math.max(0, startPos);
-        final String haystack = args.get(1).toString();
+        final String haystack = SharedFunctionHelpers.textOf(args.get(1));
         final int[] found = CollationMatching.findUnder(collation, haystack,
-            args.get(0).toString(), CodePointText.offset(haystack, startPos));
+            SharedFunctionHelpers.textOf(args.get(0)), CodePointText.offset(haystack, startPos));
         return found == null ? 0L : (long) (CodePointText.characterIndex(haystack, found[0]) + 1);
     }
 

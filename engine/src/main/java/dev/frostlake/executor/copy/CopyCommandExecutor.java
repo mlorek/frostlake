@@ -18,15 +18,18 @@ package dev.frostlake.executor.copy;
 
 import dev.frostlake.executor.ColumnLengthException;
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.FileFormatClause;
 import dev.frostlake.executor.FileFormatReference;
-import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SessionInputFormats;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StagePathSegments;
 import dev.frostlake.executor.StagePrefix;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementErrors;
+import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
@@ -37,16 +40,22 @@ import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.WhenClause;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.metastore.LoadRecord;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SequenceDefault;
+import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.storage.TableStorage;
+import dev.frostlake.transaction.TransactionOutcome;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
@@ -54,11 +63,13 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StatementResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.CodePointText;
 import dev.frostlake.values.VariantValue;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -74,6 +85,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -117,11 +129,6 @@ public final class CopyCommandExecutor {
     // the same column a rejected record would use. Live-verified, the trailing period included.
     private static final String ALREADY_LOADED_ERROR = "File was loaded before.";
 
-    // ON_ERROR's SKIP_FILE family — SKIP_FILE, SKIP_FILE_<n> and SKIP_FILE_<n>% — matched against the
-    // upper-cased value with its quotes already stripped, so one pattern covers the quoted and unquoted
-    // spellings alike. See requireValidOnError and fileErrorLimit.
-    private static final Pattern SKIP_FILE_ON_ERROR = Pattern.compile("SKIP_FILE(?:_(\\d+)(%)?)?");
-
     // VALIDATION_MODE's row-returning family, RETURN_<n>_ROWS — matched against the upper-cased value with
     // its quotes stripped. Everything else (RETURN_ERRORS, RETURN_ALL_ERRORS) lists errors instead.
     private static final Pattern RETURN_N_ROWS_MODE = Pattern.compile("RETURN_(\\d+)_ROWS");
@@ -129,12 +136,64 @@ public final class CopyCommandExecutor {
     private final QueryExecutor executor;
 
     // COPY load history per fully-qualified table: keys of files already loaded, so a re-COPY / pipe REFRESH
-    // skips them unless FORCE = TRUE (matching Snowflake). In-memory only (not persisted).
-    private final Map<String, Set<String>> copyLoadHistory = new HashMap<>();
+    // skips them unless FORCE = TRUE (matching Snowflake). A permanent table's live in the catalog, which a snapshot,
+    // a clone and a restored state carry; a temporary table keeps a history apart from a permanent table of its name,
+    // here, which ends with its session.
+    private final Map<String, Set<String>> temporaryLoadHistory = new HashMap<>();
 
-    /** TRUNCATE and CREATE OR REPLACE / DROP of the table discard its history; DELETE never does. */
-    public void forgetLoadHistory(final String fullyQualifiedTableName) {
-        copyLoadHistory.remove(fullyQualifiedTableName);
+    /** How a load key names a file under the engine's internal stage root, which a copy of the engine moves. */
+    private static final String INTERNAL_ROOT = "@internal/";
+
+    /**
+     * TRUNCATE and CREATE OR REPLACE / DROP of the table discard its history; DELETE never does.
+     *
+     * @param fullyQualifiedTableName the table's qualified name
+     * @param temporary               whether the table is the temporary one of that name
+     */
+    public void forgetLoadHistory(final String fullyQualifiedTableName, final boolean temporary) {
+        loadHistory(temporary).remove(fullyQualifiedTableName);
+        executor.getCatalog().getLoadHistory().forget(fullyQualifiedTableName, temporary);
+    }
+
+    /**
+     * A table renamed or moved keeps its load history: the history follows it to its new name, and a file of its own
+     * stage, which moved with it, keeps the identity it was loaded under, so a COPY of the renamed table skips what the
+     * table already loaded (live-verified).
+     *
+     * @param oldTable  the table's qualified name before
+     * @param newTable  its qualified name after
+     * @param oldStage  its stage's directory before
+     * @param newStage  its stage's directory after
+     * @param temporary whether the table is temporary
+     */
+    public void followMovedTable(final String oldTable, final String newTable, final Path oldStage,
+                                 final Path newStage, final boolean temporary) {
+        final Map<String, Set<String>> histories = loadHistory(temporary);
+        final Set<String> loaded = histories.remove(oldTable);
+        if (loaded == null) {
+            return;
+        }
+        final String from = portable(oldStage.toAbsolutePath().normalize() + File.separator);
+        final String to = portable(newStage.toAbsolutePath().normalize() + File.separator);
+        final Set<String> followed = new HashSet<>();
+        for (final String key : loaded) {
+            followed.add(key.startsWith(from) ? to + key.substring(from.length()) : key);
+        }
+        histories.put(newTable, followed);
+    }
+
+    /** The load histories of the tables of one persistence, each under its table's qualified name. */
+    private Map<String, Set<String>> loadHistory(final boolean temporary) {
+        return temporary ? temporaryLoadHistory : executor.getCatalog().getCopyLoadedFiles();
+    }
+
+    /**
+     * A path as a load key spells it: one under the engine's internal stage root relative to the root, so a clone or
+     * a restored state, whose stages hold the same files under a root of its own, still knows them.
+     */
+    private String portable(final String path) {
+        final String root = executor.internalStageRootPath().toAbsolutePath().normalize() + File.separator;
+        return path.startsWith(root) ? INTERNAL_ROOT + path.substring(root.length()) : path;
     }
 
     // ALTER PIPE … REFRESH [PREFIX=…] [MODIFIED_AFTER=…] file filters. Set ONLY for the duration of the
@@ -163,6 +222,7 @@ public final class CopyCommandExecutor {
                 // COPY INTO @stage | @~ | @%table [/path] (unloading data to a stage)
                 targetName = executor.stageRefToLocation(ctx.stageRef());
                 targetDisplay = ParseTreeText.getOriginalText(ctx.stageRef());
+                executor.requireStagePrivilege(Privilege.WRITE, ctx.stageRef());
                 isLoadIntoTable = false;
             } else if (ctx.STRING_LITERAL() != null) {
                 // COPY INTO 'protocol://bucket/path' (unloading data to an external location)
@@ -172,8 +232,17 @@ public final class CopyCommandExecutor {
             }
 
             if (isLoadIntoTable) {
-                // COPY INTO table FROM stage/location
-                return executeCopyIntoTable(ctx, targetName);
+                // COPY INTO table FROM stage/location, which reads its fields by its file format's formats.
+                final Map<String, String> statementInputs = SessionInputFormats.pinned();
+                try {
+                    return executeCopyIntoTable(ctx, targetName);
+                } finally {
+                    SessionInputFormats.restore(statementInputs);
+                }
+            } else if (StatementClock.isReplay()) {
+                // A replayed unload wrote its files when it first ran, and they are on disk as the statements after it
+                // left them: writing them again would refuse over them, or bring back files removed since.
+                return null;
             } else {
                 // COPY INTO stage FROM table/query
                 return executeCopyIntoStage(ctx, targetName, targetDisplay);
@@ -220,11 +289,16 @@ public final class CopyCommandExecutor {
      */
     private Object executeCopyIntoTable(final FrostlakeParser.CopyIntoStatementContext ctx, final String tableName) {
         logger.info("Executing COPY INTO table: {}", tableName);
+        requireStorageIntegration(ctx);
 
         // COPY refuses a missing target in words of its own: the name as the statement wrote it, and no
         // "or not authorized" tail. A name the session cannot place, with no current database, is missing
         // in the same words (live-verified, with a current database and without one).
         final QualifiedName written = QualifiedName.parse(tableName);
+        // A load is an INSERT to the account: a view, a stream or an event table named as its target is refused
+        // as an INSERT's is.
+        executor.requireInsertTarget(tableName);
+        executor.requirePrivilege(Privilege.INSERT, "TABLE", tableName);
         if (!executor.getCatalog().hasTableAsWritten(written)) {
             throw new RuntimeException(SqlCompilationError.of("Table '"
                 + SqlIdentifiers.spellAlreadyCanonicalPath(String.join(".", written.parts())) + "' does not exist"));
@@ -237,33 +311,19 @@ public final class CopyCommandExecutor {
         // The FROM location exactly as the statement wrote it — error messages echo THIS, not the
         // canonical name (a stage created as st and read as @st refuses naming '@st/x.csv').
         String fromLocationDisplay = null;
-        String fileFormat = "CSV";
         String pattern = null;
         String matchByColumnName = null;
         String validationMode = null;
-        String onError = "ABORT_STATEMENT";
+        OnErrorOption onError = OnErrorOption.ABORT_STATEMENT;
         boolean force = false;
         boolean purge = false;
         List<String> files = null;
         List<String> columns = null;
-        String fieldDelimiter = ",";
-        int skipHeader = 0;
-        String enclosedBy = null;
-        boolean trimSpace = false;
-        List<String> nullIf = null;
-        // CSV's ERROR_ON_COLUMN_COUNT_MISMATCH, whose Snowflake default is TRUE — a record whose field count
-        // differs from the target table's column count is REJECTED, in either direction. See
-        // requireCsvColumnCount for the whole rule; FALSE restores the lenient truncate/NULL-pad reshaping.
-        boolean errorOnColumnCountMismatch = true;
-        // CSV's SKIP_BLANK_LINES, whose Snowflake default is FALSE — a blank line is a one-empty-field record
-        // and so a column-count error on any table wider than one column, not a line to pass over.
-        boolean skipBlankLines = false;
-        // CSV's EMPTY_FIELD_AS_NULL, whose Snowflake default is TRUE — an unenclosed empty field loads as SQL
-        // NULL. FALSE loads it as the empty string instead. See applyCsvFieldOptions for the whole rule.
-        boolean emptyFieldAsNull = true;
         FrostlakeParser.CopyTransformationContext transformation = null;
-        // Whether the effective CSV format parses a header — MATCH_BY_COLUMN_NAME needs it.
-        boolean parseHeader = false;
+        // The format the files are read by, at the account's defaults until a format says otherwise: the stage's
+        // own first, then the statement's FILE_FORMAT - the format it names, then the options written beside it
+        // (see FileFormatOptions).
+        final FileFormatOptions format = new FileFormatOptions();
         // Repeating a copy option is a conflict, live-verified; the inverse pair
         // ENFORCE_LENGTH/TRUNCATECOLUMNS additionally conflicts when both carry one polarity.
         final Set<String> seenCopyOptions = new HashSet<>();
@@ -273,6 +333,14 @@ public final class CopyCommandExecutor {
 
         rejectCredentialsOnInternalStage(ctx);
 
+        // A COPY that writes no FILE_FORMAT reads the files by the format their stage keeps — a named stage's
+        // FILE_FORMAT, a table stage's STAGE_FILE_FORMAT — as a staged-file query and an unload read them
+        // (documented): its header is skipped, its delimiter splits the fields.
+        final FileFormat stageFormat = stageFormatOf(ctx, tableName);
+        if (stageFormat != null) {
+            format.takeFormat(stageFormat);
+        }
+
         for (final FrostlakeParser.CopyIntoTableClauseContext clause : ctx.copyIntoTableClause()) {
             if (clause.FROM() != null) {
                 // Get source location
@@ -281,6 +349,7 @@ public final class CopyCommandExecutor {
                     // FROM @stage | @~ | @%table [/path]
                     fromLocation = executor.stageRefToLocation(sourceCtx.stageRef());
                     fromLocationDisplay = ParseTreeText.getOriginalText(sourceCtx.stageRef());
+                    executor.requireStagePrivilege(Privilege.READ, sourceCtx.stageRef());
                 } else if (sourceCtx.STRING_LITERAL() != null) {
                     // FROM 's3://bucket/path/'
                     fromLocation = ParseTreeText.extractStringLiteral(sourceCtx.STRING_LITERAL());
@@ -291,89 +360,19 @@ public final class CopyCommandExecutor {
                     validateTransformationFunctions(transformation);
                     fromLocation = executor.stageRefToLocation(transformation.stageRef());
                     fromLocationDisplay = ParseTreeText.getOriginalText(transformation.stageRef());
+                    executor.requireStagePrivilege(Privilege.READ, transformation.stageRef());
                 }
             } else if (clause.FILE_FORMAT() != null) {
                 requireDistinctCopyOption(seenCopyOptions, "FILE_FORMAT");
-                // Parse FILE_FORMAT options
                 if (clause.copyFormatOptions() != null) {
-                    requireDistinctFormatOptions(clause.copyFormatOptions().copyFormatOption());
-                    for (final FrostlakeParser.CopyFormatOptionContext option : clause.copyFormatOptions().copyFormatOption()) {
-                        if (option.TYPE() != null) {
-                            FileFormatSurfaces.requireLegalValue("TYPE",
-                                copyOptValue(option.copyOptionValue()), option.copyOptionValue().getText());
-                            fileFormat = copyOptValue(option.copyOptionValue()).toUpperCase();
-                        } else if (option.FIELD_DELIMITER() != null) {
-                            fieldDelimiter = copyOptValue(option.copyOptionValue());
-                        } else if (option.SKIP_HEADER() != null) {
-                            skipHeader = Integer.parseInt(option.INTEGER_LITERAL().getText());
-                        } else if (option.identifier() != null && option.copyOptionValue() != null
-                                && "FIELD_OPTIONALLY_ENCLOSED_BY".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            enclosedBy = copyOptValue(option.copyOptionValue());
-                        } else if (option.identifier() != null && option.copyOptionValue() != null
-                                && "PARSE_HEADER".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            parseHeader = "TRUE".equalsIgnoreCase(copyOptValue(option.copyOptionValue()));
-                        } else if (option.identifier() != null && option.copyOptionValue() != null
-                                && "TRIM_SPACE".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            trimSpace = "TRUE".equalsIgnoreCase(copyOptValue(option.copyOptionValue()));
-                        } else if (option.identifier() != null
-                                && "NULL_IF".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            nullIf = copyNullIfValues(option);
-                        } else if (option.identifier() != null && option.copyOptionValue() != null
-                                && "ERROR_ON_COLUMN_COUNT_MISMATCH".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            errorOnColumnCountMismatch = !"FALSE".equalsIgnoreCase(copyOptValue(option.copyOptionValue()));
-                        } else if (option.identifier() != null && option.copyOptionValue() != null
-                                && "SKIP_BLANK_LINES".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            skipBlankLines = "TRUE".equalsIgnoreCase(copyOptValue(option.copyOptionValue()));
-                        } else if (option.identifier() != null && option.copyOptionValue() != null
-                                && "EMPTY_FIELD_AS_NULL".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            emptyFieldAsNull = !"FALSE".equalsIgnoreCase(copyOptValue(option.copyOptionValue()));
-                        } else if (option.identifier() != null && option.copyOptionValue() != null
-                                && "FORMAT_NAME".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
-                            // FILE_FORMAT = (FORMAT_NAME = 'ff') — resolve the named file format and adopt its options.
-                            FileFormatReference.require(executor.getCatalog(),
-                                SqlIdentifiers.canonicalText(copyOptValue(option.copyOptionValue())));
-                            final FileFormat named = resolveFileFormat(copyOptValue(option.copyOptionValue()));
-                            if (named != null) {
-                                fileFormat = named.getType();
-                                if (named.getOption("FIELD_DELIMITER") != null) {
-                                    fieldDelimiter = named.getOption("FIELD_DELIMITER");
-                                }
-                                if (named.getOption("SKIP_HEADER") != null) {
-                                    skipHeader = Integer.parseInt(named.getOption("SKIP_HEADER"));
-                                }
-                                if (named.getOption("FIELD_OPTIONALLY_ENCLOSED_BY") != null) {
-                                    enclosedBy = named.getOption("FIELD_OPTIONALLY_ENCLOSED_BY");
-                                }
-                                if (named.getOption("TRIM_SPACE") != null) {
-                                    trimSpace = "TRUE".equalsIgnoreCase(named.getOption("TRIM_SPACE"));
-                                }
-                                if (named.getNullIfValues() != null && !named.getNullIfValues().isEmpty()) {
-                                    nullIf = named.getNullIfValues();
-                                }
-                                if (named.getOption("ERROR_ON_COLUMN_COUNT_MISMATCH") != null) {
-                                    errorOnColumnCountMismatch =
-                                        !"FALSE".equalsIgnoreCase(named.getOption("ERROR_ON_COLUMN_COUNT_MISMATCH"));
-                                }
-                                if (named.getOption("SKIP_BLANK_LINES") != null) {
-                                    skipBlankLines = "TRUE".equalsIgnoreCase(named.getOption("SKIP_BLANK_LINES"));
-                                }
-                                if (named.getOption("PARSE_HEADER") != null) {
-                                    parseHeader = "TRUE".equalsIgnoreCase(named.getOption("PARSE_HEADER"));
-                                }
-                                if (named.getOption("EMPTY_FIELD_AS_NULL") != null) {
-                                    emptyFieldAsNull =
-                                        !"FALSE".equalsIgnoreCase(named.getOption("EMPTY_FIELD_AS_NULL"));
-                                }
-                            }
-                        }
-                    }
+                    takeWrittenFormat(format, clause.copyFormatOptions().copyFormatOption());
                 }
             } else if (clause.PATTERN() != null) {
                 pattern = ParseTreeText.extractStringLiteral(clause.STRING_LITERAL());
             } else if (clause.VALIDATION_MODE() != null) {
                 requireDistinctCopyOption(seenCopyOptions, "VALIDATION_MODE");
                 validationMode = copyOptValue(clause.copyOptionValue());
-                if (!validationMode.toUpperCase().matches("RETURN_\\d+_ROWS|RETURN_ERRORS|RETURN_ALL_ERRORS")) {
+                if (!validationMode.toUpperCase(Locale.ROOT).matches("RETURN_\\d+_ROWS|RETURN_ERRORS|RETURN_ALL_ERRORS")) {
                     throw invalidCopyOptionValue("VALIDATION_MODE", clause.copyOptionValue());
                 }
             } else if (clause.ON_ERROR() != null) {
@@ -402,7 +401,7 @@ public final class CopyCommandExecutor {
             } else if (clause.MATCH_BY_COLUMN_NAME() != null) {
                 requireDistinctCopyOption(seenCopyOptions, "MATCH_BY_COLUMN_NAME");
                 matchByColumnName = copyOptValue(clause.copyOptionValue());
-                final String matchMode = matchByColumnName.toUpperCase();
+                final String matchMode = matchByColumnName.toUpperCase(Locale.ROOT);
                 if (!"CASE_SENSITIVE".equals(matchMode) && !"CASE_INSENSITIVE".equals(matchMode)
                         && !"NONE".equals(matchMode)) {
                     throw invalidCopyOptionValue("MATCH_BY_COLUMN_NAME", clause.copyOptionValue());
@@ -417,7 +416,11 @@ public final class CopyCommandExecutor {
                 // The generic key=value options: ENFORCE_LENGTH / TRUNCATECOLUMNS /
                 // RETURN_FAILED_ONLY / LOAD_UNCERTAIN_FILES / INCLUDE_METADATA — an unknown NAME
                 // refuses as an invalid parameter, live-verified.
-                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase();
+                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase(Locale.ROOT);
+                if (StorageIntegrationReference.PROPERTY.equals(optionName)) {
+                    // Judged before the table was looked for (see requireStorageIntegration).
+                    continue;
+                }
                 if (!GENERIC_COPY_OPTIONS.contains(optionName)) {
                     throw new RuntimeException(SqlCompilationError.of(
                         "invalid parameter '" + optionName + "'"));
@@ -434,12 +437,32 @@ public final class CopyCommandExecutor {
             }
         }
 
+        // The effective format, settled once every clause is read (see FileFormatOptions): the CSV delimiters (NONE
+        // as the word), the enclosure and the escapes as characters, NULL_IF (the
+        // text \N when no format names one), the header, blank-line, width and field rules, the character set,
+        // a JSON format's strip flags, and the input formats the fields' text is read by.
+        final String fileFormat = format.getType();
+        final String fieldDelimiter = format.getFieldDelimiter() == null ? "NONE" : format.getFieldDelimiter();
+        final String recordDelimiter = format.getRecordDelimiter() == null ? "NONE" : format.getRecordDelimiter();
+        final int skipHeader = format.getSkipHeader();
+        final boolean errorOnColumnCountMismatch = format.checksColumnCount();
+        final boolean parseHeader = format.parsesHeader();
+        final String encoding = format.getEncoding();
+        final boolean replaceInvalidCharacters = format.replacesInvalidCharacters();
+        final boolean stripNullValues = format.stripsNullValues();
+        final boolean stripOuterArray = format.stripsOuterArray();
+        final Map<String, String> loadInputFormats = format.loadInputFormats();
+
         // ENFORCE_LENGTH and TRUNCATECOLUMNS are each other's inverse; declaring both with the
         // SAME polarity is the same conflict a repeated option raises, named on TRUNCATECOLUMNS.
         if (enforceLength != null && truncateColumns != null
                 && enforceLength.booleanValue() == truncateColumns.booleanValue()) {
             throw conflictingCopyOption("TRUNCATECOLUMNS");
         }
+        // TRUNCATECOLUMNS = TRUE, or its inverse ENFORCE_LENGTH = FALSE, cuts a text longer than its column to the
+        // column's length where the default refuses it (documented).
+        final boolean truncateToColumns = truncateColumns != null ? truncateColumns.booleanValue()
+            : enforceLength != null && !enforceLength.booleanValue();
         // MATCH_BY_COLUMN_NAME needs a header to match against — CSV only carries one under
         // PARSE_HEADER = TRUE (live's own lowercase wording).
         if (matchByColumnName != null && !"NONE".equalsIgnoreCase(matchByColumnName)
@@ -463,6 +486,9 @@ public final class CopyCommandExecutor {
         if (fromLocation == null) {
             fromLocation = "@%" + tableName;
             fromLocationDisplay = fromLocation;
+        } else if (fromLocation.startsWith("@%") && validationMode == null) {
+            // Another table's stage is no source for this one; a validating COPY is not refused for it.
+            executor.requireOwnTableStage(fromLocation, table);
         }
 
         // A semi-structured file yields ONE semi-structured value per record, so it can only load into a
@@ -474,7 +500,12 @@ public final class CopyCommandExecutor {
         rejectMultiColumnSemiStructuredLoad(fileFormat, table, columns, matchByColumnName, transformation);
 
         logger.info("COPY INTO {} FROM {} FILE_FORMAT={} PATTERN={} ON_ERROR={} FORCE={} PURGE={}",
-                tableName, fromLocation, fileFormat, pattern, onError, force, purge);
+                tableName, fromLocation, fileFormat, pattern, onError.spelled(), force, purge);
+
+        // The fields are read as the file format says from here on: its DATE_FORMAT, TIME_FORMAT and TIMESTAMP_FORMAT
+        // take the session's input formats' place — AUTO, or none written, leaves the session's own — and its
+        // BINARY_FORMAT reads a BINARY column's text (documented). The caller puts the statement's own back.
+        SessionInputFormats.override(loadInputFormats);
 
         final List<ResultSetColumn> resultColumns = Arrays.asList(
             new ResultSetColumn("file", StringType.VARCHAR),
@@ -494,9 +525,9 @@ public final class CopyCommandExecutor {
         // every file the load loop sees under a non-empty FILES list was named by the statement.
         final boolean explicitFileList = files != null && !files.isEmpty();
         // ON_ERROR = ABORT_STATEMENT (the default) fails the whole COPY on the first bad record; CONTINUE
-        // and the SKIP_FILE family read the file to the end and settle its fate afterwards, per
-        // fileErrorLimit. requireValidOnError has already upper-cased the value and rejected any other.
-        final boolean abortOnError = "ABORT_STATEMENT".equals(onError);
+        // and the SKIP_FILE family read the file to the end and settle its fate afterwards, per the budget
+        // OnErrorOption.errorLimit gives.
+        final boolean abortOnError = onError.aborts();
 
         // Resolve the local directory backing the FROM location (@stage / s3:// / file://) and load CSV or
         // JSON files from it.
@@ -525,7 +556,7 @@ public final class CopyCommandExecutor {
         // nothing reads as a completed load. Avro/Parquet/ORC ship in the optional frostlake-formats
         // module (a StageFileReader SPI), so their absence gets a pointer rather than a bare rejection.
         if (fileFormat != null && !csv && recordReader == null) {
-            final String upperType = fileFormat.toUpperCase();
+            final String upperType = fileFormat.toUpperCase(Locale.ROOT);
             final boolean optionalFormat = upperType.equals("AVRO") || upperType.equals("PARQUET")
                 || upperType.equals("ORC");
             final String hint = optionalFormat
@@ -537,14 +568,14 @@ public final class CopyCommandExecutor {
         if (baseDir != null && Files.isDirectory(baseDir) && (csv || recordReader != null)) {
             final List<TableColumn> tableCols = table.getColumns();
             final int[] fieldToCol = buildCopyColumnMapping(tableCols, columns);
+            final LoadedRowRules rowRules = new LoadedRowRules(loadCharset(encoding), replaceInvalidCharacters,
+                stripNullValues, stripOuterArray, truncateToColumns, omittedColumns(tableCols, columns, fieldToCol),
+                fullyQualifiedTableName, fieldDelimiter, recordDelimiter, matchByColumnName);
             // COPY transformation setup: a synthetic COLUMN1..N table lets $1, $2, … resolve to staged fields.
             final List<FrostlakeParser.CopyTransformItemContext> transformItems =
                 transformation != null ? transformation.copyTransformItem() : null;
             final int transformSlots = transformItems != null ? maxPositionalRef(transformItems) : 0;
             final ExpressionEvaluator transformEval = transformItems != null ? buildStageFieldEvaluator(transformSlots) : null;
-            final char delimiter = (fieldDelimiter == null || fieldDelimiter.isEmpty()) ? ',' : fieldDelimiter.charAt(0);
-            final Character enclosure = (enclosedBy == null || enclosedBy.isEmpty() || "NONE".equalsIgnoreCase(enclosedBy))
-                ? null : enclosedBy.charAt(0);
             final boolean checkColumnCount = csv
                 && columnCountChecked(errorOnColumnCountMismatch, columns, matchByColumnName, transformItems);
             // The files this statement reads, in path order — the same list for a load and a validation.
@@ -557,14 +588,16 @@ public final class CopyCommandExecutor {
             if (validationMode != null) {
                 return validateCopyFiles(validationMode, table, tableCols, fieldToCol,
                     transformItems, transformEval, transformSlots,
-                    candidates, recordReader, skipHeader, delimiter, enclosure, trimSpace, nullIf,
-                    emptyFieldAsNull, checkColumnCount, skipBlankLines, fromLocationDisplay, missingFiles);
+                    candidates, recordReader, format, checkColumnCount, fromLocationDisplay, missingFiles, rowRules);
             }
+            // The load reads the stage's files as they are now, which a replay of its text would not find again.
+            CheckpointDebt.owe();
 
-            Set<String> loadedKeys = copyLoadHistory.get(fullyQualifiedTableName);
+            final Map<String, Set<String>> histories = loadHistory(table.isTemporary());
+            Set<String> loadedKeys = histories.get(fullyQualifiedTableName);
             if (loadedKeys == null) {
                 loadedKeys = new HashSet<>();
-                copyLoadHistory.put(fullyQualifiedTableName, loadedKeys);
+                histories.put(fullyQualifiedTableName, loadedKeys);
             }
 
             // Rows are buffered and inserted only after every file is parsed + validated, so an
@@ -573,6 +606,11 @@ public final class CopyCommandExecutor {
             // PURGE = TRUE: the staged files to delete once the load is committed. Only files this
             // statement actually consumed land here — see purgeLoadedFiles for the exact rule.
             final List<Path> purgeCandidates = new ArrayList<>();
+            // The files this statement added to the table's loaded files, which a ROLLBACK takes back.
+            final List<String> addedKeys = new ArrayList<>();
+            // The files read, for the load history once the whole COPY has run (an aborted one records none).
+            final List<LoadRecord> completedLoads = new ArrayList<>();
+            final Schema owningSchema = executor.getCatalog().resolveOwningSchema(tableName);
             // SIZE_LIMIT counts the bytes of the files this statement has read so far; the next file
             // starts only while that total does not EXCEED the limit — so at least one file always
             // loads, and a total exactly at the limit still admits one more.
@@ -613,14 +651,14 @@ public final class CopyCommandExecutor {
                 CopyFileError firstError = null;
                 try {
                     if (recordReader != null) {
-                        final List<JsonNode> records = recordReader.readRecords(file);
+                        final List<JsonNode> records = loadedRecords(recordReader, file, rowRules);
                         for (final JsonNode record : records) {
                             parsed++;
                             try {
                                 final Row row = transformItems != null
                                     ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record, transformEval, transformSlots)
-                                    : buildJsonRow(tableCols, record);
-                                executor.enforceColumnConstraints(table, row);
+                                    : buildJsonRow(tableCols, record, rowRules.matchByColumnName());
+                                enforceLoadedRow(table, row, rowRules);
                                 fileRows.add(row);
                             } catch (final RuntimeException rowError) {
                                 errors++;
@@ -640,62 +678,79 @@ public final class CopyCommandExecutor {
                         // Streamed line read — materializing the whole file first doubled peak memory
                         // for a large CSV. The one-line lookahead keeps the last-line flag available,
                         // and is advanced BEFORE the blank-line skip so a `continue` can't stall it.
-                        try (final BufferedReader reader = StagedFileIo.reader(file)) {
-                            for (int skipped = 0; skipped < skipHeader && reader.readLine() != null; skipped++) {
-                                // header lines discarded unread
-                            }
+                        try (final BufferedReader reader = StagedFileIo.reader(file, rowRules.charset())) {
+                            // The file is split as a staged-file query splits it (CsvRecordReader), so a record
+                            // that does not parse is rejected here as the query refuses it.
+                            final CsvRecordReader records = CsvRecordReader.forLoad(reader, fileName, format)
+                                .expectingWidth(checkColumnCount ? tableCols.size() : -1);
+                            records.skipLines(skipHeader);
                             // MATCH_BY_COLUMN_NAME over CSV reads each file's PARSE_HEADER line and
                             // maps fields onto columns by the names it carries, not by position.
                             int[] fileFieldMap = fieldToCol;
-                            int headerLines = 0;
                             if (parseHeader && matchByColumnName != null && !"NONE".equalsIgnoreCase(matchByColumnName)) {
-                                final String headerLine = reader.readLine();
-                                if (headerLine != null) {
-                                    headerLines = 1;
-                                    fileFieldMap = headerFieldToCol(
-                                        parseCsvLine(headerLine, delimiter, enclosure, new ArrayList<>()),
-                                        tableCols, "CASE_SENSITIVE".equalsIgnoreCase(matchByColumnName));
+                                final List<String> header = records.header(new ArrayList<Boolean>());
+                                if (header != null) {
+                                    fileFieldMap = headerFieldToCol(header, tableCols,
+                                        "CASE_SENSITIVE".equalsIgnoreCase(matchByColumnName));
                                 }
                             }
                             // The record's 1-based ordinal among the ones actually read, which decides WHICH
-                            // column-count message a mismatch gets (see requireCsvColumnCount). Distinct from
+                            // column-count message a mismatch gets (see loadWidthRefusal). Distinct from
                             // `parsed`, which also counts a blank line SKIP_BLANK_LINES passed over.
                             int recordNumber = 0;
-                            String lookahead = reader.readLine();
-                            for (int ln = skipHeader + headerLines; lookahead != null; ln++) {
-                                final String line = lookahead;
-                                lookahead = reader.readLine();
-                                final boolean lastLine = lookahead == null;
-                                parsed++;
-                                if (line.isEmpty() && skipBlankLines) {
+                            while (true) {
+                                final List<Boolean> enclosed = new ArrayList<>();
+                                final List<String> rowFields;
+                                try {
+                                    rowFields = records.next(-1, recordNumber + 1, enclosed);
+                                } catch (final CsvParseFault fault) {
+                                    parsed += records.blankLinesSkipped() + 1;
+                                    recordNumber++;
+                                    errors++;
+                                    final CopyFileError described = describeCsvFault(fault, table);
+                                    if (firstError == null) {
+                                        firstError = described;
+                                    }
+                                    if (abortOnError) {
+                                        throw new RuntimeException(abortStatementError(described, recordNumber,
+                                            fileName), fault);
+                                    }
+                                    records.skipRecordRest();
                                     continue;
                                 }
+                                parsed += records.blankLinesSkipped();
+                                if (rowFields == null) {
+                                    break;
+                                }
+                                parsed++;
                                 recordNumber++;
                                 Row row = null;
                                 try {
-                                    final List<Boolean> enclosed = new ArrayList<>();
-                                    final List<String> enclosedContent = new ArrayList<>();
-                                    final List<String> rowFields = parseCsvLine(line, delimiter, enclosure, enclosed, enclosedContent);
-                                    applyCsvFieldOptions(rowFields, trimSpace, nullIf, emptyFieldAsNull, enclosed, enclosedContent);
+                                    settleUnreadableText(rowFields, rowRules.replacesInvalidCharacters());
+                                    format.settle(rowFields, enclosed);
                                     if (checkColumnCount) {
-                                        requireCsvColumnCount(rowFields, table, line, ln + 1,
-                                            lastLine, recordNumber == 1, delimiter, enclosure);
+                                        final CsvColumnCountException count = records.loadWidthRefusal(
+                                            rowFields.size(), table.getName(), columnNames(tableCols),
+                                            recordNumber == 1);
+                                        if (count != null) {
+                                            throw count;
+                                        }
                                     }
                                     row = transformItems != null
                                         ? buildTransformedRow(transformItems, tableCols.size(), fieldToCol, rowFields, transformEval, transformSlots)
                                         : buildCopyRow(tableCols, fileFieldMap, rowFields);
-                                    executor.enforceColumnConstraints(table, row);
+                                    enforceLoadedRow(table, row, rowRules);
                                     fileRows.add(row);
                                 } catch (final RuntimeException rowError) {
                                     errors++;
+                                    final CopyFileError described = describeCsvError(rowError, table, row, records,
+                                        fileFieldMap);
                                     if (firstError == null) {
-                                        firstError = describeCsvError(rowError, table, row, line, ln + 1,
-                                            fileFieldMap, delimiter, enclosure);
+                                        firstError = described;
                                     }
                                     if (abortOnError) {
-                                        throw new RuntimeException(abortStatementError(rowError, table, row,
-                                            line, ln + 1, recordNumber, fileName, fieldToCol, delimiter,
-                                            enclosure), rowError);
+                                        throw new RuntimeException(abortStatementError(described, recordNumber,
+                                            fileName), rowError);
                                     }
                                 }
                             }
@@ -705,10 +760,10 @@ public final class CopyCommandExecutor {
                     throw new RuntimeException("COPY INTO failed reading file " + fileName + ": " + io.getMessage(), io);
                 }
                 bytesRead += file.toFile().length();
-                // ON_ERROR's per-file budget (fileErrorLimit): once a file's rejected-record count reaches it
-                // the WHOLE file is dropped, and the records that parsed cleanly go with it — under
-                // SKIP_FILE a file with one bad record out of two loads neither.
-                final int errorLimit = fileErrorLimit(onError, parsed);
+                // ON_ERROR's per-file budget (OnErrorOption.errorLimit): once a file's rejected-record count reaches
+                // it the WHOLE file is dropped, and the records that parsed cleanly go with it — under SKIP_FILE a
+                // file with one bad record out of two loads neither.
+                final int errorLimit = onError.errorLimit(parsed);
                 final boolean fileSkipped = errors >= errorLimit;
                 final int rowsLoaded = fileSkipped ? 0 : fileRows.size();
                 if (!fileSkipped) {
@@ -720,8 +775,8 @@ public final class CopyCommandExecutor {
                 // including a LOADED file that held no records at all. Live-verified: a re-COPY
                 // reported LOAD_FAILED a second time for the same file, but answered "0 files processed"
                 // for a partially loaded one and for a header-only one.
-                if (!loadFailed) {
-                    loadedKeys.add(fileKey);
+                if (!loadFailed && loadedKeys.add(fileKey)) {
+                    addedKeys.add(fileKey);
                 }
                 // A file counts as loaded — and so as purgeable — unless it is LOAD_FAILED. A clean file
                 // with no records at all (header-only, or empty) still counts: it is LOADED with zero rows.
@@ -731,22 +786,41 @@ public final class CopyCommandExecutor {
                 // A file dropped by a budget it never tripped on rejected records — SKIP_FILE_0 over a
                 // wholly CLEAN file — reports the quartet all-null beside errors_seen = 0: there was no
                 // first error to describe. A file dropped by a budget it DID trip still describes it.
+                final String fileStatus = loadFailed ? "LOAD_FAILED" : (errors == 0 ? "LOADED" : "PARTIALLY_LOADED");
                 resultRows.add(new Row(Arrays.asList(executor.stagedDisplayName(fromLocation, file),
-                    loadFailed ? "LOAD_FAILED" : (errors == 0 ? "LOADED" : "PARTIALLY_LOADED"),
+                    fileStatus,
                     parsed, rowsLoaded, errorLimit, errors,
                     firstError == null ? null : firstError.getMessage(),
                     firstError == null ? null : Integer.valueOf(firstError.getLine()),
                     firstError == null ? null : firstError.getCharacter(),
                     firstError == null ? null : firstError.getColumnName())));
+                completedLoads.add(new LoadRecord(fullyQualifiedTableName, table.isTemporary(),
+                    owningSchema.getDatabaseName(), owningSchema.getName(), table.getName(),
+                    executor.stagedDisplayName(fromLocation, file), fromLocationDisplay,
+                    executor.currentStatementInstant(), fileStatus, parsed, rowsLoaded, sizeOf(file), errors,
+                    errorLimit, firstError == null ? null : firstError.getMessage(),
+                    firstError == null ? null : Integer.valueOf(firstError.getLine()),
+                    firstError == null ? null : firstError.getCharacter(),
+                    firstError == null ? null : firstError.getColumnName()));
             }
 
-            final TableStorage targetStorage =
-                executor.getStorageEngine().getTableStorage(fullyQualifiedTableName);
-            for (final Row row : pending) {
-                targetStorage.insert(row);
-            }
+            // A load is DML (documented): its rows belong to the statement's transaction, seen by other sessions
+            // once it commits and gone when it rolls back; the load history and the purge wait for the commit too,
+            // and a rollback forgets the files the load marked as loaded, so the next COPY loads them again.
+            executor.storeLoadedRows(table, fullyQualifiedTableName, pending);
+            final Set<String> marked = loadedKeys;
+            executor.getTransactionManager().getCurrentTransaction().onOutcome(new TransactionOutcome() {
+                @Override
+                public void committed() {
+                    executor.getCatalog().getLoadHistory().add(completedLoads);
+                    purgeLoadedFiles(purgeCandidates);
+                }
 
-            purgeLoadedFiles(purgeCandidates);
+                @Override
+                public void rolledBack() {
+                    marked.removeAll(addedKeys);
+                }
+            });
         }
 
         // The files FILES = (…) named but the stage does not hold. Reaching here means ON_ERROR tolerates
@@ -756,7 +830,7 @@ public final class CopyCommandExecutor {
         // same name loaded it, LOADED, as soon as the file was staged).
         for (final String missing : missingFiles) {
             resultRows.add(new Row(Arrays.asList(missing, "LOAD_FAILED", 0, 0,
-                fileErrorLimit(onError, 0), 1, remoteFileMissingDetail(fromLocationDisplay, missing),
+                onError.errorLimit(0), 1, remoteFileMissingDetail(fromLocationDisplay, missing),
                 null, null, null)));
         }
 
@@ -772,6 +846,123 @@ public final class CopyCommandExecutor {
 
         logger.info("COPY INTO table completed: {} file result(s)", resultRows.size());
         return new ResultSet(resultColumns, resultRows);
+    }
+
+    /**
+     * A loaded row held to its table's constraints, once the load's rules have had it (see {@link LoadedRowRules}): a
+     * column the column list leaves out takes its DEFAULT or next IDENTITY value, and where the load truncates a text
+     * longer than its column is cut to the column's length, counted in characters as the width is — a CSV field and a
+     * semi-structured string loaded into a column of its own alike (documented).
+     */
+    private void enforceLoadedRow(final Table table, final Row row, final LoadedRowRules rules) {
+        final List<TableColumn> cols = table.getColumns();
+        for (int i = 0; i < cols.size() && i < row.getValues().size(); i++) {
+            final Object value = row.getValue(i);
+            if (rules.isOmitted(i)) {
+                row.setValue(i, executor.declaredDefaultFor(table, i, rules.storageName()));
+            } else if (rules.truncatesToColumns() && value instanceof String
+                    && cols.get(i).getDataType() instanceof StringType) {
+                final int width = ((StringType) cols.get(i).getDataType()).getMaxLength();
+                if (width > 0 && CodePointText.length((String) value) > width) {
+                    row.setValue(i, CodePointText.slice((String) value, 0, width));
+                }
+            } else {
+                // A number too wide for its column is the record's refusal, as an INSERT of it is.
+                executor.rejectLoadedValuePastColumnRange(value, cols.get(i));
+            }
+        }
+        executor.enforceColumnConstraints(table, row);
+    }
+
+    /** A staged file's size in bytes, as the load history reports it; 0 when the file cannot be measured. */
+    private static long sizeOf(final Path file) {
+        try {
+            return Files.size(file);
+        } catch (final IOException unmeasured) {
+            return 0L;
+        }
+    }
+
+    /**
+     * A file's records as the load reads them: a JSON file's top-level array split into its elements only under
+     * STRIP_OUTER_ARRAY = TRUE, without their null values under STRIP_NULL_VALUES = TRUE (see
+     * {@link JsonNullStripping}), and a byte that is no UTF-8 refusing the file unless REPLACE_INVALID_CHARACTERS =
+     * TRUE reads it as U+FFFD, as a staged-file query reads it.
+     */
+    private static List<JsonNode> loadedRecords(final StageFileReader reader, final Path file,
+                                                final LoadedRowRules rules) throws IOException {
+        final List<JsonNode> records = reader instanceof JsonStageReader
+            ? ((JsonStageReader) reader).readRecords(file, rules.stripsOuterArray(), rules.replacesInvalidCharacters(),
+                String.valueOf(file.getFileName()))
+            : reader.readRecords(file);
+        if (rules.stripsNullValues()) {
+            for (final JsonNode record : records) {
+                JsonNullStripping.strip(record);
+            }
+        }
+        return records;
+    }
+
+    /**
+     * The character set a load's ENCODING names, UTF-8 when it names none (documented).
+     *
+     * @param encoding the ENCODING as written, or null
+     * @return the set
+     */
+    private static Charset loadCharset(final String encoding) {
+        if (encoding == null) {
+            return StandardCharsets.UTF_8;
+        }
+        final Charset charset = StagedFileIo.charsetFor(encoding);
+        if (charset == null) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value ['" + encoding
+                + "'] for parameter 'ENCODING'"));
+        }
+        return charset;
+    }
+
+    /**
+     * A record's fields with the byte sequences the file's encoding could not read settled: each becomes U+FFFD under
+     * REPLACE_INVALID_CHARACTERS = TRUE, and otherwise the record is refused (documented).
+     */
+    private static void settleUnreadableText(final List<String> fields, final boolean replaceInvalidCharacters) {
+        for (int i = 0; i < fields.size(); i++) {
+            final String field = fields.get(i);
+            if (field != null && StagedFileIo.firstUnreadable(field) >= 0) {
+                if (!replaceInvalidCharacters) {
+                    // The bytes spelled as the account spells them reading a staged file: 'caf0xE9'.
+                    throw new RuntimeException("Invalid UTF8 detected in string '"
+                        + StagedFileIo.unreadableShown(field) + "'");
+                }
+                fields.set(i, StagedFileIo.unreadableReplaced(field));
+            }
+        }
+    }
+
+    /**
+     * The table columns a COPY's column list leaves out, by position, or null when it writes no list. They take their
+     * DEFAULT, or the next IDENTITY value, as an INSERT's would; a sequence cannot be the DEFAULT of one (documented).
+     */
+    private static boolean[] omittedColumns(final List<TableColumn> tableCols, final List<String> columns,
+                                            final int[] fieldToCol) {
+        if (columns == null || columns.isEmpty()) {
+            return null;
+        }
+        final boolean[] omitted = new boolean[tableCols.size()];
+        Arrays.fill(omitted, true);
+        for (final int column : fieldToCol) {
+            if (column >= 0 && column < omitted.length) {
+                omitted[column] = false;
+            }
+        }
+        for (int i = 0; i < omitted.length; i++) {
+            if (omitted[i] && tableCols.get(i).getDefaultValue() instanceof SequenceDefault) {
+                throw new RuntimeException(SqlCompilationError.of("Column " + tableCols.get(i).getName()
+                    + " is left out of the COPY column list, and a column left out cannot take a sequence as its"
+                    + " default value."));
+            }
+        }
+        return omitted;
     }
 
     /**
@@ -811,6 +1002,10 @@ public final class CopyCommandExecutor {
      * Snowflake rejects. The warning keeps the operator informed without changing the statement's outcome.
      */
     private void purgeLoadedFiles(final List<Path> loadedFiles) {
+        if (StatementClock.isReplay()) {
+            // The files a replayed load purged are gone already; one staged again under their name since stays.
+            return;
+        }
         final List<String> failures = new ArrayList<>();
         for (final Path file : loadedFiles) {
             try {
@@ -844,11 +1039,9 @@ public final class CopyCommandExecutor {
             final List<FrostlakeParser.CopyTransformItemContext> transformItems,
             final ExpressionEvaluator transformEval, final int transformSlots,
             final List<Path> candidates,
-            final StageFileReader recordReader, final int skipHeader, final char delimiter, final Character enclosure,
-            final boolean trimSpace, final List<String> nullIf, final boolean emptyFieldAsNull,
-            final boolean checkColumnCount, final boolean skipBlankLines,
-            final String fromLocation, final List<String> missingFiles) {
-        final String mode = validationMode.toUpperCase().replace("'", "").trim();
+            final StageFileReader recordReader, final FileFormatOptions format, final boolean checkColumnCount,
+            final String fromLocation, final List<String> missingFiles, final LoadedRowRules rowRules) {
+        final String mode = validationMode.toUpperCase(Locale.ROOT).replace("'", "").trim();
         final Matcher nRowsMatcher = RETURN_N_ROWS_MODE.matcher(mode);
         final int returnRows = nRowsMatcher.matches() ? Integer.parseInt(nRowsMatcher.group(1)) : -1;
 
@@ -861,8 +1054,7 @@ public final class CopyCommandExecutor {
             for (final Path file : candidates) {
                 for (final Row row : parseCopyFileRows(file, table, tableCols, fieldToCol,
                         transformItems, transformEval, transformSlots,
-                        recordReader, skipHeader, delimiter, enclosure, trimSpace, nullIf, emptyFieldAsNull,
-                        checkColumnCount, skipBlankLines, null)) {
+                        recordReader, format, checkColumnCount, null, rowRules)) {
                     rows.add(row);
                     if (rows.size() >= returnRows) {
                         return new ResultSet(columns, rows);
@@ -889,8 +1081,7 @@ public final class CopyCommandExecutor {
         final List<Row> errorRows = new ArrayList<>();
         for (final Path file : candidates) {
             parseCopyFileRows(file, table, tableCols, fieldToCol, transformItems, transformEval,
-                transformSlots, recordReader, skipHeader, delimiter, enclosure, trimSpace, nullIf,
-                emptyFieldAsNull, checkColumnCount, skipBlankLines, errorRows);
+                transformSlots, recordReader, format, checkColumnCount, errorRows, rowRules);
         }
         for (final String missing : missingFiles) {
             // The miss has no record geometry behind it — every positional column is null while the
@@ -912,21 +1103,20 @@ public final class CopyCommandExecutor {
             final List<TableColumn> tableCols, final int[] fieldToCol,
             final List<FrostlakeParser.CopyTransformItemContext> transformItems,
             final ExpressionEvaluator transformEval, final int transformSlots,
-            final StageFileReader recordReader, final int skipHeader, final char delimiter, final Character enclosure,
-            final boolean trimSpace, final List<String> nullIf, final boolean emptyFieldAsNull,
-            final boolean checkColumnCount, final boolean skipBlankLines, final List<Row> errorCollector) {
+            final StageFileReader recordReader, final FileFormatOptions format, final boolean checkColumnCount,
+            final List<Row> errorCollector, final LoadedRowRules rowRules) {
         final String fileName = StagePathSegments.diskName(file);
         final List<Row> rows = new ArrayList<>();
         try {
             if (recordReader != null) {
                 int recordNumber = 0;
-                for (final JsonNode record : recordReader.readRecords(file)) {
+                for (final JsonNode record : loadedRecords(recordReader, file, rowRules)) {
                     recordNumber++;
                     try {
                         final Row row = transformItems != null
                             ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record, transformEval, transformSlots)
-                            : buildJsonRow(tableCols, record);
-                        executor.enforceColumnConstraints(table, row);
+                            : buildJsonRow(tableCols, record, rowRules.matchByColumnName());
+                        enforceLoadedRow(table, row, rowRules);
                         rows.add(row);
                     } catch (final RuntimeException rowError) {
                         if (errorCollector == null) {
@@ -945,69 +1135,73 @@ public final class CopyCommandExecutor {
                 }
             } else {
                 // Streamed line read with a one-line lookahead — see the load path's CSV loop.
-                try (final BufferedReader reader = StagedFileIo.reader(file)) {
-                    // Byte offset of the line about to be read, headers included — the account's
-                    // BYTE_OFFSET points into the raw file (line terminators counted one byte each).
-                    long byteOffset = 0L;
-                    for (int skipped = 0; skipped < skipHeader; skipped++) {
-                        final String header = reader.readLine();
-                        if (header == null) {
-                            break;
-                        }
-                        byteOffset += header.getBytes(StandardCharsets.UTF_8).length + 1L;
-                    }
+                try (final BufferedReader reader = StagedFileIo.reader(file, rowRules.charset())) {
+                    // Split as the load splits it (see the load's CSV loop).
+                    final CsvRecordReader records = CsvRecordReader.forLoad(reader, fileName, format)
+                        .expectingWidth(checkColumnCount ? tableCols.size() : -1);
+                    records.skipLines(format.getSkipHeader());
                     int recordNumber = 0;
-                    String lookahead = reader.readLine();
-                    for (int ln = skipHeader; lookahead != null; ln++) {
-                        final String line = lookahead;
-                        lookahead = reader.readLine();
-                        final boolean lastLine = lookahead == null;
-                        final long recordOffset = byteOffset;
-                        byteOffset += line.getBytes(StandardCharsets.UTF_8).length + 1L;
-                        if (line.isEmpty() && skipBlankLines) {
-                            continue;
-                        }
-                        recordNumber++;
+                    while (true) {
+                        final List<Boolean> enclosed = new ArrayList<>();
+                        List<String> rowFields = null;
+                        RuntimeException rowError = null;
                         Row row = null;
                         try {
-                            final List<Boolean> enclosed = new ArrayList<>();
-                            final List<String> enclosedContent = new ArrayList<>();
-                            final List<String> rowFields = parseCsvLine(line, delimiter, enclosure, enclosed, enclosedContent);
-                            applyCsvFieldOptions(rowFields, trimSpace, nullIf, emptyFieldAsNull, enclosed, enclosedContent);
-                            if (checkColumnCount) {
-                                requireCsvColumnCount(rowFields, table, line, ln + 1,
-                                    lastLine, recordNumber == 1, delimiter, enclosure);
-                            }
-                            row = transformItems != null
-                                ? buildTransformedRow(transformItems, tableCols.size(), fieldToCol, rowFields, transformEval, transformSlots)
-                                : buildCopyRow(tableCols, fieldToCol, rowFields);
-                            executor.enforceColumnConstraints(table, row);
-                            rows.add(row);
-                        } catch (final RuntimeException rowError) {
-                            if (errorCollector == null) {
-                                throw new RuntimeException("COPY validation failed on file " + fileName
-                                    + " line " + (ln + 1) + ": " + copyErrorMessage(rowError), rowError);
-                            }
-                            // A column-count reject reports the position just past the record, which can be the
-                            // FOLLOWING line — the account's RETURN_ERRORS row does the same (its LINE was 3 for
-                            // a bad record on line 2, with the record's own line carried separately).
-                            final int errorLine = rowError instanceof CsvColumnCountException
-                                ? ((CsvColumnCountException) rowError).getLine() : ln + 1;
-                            final CopyFileError described = describeCsvError(rowError, table, row,
-                                line, ln + 1, fieldToCol, delimiter, enclosure);
-                            final CopyErrorTaxonomy taxonomy =
-                                CopyErrorTaxonomy.of(rowError, described.getMessage());
-                            // The rejected record is quoted back raw, KEEPING its line terminator —
-                            // except for the file's last record, which is quoted without one.
-                            final String rejected = lastLine ? line : line + "\n";
-                            errorCollector.add(new Row(Arrays.asList(
-                                described.getMessage(), fileName, errorLine,
-                                described.getCharacter(),
-                                described.getCharacter() == null
-                                    ? null : Long.valueOf(recordOffset + described.getCharacter() - 1L),
-                                taxonomy.getCategory(), taxonomy.getCode(), taxonomy.getSqlState(),
-                                described.getColumnName(), recordNumber, ln + 1, rejected)));
+                            rowFields = records.next(-1, recordNumber + 1, enclosed);
+                        } catch (final CsvParseFault fault) {
+                            records.skipRecordRest();
+                            rowError = fault;
                         }
+                        if (rowError == null && rowFields == null) {
+                            break;
+                        }
+                        recordNumber++;
+                        if (rowError == null) {
+                            try {
+                                settleUnreadableText(rowFields, rowRules.replacesInvalidCharacters());
+                                format.settle(rowFields, enclosed);
+                                if (checkColumnCount) {
+                                    final CsvColumnCountException count = records.loadWidthRefusal(rowFields.size(),
+                                        table.getName(), columnNames(tableCols), recordNumber == 1);
+                                    if (count != null) {
+                                        throw count;
+                                    }
+                                }
+                                row = transformItems != null
+                                    ? buildTransformedRow(transformItems, tableCols.size(), fieldToCol, rowFields,
+                                        transformEval, transformSlots)
+                                    : buildCopyRow(tableCols, fieldToCol, rowFields);
+                                enforceLoadedRow(table, row, rowRules);
+                                rows.add(row);
+                            } catch (final RuntimeException rejected) {
+                                rowError = rejected;
+                            }
+                        }
+                        if (rowError == null) {
+                            continue;
+                        }
+                        if (errorCollector == null) {
+                            throw new RuntimeException("COPY validation failed on file " + fileName
+                                + " line " + records.recordLine() + ": " + copyErrorMessage(rowError), rowError);
+                        }
+                        // A column-count reject reports the position just past the record, which can be the
+                        // FOLLOWING line — the account's RETURN_ERRORS row does the same (its LINE was 3 for
+                        // a bad record on line 2, with the record's own line carried separately).
+                        final CopyFileError described = rowError instanceof CsvParseFault
+                            ? describeCsvFault((CsvParseFault) rowError, table)
+                            : describeCsvError(rowError, table, row, records, fieldToCol);
+                        final CopyErrorTaxonomy taxonomy = CopyErrorTaxonomy.of(rowError, described.getMessage());
+                        // The rejected record is quoted back raw, KEEPING its line terminator —
+                        // except for the file's last record, which is quoted without one.
+                        final String rejectedRecord = records.goesOn() ? records.rawRecord() + "\n"
+                            : records.rawRecord();
+                        errorCollector.add(new Row(Arrays.asList(
+                            described.getMessage(), fileName, described.getLine(),
+                            described.getCharacter(),
+                            described.getCharacter() == null
+                                ? null : Long.valueOf(records.recordByte() + described.getCharacter() - 1L),
+                            taxonomy.getCategory(), taxonomy.getCode(), taxonomy.getSqlState(),
+                            described.getColumnName(), recordNumber, records.recordLine(), rejectedRecord)));
                     }
                 }
             }
@@ -1027,7 +1221,17 @@ public final class CopyCommandExecutor {
         this.copyRefreshPrefix = prefix;
         this.copyRefreshModifiedAfter = modifiedAfter != null ? parseRefreshTimestamp(modifiedAfter) : null;
         try {
-            return executor.execute(copyStatement);
+            // Snowpipe loads serverlessly: the load is no statement of the caller's session. It runs in a session
+            // of its own, outside the caller's transaction, takes no query ID and commits by itself.
+            final Object[] loaded = new Object[1];
+            executor.runInOwnSession(new Runnable() {
+                @Override
+                public void run() {
+                    loaded[0] = executor.executeUnrecorded(copyStatement);
+                    executor.getTransactionManager().autocommitStatementEnd();
+                }
+            });
+            return loaded[0];
         } finally {
             this.copyRefreshPrefix = null;
             this.copyRefreshModifiedAfter = null;
@@ -1081,74 +1285,20 @@ public final class CopyCommandExecutor {
     }
 
     /**
-     * ON_ERROR's value, upper-cased and validated. Snowflake accepts exactly {@code ABORT_STATEMENT},
-     * {@code CONTINUE}, {@code SKIP_FILE}, {@code SKIP_FILE_<n>} and {@code 'SKIP_FILE_<n>%'} (quoted or
-     * unquoted, any case) and rejects everything else outright — live-verified on a real account
-     *: {@code ON_ERROR = KEEP_GOING}, {@code = 2}, {@code = '2'} and {@code = 1} each fail
-     * compilation with "invalid value [&lt;as written&gt;] for parameter 'ON_ERROR'", so a bare error count is
-     * NOT a spelling of the threshold — {@code SKIP_FILE_<n>} is. (The {@code %} form must be quoted: the
-     * account rejects a bare {@code %} as a syntax error before the value is ever examined.) Accepting a
-     * value Snowflake refuses would silently downgrade it here to the aborting default.
+     * ON_ERROR's value, read as {@link OnErrorOption} reads it; every other value is refused outright, echoed as
+     * written (live-verified: {@code ON_ERROR = KEEP_GOING}, {@code = 2}, {@code = '2'} and {@code = 1} each fail
+     * compilation with "invalid value [&lt;as written&gt;] for parameter 'ON_ERROR'", so a bare error count is NOT
+     * a spelling of the threshold — {@code SKIP_FILE_<n>} is; the {@code %} form must be quoted, the account
+     * rejecting a bare {@code %} as a syntax error before the value is ever examined). Accepting a value Snowflake
+     * refuses would silently downgrade it here to the aborting default.
      */
-    private String requireValidOnError(final FrostlakeParser.CopyOptionValueContext valueCtx) {
-        final String value = copyOptValue(valueCtx);
-        if (value != null) {
-            final String upper = value.toUpperCase();
-            if (upper.equals("ABORT_STATEMENT") || upper.equals("CONTINUE")
-                    || SKIP_FILE_ON_ERROR.matcher(upper).matches()) {
-                return upper;
-            }
+    private OnErrorOption requireValidOnError(final FrostlakeParser.CopyOptionValueContext valueCtx) {
+        final OnErrorOption option = OnErrorOption.parse(copyOptValue(valueCtx));
+        if (option == null) {
+            throw new RuntimeException("SQL compilation error:\ninvalid value ["
+                + ParseTreeText.getOriginalText(valueCtx) + "] for parameter 'ON_ERROR'");
         }
-        throw new RuntimeException("SQL compilation error:\ninvalid value ["
-            + ParseTreeText.getOriginalText(valueCtx) + "] for parameter 'ON_ERROR'");
-    }
-
-    /**
-     * ON_ERROR's per-file error budget: how many rejected records ONE file may hold before the WHOLE file is
-     * dropped, the records that parsed cleanly along with it — and, identically, the {@code error_limit} the
-     * per-file result reports. Live-verified on a real account, every row of this table observed
-     * directly with a control run beside it:
-     *
-     * <ul>
-     *   <li>{@code CONTINUE} — the record count itself, {@code max(rows_parsed, 1)}: a 4-record file reported
-     *       4, a 2-record file 2, and a header-only file with nothing parsed reported 1 rather than 0. NOT
-     *       unlimited, though it behaves so — a budget equal to the record count can only be reached by a
-     *       file whose every record was rejected, which loads nothing and is LOAD_FAILED on that ground
-     *       alone (see {@link #fileLoadFailed}), so no clean record is ever dropped by it;</li>
-     *   <li>{@code ABORT_STATEMENT} — 1, whatever the file holds: clean loads of a 0-, 1- and 2-record file
-     *       all reported 1. It can never be reached, the statement having already failed on the first bad
-     *       record, so this value only ever shows up in the result;</li>
-     *   <li>{@code SKIP_FILE} — 1: a single bad record drops the file (a 2-record file with 1 bad record
-     *       loaded NOTHING and reported LOAD_FAILED, not the good record);</li>
-     *   <li>{@code SKIP_FILE_<n>} — n, taken as-is and NOT clamped: a 4-record file with 1 bad record
-     *       survived {@code SKIP_FILE_2} (PARTIALLY_LOADED, 3 loaded) and was dropped by
-     *       {@code SKIP_FILE_1}, and {@code SKIP_FILE_0} dropped a wholly CLEAN file — 0 rejected records
-     *       already reaches a budget of 0;</li>
-     *   <li>{@code 'SKIP_FILE_<n>%'} — n percent of the records parsed, rounded DOWN, but never below 1.
-     *       Pinned by three readings of the account's own reported error_limit: 70% of 4 records = 2 (not 3,
-     *       so not rounded up), 50% of 3 = 1 (not 2, so not rounded to nearest), and 0% of 2 = 1 (not 0, so
-     *       floored at one) — the last confirmed by a clean file loading normally under
-     *       {@code 'SKIP_FILE_0%'} while {@code SKIP_FILE_0} dropped it.</li>
-     * </ul>
-     *
-     * The budget is per FILE, not per statement: one run over four files under {@code SKIP_FILE_2} reported
-     * LOADED / PARTIALLY_LOADED (1 error) / LOAD_FAILED (2 errors) / LOAD_FAILED (2 errors) side by side,
-     * so the count never carries from one file to the next.
-     */
-    private static int fileErrorLimit(final String onError, final int rowsParsed) {
-        final Matcher skipFile = SKIP_FILE_ON_ERROR.matcher(onError);
-        if (!skipFile.matches()) {
-            // ABORT_STATEMENT reports a flat 1; CONTINUE reports the record count, floored at one.
-            return "CONTINUE".equals(onError) ? Math.max(rowsParsed, 1) : 1;
-        }
-        if (skipFile.group(1) == null) {
-            return 1;
-        }
-        final int count = skipFileErrorCount(skipFile.group(1));
-        if (skipFile.group(2) == null) {
-            return count;
-        }
-        return (int) Math.min(Integer.MAX_VALUE, Math.max(1L, (long) count * rowsParsed / 100L));
+        return option;
     }
 
     /**
@@ -1167,11 +1317,8 @@ public final class CopyCommandExecutor {
      * lines carrying the geometry the result row would have reported, then the fixed advice
      * sentence. {@code Row} counts data records where {@code line} counts physical lines.
      */
-    private String abortStatementError(final RuntimeException rowError, final Table table, final Row row,
-            final String line, final int lineNumber, final int recordNumber, final String fileName,
-            final int[] fieldToCol, final char delimiter, final Character enclosure) {
-        final CopyFileError err = describeCsvError(rowError, table, row, line, lineNumber,
-            fieldToCol, delimiter, enclosure);
+    private static String abortStatementError(final CopyFileError err, final int recordNumber,
+            final String fileName) {
         final StringBuilder sb = new StringBuilder(err.getMessage());
         sb.append("\n  File '").append(fileName).append("', line ").append(err.getLine());
         if (err.getCharacter() != null) {
@@ -1187,9 +1334,32 @@ public final class CopyCommandExecutor {
         return sb.toString();
     }
 
+    /**
+     * A record the file's splitting refused (see {@link CsvRecordReader}), described as the load's result reports it:
+     * the sentence, the place the fault was found, and the column of the field it was found in — named when the
+     * table has one there.
+     */
+    private static CopyFileError describeCsvFault(final CsvParseFault fault, final Table table) {
+        final List<TableColumn> cols = table.getColumns();
+        final int field = fault.getField();
+        final String column = field >= 1 && field <= cols.size()
+            ? errorColumnName(table.getName(), cols.get(field - 1).getName(), field)
+            : "\"" + table.getName() + "\"[" + field + "]";
+        return new CopyFileError(fault.getDetail(), fault.getLine(), Integer.valueOf(fault.getCharacter()), column);
+    }
+
+    /** A table's column names, in order. */
+    private static List<String> columnNames(final List<TableColumn> cols) {
+        final List<String> names = new ArrayList<>(cols.size());
+        for (final TableColumn col : cols) {
+            names.add(col.getName());
+        }
+        return names;
+    }
+
     private CopyFileError describeCsvError(final RuntimeException rowError, final Table table, final Row row,
-            final String line, final int lineNumber, final int[] fieldToCol,
-            final char delimiter, final Character enclosure) {
+            final CsvRecordReader records, final int[] fieldToCol) {
+        final int lineNumber = records.recordLine();
         if (rowError instanceof CsvColumnCountException) {
             // A count reject worked out its own geometry when it was raised: it happens before a row exists,
             // and the position it reports is off the end of the fields rather than at one of them.
@@ -1204,7 +1374,8 @@ public final class CopyCommandExecutor {
         Integer character = null;
         for (int f = 0; f < fieldToCol.length; f++) {
             if (fieldToCol[f] == colIdx) {
-                character = Integer.valueOf(csvFieldStart(line, delimiter, enclosure, f));
+                // The field's own start, counted over the record's raw text — enclosure characters included.
+                character = Integer.valueOf(records.fieldCharacter(f));
                 break;
             }
         }
@@ -1260,38 +1431,6 @@ public final class CopyCommandExecutor {
         return -1;
     }
 
-    /**
-     * The 1-based character at which CSV field {@code fieldIndex} (0-based) starts in {@code line}, counted
-     * over the RAW text — enclosure characters included. Live-verified: a bad third field reported
-     * 7 in {@code 2,bob,BADAGE} and 10 in {@code 2,"b,ob",BADAGE}, so the offset is the real position in the
-     * line and not one recomputed from the parsed field widths. Splits exactly the way
-     * {@link #parseCsvLine} does, so a delimiter inside an enclosure does not start a field.
-     */
-    private static int csvFieldStart(final String line, final char delimiter, final Character enclosure,
-            final int fieldIndex) {
-        if (fieldIndex <= 0) {
-            return 1;
-        }
-        int field = 0;
-        boolean inQuotes = false;
-        for (int i = 0; i < line.length(); i++) {
-            final char c = line.charAt(i);
-            if (enclosure != null && c == enclosure) {
-                if (inQuotes && i + 1 < line.length() && line.charAt(i + 1) == enclosure) {
-                    i++;                       // escaped enclosure ("") — not a boundary
-                } else {
-                    inQuotes = !inQuotes;
-                }
-            } else if (c == delimiter && !inQuotes) {
-                field++;
-                if (field == fieldIndex) {
-                    return i + 2;              // the character just past this delimiter, 1-based
-                }
-            }
-        }
-        return 1;
-    }
-
     /** Snowflake's {@code first_error_column_name} rendering: {@code "TABLE"["COLUMN":ordinal]}, 1-based. */
     private static String errorColumnName(final String tableName, final String columnName, final int ordinal) {
         return "\"" + tableName + "\"[\"" + columnName + "\":" + ordinal + "]";
@@ -1327,97 +1466,6 @@ public final class CopyCommandExecutor {
             && transformItems == null
             && (columns == null || columns.isEmpty())
             && (matchByColumnName == null || "NONE".equalsIgnoreCase(matchByColumnName));
-    }
-
-    /**
-     * {@code ERROR_ON_COLUMN_COUNT_MISMATCH} (Snowflake default TRUE): reject a CSV record whose field count
-     * differs from the target table's column count, in EITHER direction. Without it a malformed file loads
-     * silently reshaped — an extra field dropped, a missing one NULL-padded — and reports a clean
-     * {@code LOADED}, which is the whole reason the option defaults to TRUE.
-     *
-     * <p>Live-verified on a real account, the option's two settings run side by side over the
-     * same staged files. With {@code = FALSE} the account loads them exactly the lenient way: a
-     * {@code 1,a,extra} record into a two-column table lands {@code (1, a)} and a bare {@code 1} record lands
-     * {@code (1, NULL)}, {@code LOADED} with {@code errors_seen = 0} and the whole first_error quartet null.
-     * With the default the same records are rejected and counted as ordinary errors — they spend the
-     * {@code ON_ERROR} budget like any other bad record ({@code SKIP_FILE} dropped a 3-record file over one
-     * such record, {@code SKIP_FILE_2} let it through PARTIALLY_LOADED), and the aborting default fails the
-     * statement outright (SQLSTATE 22000, error 100080) leaving the table empty.
-     *
-     * <p>WHICH message a rejected record gets turns on ONE thing: whether it is the file's FIRST data record.
-     * Pinned by varying every other dimension against it — direction (too many / too few), table width (2 and
-     * 3 columns), field delimiter (comma and pipe), file length (1, 2 and 3 records), and the record's
-     * position (first / middle / last, with a one-record file making first and last the same record):
-     *
-     * <ul>
-     *   <li><b>the first data record</b> — {@code Number of columns in file (F) does not match that of the
-     *       corresponding table (T), use file format option error_on_column_count_mismatch=false to ignore
-     *       this error}, either direction, and the delimiter never appears in it. Reported at the position
-     *       just PAST the record: the start of the following line when the file has one (line + 1, character
-     *       1), else the end of the record's own line (character length + 1) — the same physical spot,
-     *       rendered whichever way the file allows. Its column is the ordinal F, named when the table has an
-     *       F-th column ({@code "T"["ID":1]} for one field into two columns) and bare when it does not
-     *       ({@code "T"[3]} for three fields into two, {@code "T"[5]} for five into three) — the only
-     *       first_error_column_name shape in the whole COPY result that carries no name;</li>
-     *   <li><b>a later record with TOO MANY fields</b> — {@code Field delimiter '<d>' found while expecting
-     *       record delimiter '\n'}, quoting the file format's OWN delimiter (a pipe-delimited file said
-     *       {@code '|'}). Reported at the offending delimiter itself — the one that should have ended the
-     *       record — and against the table's LAST column;</li>
-     *   <li><b>a later record with TOO FEW fields</b> — {@code End of record reached while expected to parse
-     *       column '<col>'}, naming the first column the record never reached, in the same rendering the
-     *       column is reported in. Reported just past the record's end.</li>
-     * </ul>
-     *
-     * A wholly BLANK line is one empty field, so on any table wider than one column it is a too-few record
-     * and rejected exactly like that — live-verified, and the reason {@code SKIP_BLANK_LINES} exists.
-     */
-    private static void requireCsvColumnCount(final List<String> fields, final Table table, final String line,
-            final int lineNumber, final boolean lastLine, final boolean firstRecord,
-            final char delimiter, final Character enclosure) {
-        final int fileColumns = fields.size();
-        final int tableColumns = table.getColumns().size();
-        if (fileColumns == tableColumns) {
-            return;
-        }
-        if (firstRecord) {
-            throw new CsvColumnCountException("Number of columns in file (" + fileColumns
-                + ") does not match that of the corresponding table (" + tableColumns
-                + "), use file format option error_on_column_count_mismatch=false to ignore this error",
-                lastLine ? lineNumber : lineNumber + 1,
-                Integer.valueOf(lastLine ? line.length() + 1 : 1),
-                countMismatchColumnName(table, fileColumns));
-        }
-        if (fileColumns > tableColumns) {
-            throw new CsvColumnCountException("Field delimiter '" + delimiter
-                + "' found while expecting record delimiter '\\n'", lineNumber,
-                Integer.valueOf(csvFieldStart(line, delimiter, enclosure, tableColumns) - 1),
-                errorColumnName(table.getName(), table.getColumns().get(tableColumns - 1).getName(), tableColumns));
-        }
-        final String missingColumn = errorColumnName(table.getName(),
-            table.getColumns().get(fileColumns).getName(), fileColumns + 1);
-        throw new CsvColumnCountException("End of record reached while expected to parse column '"
-            + missingColumn + "'", lineNumber, Integer.valueOf(line.length() + 1), missingColumn);
-    }
-
-    /**
-     * The column a first-record count mismatch is reported against: always the ordinal of the file's own
-     * field count, named when the table reaches that far and bare when it does not (see
-     * {@link #requireCsvColumnCount}).
-     */
-    private static String countMismatchColumnName(final Table table, final int fileColumns) {
-        if (fileColumns > table.getColumns().size()) {
-            return "\"" + table.getName() + "\"[" + fileColumns + "]";
-        }
-        return errorColumnName(table.getName(), table.getColumns().get(fileColumns - 1).getName(), fileColumns);
-    }
-
-    /** The {@code <n>} of a SKIP_FILE_&lt;n&gt;: a budget too wide for an int is wider than any file here. */
-    private static int skipFileErrorCount(final String digits) {
-        try {
-            return Integer.parseInt(digits);
-        } catch (final NumberFormatException tooWide) {
-            return Integer.MAX_VALUE;
-        }
     }
 
     /**
@@ -1534,29 +1582,13 @@ public final class CopyCommandExecutor {
     }
 
     /**
-     * A file-format PARAMETER inside {@code FILE_FORMAT = (…)} may be given once, and its repeat
-     * carries a different sentence from a repeated copy OPTION (live-verified). The name is the
-     * parameter's first token, read off the parse tree.
-     */
-    private static void requireDistinctFormatOptions(
-            final List<FrostlakeParser.CopyFormatOptionContext> options) {
-        final Set<String> seen = new HashSet<>();
-        for (final FrostlakeParser.CopyFormatOptionContext option : options) {
-            final String name = option.getStart().getText().toUpperCase();
-            if (!seen.add(name)) {
-                throw new RuntimeException(SqlCompilationError.conflictingFileFormatParameter(name));
-            }
-        }
-    }
-
-    /**
      * The invalid-value shape with live's three renderings: a quoted string echoes with its
      * quotes, a bareword or negative integer echoes bare.
      */
     private static RuntimeException invalidCopyOptionValue(final String name,
             final FrostlakeParser.CopyOptionValueContext value) {
         final String raw = value.getText();
-        final String rendered = value.STRING_LITERAL() != null ? raw : raw.toUpperCase();
+        final String rendered = value.STRING_LITERAL() != null ? raw : raw.toUpperCase(Locale.ROOT);
         return new RuntimeException(SqlCompilationError.invalidValueForParameter(rendered, name));
     }
 
@@ -1604,7 +1636,7 @@ public final class CopyCommandExecutor {
     private String firstDisallowedTransformCall(final Expression expr) {
         if (expr instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) expr;
-            final String name = call.getFunctionName().toUpperCase();
+            final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
             if (!TRANSFORM_FUNCTION_ALLOWLIST.contains(name)
                     && !name.startsWith("TO_") && !name.startsWith("TRY_TO_")) {
                 return call.getFunctionName();
@@ -1729,7 +1761,61 @@ public final class CopyCommandExecutor {
 
     /** Whether a VALIDATION_MODE value is the error-listing family rather than RETURN_&lt;n&gt;_ROWS. */
     private static boolean isReturnErrorsMode(final String validationMode) {
-        return !RETURN_N_ROWS_MODE.matcher(validationMode.toUpperCase().replace("'", "").trim()).matches();
+        return !RETURN_N_ROWS_MODE.matcher(validationMode.toUpperCase(Locale.ROOT).replace("'", "").trim()).matches();
+    }
+
+    /**
+     * A load that names a STORAGE_INTEGRATION has it looked up before anything else it names: the target table,
+     * the stage and its credentials come after, and only another option's own value is judged first — ON_ERROR's,
+     * and the parameters an ENCRYPTION group's TYPE takes. Under a VALIDATION_MODE the name is not looked up at all
+     * (live-verified).
+     *
+     * @param ctx the COPY INTO &lt;table&gt; statement
+     */
+    private void requireStorageIntegration(final FrostlakeParser.CopyIntoStatementContext ctx) {
+        FrostlakeParser.CopyOptionValueContext named = null;
+        for (final FrostlakeParser.CopyIntoTableClauseContext clause : ctx.copyIntoTableClause()) {
+            if (clause.VALIDATION_MODE() != null) {
+                return;
+            }
+            if (named == null && clause.identifier() != null && clause.copyOptionValue() != null
+                    && StorageIntegrationReference.PROPERTY.equalsIgnoreCase(
+                        ParseTreeText.getIdentifier(clause.identifier()))) {
+                named = clause.copyOptionValue();
+            }
+        }
+        if (named == null) {
+            return;
+        }
+        for (final FrostlakeParser.CopyIntoTableClauseContext clause : ctx.copyIntoTableClause()) {
+            if (clause.ON_ERROR() != null) {
+                requireValidOnError(clause.copyOptionValue());
+            }
+            if (clause.optionKey() != null && clause.parenOptionList() != null
+                    && "ENCRYPTION".equalsIgnoreCase(clause.optionKey().getText())) {
+                requireEncryptionParameters(clause.parenOptionList());
+            }
+        }
+        StorageIntegrationReference.require(executor.getCatalog(), named);
+    }
+
+    /**
+     * An ENCRYPTION group whose TYPE is NONE takes no other parameter: {@code ENCRYPTION = (TYPE='NONE'
+     * MASTER_KEY='key')} is refused {@code Incompatible number of parameters for value [TYPE]} (live-verified).
+     *
+     * @param group the group as written
+     */
+    private void requireEncryptionParameters(final FrostlakeParser.ParenOptionListContext group) {
+        boolean none = false;
+        for (final FrostlakeParser.ParenOptionContext option : group.parenOption()) {
+            if ("TYPE".equalsIgnoreCase(option.optionKey().getText()) && option.copyOptionValue() != null
+                    && "NONE".equalsIgnoreCase(copyOptValue(option.copyOptionValue()))) {
+                none = true;
+            }
+        }
+        if (none && group.parenOption().size() > 1) {
+            throw new RuntimeException("Incompatible number of parameters for value [TYPE]");
+        }
     }
 
     /** The string value of a copy option: quotes stripped for a STRING_LITERAL, else the literal token text (CSV, GZIP, CONTINUE, …). */
@@ -1791,7 +1877,7 @@ public final class CopyCommandExecutor {
                 || transformation != null) {
             return;
         }
-        final String type = fileFormat.toUpperCase();
+        final String type = fileFormat.toUpperCase(Locale.ROOT);
         if (!SEMI_STRUCTURED_LOAD_FORMATS.contains(type)) {
             return;
         }
@@ -1844,78 +1930,9 @@ public final class CopyCommandExecutor {
         return mapped;
     }
 
-    /** NULL_IF values from a COPY FILE_FORMAT option: the parenthesized string list, or a single scalar value. */
-    private List<String> copyNullIfValues(final FrostlakeParser.CopyFormatOptionContext option) {
-        final List<String> values = new ArrayList<>();
-        if (option.stringLiteralList() != null) {
-            for (final TerminalNode node : option.stringLiteralList().STRING_LITERAL()) {
-                values.add(ParseTreeText.extractStringLiteral(node));
-            }
-        } else if (option.copyOptionValue() != null) {
-            values.add(copyOptValue(option.copyOptionValue()));
-        }
-        return values;
-    }
-
-    /**
-     * Apply TRIM_SPACE, NULL_IF and EMPTY_FIELD_AS_NULL to a parsed CSV row in place, in that order: trim
-     * leading/trailing whitespace from each field (when enabled), null out any field whose (trimmed) value
-     * matches a NULL_IF token, then — under EMPTY_FIELD_AS_NULL, whose Snowflake default is TRUE — null out
-     * any field left empty. A null in the field list is loaded as SQL NULL by {@code buildCopyRow} /
-     * {@code inferStageFieldValue}; an empty string survives as the empty string.
-     *
-     * <p>The three settle in that order because each was live-verified against a real account
-     * against a control run producing the other outcome:
-     *
-     * <ul>
-     *   <li>TRIM_SPACE runs FIRST, so a field of nothing but spaces is empty by the time this rule sees it:
-     *       {@code '   '} under {@code TRIM_SPACE = TRUE} loaded as NULL by default and as the empty string
-     *       under {@code EMPTY_FIELD_AS_NULL = FALSE}, while the same field without TRIM_SPACE kept its three
-     *       spaces under both;</li>
-     *   <li>NULL_IF WINS over the option: {@code NULL_IF = ('')} with {@code EMPTY_FIELD_AS_NULL = FALSE}
-     *       loaded NULL. The two are independent rather than alternatives — {@code NULL_IF = ()} with the
-     *       default still loaded an empty field as NULL, and {@code NULL_IF = ('x')} with the default nulled
-     *       both the empty field and the literal {@code x};</li>
-     *   <li>an ENCLOSED empty field is NOT an empty field: with {@code FIELD_OPTIONALLY_ENCLOSED_BY = '"'} a
-     *       {@code ""} loaded as the empty string even under the default TRUE, beside a bare {@code ,,} in
-     *       the same record that loaded NULL. (The option defaults to NONE, so without it {@code ""} is an
-     *       ordinary two-character string and this exemption cannot arise — {@code enclosedEmpty} is then
-     *       empty.)</li>
-     * </ul>
-     *
-     * <p>{@code enclosed} and {@code enclosedContent} carry {@link #parseCsvLine}'s per-field
-     * enclosure flags and contents and may be shorter than {@code fields} (they are filled only
-     * while an enclosure is set).
-     */
-    private static void applyCsvFieldOptions(final List<String> fields, final boolean trimSpace,
-            final List<String> nullIf, final boolean emptyFieldAsNull, final List<Boolean> enclosed,
-            final List<String> enclosedContent) {
-        if (!trimSpace && !emptyFieldAsNull && (nullIf == null || nullIf.isEmpty())) {
-            return;
-        }
-        for (int i = 0; i < fields.size(); i++) {
-            String value = fields.get(i);
-            if (value == null) {
-                continue;
-            }
-            final boolean fieldEnclosed = i < enclosed.size() && enclosed.get(i).booleanValue();
-            if (trimSpace) {
-                // The account trims around the enclosure, never inside it: an enclosed field keeps
-                // its content verbatim (padding included) while a bare field is trimmed whole.
-                value = fieldEnclosed && i < enclosedContent.size() ? enclosedContent.get(i) : value.trim();
-            }
-            if (nullIf != null && nullIf.contains(value)) {
-                value = null;
-            } else if (emptyFieldAsNull && value.isEmpty() && !fieldEnclosed) {
-                value = null;
-            }
-            fields.set(i, value);
-        }
-    }
-
     /**
      * Build one row from a CSV record's fields, placing each field in the column it maps onto (unmapped
-     * columns stay NULL). The fields arrive already settled by {@link #applyCsvFieldOptions}, so a null is a
+     * columns stay NULL). The fields arrive already settled by {@link FileFormatOptions#settle}, so a null is a
      * SQL NULL and an empty string is a real empty string — with ONE exception: a semi-structured target
      * column takes NULL for an empty field whatever EMPTY_FIELD_AS_NULL says. Live-verified with
      * a control beside it: {@code EMPTY_FIELD_AS_NULL = FALSE} loaded an empty field as NULL into both a
@@ -1971,7 +1988,7 @@ public final class CopyCommandExecutor {
     /**
      * Infer a staged CSV field's value: numeric literals become numbers so $n arithmetic (e.g. {@code $3 * 2})
      * works, anything else stays a string for text functions (e.g. {@code UPPER($2)}). The field arrives
-     * already settled by {@link #applyCsvFieldOptions} — a null is a SQL NULL, and an empty string is
+     * already settled by {@link FileFormatOptions#settle} — a null is a SQL NULL, and an empty string is
      * passed through as itself, which is what makes a COPY transformation honour EMPTY_FIELD_AS_NULL the
      * way a plain load does ({@code COPY INTO t FROM (SELECT $1, $2 FROM @s)}
      * loaded the empty string under {@code = FALSE} and NULL under the default). The value is still
@@ -2078,89 +2095,23 @@ public final class CopyCommandExecutor {
     }
 
     /** A file's load-history identity: name + size + last-modified (re-staging a changed file reloads it). */
-    private static String copyFileKey(final Path file) {
+    private String copyFileKey(final Path file) {
         // The whole path, not the bare name: a load reaches files at any depth, and dir/a.csv and
         // other/a.csv are two files — live loads the second after the first (live-verified).
         // A file moved inside the directory of its name, when later names continued it, keeps its key.
         final File f = file.toAbsolutePath().normalize().toFile();
-        return StagePathSegments.namedPath(file.toAbsolutePath().normalize()) + "|" + f.length() + "|"
-            + f.lastModified();
+        return portable(String.valueOf(StagePathSegments.namedPath(file.toAbsolutePath().normalize()))) + "|"
+            + f.length() + "|" + f.lastModified();
     }
 
-    /**
-     * Split one CSV line on {@code delimiter}, honoring an optional enclosure character (with {@code ""}
-     * escaping). Public so the stage-query path (SELECT … FROM @stage) reads fields exactly the way COPY
-     * INTO does.
-     *
-     * <p>{@code enclosedOut} collects, alongside each field, whether an enclosure produced it. The
-     * flag keeps an enclosed empty ({@code ""}) apart from a blank field — EMPTY_FIELD_AS_NULL nulls
-     * only the blank one — and marks the fields TRIM_SPACE must leave untrimmed (see
-     * {@link #applyCsvFieldOptions}). It is filled in field order and stays empty when no enclosure
-     * is configured, since neither distinction can arise then.
-     */
-    public static List<String> parseCsvLine(final String line, final char delimiter, final Character enclosure,
-            final List<Boolean> enclosedOut) {
-        return parseCsvLine(line, delimiter, enclosure, enclosedOut, null);
-    }
-
-    /**
-     * The four-argument split plus, when {@code enclosedContentOut} is given, each field's ENCLOSURE
-     * CONTENT — the characters between the first opening and last closing enclosure, escapes
-     * resolved, with whatever sat outside the enclosure left out. TRIM_SPACE needs it: the account
-     * trims spaces around the enclosure but keeps the enclosed content verbatim, so
-     * {@code  " x y " } loads as {@code  x y } (padding inside the quotes intact). For a field with
-     * no enclosure the content is the field itself.
-     */
-    public static List<String> parseCsvLine(final String line, final char delimiter, final Character enclosure,
-            final List<Boolean> enclosedOut, final List<String> enclosedContentOut) {
-        final List<String> fields = new ArrayList<>();
-        final StringBuilder cur = new StringBuilder();
-        boolean inQuotes = false;
-        boolean sawEnclosure = false;
-        int contentStart = -1;
-        int contentEnd = -1;
-        for (int i = 0; i < line.length(); i++) {
-            final char c = line.charAt(i);
-            if (enclosure != null && c == enclosure) {
-                if (!sawEnclosure) {
-                    contentStart = cur.length();
-                }
-                sawEnclosure = true;
-                if (inQuotes && i + 1 < line.length() && line.charAt(i + 1) == enclosure) {
-                    cur.append(enclosure);   // escaped enclosure ("")
-                    i++;
-                } else {
-                    if (inQuotes) {
-                        contentEnd = cur.length();
-                    }
-                    inQuotes = !inQuotes;
-                }
-            } else if (c == delimiter && !inQuotes) {
-                final String field = cur.toString();
-                fields.add(field);
-                if (enclosure != null) {
-                    enclosedOut.add(Boolean.valueOf(sawEnclosure));
-                    if (enclosedContentOut != null) {
-                        enclosedContentOut.add(enclosedContent(field, sawEnclosure, contentStart, contentEnd));
-                    }
-                }
-                cur.setLength(0);
-                sawEnclosure = false;
-                contentStart = -1;
-                contentEnd = -1;
-            } else {
-                cur.append(c);
+    /** Whether a field read so far holds nothing but spaces, which may come before its enclosure. */
+    private static boolean blank(final StringBuilder field) {
+        for (int i = 0; i < field.length(); i++) {
+            if (field.charAt(i) != ' ') {
+                return false;
             }
         }
-        final String field = cur.toString();
-        fields.add(field);
-        if (enclosure != null) {
-            enclosedOut.add(Boolean.valueOf(sawEnclosure));
-            if (enclosedContentOut != null) {
-                enclosedContentOut.add(enclosedContent(field, sawEnclosure, contentStart, contentEnd));
-            }
-        }
-        return fields;
+        return true;
     }
 
     /** One field's enclosure content — the field itself when no enclosure (or none closed). */
@@ -2173,30 +2124,54 @@ public final class CopyCommandExecutor {
         return field.substring(Math.min(contentStart, field.length()), Math.min(end, field.length()));
     }
 
-    /** Map a JSON record to a row: a single (VARIANT) column gets the whole element; otherwise object fields map to columns by name. */
-    private static Row buildJsonRow(final List<TableColumn> tableCols, final JsonNode record) {
+    /**
+     * Map a JSON record to a row: a single (VARIANT) column gets the whole element; otherwise object fields map to
+     * columns by name, as MATCH_BY_COLUMN_NAME says: CASE_SENSITIVE takes a key spelled exactly as the column,
+     * CASE_INSENSITIVE a key in any case, the exact spelling first (documented).
+     */
+    private static Row buildJsonRow(final List<TableColumn> tableCols, final JsonNode record,
+                                    final String matchByColumnName) {
         final List<Object> values = new ArrayList<>(tableCols.size());
         if (tableCols.size() == 1) {
             values.add(jsonNodeToValue(record, tableCols.get(0)));
             return new Row(values);
         }
         for (final TableColumn col : tableCols) {
-            values.add(jsonNodeToValue(jsonField(record, col.getName()), col));
+            values.add(jsonNodeToValue(jsonField(record, col.getName(), matchByColumnName), col));
         }
         return new Row(values);
     }
 
-    /** Look up a JSON object field by column name, tolerating case (JSON keys are case-sensitive, SQL columns are not). */
-    private static JsonNode jsonField(final JsonNode record, final String columnName) {
+    /**
+     * Look up a JSON object field by column name. Under MATCH_BY_COLUMN_NAME = CASE_SENSITIVE only the exact spelling
+     * is the column's; under CASE_INSENSITIVE any spelling is, the exact one first; with no mode the column's own,
+     * lower-case and upper-case spellings are tried, as before.
+     */
+    private static JsonNode jsonField(final JsonNode record, final String columnName, final String matchByColumnName) {
         if (record == null || !record.isObject()) {
+            return null;
+        }
+        if ("CASE_SENSITIVE".equalsIgnoreCase(matchByColumnName)) {
+            return record.get(columnName);
+        }
+        if ("CASE_INSENSITIVE".equalsIgnoreCase(matchByColumnName)) {
+            final JsonNode exact = record.get(columnName);
+            if (exact != null) {
+                return exact;
+            }
+            for (final String name : record.propertyNames()) {
+                if (name.equalsIgnoreCase(columnName)) {
+                    return record.get(name);
+                }
+            }
             return null;
         }
         JsonNode value = record.get(columnName);
         if (value == null) {
-            value = record.get(columnName.toLowerCase());
+            value = record.get(columnName.toLowerCase(Locale.ROOT));
         }
         if (value == null) {
-            value = record.get(columnName.toUpperCase());
+            value = record.get(columnName.toUpperCase(Locale.ROOT));
         }
         return value;
     }
@@ -2216,6 +2191,64 @@ public final class CopyCommandExecutor {
             return ArrayFunctionHelper.toCanonicalVariant(node);
         }
         return node.isValueNode() ? node.asText() : node.toString();
+    }
+
+    /**
+     * The options an unload writes its text by: the target stage's own format, then the statement's FILE_FORMAT
+     * clause, a format either names first and the options written beside it after.
+     */
+    private FileFormatOptions unloadFormat(final String location, final FrostlakeParser.CopyIntoStatementContext ctx) {
+        final FileFormatOptions options = new FileFormatOptions();
+        final Stage stage = namedStageOf(location);
+        if (stage != null) {
+            final Map<String, String> own = stage.getFileFormatOptions();
+            if (own.get("FORMAT_NAME") != null) {
+                takeNamedFormat(options, own.get("FORMAT_NAME"));
+            }
+            options.takeAll(own);
+        }
+        for (final FrostlakeParser.CopyIntoStageClauseContext clause : ctx.copyIntoStageClause()) {
+            if (clause.FILE_FORMAT() != null && clause.copyFormatOptions() != null) {
+                takeWrittenFormat(options, clause.copyFormatOptions().copyFormatOption());
+            }
+        }
+        return options;
+    }
+
+    /**
+     * The statement's inline FILE_FORMAT list onto the options, read and judged as every such list is (see
+     * {@link FileFormatClause}): the format FORMAT_NAME names first, which must be there, then the options
+     * written beside it.
+     */
+    private void takeWrittenFormat(final FileFormatOptions options,
+                                   final List<FrostlakeParser.CopyFormatOptionContext> written) {
+        final FileFormatClause clause = FileFormatClause.read(written, new FileFormat("WRITTEN", options.getType()),
+            true, true);
+        if (clause.formatName() != null) {
+            FileFormatReference.require(executor.getCatalog(), SqlIdentifiers.canonicalText(clause.formatName()));
+            takeNamedFormat(options, clause.formatName());
+        }
+        options.takeWritten(clause);
+    }
+
+    private void takeNamedFormat(final FileFormatOptions options, final String name) {
+        final FileFormat named = resolveFileFormat(name);
+        if (named != null) {
+            options.takeFormat(named);
+        }
+    }
+
+    /** The named stage a location starts with, or null for a user stage, a table stage or a stage unknown. */
+    private Stage namedStageOf(final String location) {
+        if (location == null || !location.startsWith("@") || location.startsWith("@~") || location.startsWith("@%")) {
+            return null;
+        }
+        final int slash = location.indexOf('/');
+        try {
+            return executor.getCatalog().getStage(slash < 0 ? location.substring(1) : location.substring(1, slash));
+        } catch (final RuntimeException unknown) {
+            return null;
+        }
     }
 
     private Object executeCopyIntoStage(final FrostlakeParser.CopyIntoStatementContext ctx, final String location,
@@ -2245,20 +2278,8 @@ public final class CopyCommandExecutor {
                     fromSelect = sourceCtx.selectStatement();
                 }
             } else if (clause.FILE_FORMAT() != null && clause.copyFormatOptions() != null) {
+                // Read, judged and applied by unloadFormat once every clause is seen.
                 sawOptionClause = true;
-                requireDistinctFormatOptions(clause.copyFormatOptions().copyFormatOption());
-                for (final FrostlakeParser.CopyFormatOptionContext opt : clause.copyFormatOptions().copyFormatOption()) {
-                    if (opt.TYPE() != null) {
-                        FileFormatSurfaces.requireLegalValue("TYPE",
-                            copyOptValue(opt.copyOptionValue()), opt.copyOptionValue().getText());
-                        fileFormat = copyOptValue(opt.copyOptionValue()).toUpperCase();
-                    } else if (opt.COMPRESSION() != null) {
-                        compression = copyOptValue(opt.copyOptionValue()).toUpperCase();
-                    } else if (opt.identifier() != null && opt.copyOptionValue() != null
-                            && "FILE_EXTENSION".equalsIgnoreCase(ParseTreeText.getIdentifier(opt.identifier()))) {
-                        fileExtension = copyOptValue(opt.copyOptionValue());
-                    }
-                }
             } else if (clause.PARTITION() != null) {
                 if (sawOptionClause) {
                     final Token by = clause.BY().getSymbol();
@@ -2289,11 +2310,15 @@ public final class CopyCommandExecutor {
                 throw invalidCopyOptionValue("VALIDATION_MODE", clause.copyOptionValue());
             } else if (clause.identifier() != null && clause.copyOptionValue() != null) {
                 sawOptionClause = true;
-                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase();
+                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase(Locale.ROOT);
                 if ("DETAILED_OUTPUT".equals(optionName)) {
                     detailedOutput = requireBareBoolean("DETAILED_OUTPUT", clause.copyOptionValue());
                 } else if ("INCLUDE_QUERY_ID".equals(optionName)) {
                     requireBareBoolean("INCLUDE_QUERY_ID", clause.copyOptionValue());
+                } else if (StorageIntegrationReference.PROPERTY.equals(optionName)) {
+                    // An unload into a stage takes no integration: the stage carries its own (live-verified).
+                    throw new RuntimeException("SQL compilation error: \n COPY statements targeting a stage do not"
+                        + " support the STORAGE_INTEGRATION property.");
                 } else {
                     throw new RuntimeException(SqlCompilationError.of(
                         "invalid parameter '" + optionName + "'"));
@@ -2303,17 +2328,44 @@ public final class CopyCommandExecutor {
             }
         }
 
+        // The text is written by the target stage's own format, then the statement's: delimiters, NULL_IF, the
+        // enclosure and the escapes, the type, the compression and the extension alike.
+        final FileFormatOptions unloadOptions = unloadFormat(location, ctx);
+        if (unloadOptions.getType() != null) {
+            fileFormat = unloadOptions.getType();
+        }
+        if (unloadOptions.getCompression() != null) {
+            compression = unloadOptions.getCompression();
+        }
+        if (unloadOptions.getFileExtension() != null) {
+            fileExtension = unloadOptions.getFileExtension();
+        }
+        final CsvUnloadWriter csv = new CsvUnloadWriter(unloadOptions,
+            executor.getFunctionRegistry().getFunction("TO_VARCHAR"));
+
         // Resolve the data to unload — either a table scan or a query result.
         final ResultSet data;
         if (fromSelect != null) {
             data = executor.executeSelectFromContext(fromSelect);
         } else if (fromTable != null) {
             final Table sourceTable = executor.getCatalog().resolveTable(fromTable);
-            final List<ResultSetColumn> cols = new ArrayList<>();
-            for (final TableColumn tc : sourceTable.getColumns()) {
-                cols.add(new ResultSetColumn(tc.getName(), tc.getDataType()));
+            // An unload reads its table as a query does, so it needs SELECT on it as the query form does
+            // (documented: COPY INTO <location> requires SELECT on the table it unloads).
+            executor.requireSelect(fromTable);
+            if (hasMaskedColumns(sourceTable) || hasProjectionPolicies(sourceTable)
+                    || sourceTable.hasRowAccessPolicy()) {
+                // An unload reads the table as a query does, so its masking, projection and row access policies
+                // apply: the raw scan below wrote the unmasked values, a column no query may project and the rows
+                // the policy withholds to the stage. Read through the query that applies them, unrecorded because
+                // the read is part of this COPY, not a statement of its own.
+                data = executor.executeUnrecorded("SELECT * FROM " + spelledName(fromTable)).get(0);
+            } else {
+                final List<ResultSetColumn> cols = new ArrayList<>();
+                for (final TableColumn tc : sourceTable.getColumns()) {
+                    cols.add(new ResultSetColumn(tc.getName(), tc.getDataType()));
+                }
+                data = new ResultSet(cols, executor.getStorageEngine().getTableStorage(executor.getFullyQualifiedTableName(fromTable)).scan());
             }
-            data = new ResultSet(cols, executor.getStorageEngine().getTableStorage(executor.getFullyQualifiedTableName(fromTable)).scan());
         } else {
             throw new RuntimeException("COPY INTO " + location + " requires a FROM clause");
         }
@@ -2412,12 +2464,12 @@ public final class CopyCommandExecutor {
         int outputBytes = 0;
         if (rowsUnloaded > 0) {
             if (partitionExpr != null) {
-                final int[] totals = writePartitionedUnload(data, partitionExpr, dir, json, header,
+                final int[] totals = writePartitionedUnload(data, partitionExpr, dir, json, header, csv,
                     location, extension, gzip, detailRows);
                 inputBytes = totals[0];
                 outputBytes = totals[1];
             } else {
-                final String content = json ? formatRowsAsJson(data) : formatRowsAsCsv(data, header);
+                final String content = json ? formatRowsAsJson(data) : csv.text(data, header);
                 final String fileName = unloadFileName != null ? unloadFileName
                     : singleFileName != null ? singleFileName : defaultName;
                 inputBytes = content.getBytes(StandardCharsets.UTF_8).length;
@@ -2490,8 +2542,8 @@ public final class CopyCommandExecutor {
      * directory structure). Returns total bytes written.
      */
     private int[] writePartitionedUnload(final ResultSet data, final FrostlakeParser.ExpressionContext partitionExpr,
-            final Path dir, final boolean json, final boolean header, final String location,
-            final String extension, final boolean gzip, final List<Row> detailRows) {
+            final Path dir, final boolean json, final boolean header, final CsvUnloadWriter csv,
+            final String location, final String extension, final boolean gzip, final List<Row> detailRows) {
         // A synthetic table over the unload columns lets the partition expression resolve them by name.
         final List<TableColumn> partCols = new ArrayList<>();
         for (final ResultSetColumn rc : data.getColumns()) {
@@ -2521,7 +2573,7 @@ public final class CopyCommandExecutor {
         final String fileName = "data_" + UUID.randomUUID() + "_0_0_0." + extension + (gzip ? ".gz" : "");
         for (final Map.Entry<String, List<Row>> entry : groups.entrySet()) {
             final ResultSet part = new ResultSet(data.getColumns(), entry.getValue());
-            final String content = json ? formatRowsAsJson(part) : formatRowsAsCsv(part, header);
+            final String content = json ? formatRowsAsJson(part) : csv.text(part, header);
             final String subDir = sanitizePartitionDir(entry.getKey());
             final Path partDir = dir != null ? dir.resolve(subDir) : null;
             inputTotal += content.getBytes(StandardCharsets.UTF_8).length;
@@ -2545,38 +2597,6 @@ public final class CopyCommandExecutor {
             sb.append(Character.isLetterOrDigit(c) || c == '-' || c == '_' || c == '=' ? c : '_');
         }
         return sb.length() == 0 ? "_" : sb.toString();
-    }
-
-    /** Format a result set as delimited CSV text (one row per line), optionally with a header line. */
-    private String formatRowsAsCsv(final ResultSet data, final boolean header) {
-        final StringBuilder sb = new StringBuilder();
-        if (header) {
-            for (int c = 0; c < data.getColumns().size(); c++) {
-                if (c > 0) sb.append(',');
-                sb.append(data.getColumns().get(c).getName());
-            }
-            sb.append('\n');
-        }
-        for (final Row row : data.getRows()) {
-            for (int c = 0; c < row.getValues().size(); c++) {
-                if (c > 0) sb.append(',');
-                sb.append(csvCell(row.getValue(c)));
-            }
-            sb.append('\n');
-        }
-        return sb.toString();
-    }
-
-    /** Render a single CSV cell, quoting (and doubling embedded quotes) when it contains a comma, quote, or newline. */
-    private String csvCell(final Object v) {
-        if (v == null) {
-            return "";
-        }
-        final String s = v.toString();
-        if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
-            return '"' + s.replace("\"", "\"\"") + '"';
-        }
-        return s;
     }
 
     /**
@@ -2648,6 +2668,50 @@ public final class CopyCommandExecutor {
         return true;
     }
 
+    /**
+     * The file format a COPY INTO a table that writes no FILE_FORMAT reads its files by: the one its stage keeps — a
+     * named stage's FILE_FORMAT, a table stage's STAGE_FILE_FORMAT — whether it names a file format or writes its
+     * options out. Null when the statement writes a FILE_FORMAT, reads no stage, or the stage keeps no format.
+     */
+    private FileFormat stageFormatOf(final FrostlakeParser.CopyIntoStatementContext ctx, final String tableName) {
+        FrostlakeParser.StageRefContext stage = null;
+        boolean from = false;
+        for (final FrostlakeParser.CopyIntoTableClauseContext clause : ctx.copyIntoTableClause()) {
+            if (clause.FILE_FORMAT() != null) {
+                return null;
+            }
+            if (clause.FROM() != null) {
+                from = true;
+                final FrostlakeParser.CopySourceContext source = clause.copySource();
+                stage = source.stageRef() != null ? source.stageRef()
+                    : source.copyTransformation() != null ? source.copyTransformation().stageRef() : null;
+            }
+        }
+        // A COPY with no FROM reads the target table's own stage.
+        final String location = stage != null ? executor.stageRefToLocation(stage) : from ? null : "@%" + tableName;
+        if (location == null) {
+            return null;
+        }
+        final Map<String, String> kept = executor.stageFileFormat(location);
+        if (kept.get("FORMAT_NAME") != null) {
+            // Read where the stage lives, and refused when it names a format that is not there (see
+            // QueryExecutor.stageNamedFormat): a COPY never falls back to the default CSV in its place.
+            return executor.stageNamedFormat(location, kept.get("FORMAT_NAME"));
+        }
+        if (kept.isEmpty()) {
+            return null;
+        }
+        final FileFormat format = new FileFormat("STAGE",
+            kept.get("TYPE") != null ? kept.get("TYPE").toUpperCase(Locale.ROOT) : "CSV");
+        // A stage keeps its options as a named format keeps its own, NULL_IF included.
+        for (final Map.Entry<String, String> option : kept.entrySet()) {
+            if (!"TYPE".equalsIgnoreCase(option.getKey())) {
+                format.setOption(option.getKey().toUpperCase(Locale.ROOT), option.getValue());
+            }
+        }
+        return format;
+    }
+
     /** Render one variant value as its raw JSON document text. */
     private String variantDocumentText(final Object v) {
         if (v == null) {
@@ -2660,5 +2724,41 @@ public final class CopyCommandExecutor {
             return ((String) v).trim();
         }
         return MAPPER.writeValueAsString(v);
+    }
+
+    /**
+     * Whether a column of the table carries a projection policy: an unload projects every column, so it is read
+     * through the query that refuses one the policy restricts, never straight from storage.
+     */
+    private static boolean hasProjectionPolicies(final Table table) {
+        for (final TableColumn column : table.getColumns()) {
+            if (column.hasProjectionPolicy()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a masking policy applies to any of the table's columns (masking needs the security manager). */
+    private boolean hasMaskedColumns(final Table table) {
+        if (executor.getSecurityManager() == null) {
+            return false;
+        }
+        for (final TableColumn column : table.getColumns()) {
+            if (column.hasMaskingPolicy()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A canonical qualified name spelled back as SQL, each part quoted only where it has to be. */
+    private static String spelledName(final String canonicalQualifiedName) {
+        final String[] parts = QualifiedName.parse(canonicalQualifiedName).parts();
+        final StringBuilder spelled = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            spelled.append(i > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(parts[i]));
+        }
+        return spelled.toString();
     }
 }

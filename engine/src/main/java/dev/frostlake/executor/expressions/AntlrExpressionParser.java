@@ -19,11 +19,13 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 
+import dev.frostlake.parser.SqlCharStream;
+import dev.frostlake.parser.TypeParameterLines;
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.atn.PredictionMode;
 import org.antlr.v4.runtime.misc.ParseCancellationException;
 
 /**
@@ -64,20 +66,43 @@ public final class AntlrExpressionParser {
      * @return the parse tree of the whole expression (the grammar's {@code booleanExpr} entry rule)
      */
     public static FrostlakeParser.BooleanExprContext parseTree(final String expression) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
-        lexer.removeErrorListeners();
-
-        final CommonTokenStream tokens = new CommonTokenStream(lexer);
-        final FrostlakeParser parser = new FrostlakeParser(tokens);
-        parser.removeErrorListeners();
-        parser.setErrorHandler(new BailErrorStrategy());
-
-        final FrostlakeParser.BooleanExprContext ctx = parser.booleanExpr();
-        if (parser.getCurrentToken().getType() != Token.EOF) {
-            throw new IllegalStateException("Trailing input after expression: " + expression);
+        FrostlakeParser.BooleanExprContext ctx = parsedWith(expression, PredictionMode.SLL);
+        if (ctx == null) {
+            // The quick prediction gave up: the full one decides, and its failure is the expression's.
+            final FrostlakeParser parser = parserOf(expression, PredictionMode.LL);
+            ctx = parser.booleanExpr();
+            if (parser.getCurrentToken().getType() != Token.EOF) {
+                throw new IllegalStateException("Trailing input after expression: " + expression);
+            }
         }
         NamedCallRewrite.apply(ctx);
         return ctx;
+    }
+
+    /**
+     * The expression's tree as one prediction mode reads it, or null where that mode does not read the whole text.
+     * The grammar is parsed in two stages: SLL prediction first, which is several times faster and, where it
+     * reads a text at all, reads it exactly as full LL prediction does; full LL only for the rare text SLL gives
+     * up on, so an expression is never refused, nor read differently, for the quicker mode.
+     */
+    private static FrostlakeParser.BooleanExprContext parsedWith(final String expression, final PredictionMode mode) {
+        final FrostlakeParser parser = parserOf(expression, mode);
+        try {
+            final FrostlakeParser.BooleanExprContext ctx = parser.booleanExpr();
+            return parser.getCurrentToken().getType() == Token.EOF ? ctx : null;
+        } catch (final RuntimeException gaveUp) {
+            return null;
+        }
+    }
+
+    private static FrostlakeParser parserOf(final String expression, final PredictionMode mode) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
+        lexer.removeErrorListeners();
+        final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
+        parser.removeErrorListeners();
+        parser.setErrorHandler(new BailErrorStrategy());
+        parser.getInterpreter().setPredictionMode(mode);
+        return parser;
     }
 
     /**
@@ -94,7 +119,7 @@ public final class AntlrExpressionParser {
      * @return the token the parser stopped at — its line and position locate the syntax error
      */
     public static Token failurePoint(final String expression) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
 
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -121,7 +146,7 @@ public final class AntlrExpressionParser {
      * @return the offending token, or null when the parse did not fail
      */
     public static Token offendingToken(final String expression) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
 
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -133,10 +158,14 @@ public final class AntlrExpressionParser {
             parser.booleanExpr();
             return null;
         } catch (final ParseCancellationException bailed) {
-            if (bailed.getCause() instanceof RecognitionException) {
-                return ((RecognitionException) bailed.getCause()).getOffendingToken();
+            final Token offending = bailed.getCause() instanceof RecognitionException
+                ? ((RecognitionException) bailed.getCause()).getOffendingToken() : parser.getCurrentToken();
+            if (offending != null && offending.getType() == Token.EOF) {
+                // A text that stops in a type's parameter list is refused at the list, not at its end.
+                final Token inList = TypeParameterLines.unfinishedAt(tokens, offending);
+                return inList != null ? inList : offending;
             }
-            return parser.getCurrentToken();
+            return offending;
         }
     }
 }

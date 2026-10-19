@@ -18,6 +18,7 @@ package dev.frostlake.security;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
@@ -48,6 +49,10 @@ public final class SessionSettings {
     private volatile String currentStatement;
     /** The public id of this session's last committed or rolled-back transaction, for LAST_TRANSACTION(). */
     private volatile String lastTransactionId;
+    /** The session's own roles once it has set any; null while it still takes the engine's. */
+    private volatile SessionRoles roles;
+    /** Whether SYSTEM$ABORT_SESSION ended the session: what it runs now ends, and it runs nothing more. */
+    private volatile boolean aborted;
 
     /** A new session's settings. */
     public SessionSettings() {
@@ -60,6 +65,26 @@ public final class SessionSettings {
      *
      * @return the session's 16-digit number
      */
+    /** The session's own roles, or null while it takes the engine's (see {@link SessionContext#getCurrentRole}). */
+    public SessionRoles getRoles() {
+        return roles;
+    }
+
+    /** Give the session roles of its own. */
+    public void setRoles(final SessionRoles roles) {
+        this.roles = roles;
+    }
+
+    /** Marks the session aborted (see SYSTEM$ABORT_SESSION); a statement it is waiting in ends. */
+    public void markAborted() {
+        aborted = true;
+    }
+
+    /** Whether the session was aborted. */
+    public boolean isAborted() {
+        return aborted;
+    }
+
     public long getSessionNumber() {
         return sessionNumber;
     }
@@ -90,6 +115,16 @@ public final class SessionSettings {
         return parameters;
     }
 
+    /**
+     * A parameter ALTER SESSION set, as it was set, or null when the session has not set it.
+     *
+     * @param name the parameter's name, in any case
+     * @return its value, or null
+     */
+    public Object getParameter(final String name) {
+        return name == null ? null : parameters.get(name.toUpperCase(Locale.ROOT));
+    }
+
     /** The variables SET defined, by upper-case name, in the order they were defined. */
     Map<String, Object> variables() {
         return variables;
@@ -100,5 +135,6 @@ public final class SessionSettings {
         parameters.clear();
         parameters.put("MULTI_STATEMENT_COUNT", 1);
         variables.clear();
+        roles = null;
     }
 }

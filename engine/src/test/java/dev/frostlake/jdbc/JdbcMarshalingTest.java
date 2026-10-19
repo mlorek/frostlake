@@ -30,6 +30,7 @@ import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -117,6 +118,18 @@ public class JdbcMarshalingTest extends BaseJdbcTest {
         assertEquals("'x''y'", JdbcMarshaling.formatLiteral("x'y"));
         assertEquals("NULL", JdbcMarshaling.formatLiteral(null));
         assertEquals("42", JdbcMarshaling.formatLiteral(42));
+    }
+
+    @Test
+    public void aNonFiniteDoubleBindsAsTheCastOfItsWord() {
+        // No numeric literal spells NaN or an infinity, and the word bound bare would be read as a name.
+        assertEquals("'NaN'::FLOAT", JdbcMarshaling.formatLiteral(Double.NaN));
+        assertEquals("'inf'::FLOAT", JdbcMarshaling.formatLiteral(Double.POSITIVE_INFINITY));
+        assertEquals("'-inf'::FLOAT", JdbcMarshaling.formatLiteral(Double.NEGATIVE_INFINITY));
+        assertEquals("'NaN'::FLOAT", JdbcMarshaling.formatLiteral(Float.NaN));
+        assertEquals("1.5", JdbcMarshaling.formatLiteral(1.5d));
+        assertEquals("SELECT 'inf'::FLOAT > ?", JdbcMarshaling.substitutePlaceholders("SELECT ? > ?",
+            Collections.<Object>singletonList(Double.POSITIVE_INFINITY), Collections.singleton(2)));
     }
 
     @Test

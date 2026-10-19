@@ -44,6 +44,8 @@ import org.antlr.v4.runtime.misc.IntervalSet;
  *       alone — except in the places {@code runInReadPast} lists, which read on: after a DROP's name, a SHOW's kind,
  *       an UNSET's name, BEGIN WORK or TRANSACTION, a table's alias in a query's FROM list, and, for a '(', a
  *       membership or null test, a VALUES row and a plain CREATE DATABASE or SCHEMA's name.</li>
+ *   <li>A NUMBER OR A STRING RUN IN after a finished statement ends the report or lets it go on by what it
+ *       follows: see {@link LiteralRunIn}.</li>
  *   <li>A WORD RUN INTO ANOTHER inside a bracket of a SELECT list — a scalar subquery, a parenthesized expression, a
  *       call's arguments, but not an EXISTS — ends the report, unless it stands in a FROM list or a GROUP BY there:
  *       {@code SELECT ABS((1 x y)); SELECT 1 x y} is the 'x' alone, where {@code SELECT (1 x); SELECT 1 x y} names
@@ -159,10 +161,12 @@ final class LaterStatementLines {
      * @param opened whether that line names a token run in after a complete statement: a word that opened a statement
      *               the parse could not finish, an alias's '(', or a token refused as opening a statement run into the
      *               one before it
+     * @param givenUp whether that line names a literal run in after a complete statement where live reads nothing
+     *                more
      * @param at     the token index of the line's token, the end of input's for a line at the end of the input, or -1
      * @return the verdict
      */
-    LaterLineVerdict judge(final int from, final boolean opened, final int at) {
+    LaterLineVerdict judge(final int from, final boolean opened, final boolean givenUp, final int at) {
         replacement = null;
         final int f = position(from);
         final int a = at < 0 ? -1 : position(at);
@@ -174,7 +178,7 @@ final class LaterStatementLines {
             return LaterLineVerdict.END;
         }
         final int own = separator(f, 1);
-        if (givenUpAfter < 0 && (opened ? !runInReadPast(f) : givesUpInSelectListBracket(f))) {
+        if (givenUpAfter < 0 && (givenUp || (opened ? !runInReadPast(f) : givesUpInSelectListBracket(f)))) {
             givenUpAfter = own < 0 ? spoken.size() - 1 : own;
         }
         if (givenUpAfter >= 0) {
@@ -254,7 +258,8 @@ final class LaterStatementLines {
         }
         final int kind = type(s);
         if (kind == FrostlakeLexer.SET) {
-            return s + 2 == f && WORDS.contains(type(s + 1)) ? LaterLineVerdict.SKIPPED : LaterLineVerdict.READ;
+            // The name itself is the line where its '=' is missing: see SetNameSyntax.
+            return (s + 2 == f || s + 1 == f) && isName(s + 1) ? LaterLineVerdict.SKIPPED : LaterLineVerdict.READ;
         }
         if (kind == FrostlakeLexer.WITH) {
             return withFault(s, f, semicolon);
@@ -545,6 +550,11 @@ final class LaterStatementLines {
             || type == FrostlakeLexer.STRING_LITERAL || type == FrostlakeLexer.DOLLAR_QUOTED_STRING
             || type == FrostlakeLexer.HEX_LITERAL || type == FrostlakeLexer.TRUE || type == FrostlakeLexer.FALSE
             || type == FrostlakeLexer.NULL || type == FrostlakeLexer.RPAREN || type == FrostlakeLexer.RBRACKET;
+    }
+
+    /** Whether the token at {@code p} is a name: a word or a quoted identifier. */
+    private boolean isName(final int p) {
+        return WORDS.contains(type(p)) || type(p) == FrostlakeLexer.QUOTED_IDENTIFIER;
     }
 
     /** Whether a token opens one of a query's clauses. */

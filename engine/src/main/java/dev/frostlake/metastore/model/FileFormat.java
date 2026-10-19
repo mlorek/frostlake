@@ -16,17 +16,21 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Named;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * A named file format object (CREATE FILE FORMAT) — a reusable set of parsing/formatting options (TYPE plus
  * format-specific options like FIELD_DELIMITER, SKIP_HEADER) that COPY statements reference via FORMAT_NAME.
  */
-public class FileFormat {
+public class FileFormat implements Named, SessionScoped {
 
     /** The option holding the strings a load reads as NULL. */
     private static final String NULL_IF = "NULL_IF";
@@ -38,15 +42,23 @@ public class FileFormat {
     private String type;
     private final Map<String, String> options;
     private String comment;
-    private final Instant createdTime = Instant.now();
+    // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
+    private Instant createdTime = StatementClock.instant();
+    /** When the last DDL after the CREATE ran, or null while the CREATE is the last; see {@link #getLastDdlTime}. */
+    private Instant lastDdlTime;
     private String owner = "SYSADMIN";
+    /** Whether CREATE TEMPORARY FILE FORMAT made it, so it ends with its session. */
+    private boolean temporary;
+    /** The session whose statement created a temporary format, or null (see SqlObject#getCreatedInSession). */
+    private Long createdInSession;
 
     public FileFormat(final String name, final String type) {
         this.name = name;
-        this.type = type != null ? type.toUpperCase() : "CSV";
+        this.type = type != null ? type.toUpperCase(Locale.ROOT) : "CSV";
         this.options = new LinkedHashMap<>();
     }
 
+    @Override
     public String getName() {
         return name;
     }
@@ -60,7 +72,7 @@ public class FileFormat {
     }
 
     public void setType(final String type) {
-        this.type = type != null ? type.toUpperCase() : null;
+        this.type = type != null ? type.toUpperCase(Locale.ROOT) : null;
     }
 
     public Map<String, String> getOptions() {
@@ -69,12 +81,12 @@ public class FileFormat {
 
     public void setOption(final String key, final String value) {
         if (key != null) {
-            options.put(key.toUpperCase(), value);
+            options.put(key.toUpperCase(Locale.ROOT), value);
         }
     }
 
     public String getOption(final String key) {
-        return key == null ? null : options.get(key.toUpperCase());
+        return key == null ? null : options.get(key.toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -86,12 +98,35 @@ public class FileFormat {
      * @return the values in the order written, or null
      */
     public List<String> getNullIfValues() {
-        final String stored = getOption(NULL_IF);
+        return nullIfValues(getOption(NULL_IF));
+    }
+
+    /**
+     * NULL_IF's values as a stored NULL_IF option holds them (see {@link #getNullIfValues}) — the one reading for a
+     * named format's option and for the format a stage or a table keeps. A listing of the form {@code [a, b]}, with
+     * a backslash doubled, is how an earlier version kept a stage's values, and still reads.
+     *
+     * @param stored the option's stored text, or null
+     * @return the values in the order written, or null for no option
+     */
+    public static List<String> nullIfValues(final String stored) {
         if (stored == null) {
             return null;
         }
         final List<String> values = new ArrayList<>();
         if (stored.isEmpty()) {
+            return values;
+        }
+        if (stored.charAt(0) == '[' && stored.endsWith("]")) {
+            final String inner = stored.substring(1, stored.length() - 1);
+            int start = 0;
+            for (int i = 0; !inner.isEmpty() && i <= inner.length(); i++) {
+                if (i == inner.length() || inner.startsWith(", ", i)) {
+                    values.add(inner.substring(start, i).replace("\\\\", "\\"));
+                    start = i + 2;
+                    i++;
+                }
+            }
             return values;
         }
         final boolean separated = stored.charAt(0) == VALUE_SEPARATOR;
@@ -107,12 +142,14 @@ public class FileFormat {
     }
 
     /**
-     * Set NULL_IF's values, kept as {@link #getNullIfValues} reads them back.
+     * Set NULL_IF's values, kept as {@link #getNullIfValues} reads them back: a list whose first value opens a
+     * bracket is kept behind the separator too, so that it is never read as an earlier version's listing.
      *
      * @param values the values in the order written
      */
     public void setNullIfValues(final List<String> values) {
-        boolean ambiguous = values.size() == 1 && values.get(0).isEmpty();
+        boolean ambiguous = values.size() == 1 && values.get(0).isEmpty()
+            || !values.isEmpty() && values.get(0).startsWith("[");
         for (final String value : values) {
             ambiguous = ambiguous || value.indexOf(',') >= 0;
         }
@@ -134,7 +171,69 @@ public class FileFormat {
         return createdTime;
     }
 
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final Instant created) {
+        if (created != null) {
+            this.createdTime = created;
+        }
+    }
+
+    /**
+     * When the last DDL statement ran on this file format, which is INFORMATION_SCHEMA.FILE_FORMATS' LAST_ALTERED: its
+     * CREATE until an ALTER or a COMMENT ON moves it, as {@link dev.frostlake.metastore.SqlObject#getLastDdlTime} is for
+     * the objects that extend it.
+     *
+     * @return the instant
+     */
+    public Instant getLastDdlTime() {
+        return lastDdlTime != null ? lastDdlTime : createdTime;
+    }
+
+    /** A DDL statement changed this file format: its LAST_ALTERED moves to the statement's instant. */
+    public void markDdl() {
+        lastDdlTime = StatementClock.instant();
+    }
+
+    /**
+     * Put back when the last DDL ran on this file format, as a snapshot recorded it; a null, from a snapshot that never
+     * recorded it, leaves LAST_ALTERED at the creation.
+     *
+     * @param lastDdl the recorded last DDL, or null
+     */
+    public void restoreLastDdlTime(final Instant lastDdl) {
+        if (lastDdl != null) {
+            this.lastDdlTime = lastDdl;
+        }
+    }
+
     /** The role that owns this file format. */
+    /**
+     * Marks the format temporary: its session's alone, and dropped when that session ends (live-verified).
+     *
+     * @param session the number of the session that created it, or null for the engine's own
+     */
+    public void markTemporary(final Long session) {
+        this.temporary = true;
+        this.createdInSession = session;
+    }
+
+    /** Whether CREATE TEMPORARY FILE FORMAT made it. */
+    @Override
+    public boolean isTemporary() {
+        return temporary;
+    }
+
+    /** The session that created a temporary format, or null. */
+    @Override
+    public Long getCreatedInSession() {
+        return createdInSession;
+    }
+
     public String getOwner() {
         return owner;
     }

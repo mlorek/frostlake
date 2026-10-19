@@ -19,6 +19,7 @@ package dev.frostlake.jdbc;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.security.AbortableSession;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.security.SessionSettings;
 import dev.frostlake.transaction.TransactionManager;
@@ -50,7 +51,7 @@ import java.util.concurrent.Executor;
  * Direct JDBC connection that wraps a DatabaseEngine instance without HTTP.
  * Used for testing and embedded usage.
  */
-public class DirectConnection implements Connection {
+public class DirectConnection implements Connection, AbortableSession {
 
     private final DatabaseEngine engine;
     private boolean closed = false;
@@ -61,6 +62,7 @@ public class DirectConnection implements Connection {
     // pool threads) can never leak into another connection's name resolution mid-statement.
     private String sessionDatabase;
     private String sessionSchema;
+    private String sessionWarehouse;
     private boolean sessionAutoCommit;
 
     /**
@@ -93,6 +95,14 @@ public class DirectConnection implements Connection {
      */
     private final SessionSettings sessionSettings;
 
+    /** What a statement gets once SYSTEM$ABORT_SESSION ended this connection's session, as the account words it. */
+    static final String SESSION_GONE = "Session no longer exists.  New login required to access the service.";
+
+    /** Set once another statement aborted this connection's session; every later statement is refused. */
+    private volatile boolean aborted;
+    /** Whether the aborted session held an open transaction, for the refusal's report. */
+    private volatile boolean abortedInTransaction;
+
     public DirectConnection(final DatabaseEngine engine) {
         this(engine, true);
     }
@@ -109,8 +119,41 @@ public class DirectConnection implements Connection {
         this.engine = engine;
         this.sessionDatabase = engine.getCurrentDatabase();
         this.sessionSchema = engine.getCurrentSchema();
+        this.sessionWarehouse = ownSession ? engine.getCatalog().sessionStartWarehouse()
+            : engine.getCatalog().getCurrentWarehouse();
         this.sessionAutoCommit = engine.isAutoCommit();
         this.sessionSettings = ownSession ? new SessionSettings() : null;
+        if (sessionSettings != null) {
+            engine.getSessionDirectory().register(sessionSettings.getSessionNumber(), this);
+        }
+    }
+
+    /** SYSTEM$ABORT_SESSION named this connection's session: only marked here, from the aborting statement. */
+    @Override
+    public void abort() {
+        abortedInTransaction = sessionTransactionId != null;
+        aborted = true;
+    }
+
+    /** Roll back what the aborted session left open, and drop what it created TEMPORARY, once the aborting
+     *  statement is over. */
+    @Override
+    public void endAborted() {
+        endOwnTransaction();
+        dropOwnTemporaryObjects();
+    }
+
+    /**
+     * Refuse a statement on a session that was aborted, as the account does: the session is gone for good, so
+     * every later statement gets the same answer.
+     *
+     * @throws SQLException when the session was aborted
+     */
+    void requireSession() throws SQLException {
+        if (aborted) {
+            endOwnTransaction();
+            throw new FrostlakeSessionLostException(SESSION_GONE, abortedInTransaction);
+        }
     }
 
     int getMultiStatementCount() {
@@ -128,6 +171,9 @@ public class DirectConnection implements Connection {
      * closed transaction — is captured back into the connection.
      */
     ExecutionResult executeScoped(final String sql) {
+        if (aborted) {
+            throw new IllegalStateException(SESSION_GONE);
+        }
         // One statement at a time on the shared engine: the embedded engine's procedural state
         // (variable scopes, handler stacks) is not safe under concurrent execution, and direct
         // connections can be driven from many threads (the test harness's pooled bulk checks).
@@ -135,7 +181,7 @@ public class DirectConnection implements Connection {
         synchronized (engine) {
             final Catalog catalog = engine.getCatalog();
             final TransactionManager transactions = engine.getTransactionManager();
-            catalog.beginSessionScope(sessionDatabase, sessionSchema);
+            catalog.beginSessionScope(sessionDatabase, sessionSchema, sessionWarehouse);
             transactions.beginSessionAutoCommit(sessionAutoCommit);
             final SessionContext session = engine.getSecurityManager().getSessionContext();
             if (sessionSettings != null) {
@@ -154,6 +200,7 @@ public class DirectConnection implements Connection {
                 // uncaptured, it was adopted by whichever connection ran next there, or orphaned.
                 sessionDatabase = catalog.getCurrentDatabase();
                 sessionSchema = catalog.getCurrentSchema();
+                sessionWarehouse = catalog.getCurrentWarehouse();
                 sessionAutoCommit = transactions.isAutoCommit();
                 sessionTransactionId = transactions.getCurrentTransactionId();
                 if (sessionTransactionId != null) {
@@ -164,6 +211,8 @@ public class DirectConnection implements Connection {
                 if (sessionSettings != null) {
                     session.unbindSettings();
                 }
+                // A session this statement aborted — its own included — ends now that the statement is over.
+                engine.getSessionDirectory().endAborted();
             }
         }
     }
@@ -202,7 +251,29 @@ public class DirectConnection implements Connection {
             return;
         }
         closed = true;
+        if (sessionSettings != null) {
+            engine.getSessionDirectory().unregister(sessionSettings.getSessionNumber());
+        }
         endOwnTransaction();
+        dropOwnTemporaryObjects();
+    }
+
+    /**
+     * Drop what this connection's session created TEMPORARY, as the session ends: a temporary object lives as long
+     * as its session, and on an account a connection is one. A connection that shares the engine's own session
+     * leaves its objects to the engine.
+     */
+    private void dropOwnTemporaryObjects() {
+        if (sessionSettings == null) {
+            return;
+        }
+        synchronized (engine) {
+            try {
+                engine.dropTemporaryObjectsOf(sessionSettings.getSessionNumber());
+            } catch (final RuntimeException ignored) {
+                // The session is gone either way; what could not be dropped goes when the engine shuts down.
+            }
+        }
     }
 
     /**
@@ -240,7 +311,7 @@ public class DirectConnection implements Connection {
 
     @Override
     public boolean isValid(final int timeout) throws SQLException {
-        return !closed;
+        return !closed && !aborted;
     }
 
     @Override
@@ -260,13 +331,24 @@ public class DirectConnection implements Connection {
     @Override
     public void commit() throws SQLException {
         checkClosed();
-        executeScoped("COMMIT");
+        requireSession();
+        endTransaction("COMMIT");
     }
 
     @Override
     public void rollback() throws SQLException {
         checkClosed();
-        executeScoped("ROLLBACK");
+        requireSession();
+        endTransaction("ROLLBACK");
+    }
+
+    /** A COMMIT can fail — of a transaction that was aborted, for one — and fails as a statement's does. */
+    private void endTransaction(final String statement) throws SQLException {
+        try {
+            executeScoped(statement);
+        } catch (final RuntimeException failed) {
+            throw new SQLException(failed.getMessage(), failed);
+        }
     }
 
     private void checkClosed() throws SQLException {
@@ -306,6 +388,7 @@ public class DirectConnection implements Connection {
 
     @Override
     public void setCatalog(final String catalog) throws SQLException {
+        requireSession();
         executeScoped("USE DATABASE " + catalog);
     }
 
@@ -482,12 +565,22 @@ public class DirectConnection implements Connection {
 
     @Override
     public void setSchema(final String schema) throws SQLException {
+        requireSession();
         executeScoped("USE SCHEMA " + schema);
     }
 
     @Override
     public String getSchema() throws SQLException {
         return sessionSchema;
+    }
+
+    /**
+     * The user this connection's statements run as, as CURRENT_USER() names it.
+     *
+     * @return the user's name
+     */
+    String userName() {
+        return engine.getSecurityManager().getSessionContext().getDisplayUser();
     }
 
     @Override

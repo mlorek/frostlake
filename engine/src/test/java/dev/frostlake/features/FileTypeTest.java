@@ -25,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -52,8 +53,8 @@ public class FileTypeTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("DESCRIBE TABLE ft_desc");
         assertEquals(2, rs.getRows().size());
         final int typeCol = columnIndex(rs, "type");
-        assertEquals("F", String.valueOf(rs.getRows().get(1).getValue(columnIndex(rs, "name"))).toUpperCase());
-        assertEquals("FILE", String.valueOf(rs.getRows().get(1).getValue(typeCol)).toUpperCase());
+        assertEquals("F", String.valueOf(rs.getRows().get(1).getValue(columnIndex(rs, "name"))).toUpperCase(Locale.ROOT));
+        assertEquals("FILE", String.valueOf(rs.getRows().get(1).getValue(typeCol)).toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -67,14 +68,14 @@ public class FileTypeTest extends BaseDatabaseTest {
         final ResultSet file = engine.executeQuery(
             "SELECT data_type FROM information_schema.columns WHERE table_name = 'FT_ISC' AND column_name = 'F'");
         assertEquals(1, file.getRows().size());
-        assertEquals("FILE", String.valueOf(file.getRows().get(0).getValue(0)).toUpperCase());
+        assertEquals("FILE", String.valueOf(file.getRows().get(0).getValue(0)).toUpperCase(Locale.ROOT));
 
         // Control: the sibling INTEGER column DOES fold onto its family name, so FILE passing through
         // is the type's own reporting and not a missing mapping.
         final ResultSet integer = engine.executeQuery(
             "SELECT data_type FROM information_schema.columns WHERE table_name = 'FT_ISC' AND column_name = 'ID'");
         assertEquals(1, integer.getRows().size());
-        assertEquals("NUMBER", String.valueOf(integer.getRows().get(0).getValue(0)).toUpperCase());
+        assertEquals("NUMBER", String.valueOf(integer.getRows().get(0).getValue(0)).toUpperCase(Locale.ROOT));
     }
 
     /** FILE describes itself in SHOW COLUMNS' descriptor as an OBJECT-valued type. */
@@ -107,7 +108,7 @@ public class FileTypeTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("DESCRIBE TABLE ft_alter");
         assertEquals(2, rs.getRows().size());
         assertEquals("FILE",
-            String.valueOf(rs.getRows().get(1).getValue(columnIndex(rs, "type"))).toUpperCase());
+            String.valueOf(rs.getRows().get(1).getValue(columnIndex(rs, "type"))).toUpperCase(Locale.ROOT));
     }
 
     /** Live: a FILE column accepts NULL ({@code INSERT INTO ft VALUES (4, NULL)}) and reads back NULL. */
@@ -334,7 +335,7 @@ public class FileTypeTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("DESCRIBE TABLE ft_copy");
         assertEquals(1, rs.getRows().size());
         assertEquals("FILE",
-            String.valueOf(rs.getRows().get(0).getValue(columnIndex(rs, "type"))).toUpperCase());
+            String.valueOf(rs.getRows().get(0).getValue(columnIndex(rs, "type"))).toUpperCase(Locale.ROOT));
     }
 
     private void assertUnsupportedNestedFile(final String sql) {

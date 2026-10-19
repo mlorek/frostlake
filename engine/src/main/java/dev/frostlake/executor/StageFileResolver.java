@@ -56,7 +56,8 @@ public class StageFileResolver implements StageFileLocator, NamedStageLocator {
         final Path path;
         try {
             // A staged name that other names continue is kept as its directory's own file (StagePathSegments).
-            path = StagePathSegments.ownFileOf(executor.resolveCopyBaseDir(location));
+            path = StagePathSegments.ownFileOf(
+                executor.resolveCopyBaseDir(StagePathSegments.canonicalLocation(location)));
         } catch (final RuntimeException e) {
             // An unknown stage name throws out of the catalog; to the caller that is simply a file it
             // cannot reach, which TO_FILE reports as Snowflake's "was not found".

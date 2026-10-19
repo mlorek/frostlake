@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.StatementAnswers;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.security.SessionSettings;
 import dev.frostlake.types.StringType;
@@ -37,7 +38,9 @@ public class CurrentSession extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return sessionContext != null ? sessionContext.getSessionId() : FALLBACK_SESSION_ID;
+        // A replayed statement answers the session it first ran in (see StatementAnswers).
+        return StatementAnswers.answered(getName(),
+            sessionContext != null ? sessionContext.getSessionId() : FALLBACK_SESSION_ID);
     }
 
     @Override

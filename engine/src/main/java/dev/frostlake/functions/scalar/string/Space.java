@@ -32,7 +32,7 @@ public class Space extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final int n = ((Number) args.get(0)).intValue();
+        final int n = wholeNumber(args.get(0));
         return n <= 0 ? "" : " ".repeat(n);
     }
 

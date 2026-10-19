@@ -62,7 +62,8 @@ public class RestAccountTest extends BaseRestTest {
         ok(post("/api/v2/accounts/acct_basic:undrop", null));
         assertEquals("ACCT_BASIC", names(ok(get("/api/v2/accounts?like=ACCT_BASIC"))));
         error(409, post("/api/v2/accounts/acct_basic:undrop", null));
-        error(404, post("/api/v2/accounts/no_such_account:undrop", null));
+        // An account that is not there is refused as one the role may not operate on.
+        error(403, post("/api/v2/accounts/no_such_account:undrop", null));
     }
 
     @Test

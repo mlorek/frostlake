@@ -30,8 +30,17 @@ public class RandStr extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null || args.get(1) == null) return null;
-        final int length = (int) Double.parseDouble(args.get(0).toString());
+        // The length is judged before the seed is read: a NULL one and a negative one are refused, where a NULL
+        // seed answers NULL (live-verified).
+        if (args.get(0) == null) {
+            throw new RuntimeException("Invalid parameter value: NULL. Reason: length must not be NULL");
+        }
+        // A text is read as the number it spells and a fraction goes to the nearest whole number.
+        final int length = wholeNumber(args.get(0));
+        if (length < 0) {
+            throw new RuntimeException("Invalid parameter value: " + length + ". Reason: length must not be negative");
+        }
+        if (args.get(1) == null) return null;
         final long seed = (long) Double.parseDouble(args.get(1).toString());
         final Random random = new Random(seed);
         final StringBuilder sb = new StringBuilder(length);

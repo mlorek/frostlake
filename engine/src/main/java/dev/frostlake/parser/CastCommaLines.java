@@ -48,9 +48,14 @@ final class CastCommaLines {
      * @param statementParse whether the text was parsed as a whole statement
      * @return the lines, or null
      */
-    static List<String> lines(final List<Token> spoken, final int faultIndex, final boolean statementParse) {
+    static List<String> lines(final String sql, final List<Token> spoken, final int faultIndex,
+                              final boolean statementParse) {
         if (!statementParse) {
             return null;
+        }
+        final List<String> nested = nestedLines(sql, spoken, faultIndex);
+        if (nested != null) {
+            return nested;
         }
         int fault = -1;
         for (int i = 1; i < spoken.size() && fault < 0; i++) {
@@ -84,6 +89,71 @@ final class CastCommaLines {
             }
         }
         return lines;
+    }
+
+    /**
+     * The lines for a comma inside a cast that stands in a bracket of its clause — a call's arguments, a group, an
+     * IN list, a window's OVER, another cast — in any clause of a query: the comma, and then the lines of the text
+     * read with the cast's own parenthesis given up, as live reads on (live-verified). The bracket around the
+     * cast then closes one parenthesis early, and the last one is refused: {@code SELECT UPPER(CAST(1, 2)) FROM
+     * t} is ',' at 19 and ')' at 23, {@code SELECT UPPER(CAST(1, 2), 3) FROM t} ')' at 26, {@code … WHERE a IN
+     * (CAST(1, 2), 3)} the ',' at 38. A cast that another cast's parentheses hold directly gives that cast up
+     * too and is read on from its AS: {@code SELECT CAST(CAST(1, 2) AS INT) FROM t} is ',' at 18 and ')' at 29.
+     */
+    private static List<String> nestedLines(final String sql, final List<Token> spoken, final int faultIndex) {
+        final int fault = sql == null ? -1 : CastFaultPlace.positionOf(spoken, faultIndex);
+        if (fault < 3 || spoken.get(fault).getType() != FrostlakeLexer.COMMA) {
+            return null;
+        }
+        final int open = CastFaultPlace.enclosingParen(spoken, fault);
+        if (open < 1 || !CastFaultPlace.isCast(spoken, open - 1)) {
+            return null;
+        }
+        final int cast = open - 1;
+        final int clause = CastFaultPlace.clauseOf(spoken, cast);
+        if (clause < 0 || spoken.get(clause).getType() == FrostlakeLexer.ON
+                || spoken.get(clause).getType() == FrostlakeLexer.FROM
+                || CastFaultPlace.nesting(spoken, clause, cast) == 0) {
+            return null;
+        }
+        final char[] text = sql.toCharArray();
+        boolean typed = false;
+        int depth = 0;
+        for (int i = open + 1; i < fault; i++) {
+            final int type = spoken.get(i).getType();
+            depth += type == FrostlakeLexer.LPAREN ? 1 : type == FrostlakeLexer.RPAREN ? -1 : 0;
+            typed = typed || depth == 0 && type == FrostlakeLexer.AS;
+        }
+        if (typed) {
+            // After its type the cast is whole: a value stands where it stood, and the comma goes on the list.
+            CastFaultPlace.blanked(text, spoken, cast, fault - 1);
+            text[spoken.get(cast).getStartIndex()] = '1';
+        } else if (cast >= 2 && spoken.get(cast - 1).getType() == FrostlakeLexer.LPAREN
+                && CastFaultPlace.isCast(spoken, cast - 2)) {
+            final int outerAs = castAs(spoken, CastFaultPlace.closeOf(spoken, open), cast - 1);
+            if (outerAs > 0) {
+                CastFaultPlace.blanked(text, spoken, cast - 2, outerAs - 1);
+                text[spoken.get(cast - 2).getStartIndex()] = '1';
+            } else {
+                CastFaultPlace.blanked(text, spoken, cast, open);
+            }
+        } else {
+            CastFaultPlace.blanked(text, spoken, cast, open);
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+        for (final String line : SyntaxErrorListener.linesReportedFor(new String(text), true)) {
+            if (!lines.contains(line)) {
+                lines.add(line);
+            }
+        }
+        return lines;
+    }
+
+    /** The AS of the cast opened at {@code outerOpen}, when it directly follows the ')' at {@code innerClose}; or -1. */
+    private static int castAs(final List<Token> spoken, final int innerClose, final int outerOpen) {
+        return innerClose > outerOpen && innerClose + 1 < spoken.size()
+            && spoken.get(innerClose + 1).getType() == FrostlakeLexer.AS ? innerClose + 1 : -1;
     }
 
     /** The index of the '(' that the token at {@code at} stands directly inside, or -1. */

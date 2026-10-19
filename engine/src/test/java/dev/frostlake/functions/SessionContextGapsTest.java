@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,7 +47,7 @@ public class SessionContextGapsTest extends BaseDatabaseTest {
     @Test
     public void currentStatementEchoesTheRunningSql() {
         final String statement = text("CURRENT_STATEMENT()");
-        assertTrue(statement.toUpperCase().contains("CURRENT_STATEMENT"),
+        assertTrue(statement.toUpperCase(Locale.ROOT).contains("CURRENT_STATEMENT"),
             "statement text was: " + statement);
     }
 

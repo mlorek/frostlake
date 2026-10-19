@@ -23,10 +23,12 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
@@ -46,7 +48,15 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *   APPROX_TOP_K_ESTIMATE(s, k) Invalid value [T.K] for function '{1}', parameter {2}: {3}
  *   APPROX_PERCENTILE_ESTIMATE(s, 1.5)  Invalid value [1.5] for function 'APPROX_PERCENTILE_ESTIMATE', parameter 2: Percentile must be between 0 and 1 inclusive.
  *   APPROX_PERCENTILE_ESTIMATE(s, p)    argument 2 to function APPROX_PERCENTILE_ESTIMATE needs to be constant, found 'T.P'
+ *   APPROX_PERCENTILE(n, 2)     Invalid value [2] for function 'APPROX_PERCENTILE', parameter 2: Percentile must be between 0 and 1 inclusive.
+ *   APPROX_PERCENTILE(n, '0.5') Invalid value ['0.5'] for function 'APPROX_PERCENTILE', parameter 2: Percentile must be a numeric value.
+ *   APPROX_PERCENTILE(n, i)     Invalid value [T.I] for function 'APPROX_PERCENTILE', parameter 2: Percentile must be a constant numberic value between 0 and 1 inclusive.
  * </pre>
+ *
+ * <p>APPROX_PERCENTILE's percentile is a number written out, signed or not: a text, a NULL and a BOOLEAN are no
+ * numeric value, and anything computed — {@code 0.5 + 0.1}, a cast, a call, a subquery, a column — is no constant,
+ * echoed as the plan holds it. It is judged by where it stands, the second argument written, before the call's
+ * named arguments are refused: {@code APPROX_PERCENTILE(p => 0.5, x => n)} is refused for {@code T.N}.
  *
  * <p>The three placeholder sentences are live's own — its message template left unfilled — and are
  * reproduced as measured. An integral constant passes in any spelling: {@code 2.0}, {@code 1e1},
@@ -61,6 +71,7 @@ final class ApproximateCallRules {
     private static final String TOP_K_COMBINE = "APPROX_TOP_K_COMBINE";
     private static final String TOP_K_ESTIMATE = "APPROX_TOP_K_ESTIMATE";
     private static final String PERCENTILE_ESTIMATE = "APPROX_PERCENTILE_ESTIMATE";
+    private static final String PERCENTILE = "APPROX_PERCENTILE";
 
     /** The largest number of items or counters a call may ask for. */
     private static final BigDecimal LIMIT = new BigDecimal(100000);
@@ -100,6 +111,38 @@ final class ApproximateCallRules {
         }
     }
 
+    /**
+     * Walks a statement's tree and refuses the first call written with named arguments whose constant argument
+     * breaks a rule. It is asked ahead of the refusal of the named arguments themselves, which the account
+     * reaches only once the percentile has passed.
+     *
+     * @param node any parse-tree node; the walk covers the statement
+     * @param table the leading relation, for echoing a column the way the plan names it
+     * @param aliasToTable the FROM's alias map, or null
+     * @param allTables every relation in the FROM, or null
+     */
+    void validateNamed(final ParseTree node, final Table table, final Map<String, Table> aliasToTable,
+                       final List<Table> allTables) {
+        if (node == null) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            final FrostlakeParser.FunctionCallNamedArgsExprContext call =
+                (FrostlakeParser.FunctionCallNamedArgsExprContext) node;
+            judgeNamed(call.functionName(), new ArrayList<FrostlakeParser.ExpressionContext>(),
+                call.namedArgumentList().namedArgument(), call.strayArguments() != null, table, aliasToTable,
+                allTables);
+        } else if (node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            final FrostlakeParser.FunctionCallMixedArgsExprContext call =
+                (FrostlakeParser.FunctionCallMixedArgsExprContext) node;
+            judgeNamed(call.functionName(), call.expression(), call.namedArgument(), call.strayArguments() != null,
+                table, aliasToTable, allTables);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            validateNamed(node.getChild(i), table, aliasToTable, allTables);
+        }
+    }
+
     private void judge(final FrostlakeParser.FunctionCallExprContext call, final Table table,
                        final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final String name = SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase(Locale.ROOT);
@@ -120,8 +163,52 @@ final class ApproximateCallRules {
             case PERCENTILE_ESTIMATE:
                 fraction(name, args, table, aliasToTable, allTables);
                 break;
+            case PERCENTILE:
+                if (args.size() == 2 && call.functionArgList().functionArg().size() == 2) {
+                    percentile(args.get(1), table, aliasToTable, allTables);
+                }
+                break;
             default:
                 break;
+        }
+    }
+
+    /**
+     * A call written with named arguments: APPROX_PERCENTILE's percentile is the second argument written,
+     * whatever it is named.
+     */
+    private void judgeNamed(final FrostlakeParser.FunctionNameContext called,
+                            final List<FrostlakeParser.ExpressionContext> positional,
+                            final List<FrostlakeParser.NamedArgumentContext> named, final boolean stray,
+                            final Table table, final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final String name = SqlIdentifiers.canonicalText(called.getText()).toUpperCase(Locale.ROOT);
+        if (!PERCENTILE.equals(name) || stray || positional.size() + named.size() != 2) {
+            return;
+        }
+        final FrostlakeParser.NamedArgumentContext second = named.get(named.size() - 1);
+        if (second.expression() != null) {
+            percentile(second.expression(), table, aliasToTable, allTables);
+        }
+    }
+
+    /** APPROX_PERCENTILE's percentile: a number written out, between 0 and 1 inclusive. */
+    private void percentile(final ParserRuleContext arg, final Table table, final Map<String, Table> aliasToTable,
+                            final List<Table> allTables) {
+        final String written = ConstantArgumentTexts.unwrap(ParseTreeText.getOriginalText(arg));
+        final String word = written.toUpperCase(Locale.ROOT);
+        if ("NULL".equals(word) || "TRUE".equals(word) || "FALSE".equals(word)
+                || ConstantArgumentTexts.isStringLiteral(written)) {
+            refuse(invalidValue("NULL".equals(word) ? "null" : ConstantArgumentTexts.isStringLiteral(written)
+                ? written : word, PERCENTILE, "2", "Percentile must be a numeric value."));
+        }
+        final BigDecimal value = ConstantArgumentTexts.numericConstant(written);
+        if (value == null) {
+            refuse(invalidValue(
+                new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog).printPlanned(arg),
+                PERCENTILE, "2", "Percentile must be a constant numberic value between 0 and 1 inclusive."));
+        }
+        if (value.signum() < 0 || value.compareTo(BigDecimal.ONE) > 0) {
+            refuse(invalidValue(written, PERCENTILE, "2", "Percentile must be between 0 and 1 inclusive."));
         }
     }
 

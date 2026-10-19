@@ -108,7 +108,7 @@ final class StatementSourceCheck {
     }
 
     /** Every query written inside {@code node} and not inside another of them, in written order. */
-    private void checkQueriesIn(final ParseTree node) {
+    void checkQueriesIn(final ParseTree node) {
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             check((FrostlakeParser.SelectStatementContext) node);
             return;

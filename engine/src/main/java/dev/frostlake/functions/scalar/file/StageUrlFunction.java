@@ -38,7 +38,9 @@ import java.util.Locale;
  *   '@'                  SQL compilation error:\nmissing stage name in URL: @
  *   '@st/d', '@~/x'      … Argument 1 to function 'F' should only contain the stage name and not a path.
  *   '@~', '@%t'          … Argument 1 to function 'F' provides a user or table stage. These stage kinds are not supported by this function.
- *   '@st.', '@.st'       SQL compilation error:\nsyntax error line 1 at position 3 unexpected '&lt;EOF&gt;'.
+ *   '@st.'               SQL compilation error:\nsyntax error line 1 at position 3 unexpected '&lt;EOF&gt;'.
+ *   '@.st', '@s..st'     … syntax error line 1 at position 0 unexpected '.'. — at the dot where a name part should
+ *                        begin, position 2 in the second
  *   '@nosuch', '@"st"'   … Stage '@nosuch' provided to the function 'F' does not exist or is not authorized.
  * </pre>
  *

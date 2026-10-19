@@ -17,12 +17,16 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -30,6 +34,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.TableStorage;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
@@ -90,7 +95,8 @@ final class EventTableCommandHandler {
 
     /**
      * CREATE [OR REPLACE] EVENT TABLE [IF NOT EXISTS]: the table with the fixed columns, its comment, clustering
-     * key, change tracking, retention and tags taken as a table takes them.
+     * key, change tracking, retention and tags taken as a table takes them — or, written with CLONE, a copy of
+     * another event table, which takes no property of its own.
      */
     Object create(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String[] parts = catalog.withoutAccount(queryExecutor.resolveObjectNameParts(ctx.objectName()), 3);
@@ -113,23 +119,50 @@ final class EventTableCommandHandler {
             schema = catalog.getDatabase(databaseName).getSchema(parts[1]);
             tableName = parts[2];
         }
+        // A name another kind of relation holds — a table that is no event table among them — is refused before
+        // anything is asked of the session, and a plain create over an event table of the name before the
+        // privilege is (live-verified).
+        schema.rejectNameHeldByOtherKind(tableName, RelationKind.TABLE, false, true);
+        final boolean exists = schema.hasTable(tableName);
+        final boolean cloning = ctx.CLONE() != null;
+        if (cloning && exists && !ifNotExists && ctx.or_replace() == null) {
+            // A plain create over a taken name is refused before its source is looked for.
+            throw alreadyExists(parts);
+        }
+        // The source has to be there before anything else is asked; what it is, is judged once the statement is
+        // known to create something (live-verified).
+        final String sourceName = cloning
+            ? queryExecutor.searchPathQualified(ParseTreeText.getQualifiedName(ctx.qualifiedName(0))) : null;
+        final String sourceKind = cloning ? queryExecutor.storedRelationKind(sourceName) : null;
+        final Table source = cloning && sourceKind == null
+            ? catalog.resolveTableAsWritten(sourceName, "Object", "CLONE") : null;
+        if (ifNotExists || ctx.or_replace() != null || !exists) {
+            queryExecutor.requireCreatePrivilege(Privilege.CREATE_EVENT_TABLE, schema);
+        }
         final String key = QualifiedName.key(databaseName, schema.getName(), tableName);
-        if (schema.hasTable(tableName)) {
-            if (ifNotExists) {
-                ConditionalDdlOutcome.createSkipped();
-                return null;
+        if (exists && ifNotExists) {
+            ConditionalDdlOutcome.createSkipped();
+            return null;
+        }
+        if (exists && ctx.or_replace() == null) {
+            throw alreadyExists(parts);
+        }
+        if (cloning) {
+            requireEventTableSource(sourceKind, source);
+            if (exists && source == schema.getTable(tableName)) {
+                // A table is no clone of itself, replaced or not.
+                throw alreadyExists(parts);
             }
-            if (ctx.or_replace() == null) {
-                // The name is spelled as the statement wrote it, qualified as far as it was.
-                final StringBuilder written = new StringBuilder();
-                for (final String part : parts) {
-                    if (written.length() > 0) {
-                        written.append('.');
-                    }
-                    written.append(SqlIdentifiers.spellCanonical(part));
-                }
-                throw new RuntimeException(SqlCompilationError.of("Object '" + written + "' already exists."));
+            if (ctx.timeTravelClause() != null) {
+                // AT | BEFORE judges the point as a table's clone does: one to come is "Future data is not yet
+                // available", a value of another type the point's own refusal (live-verified).
+                final TableStorage sourceStorage = queryExecutor.getStorageEngine().getTableStorage(
+                    ddl.resolveFullyQualifiedName(sourceName));
+                queryExecutor.versionAtClonePoint(source, sourceStorage,
+                    queryExecutor.clonePoint(ctx.timeTravelClause(), source));
             }
+        }
+        if (exists) {
             schema.dropTable(tableName);
             queryExecutor.getStorageEngine().dropTable(key);
             queryExecutor.getTransactionManager().discardBufferedWritesFor(key);
@@ -138,14 +171,60 @@ final class EventTableCommandHandler {
             }
         }
         final Table table = new Table(tableName, columns(), false, false);
-        table.setOwner(catalog.currentRoleForOwner());
+        // The grants ON FUTURE EVENT TABLES cover it, held as a table's (live-verified).
+        table.setOwner(FutureGrants.ownerOfNew(catalog, "EVENT_TABLE", "TABLE", schema, tableName));
         table.setEventTable(true);
+        if (source != null) {
+            table.setComment(source.getComment());
+        }
         tables.applyTailProperties(ctx, table);
         schema.addTable(table);
         queryExecutor.getStorageEngine().createTable(key, table);
         queryExecutor.resetInternalTableStageDir(key);
         queryExecutor.resetCopyLoadHistory(key);
         return null;
+    }
+
+    /** The refusal of a create over a taken name, the name spelled as the statement wrote it. */
+    private static RuntimeException alreadyExists(final String[] parts) {
+        final StringBuilder written = new StringBuilder();
+        for (final String part : parts) {
+            if (written.length() > 0) {
+                written.append('.');
+            }
+            written.append(SqlIdentifiers.spellCanonical(part));
+        }
+        return new RuntimeException(SqlCompilationError.of("Object '" + written + "' already exists."));
+    }
+
+    /**
+     * Refuse what a CREATE EVENT TABLE … CLONE cannot copy. Only another event table is a source: a table, a
+     * dynamic table, a materialized view, a view and a stream are each refused in a sentence of their own
+     * (live-verified).
+     *
+     * @param kind   the kind of relation the source's name reaches when it is no table, or null
+     * @param source the table it reaches, or null
+     */
+    private static void requireEventTableSource(final String kind, final Table source) {
+        if ("VIEW".equals(kind)) {
+            throw new RuntimeException(SqlCompilationError.inline("Cannot clone from a view object."));
+        }
+        if ("DYNAMIC_TABLE".equals(kind)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Invalid operation Cannot clone an Event table from a dynamic table."));
+        }
+        if ("MATERIALIZED_VIEW".equals(kind)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Invalid operation Cannot clone an Event table from a materialized view."));
+        }
+        if ("STREAM".equals(kind)) {
+            throw new RuntimeException(SqlCompilationError.inline("A clone operation cannot be performed on a "
+                + "EVENT_TABLE with a STREAM source. Please refer to documentation for details."));
+        }
+        if (source == null || !source.isEventTable()) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Invalid operation Cannot clone an Event table from a table."));
+        }
     }
 
     /**

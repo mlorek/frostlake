@@ -17,6 +17,7 @@
 package dev.frostlake.testkit;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.LiveAccountObjects;
 import dev.frostlake.LiveSnowflake;
 import dev.frostlake.jdbc.DatabaseDriver;
 
@@ -37,6 +38,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.sql.Connection;
 import java.sql.DriverManager;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -83,6 +85,8 @@ public class JsonSuiteTest {
     private static final Set<String> REPLAYED_SKIPS = new HashSet<>(Arrays.asList("engine", "jdbc", "http"));
     private static Backend backend;
     private static String backendName;
+    /** The live account's connection, unobserved, for the cleanup's own statements; null on every other backend. */
+    private static Connection liveConnection;
 
     @TestFactory
     public List<DynamicNode> jsonSuites() throws Exception {
@@ -237,6 +241,9 @@ public class JsonSuiteTest {
     private static void runSteps(final String fullName, final Map<String, Object> test, final Backend target,
                                  final boolean recordSkips) throws Exception {
         target.resetContext();
+        if (liveConnection != null && target == backend) {
+            dropAccountObjectsOfEarlierCases();
+        }
         final List<Object> steps = Json.getArr(test, "steps");
         if (steps == null) {
             return;
@@ -255,6 +262,19 @@ public class JsonSuiteTest {
                 fail(fullName + " step " + (i + 1) + ": " + outcome.detail() + "  [sql: " + sql + "]");
             }
         }
+    }
+
+    /**
+     * Drops the account-level objects the cases before this one created on the live account — a database, a
+     * role, a user, a warehouse, a network policy — so that every case, and the next run, starts from the account
+     * this run found. It runs once the context is the opening one again, since a case may end on a role that
+     * may drop nothing; a case that created no such object costs no statement.
+     */
+    private static void dropAccountObjectsOfEarlierCases() {
+        if (LiveAccountObjects.sawAccountObjectStatement()) {
+            LiveAccountObjects.dropNewAccountObjects(liveConnection);
+        }
+        LiveAccountObjects.beginTest();
     }
 
     private static synchronized void recordCapabilitySkip(final String check, final String where) {
@@ -289,7 +309,12 @@ public class JsonSuiteTest {
             case "http":
                 return new HttpBackend(System.getProperty("testkit.url", System.getenv("TESTKIT_URL")));
             case "snowflake":
-                return new JdbcBackend("snowflake", LiveSnowflake.open(), EnumSet.allOf(Capability.class));
+                // What the account holds before the first case is the baseline nothing here drops; every statement
+                // a case sends is read on its way, so the account-level objects it creates are this run's to drop.
+                liveConnection = LiveSnowflake.open();
+                LiveAccountObjects.captureBaseline(liveConnection);
+                return new JdbcBackend("snowflake", LiveAccountObjects.observing(liveConnection),
+                    EnumSet.allOf(Capability.class));
             default:
                 throw new IllegalArgumentException("unknown testkit backend: " + kind
                     + " (engine|jdbc|http|snowflake)");
@@ -313,6 +338,7 @@ public class JsonSuiteTest {
     public static void closeBackendAndReportMissingApis() throws Exception {
         if (backend != null) {
             if ("snowflake".equals(backendName)) {
+                dropAccountObjectsOfTheLastCase();
                 dropLiveTestDatabase(backend, LiveSnowflake.holdsAccountClaim());
             }
             backend.close();
@@ -321,6 +347,19 @@ public class JsonSuiteTest {
             logger.info("testkit missing API [{}]: {} ({} check(s), e.g. {})", backendName, entry.getKey(),
                 entry.getValue().size(), entry.getValue().get(0));
         }
+    }
+
+    /** What the last case created at the account's level goes too, from the context the session opened with. */
+    private static void dropAccountObjectsOfTheLastCase() {
+        if (liveConnection == null || !LiveAccountObjects.sawAccountObjectStatement()) {
+            return;
+        }
+        try {
+            backend.resetContext();
+        } catch (final Exception notReset) {
+            logger.warn("testkit: cannot reset the live session before its cleanup: {}", notReset.getMessage());
+        }
+        LiveAccountObjects.dropNewAccountObjects(liveConnection);
     }
 
     /**

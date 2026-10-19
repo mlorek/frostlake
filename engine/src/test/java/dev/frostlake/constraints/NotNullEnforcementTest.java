@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -36,7 +38,7 @@ public class NotNullEnforcementTest extends BaseDatabaseTest {
             engine.execute(sql);
             fail("expected a NOT NULL violation for: " + sql);
         } catch (final RuntimeException e) {
-            final String m = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+            final String m = e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
             assertTrue(m.contains("non-nullable") || m.contains("not null") || m.contains("null"),
                 "expected a NOT NULL message, got: " + e.getMessage());
         }

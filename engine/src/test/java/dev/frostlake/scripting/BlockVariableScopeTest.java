@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -78,7 +80,7 @@ public class BlockVariableScopeTest extends BaseDatabaseTest {
             assertEquals(cell[1], answer(block(cell[0])), cell[0]);
         }
         assertEquals("FALSE", answer(block(
-            "BEGIN LET i := TRUE; FOR i IN 1 TO 2 DO LET z := 1; END FOR; LET y := NOT i; RETURN y; END;")).toUpperCase());
+            "BEGIN LET i := TRUE; FOR i IN 1 TO 2 DO LET z := 1; END FOR; LET y := NOT i; RETURN y; END;")).toUpperCase(Locale.ROOT));
     }
 
     @Test

@@ -46,6 +46,10 @@ public class RestExternalVolumeTest extends BaseRestTest {
         assertEquals("AWS_SSE_KMS", first.path("encryption").path("type").asString());
         assertEquals("k", first.path("encryption").path("kms_key_id").asString());
         assertEquals("GCS", fetched.path("storage_locations").get(1).path("storage_provider").asString());
+        // The creation time and the owner are the OWNERSHIP row's of SHOW GRANTS ON EXTERNAL VOLUME.
+        assertFalse(fetched.path("created_on").isNull());
+        assertFalse(fetched.path("owner").isNull());
+        assertEquals("ROLE", fetched.path("owner_role_type").asString());
         assertEquals("RV_ONE", names(ok(get("/api/v2/external-volumes?like=RV_ONE"))));
 
         ok(delete("/api/v2/external-volumes/rv_one"));

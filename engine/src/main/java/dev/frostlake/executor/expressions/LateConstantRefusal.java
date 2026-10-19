@@ -19,8 +19,9 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.SqlCompilationError;
 
 /**
- * The refusal live raises last of all while it compiles a statement: GETVARIABLE's "argument 0 … needs to be
- * constant". Every other compile-time refusal of the statement comes first — an argument count or an argument type
+ * The refusals live raises last of all while it compiles a statement: GETVARIABLE's "argument 0 … needs to be
+ * constant", and a relation that is gone under a SQL function the statement calls (see
+ * {@code CalledRoutineSources}). Every other compile-time refusal of the statement comes first — an argument count or an argument type
  * anywhere in it, a generator's constant argument, a predicate type, a position past the select list, an aggregate
  * or a window where none may stand, the grouped select list, a QUALIFY without a window, a subquery's own refusal of
  * any kind, and a later set-operation arm's — so the refusal is recorded where the walk meets it and raised once
@@ -136,7 +137,7 @@ public final class LateConstantRefusal {
      * @param at      where the refused call stands in the statement, or null when unknown
      * @return false when no statement scope is open, and the caller must raise the refusal itself
      */
-    static boolean record(final RuntimeException refused, final SourcePosition at) {
+    public static boolean record(final RuntimeException refused, final SourcePosition at) {
         final LateConstantRefusal scope = CURRENT.get();
         if (scope == null) {
             return false;

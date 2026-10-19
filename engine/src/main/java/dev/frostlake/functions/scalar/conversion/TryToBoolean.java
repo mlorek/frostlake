@@ -21,16 +21,19 @@ import dev.frostlake.types.BooleanType;
 
 import java.util.List;
 
+/**
+ * TRY_TO_BOOLEAN(text) — the BOOLEAN a text spells, read as {@code TO_BOOLEAN} reads it
+ * ({@link BooleanWords}), and NULL where that one refuses.
+ */
 public class TryToBoolean extends BuiltInFunction {
     public TryToBoolean() { super("TRY_TO_BOOLEAN", new BooleanType()); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        final String v = args.get(0).toString().trim().toUpperCase();
-        if (v.equals("TRUE") || v.equals("1") || v.equals("YES") || v.equals("ON")) return true;
-        if (v.equals("FALSE") || v.equals("0") || v.equals("NO") || v.equals("OFF")) return false;
-        return null;
+        if (args.get(0) == null) {
+            return null;
+        }
+        return BooleanWords.read(args.get(0).toString());
     }
 
     @Override

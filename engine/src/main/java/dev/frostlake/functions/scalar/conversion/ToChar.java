@@ -70,6 +70,9 @@ public class ToChar extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        // A format that is a NULL text answers NULL; the bare word NULL there is refused while the statement
+        // compiles (live-verified).
+        if (args.size() >= 2 && args.get(1) == null) return null;
         final Object value = args.get(0);
         if (value instanceof VariantValue) {
             // An explicit conversion is always the COMPACT text on a real account, whatever

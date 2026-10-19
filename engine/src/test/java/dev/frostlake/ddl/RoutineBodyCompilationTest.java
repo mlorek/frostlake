@@ -360,4 +360,11 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
         }
         return false;
     }
+
+    @Test
+    public void queryBodyObjectConstantReadsParameters() {
+        engine.execute("CREATE FUNCTION obj_param(p VARCHAR) RETURNS OBJECT LANGUAGE SQL AS 'SELECT {''t'': p}'");
+
+        assertEquals("x", engine.executeQuery("SELECT obj_param('x'):t::VARCHAR").getRows().get(0).getValue(0));
+    }
 }

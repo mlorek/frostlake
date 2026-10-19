@@ -98,7 +98,7 @@ public final class PipeResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW PIPES" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Pipe '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Pipe", RelationNames.qualifiedDisplay(call, name));
         }
         return toJson(rows.get(0));
     }

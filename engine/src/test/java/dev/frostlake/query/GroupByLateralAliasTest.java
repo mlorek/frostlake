@@ -23,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -360,7 +362,7 @@ public class GroupByLateralAliasTest extends BaseDatabaseTest {
                 assertNull(rs.getRows().get(i).getValue(1));
                 totals++;
             } else {
-                assertEquals(rs.getRows().get(i).getValue(0).toString().toLowerCase(),
+                assertEquals(rs.getRows().get(i).getValue(0).toString().toLowerCase(Locale.ROOT),
                     rs.getRows().get(i).getValue(1));
             }
         }
@@ -376,7 +378,7 @@ public class GroupByLateralAliasTest extends BaseDatabaseTest {
             if (rs.getRows().get(i).getValue(0) == null) {
                 assertNull(rs.getRows().get(i).getValue(2));
             } else {
-                assertEquals(rs.getRows().get(i).getValue(0).toString().toLowerCase(),
+                assertEquals(rs.getRows().get(i).getValue(0).toString().toLowerCase(Locale.ROOT),
                     rs.getRows().get(i).getValue(2));
             }
         }

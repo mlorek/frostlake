@@ -16,7 +16,11 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.metastore.model.RoutineEnvironment;
+import dev.frostlake.types.DataType;
+
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +32,12 @@ public class ProcedureSnapshot implements Serializable {
     public String name;
     public List<ParameterSnapshot> parameters = new ArrayList<>();
     public String returnType;
+    /** Whether the RETURNS type was written with its width; null on older snapshots. */
+    public Boolean returnSized;
+    /** Whether the RETURNS type was written NOT NULL; absent in a snapshot written before it was recorded. */
+    public Boolean returnNotNull;
+    /** The return type itself (see {@link ParameterSnapshot#type}); null on older snapshots. */
+    public DataType returnDataType;
     public String body;
     public String language;
     public String handler;
@@ -35,6 +45,8 @@ public class ProcedureSnapshot implements Serializable {
     public List<String> packages = new ArrayList<>();
     public String executeAs;
     public List<String> imports = new ArrayList<>();
+    /** Artifact repository, target path, integrations and secrets; null on older snapshots. */
+    public RoutineEnvironment environment;
     public String comment;
     public String owner;
     // RETURNS TABLE and its declared columns; false and null on old snapshots, which kept neither.
@@ -43,8 +55,14 @@ public class ProcedureSnapshot implements Serializable {
     // The declared null handling and volatility; null on old snapshots, which read back as the defaults.
     public String nullHandling;
     public String volatility;
+    /** Created SECURE; false on snapshots written before a procedure could be. */
+    public boolean secure;
 
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
     public Map<String, String> tags;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
 }

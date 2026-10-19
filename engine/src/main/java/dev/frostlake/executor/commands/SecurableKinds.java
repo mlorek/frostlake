@@ -19,6 +19,9 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.parser.FrostlakeParser;
 
+import java.util.Locale;
+import org.antlr.v4.runtime.ParserRuleContext;
+
 /**
  * The kind of object a GRANT, a REVOKE or a SHOW GRANTS ON names, spelled as grants record it and SHOW GRANTS reports
  * it: {@code FILE FORMAT} is {@code FILE_FORMAT}, {@code ROW ACCESS POLICY} is {@code ROW_ACCESS_POLICY}. Live reads a
@@ -36,12 +39,22 @@ final class SecurableKinds {
      * @return the words upper-cased and joined by underscores
      */
     static String of(final FrostlakeParser.SecurableKindContext kind) {
+        return joined(kind);
+    }
+
+    /**
+     * A relation kind SHOW GRANTS ON writes beside TABLE and VIEW, in words.
+     *
+     * @param kind the kind's words
+     * @return the words upper-cased and joined by underscores
+     */
+    static String joined(final ParserRuleContext kind) {
         final StringBuilder name = new StringBuilder();
         for (int i = 0; i < kind.getChildCount(); i++) {
             if (i > 0) {
                 name.append('_');
             }
-            name.append(kind.getChild(i).getText().toUpperCase());
+            name.append(kind.getChild(i).getText().toUpperCase(Locale.ROOT));
         }
         return name.toString();
     }
@@ -55,9 +68,12 @@ final class SecurableKinds {
      * @return the kind, spelled as grants record it
      */
     static String of(final FrostlakeParser.ObjectTypeContext type) {
+        if (type.MATERIALIZED() != null) {
+            return "MATERIALIZED_VIEW";
+        }
         if (type.securableKind() == null) {
             throw new RuntimeException(SqlCompilationError.inline("Object type or Class '"
-                + type.getText().toUpperCase() + "' does not exist or not authorized."));
+                + type.getText().toUpperCase(Locale.ROOT) + "' does not exist or not authorized."));
         }
         return of(type.securableKind());
     }

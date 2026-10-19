@@ -17,6 +17,12 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
+
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.Token;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -26,10 +32,12 @@ import java.util.Locale;
  * (live-verified). One rule decides the multi-statement gate for every client: the HTTP endpoint
  * applies it to a request, and the JDBC driver applies it before sending one.
  *
- * <p>Counting is scanner-based: string literals (both {@code ''} and {@code \'} escapes), quoted
- * identifiers, {@code --}/{@code //} and {@code /* *&#47;} comments and {@code $$…$$} bodies are
- * opaque; a trailing {@code ;} adds nothing, and neither does an empty statement; a scripting region —
- * an unquoted block or a DECLARE-headed body — counts as one statement.
+ * <p>The count is the parser's own: a text that parses holds as many statements as its script has —
+ * a flow chain is one, a scripting block is one, a trailing {@code ;} adds nothing. Nothing is read a
+ * second way, so a text cannot count as one statement and run as two: {@code SELECT 1 AS a$$b; DELETE
+ * FROM t} is two, the {@code $$} being part of a name, and so is a statement after a comment that a
+ * carriage return ends. A text that does not parse is refused for its syntax whatever it counts, and
+ * is counted from the lexer's tokens so that the refusal can still be chosen.
  */
 public final class StatementCount {
 
@@ -37,90 +45,87 @@ public final class StatementCount {
     }
 
     /**
-     * Top-level statement count of {@code sql} under the scanner rules above. Scripting regions
-     * count as ONE statement, the way the account counts them (live-verified: an unquoted
-     * {@code CREATE PROCEDURE … AS BEGIN …; END;} and a bare anonymous {@code BEGIN …; END;} both
-     * pass under the default single-statement gate): a block-opening {@code BEGIN} (one not
-     * immediately followed by {@code ;}, {@code )}, {@code TRANSACTION}, {@code WORK} or {@code NAME} —
-     * those are transaction starts) or a top-level {@code DECLARE} opens a region; nested blocks pair
-     * their own BEGIN/END; {@code END IF}/{@code WHILE}/{@code FOR}/{@code LOOP}/{@code REPEAT}
-     * close constructs the counter never opened and are skipped; a CASE inside a region pairs with
-     * its bare {@code END} or {@code END CASE}. A block in parentheses — the one a DECLARE section's
-     * RESULTSET is filled from — is a nested block, never the section's own BEGIN.
+     * The number of statements {@code sql} holds: its script's top-level statements when it parses,
+     * and the count {@link #countTokens} reads when it does not.
+     *
+     * @param sql the request's text
+     * @return the count; 0 for a text holding no statement
      */
     public static int countStatements(final String sql) {
+        try {
+            return QueryExecutor.parsedStatementCount(sql);
+        } catch (final RuntimeException doesNotParse) {
+            return countTokens(sql);
+        }
+    }
+
+    /**
+     * The number of statements {@code sql} holds, read off the lexer's tokens without parsing it: the
+     * semicolons that stand outside a scripting region. Literals, quoted names, dollar-quoted bodies and
+     * comments are each what the lexer makes of them, so none is read differently from the parser. A
+     * scripting region counts as one statement: a block-opening {@code BEGIN} (one not followed by
+     * {@code ;}, {@code )}, {@code TRANSACTION}, {@code WORK} or {@code NAME}, which start a transaction)
+     * or a top-level {@code DECLARE} opens one; nested blocks pair their own BEGIN and END;
+     * {@code END IF} / {@code WHILE} / {@code FOR} / {@code LOOP} / {@code REPEAT} close constructs the
+     * count never opened; a CASE inside a region pairs with its bare {@code END} or {@code END CASE}; a
+     * block in parentheses is a nested block, never a DECLARE section's own BEGIN.
+     *
+     * <p>This is the count of a client that does not parse what it sends — the remote driver — and of a
+     * text that does not parse; where the words of a block are used as names it can differ from the
+     * parser's, which is why the server counts with {@link #countStatements}.
+     *
+     * @param sql the text
+     * @return the count; 0 for a text holding no statement
+     */
+    public static int countTokens(final String sql) {
+        final List<Token> tokens = tokens(sql);
         int count = 0;
         boolean sawContent = false;
         int depth = 0;
         int parentheses = 0;
         boolean headerBeginPending = false;
-        int i = 0;
-        final int n = sql.length();
-        while (i < n) {
-            final char c = sql.charAt(i);
-            if (c == '\'') {
-                i = skipString(sql, i);
-                sawContent = true;
-            } else if (c == '"') {
-                i = skipQuoted(sql, i);
-                sawContent = true;
-            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
-                i = skipLine(sql, i);
-            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
-                final int end = sql.indexOf("*/", i + 2);
-                i = end < 0 ? n : end + 2;
-            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '/') {
-                i = skipLine(sql, i);
-            } else if (c == '$' && i + 1 < n && sql.charAt(i + 1) == '$') {
-                final int end = sql.indexOf("$$", i + 2);
-                i = end < 0 ? n : end + 2;
-                sawContent = true;
-            } else if (c == ';') {
+        for (int i = 0; i < tokens.size(); i++) {
+            final int type = tokens.get(i).getType();
+            if (type == Token.EOF) {
+                break;
+            }
+            if (type == FrostlakeLexer.SEMI) {
                 if (depth == 0 && sawContent) {
                     count++;
                     sawContent = false;
                 }
-                i++;
-            } else if (Character.isLetter(c) || c == '_') {
-                final int start = i;
-                while (i < n && (Character.isLetterOrDigit(sql.charAt(i)) || sql.charAt(i) == '_')) {
-                    i++;
-                }
-                final String word = sql.substring(start, i).toUpperCase(Locale.ROOT);
-                sawContent = true;
-                if ("BEGIN".equals(word) && !isTransactionBegin(sql, i)) {
+                continue;
+            }
+            sawContent = true;
+            if (type == FrostlakeLexer.BEGIN) {
+                if (!startsTransaction(tokens, i) && !standsAsAName(tokens, i)) {
                     if (headerBeginPending && parentheses == 0) {
                         headerBeginPending = false;
                     } else {
                         depth++;
                     }
-                } else if ("DECLARE".equals(word) && depth == 0) {
-                    depth++;
-                    headerBeginPending = true;
-                } else if ("CASE".equals(word) && depth > 0) {
-                    depth++;
-                } else if ("END".equals(word) && depth > 0) {
-                    final String follower = nextWord(sql, i);
-                    if ("IF".equals(follower) || "WHILE".equals(follower) || "FOR".equals(follower)
-                            || "LOOP".equals(follower) || "REPEAT".equals(follower)) {
-                        i = skipNextWord(sql, i);
-                    } else {
-                        if ("CASE".equals(follower)) {
-                            i = skipNextWord(sql, i);
-                        }
-                        depth--;
+                }
+            } else if (type == FrostlakeLexer.DECLARE && depth == 0) {
+                depth++;
+                headerBeginPending = true;
+            } else if (type == FrostlakeLexer.CASE && depth > 0) {
+                depth++;
+            } else if (type == FrostlakeLexer.END && depth > 0) {
+                final int follower = tokens.get(i + 1).getType();
+                if (follower == FrostlakeLexer.IF || follower == FrostlakeLexer.WHILE
+                        || follower == FrostlakeLexer.FOR || follower == FrostlakeLexer.LOOP
+                        || follower == FrostlakeLexer.REPEAT) {
+                    i++;
+                } else {
+                    if (follower == FrostlakeLexer.CASE) {
+                        i++;
                     }
+                    depth--;
                 }
-            } else {
-                if (!Character.isWhitespace(c)) {
-                    sawContent = true;
-                }
-                if (c == '(') {
-                    parentheses++;
-                } else if (c == ')' && parentheses > 0) {
-                    parentheses--;
-                }
-                i++;
+            } else if (type == FrostlakeLexer.LPAREN) {
+                parentheses++;
+            } else if (type == FrostlakeLexer.RPAREN && parentheses > 0) {
+                parentheses--;
             }
         }
         if (sawContent) {
@@ -129,86 +134,40 @@ public final class StatementCount {
         return count;
     }
 
-    /** Whether the BEGIN ending at {@code after} starts a transaction rather than a block. */
-    private static boolean isTransactionBegin(final String sql, final int after) {
-        int j = after;
-        final int n = sql.length();
-        while (j < n && Character.isWhitespace(sql.charAt(j))) {
-            j++;
-        }
-        if (j >= n || sql.charAt(j) == ';' || sql.charAt(j) == ')') {
-            return true;
-        }
-        final String word = nextWord(sql, after);
-        return "TRANSACTION".equals(word) || "WORK".equals(word) || "NAME".equals(word);
+    /** Whether the BEGIN at {@code index} starts a transaction rather than a block. */
+    private static boolean startsTransaction(final List<Token> tokens, final int index) {
+        final int follower = tokens.get(index + 1).getType();
+        return follower == Token.EOF || follower == FrostlakeLexer.SEMI || follower == FrostlakeLexer.RPAREN
+            || follower == FrostlakeLexer.TRANSACTION || follower == FrostlakeLexer.WORK
+            || follower == FrostlakeLexer.NAME;
     }
 
-    /** The upper-cased word after position {@code from}, or empty when none follows. */
-    private static String nextWord(final String sql, final int from) {
-        int j = from;
-        final int n = sql.length();
-        while (j < n && Character.isWhitespace(sql.charAt(j))) {
-            j++;
+    /**
+     * Whether the BEGIN at {@code index} is a name — an alias or a column — rather than a block's opening: no block
+     * goes on with a ',', a '.', an operator or a clause's word, so {@code SELECT 1 AS begin, 2 AS b; DELETE FROM t}
+     * is two statements.
+     */
+    private static boolean standsAsAName(final List<Token> tokens, final int index) {
+        switch (tokens.get(index + 1).getType()) {
+            case FrostlakeLexer.COMMA: case FrostlakeLexer.DOT: case FrostlakeLexer.FROM: case FrostlakeLexer.WHERE:
+            case FrostlakeLexer.GROUP: case FrostlakeLexer.ORDER: case FrostlakeLexer.HAVING:
+            case FrostlakeLexer.QUALIFY: case FrostlakeLexer.LIMIT: case FrostlakeLexer.UNION:
+            case FrostlakeLexer.INTERSECT: case FrostlakeLexer.EXCEPT: case FrostlakeLexer.MINUS_KW:
+            case FrostlakeLexer.MINUS:
+            case FrostlakeLexer.EQ: case FrostlakeLexer.PLUS: case FrostlakeLexer.STAR: case FrostlakeLexer.SLASH:
+                return true;
+            default:
+                return false;
         }
-        final int start = j;
-        while (j < n && (Character.isLetterOrDigit(sql.charAt(j)) || sql.charAt(j) == '_')) {
-            j++;
-        }
-        return sql.substring(start, j).toUpperCase(Locale.ROOT);
     }
 
-    /** The index just past the word {@link #nextWord} would return. */
-    private static int skipNextWord(final String sql, final int from) {
-        int j = from;
-        final int n = sql.length();
-        while (j < n && Character.isWhitespace(sql.charAt(j))) {
-            j++;
-        }
-        while (j < n && (Character.isLetterOrDigit(sql.charAt(j)) || sql.charAt(j) == '_')) {
-            j++;
-        }
-        return j;
-    }
-
-    private static int skipString(final String s, final int start) {
-        int j = start + 1;
-        final int n = s.length();
-        while (j < n) {
-            final char c = s.charAt(j);
-            if (c == '\\') {
-                j += 2;
-            } else if (c == '\'') {
-                if (j + 1 < n && s.charAt(j + 1) == '\'') {
-                    j += 2;
-                } else {
-                    return j + 1;
-                }
-            } else {
-                j++;
-            }
-        }
-        return j;
-    }
-
-    private static int skipQuoted(final String s, final int start) {
-        int j = start + 1;
-        final int n = s.length();
-        while (j < n) {
-            if (s.charAt(j) == '"') {
-                if (j + 1 < n && s.charAt(j + 1) == '"') {
-                    j += 2;
-                    continue;
-                }
-                return j + 1;
-            }
-            j++;
-        }
-        return j;
-    }
-
-    private static int skipLine(final String s, final int start) {
-        final int j = s.indexOf('\n', start);
-        return j < 0 ? s.length() : j + 1;
+    /** The lexer's tokens of {@code sql}, comments and blanks dropped, the end of the text last. */
+    private static List<Token> tokens(final String sql) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        return stream.getTokens();
     }
 
     /**
@@ -234,35 +193,15 @@ public final class StatementCount {
         return null;
     }
 
-    /** Upper-cased word/symbol tokens of {@code sql}, comments dropped, for the detector above. */
+    /** The upper-cased texts of the first tokens of {@code sql}, semicolons dropped, for the detector above. */
     private static List<String> words(final String sql) {
         final List<String> words = new ArrayList<String>();
-        int i = 0;
-        final int n = sql.length();
-        while (i < n) {
-            final char c = sql.charAt(i);
-            if (Character.isWhitespace(c) || c == ';') {
-                i++;
-            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
-                i = skipLine(sql, i);
-            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
-                final int end = sql.indexOf("*/", i + 2);
-                i = end < 0 ? n : end + 2;
-            } else if (c == '=') {
-                words.add("=");
-                i++;
-            } else if (Character.isLetterOrDigit(c) || c == '_') {
-                final int start = i;
-                while (i < n && (Character.isLetterOrDigit(sql.charAt(i)) || sql.charAt(i) == '_')) {
-                    i++;
-                }
-                words.add(sql.substring(start, i).toUpperCase(Locale.ROOT));
-            } else {
-                words.add(String.valueOf(c));
-                i++;
+        for (final Token token : tokens(sql)) {
+            if (token.getType() == Token.EOF || words.size() > 7) {
+                break; // longer than any form the detector accepts
             }
-            if (words.size() > 7) {
-                return words; // longer than any form the detector accepts
+            if (token.getType() != FrostlakeLexer.SEMI) {
+                words.add(token.getText().toUpperCase(Locale.ROOT));
             }
         }
         return words;

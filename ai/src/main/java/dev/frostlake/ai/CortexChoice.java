@@ -17,6 +17,7 @@
 package dev.frostlake.ai;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Picking one of a caller-supplied list. Shared by the two classifying functions and by the
@@ -55,7 +56,7 @@ final class CortexChoice {
             }
         }
         for (final String category : categories) {
-            if (reply.toLowerCase().contains(category.toLowerCase())) {
+            if (reply.toLowerCase(Locale.ROOT).contains(category.toLowerCase(Locale.ROOT))) {
                 return category;
             }
         }

@@ -37,6 +37,9 @@ import org.graalvm.polyglot.Value;
  *       must take a positional parameter at all, named {@code self}, then the signature's arguments. Then an
  *       {@code end_partition}, which must have code, take a positional parameter named {@code self}, no
  *       keyword-only parameter and nothing else.</li>
+ *   <li>an aggregate function's handler is a class too, which must have an {@code accumulate}, a {@code merge}, a
+ *       {@code finish} and an {@code aggregate_state}, looked for in that order; its {@code __init__} may be left
+ *       out.</li>
  * </ul>
  * Each sentence here is completed by the caller with {@code in function <NAME> with handler <handler>}.
  */
@@ -62,7 +65,7 @@ final class PythonHandlerCheck {
                 if isinstance(target, type):
                     return "AttributeError: type object '" + target.__name__ + "' has no attribute '__code__'"
                 return 'AttributeError: ' + str(absent)
-        def __fl_inspect_handler(name, table, declared):
+        def __fl_inspect_handler(name, table, aggregate, declared):
             import sys
             if name == '':
                 return ('missing',)
@@ -77,6 +80,12 @@ final class PythonHandlerCheck {
                         return ('missing',)
             except BaseException as failure:
                 return ('interpreter', type(failure).__name__ + ': ' + str(failure))
+            if aggregate:
+                for method in ('accumulate', 'merge', 'finish', 'aggregate_state'):
+                    if not hasattr(target, method):
+                        return ('refused', 'Could not find ' + method + ' method'
+                                + ('.' if method == 'aggregate_state' else ''))
+                return ('ok',)
             if not table:
                 code = __fl_code_of(target)
                 if isinstance(code, str):
@@ -131,7 +140,8 @@ final class PythonHandlerCheck {
                 return ('refused', 'end_partition should be defined with only one argument "self", but found %d'
                         ' arguments' % code.co_argcount)
             return ('ok',)
-        __fl_handler_report = __fl_inspect_handler(__fl_handler_name, __fl_handler_table, __fl_handler_declared)
+        __fl_handler_report = __fl_inspect_handler(__fl_handler_name, __fl_handler_table, __fl_handler_aggregate,
+                                                   __fl_handler_declared)
         """;
 
     private PythonHandlerCheck() {
@@ -143,18 +153,21 @@ final class PythonHandlerCheck {
      *
      * @param handlerName the HANDLER as written
      * @param table       whether the function returns a table
+     * @param aggregate   whether the function is an aggregate
      * @param declared    how many arguments the signature declares
      */
-    static String refusal(final String handlerName, final boolean table, final int declared) {
+    static String refusal(final String handlerName, final boolean table, final boolean aggregate,
+                          final int declared) {
         final Value report;
         try {
             PythonRuntime.bind("__fl_handler_name", handlerName);
             PythonRuntime.bind("__fl_handler_table", Boolean.valueOf(table));
+            PythonRuntime.bind("__fl_handler_aggregate", Boolean.valueOf(aggregate));
             PythonRuntime.bind("__fl_handler_declared", Integer.valueOf(declared));
             PythonRuntime.eval(INSPECTION);
             report = PythonRuntime.global("__fl_handler_report");
         } catch (final RuntimeException uninspectable) {
-            PythonRuntime.discardContext();
+            PythonRuntime.settleAfter(uninspectable);
             return null;
         }
         if (report == null || !report.hasArrayElements()) {
@@ -162,7 +175,7 @@ final class PythonHandlerCheck {
         }
         final String kind = report.getArrayElement(0).asString();
         if ("missing".equals(kind)) {
-            return table ? "Could not find handler class" : "Could not find handler";
+            return table || aggregate ? "Could not find handler class" : "Could not find handler";
         }
         if ("no-process".equals(kind)) {
             return "Could not find process method";
@@ -174,6 +187,21 @@ final class PythonHandlerCheck {
             return report.getArrayElement(1).asString();
         }
         return null;
+    }
+
+    /**
+     * Forget the name a HANDLER the body defines goes by, so that only the body about to be evaluated can define it:
+     * the thread's interpreter keeps what earlier bodies defined, and a handler of the same name one of them left
+     * stood in for a handler this body lacks.
+     *
+     * @param handlerName the HANDLER, or null
+     */
+    static void forget(final String handlerName) {
+        if (handlerName == null || handlerName.isEmpty() || isDotted(handlerName)) {
+            return;
+        }
+        PythonRuntime.bind("__fl_forgotten", handlerName);
+        PythonRuntime.eval("globals().pop(__fl_forgotten, None)\n");
     }
 
     /** Whether a HANDLER names an attribute of a module rather than a name the body defines. */

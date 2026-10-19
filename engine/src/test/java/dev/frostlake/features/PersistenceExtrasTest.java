@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -244,8 +245,8 @@ public class PersistenceExtrasTest {
         final DatabaseEngine engine2 = new DatabaseEngine(config);
         assertEquals("DEPT_POLICY", engine2.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC")
             .getRowAccessPolicy("DEPT_POLICY").getName(), "policy definition must be persisted");
-        assertEquals("DEPT_POLICY", engine2.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC")
-            .getTable("EMPLOYEES").getRowAccessPolicyName().toUpperCase(),
+        assertEquals("TEST_DB.PUBLIC.DEPT_POLICY", engine2.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC")
+            .getTable("EMPLOYEES").getRowAccessPolicyName().toUpperCase(Locale.ROOT),
             "policy-to-table binding must be persisted");
         engine2.shutdown();
     }
@@ -282,8 +283,8 @@ public class PersistenceExtrasTest {
         final List<TableColumn> cols = engine2.getCatalog()
             .getDatabase("TEST_DB").getSchema("PUBLIC").getTable("KV").getColumns();
         assertEquals(2, cols.size(), "table definition must be persisted");
-        assertEquals("K", cols.get(0).getName().toUpperCase());
-        assertEquals("V", cols.get(1).getName().toUpperCase());
+        assertEquals("K", cols.get(0).getName().toUpperCase(Locale.ROOT));
+        assertEquals("V", cols.get(1).getName().toUpperCase(Locale.ROOT));
         assertNotNull(cols.get(0).getDataType());
         assertNotNull(cols.get(1).getDataType());
 

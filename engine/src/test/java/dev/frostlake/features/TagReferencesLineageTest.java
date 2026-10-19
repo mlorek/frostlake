@@ -121,7 +121,14 @@ public class TagReferencesLineageTest extends BaseDatabaseTest {
 
     @Test
     public void everyDocumentedDomainIsAccepted() {
-        assertEquals(0, rows("anything", "SHARE").size());
+        // A documented domain is a domain, its missing object refused as such (live-verified); an unknown one is not.
+        final RuntimeException missing = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                rows("anything", "SHARE");
+            }
+        });
+        assertTrue(missing.getMessage().contains("does not exist or not authorized."), missing.getMessage());
         final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {

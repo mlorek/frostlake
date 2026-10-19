@@ -17,8 +17,10 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SessionInputFormats;
 import dev.frostlake.executor.SessionOutputFormats;
 import dev.frostlake.executor.SessionTimestampMapping;
+import dev.frostlake.executor.SessionWeek;
 import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.executor.expressions.RawOverflowKind;
@@ -44,6 +46,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
+import java.time.temporal.TemporalAccessor;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -209,7 +212,7 @@ public final class SharedFunctionHelpers {
         if (v instanceof Boolean) return (Boolean) v;
         if (v instanceof Number) return ((Number) v).doubleValue() != 0;
         if (v instanceof String) {
-            final String s = ((String) v).trim().toUpperCase();
+            final String s = ((String) v).trim().toUpperCase(Locale.ROOT);
             return s.equals("TRUE") || s.equals("1");
         }
         return false;
@@ -506,14 +509,39 @@ public final class SharedFunctionHelpers {
         final BigDecimal exact = new BigDecimal(Math.abs(d));
         return exact.precision() - exact.scale() - 1;
     }
+    /**
+     * A numeric argument as the exact number it holds: a number as itself, a text read as one — a text that spells
+     * no number is "Numeric value 'b' is not recognized", the sentence every numeric argument earns
+     * (live-verified).
+     *
+     * @param value the argument, not NULL
+     * @return the number
+     */
+    public static BigDecimal numberArgument(final Object value) {
+        if (value instanceof BigDecimal) {
+            return (BigDecimal) value;
+        }
+        if (value instanceof String) {
+            try {
+                return new BigDecimal(((String) value).trim());
+            } catch (final NumberFormatException notANumber) {
+                throw new RuntimeException(NumericRangeRefusal.unreadableText(value));
+            }
+        }
+        return new BigDecimal(value.toString());
+    }
+
     // --- shared date/datetime parsing helpers ---
     public static LocalDate toLocalDate(final Object v) {
         if (v == null) return null;
         if (v instanceof LocalDate) return (LocalDate) v;
+        refuseStructuredVariant(v, "DATE");
         // A TIMESTAMP_TZ truncates to the date its OWN wall clock names, never to the UTC one.
         if (v instanceof ZonedDateTime) return ((ZonedDateTime) v).toLocalDate();
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalDate();
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.date();
+        if (sessionFormat != null) return LocalDate.from(sessionFormatted(s, sessionFormat, "Date"));
         try { return LocalDate.parse(s); } catch (final Exception ignored) {}
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) return epoch.toLocalDate();
@@ -522,6 +550,40 @@ public final class SharedFunctionHelpers {
         // Live names the TYPE it could not read the text as — "Date '...' is not recognized" —
         // where java.time's own message says "Text '...' could not be parsed".
         throw new RuntimeException("Date '" + s + "' is not recognized");
+    }
+
+    /**
+     * A VARIANT holding an OBJECT or an ARRAY is no date and no timestamp: converted row by row it is refused in the
+     * VARIANT's own words, {@code Failed to cast variant value {"x":"2024-01-02"} to DATE} (live-verified).
+     *
+     * @param v      the value
+     * @param target the type it is converted to, as the refusal names it
+     */
+    private static void refuseStructuredVariant(final Object v, final String target) {
+        if (!(v instanceof VariantValue)) {
+            return;
+        }
+        final VariantValue held = (VariantValue) v;
+        if (held.node().isObject() || held.node().isArray()) {
+            throw new RuntimeException("Failed to cast variant value " + held.text() + " to " + target);
+        }
+    }
+
+    /**
+     * Text read by the session's input format, which is the only reading once one other than AUTO is set: text the
+     * format does not fit is not recognized, in the words the AUTO reading uses (live-verified).
+     *
+     * @param text   the text, trimmed
+     * @param format the session's format
+     * @param kind   the type's word as the refusal spells it: Date, Time or Timestamp
+     * @return the value the format read
+     */
+    private static TemporalAccessor sessionFormatted(final String text, final String format, final String kind) {
+        try {
+            return SnowflakeDateParser.parse(text, format, kind.toLowerCase(Locale.ROOT));
+        } catch (final RuntimeException unfit) {
+            throw new RuntimeException(kind + " '" + text + "' is not recognized");
+        }
     }
 
     public static LocalDateTime toLocalDateTime(final Object v) {
@@ -545,6 +607,9 @@ public final class SharedFunctionHelpers {
     public static LocalDateTime toLocalDateTime(final Object v, final boolean targetCarriesZone) {
         if (v == null) return null;
         if (v instanceof LocalDateTime) return (LocalDateTime) v;
+        if (!targetCarriesZone) {
+            refuseStructuredVariant(v, "TIMESTAMP_NTZ");
+        }
         // A TIMESTAMP_LTZ arrives with its offset ALREADY applied, so its wall clock is the answer —
         // re-applying the offset here would move the instant a second time.
         if (v instanceof OffsetDateTime) return ((OffsetDateTime) v).toLocalDateTime();
@@ -555,6 +620,16 @@ public final class SharedFunctionHelpers {
         if (v instanceof ZonedDateTime) return ((ZonedDateTime) v).toLocalDateTime();
         if (v instanceof LocalDate) return ((LocalDate) v).atStartOfDay();
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.timestamp();
+        if (sessionFormat != null) {
+            final TemporalAccessor read = sessionFormatted(s, sessionFormat, "Timestamp");
+            if (read instanceof OffsetDateTime) {
+                final OffsetDateTime written = (OffsetDateTime) read;
+                return targetCarriesZone ? written.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime()
+                    : written.toLocalDateTime();
+            }
+            return LocalDateTime.from(read);
+        }
         try { return LocalDateTime.parse(s); } catch (final Exception ignored) {}
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) return epoch;
@@ -600,6 +675,13 @@ public final class SharedFunctionHelpers {
             return ((LocalDate) v).atStartOfDay(zone).toOffsetDateTime();
         }
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.timestamp();
+        if (sessionFormat != null) {
+            final TemporalAccessor read = sessionFormatted(s, sessionFormat, "Timestamp");
+            return read instanceof OffsetDateTime
+                ? ((OffsetDateTime) read).toInstant().atZone(zone).toOffsetDateTime()
+                : LocalDateTime.from(read).atZone(zone).toOffsetDateTime();
+        }
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) {
             // An epoch already fixes the instant; the session's zone only expresses it.
@@ -611,6 +693,11 @@ public final class SharedFunctionHelpers {
             throw new RuntimeException("Timestamp '" + s + "' is not recognized");
         }
         if (offset[0] == AutoTemporalParser.NO_OFFSET) {
+            // A wall clock the zone's clocks skip is read where it stands, not moved forward.
+            final ZoneOffset skipped = SkippedWallClock.offset(scanned, zone);
+            if (skipped != null) {
+                return scanned.toInstant(skipped).atZone(zone).toOffsetDateTime();
+            }
             return scanned.atZone(zone).toOffsetDateTime();
         }
         return scanned.toInstant(ZoneOffset.ofTotalSeconds(offset[0] * 60))
@@ -651,6 +738,12 @@ public final class SharedFunctionHelpers {
             return ((LocalDate) v).atStartOfDay(zone).withFixedOffsetZone();
         }
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.timestamp();
+        if (sessionFormat != null) {
+            final TemporalAccessor read = sessionFormatted(s, sessionFormat, "Timestamp");
+            return read instanceof OffsetDateTime ? ((OffsetDateTime) read).toZonedDateTime()
+                : LocalDateTime.from(read).atZone(zone).withFixedOffsetZone();
+        }
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) {
             // An epoch written as TEXT stays at UTC whatever the session's zone, where the NUMBER
@@ -664,6 +757,11 @@ public final class SharedFunctionHelpers {
             throw new RuntimeException("Timestamp '" + s + "' is not recognized");
         }
         if (offset[0] == AutoTemporalParser.NO_OFFSET) {
+            // A wall clock the zone's clocks skip keeps its digits, at one of the two offsets around the change.
+            final ZoneOffset skipped = SkippedWallClock.offset(scanned, zone);
+            if (skipped != null) {
+                return scanned.atOffset(skipped).toZonedDateTime();
+            }
             return scanned.atZone(zone).withFixedOffsetZone();
         }
         return scanned.atOffset(ZoneOffset.ofTotalSeconds(offset[0] * 60)).toZonedDateTime();
@@ -688,6 +786,29 @@ public final class SharedFunctionHelpers {
         return computed.atZone(SessionZone.current()).toOffsetDateTime();
     }
 
+    /**
+     * Text read as a TIME under an explicit 'AUTO' format: by the session's input format first, by AUTO when the text
+     * does not fit it — TO_TIME('15:15', 'AUTO') is 15:15 under HH12:MI AM (live-verified).
+     *
+     * @param text the text
+     * @return the time
+     */
+    public static LocalTime toLocalTimeAuto(final String text) {
+        if (SessionInputFormats.time() == null) {
+            return toLocalTime(text);
+        }
+        try {
+            return toLocalTime(text);
+        } catch (final RuntimeException unfit) {
+            final Map<String, String> displaced = SessionInputFormats.without(SessionInputFormats.TIME);
+            try {
+                return toLocalTime(text);
+            } finally {
+                SessionInputFormats.restore(displaced);
+            }
+        }
+    }
+
     public static LocalTime toLocalTime(final Object v) {
         if (v == null) return null;
         if (v instanceof LocalTime) return (LocalTime) v;
@@ -697,6 +818,8 @@ public final class SharedFunctionHelpers {
         if (v instanceof OffsetDateTime) return ((OffsetDateTime) inSessionZone(v)).toLocalTime();
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.time();
+        if (sessionFormat != null) return LocalTime.from(sessionFormatted(s, sessionFormat, "Time"));
         final LocalTime epoch = integerStringTime(s);
         if (epoch != null) return epoch;
         try { return LocalTime.parse(s); } catch (final Exception ignored) {}
@@ -982,6 +1105,25 @@ public final class SharedFunctionHelpers {
         if (isExplicitFormat(format)) {
             return LocalDateTime.from(SnowflakeDateParser.parse(value.toString(), format, "timestamp"));
         }
+        if (format != null && SessionInputFormats.timestamp() != null) {
+            // An explicit AUTO reads by the session's format first and by AUTO when the text does not fit it:
+            // under DD/MM/YYYY HH24:MI, TO_TIMESTAMP('05/03/2024 10:00', 'AUTO') is 5 March and an ISO text
+            // reads as well (live-verified).
+            try {
+                return toLocalDateTime(value);
+            } catch (final RuntimeException unfit) {
+                final Map<String, String> displaced = SessionInputFormats.without(SessionInputFormats.TIMESTAMP);
+                try {
+                    return parseTimestampWithFormat(value, null);
+                } finally {
+                    SessionInputFormats.restore(displaced);
+                }
+            }
+        }
+        if (format == null && SessionInputFormats.timestamp() != null) {
+            // The session's format is the only reading: a string of digits is no epoch under it.
+            return toLocalDateTime(value);
+        }
         final String text = value.toString().trim();
         if (isIntegerText(text)) {
             try {
@@ -1044,9 +1186,36 @@ public final class SharedFunctionHelpers {
         if (isExplicitFormat(format)) {
             return LocalDate.from(SnowflakeDateParser.parse(value.toString(), format, "date"));
         }
+        if (format != null && SessionInputFormats.date() != null) {
+            // An explicit AUTO reads by the session's format first and by AUTO when the text does not fit it, as
+            // TO_TIMESTAMP's does: TO_DATE('2024-01-15', 'AUTO') reads under DD/MM/YYYY (live-verified).
+            try {
+                return toLocalDate(value);
+            } catch (final RuntimeException unfit) {
+                final Map<String, String> displaced = SessionInputFormats.without(SessionInputFormats.DATE);
+                try {
+                    return parseDateWithFormat(value, null);
+                } finally {
+                    SessionInputFormats.restore(displaced);
+                }
+            }
+        }
+        if (format == null && SessionInputFormats.date() != null) {
+            // The session's format is the only reading: a string of digits is no epoch under it.
+            return toLocalDate(value);
+        }
         final String digits = value.toString().trim();
         if (digits.matches("-?\\d+")) {
             return epochToLocalDateTime(Long.parseLong(digits)).toLocalDate();
+        }
+        if (format != null && value instanceof String) {
+            // A text no AUTO form reads is refused naming the format written for it (live-verified):
+            // TO_DATE('05/03/2024 10:00', 'AUTO') is "Can't parse '05/03/2024 10:00' as date with format 'AUTO'".
+            try {
+                return toLocalDate(value);
+            } catch (final RuntimeException unread) {
+                throw new RuntimeException("Can't parse '" + value + "' as date with format '" + format + "'");
+            }
         }
         return toLocalDate(value);
     }
@@ -1149,14 +1318,18 @@ public final class SharedFunctionHelpers {
         }
         switch (unit) {
             case "YEAR": case "Y": case "YY": case "YYY": case "YYYY": case "YR": return dt.getYear();
-            case "YEAROFWEEK": case "YEAROFWEEKISO": case "YEAROFWEEK_ISO": return dt.get(IsoFields.WEEK_BASED_YEAR);
+            // The week parts follow the session's WEEK_START and WEEK_OF_YEAR_POLICY; the ISO ones do not.
+            case "YEAROFWEEK": return SessionWeek.yearOfWeek(dt.toLocalDate());
+            case "YEAROFWEEKISO": case "YEAROFWEEK_ISO": return dt.get(IsoFields.WEEK_BASED_YEAR);
             case "QUARTER": case "Q": case "QTR":
                 return (dt.getMonthValue() - 1) / 3 + 1;
             case "MONTH": case "MM": case "MON": case "MONS": return dt.getMonthValue();
-            case "WEEK": case "W": case "WY": case "WOY": case "WEEKOFYEAR": case "WEEKISO": case "WEEK_ISO":
+            case "WEEK": case "W": case "WY": case "WOY": case "WEEKOFYEAR":
+                return SessionWeek.weekOfYear(dt.toLocalDate());
+            case "WEEKISO": case "WEEK_ISO":
                 return dt.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
             case "DAY": case "DD": case "D": case "DAYOFMONTH": return dt.getDayOfMonth();
-            case "DAYOFWEEK": case "DOW": case "DW": case "WEEKDAY": return (long) dt.getDayOfWeek().getValue() % 7;
+            case "DAYOFWEEK": case "DOW": case "DW": case "WEEKDAY": return SessionWeek.dayOfWeek(dt.toLocalDate());
             case "DAYOFWEEKISO": case "DAYOFWEEK_ISO": case "WEEKDAY_ISO": case "DOW_ISO": case "DW_ISO":
                 return dt.getDayOfWeek().getValue();
             case "DAYOFYEAR": case "DOY": case "YEARDAY": case "DY": return dt.getDayOfYear();
@@ -1175,16 +1348,25 @@ public final class SharedFunctionHelpers {
         }
     }
 
+    /**
+     * The weekday a NEXT_DAY or PREVIOUS_DAY word names: its first two letters decide, in any case, after any
+     * leading spaces — {@code 'mo'}, {@code 'Mon'} and {@code 'monday'} are all a Monday — and a word that names
+     * none is "Weekday 'zz' is not recognized" (live-verified).
+     *
+     * @param name the word as given
+     * @return the weekday
+     */
     public static DayOfWeek parseDayOfWeek(final String name) {
-        switch (name.toUpperCase().substring(0, Math.min(3, name.length()))) {
-            case "MON": return DayOfWeek.MONDAY;
-            case "TUE": return DayOfWeek.TUESDAY;
-            case "WED": return DayOfWeek.WEDNESDAY;
-            case "THU": return DayOfWeek.THURSDAY;
-            case "FRI": return DayOfWeek.FRIDAY;
-            case "SAT": return DayOfWeek.SATURDAY;
-            case "SUN": return DayOfWeek.SUNDAY;
-            default: throw new RuntimeException("Unknown day of week: " + name);
+        final String word = name.stripLeading().toUpperCase(Locale.ROOT);
+        switch (word.substring(0, Math.min(2, word.length()))) {
+            case "MO": return DayOfWeek.MONDAY;
+            case "TU": return DayOfWeek.TUESDAY;
+            case "WE": return DayOfWeek.WEDNESDAY;
+            case "TH": return DayOfWeek.THURSDAY;
+            case "FR": return DayOfWeek.FRIDAY;
+            case "SA": return DayOfWeek.SATURDAY;
+            case "SU": return DayOfWeek.SUNDAY;
+            default: throw new RuntimeException("Weekday '" + name + "' is not recognized");
         }
     }
     /** {@code unit.toUpperCase()} with one trailing {@code S} removed — the plural strip without a

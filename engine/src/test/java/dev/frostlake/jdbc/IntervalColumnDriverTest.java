@@ -377,10 +377,10 @@ public class IntervalColumnDriverTest {
         final ResultSetData wire = ResultSetData.from(result);
         final ColumnData day = wire.getColumns().get(0);
         assertEquals("INTERVAL_DAY_TIME", day.getDataType());
-        assertEquals(0, day.getPrecision());
-        assertEquals(6, day.getScale());
+        assertEquals(Integer.valueOf(0), day.getPrecision());
+        assertEquals(6, day.scaleOrZero());
         assertEquals("INTERVAL_YEAR_MONTH", wire.getColumns().get(1).getDataType());
-        assertEquals(12, wire.getColumns().get(2).getScale());
+        assertEquals(12, wire.getColumns().get(2).scaleOrZero());
         assertArrayEquals(new Object[] {"86400000000000", "12", "1000000000"}, wire.getRows().get(0).toArray());
     }
 }

@@ -18,7 +18,10 @@ package dev.frostlake.metastore;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -26,6 +29,10 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  */
 public class QueryHistoryTracker {
     private final ConcurrentLinkedQueue<QueryHistory> queryHistory;
+    /** The statements that have begun and not ended, in the order they began. */
+    private final ConcurrentLinkedQueue<QueryHistory> running = new ConcurrentLinkedQueue<>();
+    /** The replays of a former engine's logged statements, by the query ID each first answered with. */
+    private final Map<String, QueryHistory> anchors = new ConcurrentHashMap<>();
     private final int maxHistorySize;
     private static final int DEFAULT_MAX_HISTORY_SIZE = 10000;
 
@@ -39,9 +46,37 @@ public class QueryHistoryTracker {
     }
 
     /**
+     * Note a statement that has begun: it is listed as RUNNING until it ends.
+     *
+     * @param query the statement's row
+     */
+    public void begin(final QueryHistory query) {
+        running.add(query);
+    }
+
+    /**
+     * Note a statement that is over, whether or not it joined the history.
+     *
+     * @param query the statement's row
+     */
+    public void end(final QueryHistory query) {
+        running.remove(query);
+    }
+
+    /**
+     * The statements running now, oldest first.
+     *
+     * @return their rows
+     */
+    public List<QueryHistory> getRunning() {
+        return new ArrayList<>(running);
+    }
+
+    /**
      * Add a query to history
      */
     public void addQuery(final QueryHistory query) {
+        running.remove(query);
         queryHistory.add(query);
 
         // Maintain max size by removing oldest entries
@@ -78,7 +113,8 @@ public class QueryHistoryTracker {
     }
 
     /**
-     * Get query by ID
+     * Get query by ID: a query this engine ran, or one a former engine ran that the write-ahead log's replay ran again
+     * (see {@link #anchor}).
      */
     public QueryHistory getQueryById(final String queryId) {
         for (final QueryHistory query : queryHistory) {
@@ -86,7 +122,40 @@ public class QueryHistoryTracker {
                 return query;
             }
         }
-        return null;
+        return queryId == null ? null : anchors.get(queryId);
+    }
+
+    /**
+     * Lets a query ID a former engine answered a logged statement with name the statement's replay, for the
+     * time-travel points that name it: kept whatever {@link #forgetSession} forgets of the replay's sessions, so a
+     * statement run after the restart reads at that point too.
+     *
+     * @param originalId the ID the statement first answered with
+     * @param replayed   its replay's history, or null when none was recorded
+     */
+    public void anchor(final String originalId, final QueryHistory replayed) {
+        if (originalId != null && replayed != null) {
+            anchors.put(originalId, replayed);
+        }
+    }
+
+    /**
+     * The logged statement whose changes became visible last at or before a place in the order snapshots are taken
+     * in: what a replay maps that place through, since the replay runs the statement again under another place.
+     *
+     * @param sequence the place
+     * @return the statement, or null when no logged statement this engine ran was visible by then
+     */
+    public QueryHistory lastLoggedVisibleBy(final long sequence) {
+        QueryHistory last = null;
+        for (final QueryHistory query : queryHistory) {
+            final long visible = query.getVisibleSequence();
+            if (query.isLogged() && visible >= 0 && visible <= sequence
+                    && (last == null || visible >= last.getVisibleSequence())) {
+                last = query;
+            }
+        }
+        return last;
     }
 
     /**
@@ -150,6 +219,22 @@ public class QueryHistoryTracker {
      */
     public void clear() {
         queryHistory.clear();
+    }
+
+    /**
+     * Forget every query one session ran: a session that is over and that no listing may show, as the replay of
+     * the write-ahead log at startup is.
+     *
+     * @param sessionId the session's number
+     */
+    public void forgetSession(final long sessionId) {
+        final Iterator<QueryHistory> queries = queryHistory.iterator();
+        while (queries.hasNext()) {
+            final Long ran = queries.next().getSessionId();
+            if (ran != null && ran.longValue() == sessionId) {
+                queries.remove();
+            }
+        }
     }
 
     /**

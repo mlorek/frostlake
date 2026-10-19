@@ -27,7 +27,8 @@ public class Char extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final int codePoint = ((Number) args.get(0)).intValue();
+        // A code point is read as the whole number it gives, a text's included: CHAR('66.6') is C (live-verified).
+        final int codePoint = wholeNumber(args.get(0));
         if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT) return null;
         return new String(Character.toChars(codePoint));
     }

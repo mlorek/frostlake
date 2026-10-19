@@ -20,7 +20,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -65,7 +64,7 @@ final class IlikeAllSyntax {
                 all = i;
             }
         }
-        if (all < 0 || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (all < 0) {
             return null;
         }
         final Token quantifier = spoken.get(all);
@@ -94,7 +93,7 @@ final class IlikeAllSyntax {
         lines.add(SyntaxErrorListener.sentence(spoken.get(all + 2)));
         final int comma = firstListComma(spoken, all + 1);
         if (comma >= 0 && commaCarriesOn(predicate)) {
-            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
             lexer.removeErrorListeners();
             final CommonTokenStream tokens = new CommonTokenStream(lexer);
             tokens.fill();

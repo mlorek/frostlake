@@ -19,7 +19,9 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.commands.DataTypeParser;
+import dev.frostlake.executor.udf.UserAggregateFunction;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.datetime.DateDifferenceWidths;
 import dev.frostlake.functions.scalar.datetime.PlannedDateAdd;
 import dev.frostlake.metastore.model.TableColumn;
@@ -44,6 +46,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorElementType;
@@ -126,6 +129,11 @@ final class TypeInferencer {
     private final Deque<Map<String, DataType>> lambdaTypes = new ArrayDeque<>();
     /** The width a text or VARIANT value is converted to by the interpolating and picking percentiles, live: NUMBER(9,0). */
     private static final int COERCED_WHOLE_DIGITS = 9;
+    /**
+     * What SUM, AVG and the variances read an untyped NULL as: SUM(NULL) declares NUMBER(30,0) and AVG(NULL)
+     * NUMBER(36,6), the widths a NUMBER(18,0) argument gives (live-verified).
+     */
+    private static final NumericType UNTYPED_NULL_AGGREGATED = new NumericType("NUMBER", 18, 0);
 
     private static final Object UNDETERMINED = new Object();
 
@@ -186,6 +194,16 @@ final class TypeInferencer {
             return null;
         }
         final DataType left = infer(binary.getLeft());
+        if (left instanceof DateTimeType && "TIME".equals(((DateTimeType) left).getName())) {
+            // A TIME moves by parts of a day only: a day or longer is refused while the statement compiles.
+            for (IntervalExpression part = (IntervalExpression) binary.getRight(); part != null;
+                    part = part.getRest()) {
+                if (part.getUnit().isWholeDay()) {
+                    throw ExpressionArithmetic.timeComponentRefusal(part.getUnit(), part.getRest() == null,
+                        binary.getOperator() == BinaryOperator.ADD);
+                }
+            }
+        }
         if (left instanceof DateTimeType && !"DATE".equals(((DateTimeType) left).getName())) {
             // A timestamp keeps its own flavour, at the family's full nine digits.
             return atFullPrecision((DateTimeType) left);
@@ -209,6 +227,74 @@ final class TypeInferencer {
      */
     private static DataType intervalLiteralType(final IntervalExpression interval) {
         return interval.getLiteral() == null ? null : interval.getLiteral().getType();
+    }
+
+    /** The functions that read into a value as its subscripts and paths do. */
+    private static final Set<String> STRUCTURED_GETS = Set.of("GET", "GET_IGNORE_CASE", "GET_PATH");
+
+    /**
+     * What GET, GET_IGNORE_CASE and GET_PATH read from a structured value: the type the value declares there
+     * (documented). Null for any other call, and for a read of a semi-structured value, which is a VARIANT.
+     *
+     * @param funcName the function's name, upper-cased
+     * @param call     the call
+     * @return the type read, or null
+     */
+    DataType structuredGetType(final String funcName, final FunctionCallExpression call) {
+        if (!STRUCTURED_GETS.contains(funcName) || call.getArguments().size() != 2) {
+            return null;
+        }
+        final DataType base = infer(call.getArguments().get(0));
+        if (!StructuredTypes.isStructured(base)) {
+            return null;
+        }
+        final Object key = constantKey(call.getArguments().get(1));
+        if ("GET_PATH".equals(funcName)) {
+            return key instanceof String ? StructuredLeaf.ofPathText(base, (String) key) : null;
+        }
+        return StructuredLeaf.ofSubscript(base, key, "GET_IGNORE_CASE".equals(funcName));
+    }
+
+    /**
+     * A subscript's or a key's value when it is written as a constant — a text or a number — or null for anything
+     * else.
+     *
+     * @param key the subscript or key
+     * @return its constant value, or null
+     */
+    static Object constantKey(final Expression key) {
+        return key instanceof LiteralExpression ? ((LiteralExpression) key).getValue() : null;
+    }
+
+    /**
+     * The refusal a text, a VARIANT or a bare NULL beside an interval earns at the operator, the quoted interval spelled
+     * INTERVAL: {@code '2024-01-02' + INTERVAL '1 day'} is "Invalid argument types for function '+': (VARCHAR(10),
+     * INTERVAL)" and {@code NULL + INTERVAL '1 day'} "(NULL, INTERVAL)", where a DATE or a timestamp moves by it
+     * (live-verified). Null for any other pair.
+     */
+    private String untemporalBesideInterval(final BinaryOperationExpression binary, final DataType leftType,
+                                            final DataType rightType) {
+        final boolean leftInterval = isQuotedInterval(binary.getLeft()) || IntervalArithmeticTypes.isInterval(leftType);
+        final boolean rightInterval = isQuotedInterval(binary.getRight())
+            || IntervalArithmeticTypes.isInterval(rightType);
+        if (leftInterval == rightInterval) {
+            return null;
+        }
+        final Expression other = leftInterval ? binary.getRight() : binary.getLeft();
+        final DataType otherType = leftInterval ? rightType : leftType;
+        final String spelled;
+        if (otherType == null && isNullLiteral(other)) {
+            spelled = "NULL";
+        } else if (otherType instanceof StringType || otherType instanceof VariantType) {
+            spelled = SqlTypeNames.canonical(otherType);
+        } else {
+            return null;
+        }
+        final String interval = leftInterval
+            ? (isQuotedInterval(binary.getLeft()) ? "INTERVAL" : SqlTypeNames.canonical(leftType))
+            : (isQuotedInterval(binary.getRight()) ? "INTERVAL" : SqlTypeNames.canonical(rightType));
+        return "Invalid argument types for function '" + operatorSymbol(binary.getOperator()) + "': ("
+            + (leftInterval ? interval + ", " + spelled : spelled + ", " + interval) + ")";
     }
 
     /** Whether an operand is the quoted-string interval form, {@code INTERVAL '1 day'}, which has no type. */
@@ -245,11 +331,21 @@ final class TypeInferencer {
             return intervalLiteralType((IntervalExpression) expr);
         }
         if (expr instanceof SystemStreamHasDataExpression) {
+            // Its name is judged while the statement compiles, whatever rows it then reads.
+            SystemConstantArguments.judgeStreamName("SYSTEM$STREAM_HAS_DATA",
+                ((SystemStreamHasDataExpression) expr).getStreamNameExpr(), visitor);
             return BooleanType.BOOLEAN;
+        }
+        if (expr instanceof SystemUserTaskCancelExpression) {
+            // The cancellation's sentence is a VARCHAR(1), whatever it says (live-verified, over NULL too).
+            return new StringType("VARCHAR", 1);
         }
         if (expr instanceof FoldedConstantExpression) {
             // A conversion the plan folded keeps its target's type, whatever digits its value has.
             return ((FoldedConstantExpression) expr).getDeclaredType();
+        }
+        if (expr instanceof NullableConstantExpression) {
+            return infer(((NullableConstantExpression) expr).getValue());
         }
         if (expr instanceof LiteralExpression) {
             switch (((LiteralExpression) expr).getType()) {
@@ -293,10 +389,14 @@ final class TypeInferencer {
             final ColumnReferenceExpression reference = (ColumnReferenceExpression) expr;
             if (!reference.isQualified()) {
                 for (final Map<String, DataType> scope : lambdaTypes) {
-                    if (scope.containsKey(reference.getColumnName().toUpperCase())) {
-                        return scope.get(reference.getColumnName().toUpperCase());
+                    if (scope.containsKey(reference.getColumnName().toUpperCase(Locale.ROOT))) {
+                        return scope.get(reference.getColumnName().toUpperCase(Locale.ROOT));
                     }
                 }
+            }
+            if (visitor.readsUntypedNull(reference)) {
+                // A column holding nothing but an untyped NULL has no type, as the bare word has none.
+                return null;
             }
             final TableColumn resolved = visitor.resolveDeclaredColumn((ColumnReferenceExpression) expr);
             if (resolved == null && visitor.readsSequence(reference)) {
@@ -382,6 +482,29 @@ final class TypeInferencer {
             DataType leftType = infer(binary.getLeft());
             DataType rightType = infer(binary.getRight());
             visitor.validateOperatorCollations(binary);
+            // A NULL of a text type is the bare word to an exact number beside it (see UntypedNullFold).
+            final boolean leftNullText = isNumericOperator(binary.getOperator())
+                && isNullTextBesideNumber(binary.getLeft(), rightType);
+            final boolean rightNullText = isNumericOperator(binary.getOperator())
+                && isNullTextBesideNumber(binary.getRight(), leftType);
+            if (leftNullText) {
+                leftType = null;
+            }
+            if (rightNullText) {
+                rightType = null;
+            }
+            if (isNumericOperator(binary.getOperator())) {
+                final String beside = untemporalBesideInterval(binary, leftType, rightType);
+                if (beside != null) {
+                    throw new RuntimeException(positioned(beside, binary));
+                }
+            }
+            if (isNumericOperator(binary.getOperator())
+                    && (NumericType.isDecfloat(leftType) || NumericType.isDecfloat(rightType))) {
+                // A DECFLOAT operand makes the operation a DECFLOAT, beside a NUMBER, a FLOAT or a numeric text
+                // alike (live-verified).
+                return NumericType.DECFLOAT;
+            }
             if (isNumericOperator(binary.getOperator())) {
                 // A text or a VARIANT operand is judged FIRST, on the types as declared: a text beside
                 // a bare NULL is a FLOAT on the account, not the NULL's NUMBER(18,0) beside a number.
@@ -394,16 +517,16 @@ final class TypeInferencer {
                 // NUMBER(19,0), NULL * n10_2 NUMBER(28,2), NULL / n10_2 NUMBER(26,6), NULL + NULL
                 // NUMBER(19,0) — and a NUMBER(1,0) under the remainder operator (NULL % 7 is
                 // NUMBER(2,0), NULL % n10_2 NUMBER(10,2)); a FLOAT or a text beside it keeps its own
-                // rule. Beside a DATE, a TIME, a TIMESTAMP or a BOOLEAN the pair is refused at the
+                // rule. Beside a DATE, a TIME, a TIMESTAMP, a BOOLEAN or a BINARY the pair is refused at the
                 // operator, the NULL spelled as such: "Invalid argument types for function '+':
                 // (DATE, NULL)" (all live-verified).
-                final boolean leftNull = leftType == null && isNullLiteral(binary.getLeft());
-                final boolean rightNull = rightType == null && isNullLiteral(binary.getRight());
+                final boolean leftNull = leftType == null && (leftNullText || isNullLiteral(binary.getLeft()));
+                final boolean rightNull = rightType == null && (rightNullText || isNullLiteral(binary.getRight()));
                 if (leftNull && refusesNullBeside(rightType) || rightNull && refusesNullBeside(leftType)) {
                     throw new RuntimeException(positioned("Invalid argument types for function '"
                         + operatorSymbol(binary.getOperator()) + "': ("
-                        + (leftNull ? "NULL" : SqlTypeNames.canonical(leftType)) + ", "
-                        + (rightNull ? "NULL" : SqlTypeNames.canonical(rightType)) + ")", binary));
+                        + (leftNull ? "NULL" : besideNull(leftType)) + ", "
+                        + (rightNull ? "NULL" : besideNull(rightType)) + ")", binary));
                 }
                 if (leftNull && (rightNull || acceptsNullBeside(rightType))) {
                     leftType = arithmeticNullType(binary.getOperator(), rightType);
@@ -435,6 +558,17 @@ final class TypeInferencer {
                 rightType);
             if (refusal != null) {
                 throw new RuntimeException(positioned(refusal, binary));
+            }
+            if (binary.getOperator() == BinaryOperator.CONCAT) {
+                // A bare NULL is a text under the operator whatever stands beside it: NULL || NULL, NULL || 1
+                // and NULL || n over a NUMBER column are VARCHAR(134217728), so a WHERE of one is refused as
+                // a predicate that is no BOOLEAN (live-verified).
+                final boolean leftNull = leftType == null && isNullLiteral(binary.getLeft());
+                final boolean rightNull = rightType == null && isNullLiteral(binary.getRight());
+                if (leftNull && (rightNull || BinaryOperationTypes.concatenatesAsText(rightType))
+                        || rightNull && BinaryOperationTypes.concatenatesAsText(leftType)) {
+                    return new StringType("VARCHAR", StringResultWidths.UNBOUNDED);
+                }
             }
             return BinaryOperationTypes.resultOf(binary.getOperator(), leftType, rightType);
         }
@@ -502,7 +636,7 @@ final class TypeInferencer {
             // evaluator instead made the refusal data-dependent: over a table with no rows nothing
             // was evaluated, so the statement was accepted — and a view or CTAS over it was created.
             visitor.requireResolvableFunctionName(call);
-            final String funcName = call.getFunctionName().toUpperCase();
+            final String funcName = call.getFunctionName().toUpperCase(Locale.ROOT);
             // A COLLATE call is judged here — its operand, then its specification — and every call that
             // hands a collation on settles its arguments' here, refusing two that disagree.
             if ("COLLATE".equals(funcName) && call.getArguments().size() == 2) {
@@ -515,13 +649,39 @@ final class TypeInferencer {
             // A comparing function's own collation after the one it hands on: a DECODE whose results
             // and whose search values both disagree is refused for its results (live-verified).
             visitor.validateComparingCollation(call);
+            // GET, GET_IGNORE_CASE and GET_PATH over a structured value read the type it declares there (documented).
+            final DataType structuredRead = structuredGetType(funcName, call);
+            if (structuredRead != null) {
+                return structuredRead;
+            }
+            // The array and object functions over a structured value answer a structured type (live-verified).
+            final DataType structuredResult = StructuredFunctionTypes.of(this, funcName, call.getArguments());
+            if (structuredResult != null) {
+                return structuredResult;
+            }
             // SYSTEM$TYPEOF answers a string of no width: its result column is VARCHAR(134217728), typed
             // again it reads VARCHAR, and a table built over it stores VARCHAR(16777216) (live-verified).
-            if ("SYSTEM$TYPEOF".equals(funcName)) {
+            // SYSTEM$WAIT's sentence is a result column of that width too.
+            // SYSTEM$GET_TAG's value is one more: VARCHAR in SYSTEM$TYPEOF, VARCHAR(134217728) as a column.
+            // SYSTEM$ABORT_TRANSACTION's sentence reads VARCHAR too, whatever its argument.
+            // So do the tag's list, the clustering report, the allow list, the platform's description and a
+            // task's own name. SYSTEM$CLUSTERING_DEPTH is a FLOAT and SYSTEM$LAST_CHANGE_COMMIT_TIME a NUMBER(38,0).
+            if (WIDTHLESS_SYSTEM_CALLS.contains(funcName)) {
                 return WidthlessStringType.WIDTHLESS;
             }
+            if ("SYSTEM$CLUSTERING_DEPTH".equals(funcName)) {
+                return NumericType.FLOAT;
+            }
+            if ("SYSTEM$LAST_CHANGE_COMMIT_TIME".equals(funcName)) {
+                return new NumericType("NUMBER", 38, 0);
+            }
+            // A stream's table stamp and a reference are a VARCHAR(1) to SYSTEM$TYPEOF and as a column, whatever
+            // they hold, and a table built over one keeps the width and the whole text (live-verified).
+            if (ONE_CHARACTER_SYSTEM_CALLS.contains(funcName)) {
+                return new StringType("VARCHAR", 1);
+            }
             if (CONDITIONAL_FUNCTIONS.contains(funcName)) {
-                return conditionalFoldType(funcName, conditionalBranches(funcName, call.getArguments()));
+                return conditionalFoldType(funcName, foldedBranches(funcName, call.getArguments()));
             }
             // A BINARY argument survives the constructs that hand it back or reshape it. Restricted to
             // binaries on purpose: an aggregate's declared type is NOMINAL in the registry, so reading
@@ -535,7 +695,9 @@ final class TypeInferencer {
                     // NULLIFZERO is the exception within the pass-through family: a VARCHAR argument
                     // comes back at the UNKNOWN length, not its own — live declares NULLIFZERO over a
                     // VARCHAR(16777216) column as VARCHAR(134217728), where MIN keeps VARCHAR(5).
-                    if ("NULLIFZERO".equals(funcName) && passed instanceof StringType) {
+                    // A VARCHAR of no width stays one: NULLIFZERO(NULL::VARCHAR) is a bare VARCHAR.
+                    if ("NULLIFZERO".equals(funcName) && passed instanceof StringType
+                            && !(passed instanceof WidthlessStringType)) {
                         return new StringType("VARCHAR", DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR);
                     }
                     // REVERSE is not really one of them: it is a STRING function that happens to hand
@@ -580,6 +742,10 @@ final class TypeInferencer {
             if (uniform != null) {
                 return uniform;
             }
+            final DataType zipf = zipfResultType(funcName, call.getArguments());
+            if (zipf != null) {
+                return zipf;
+            }
             if (UntypedNullFold.foldsToUntypedNull(call)) {
                 return null;
             }
@@ -602,6 +768,10 @@ final class TypeInferencer {
             final DataType signed = signResultType(funcName, call.getArguments());
             if (signed != null) {
                 return signed;
+            }
+            if (DECFLOAT_MATH.contains(funcName) && anyDecfloatArgument(call.getArguments())) {
+                // SQRT, CBRT, LN, LOG, EXP, POWER and SQUARE over a DECFLOAT are DECFLOATs (live-verified).
+                return NumericType.DECFLOAT;
             }
             final DataType bucketed = widthBucketResultType(funcName, call.getArguments());
             if (bucketed != null) {
@@ -687,17 +857,49 @@ final class TypeInferencer {
                 }
                 return declaredNumericConversionType(call.getArguments());
             }
+            // AS_DECIMAL and AS_NUMBER declare the (precision, scale) written after the VARIANT, NUMBER(38,0) for
+            // none: AS_NUMBER(v, 3, 1) is NUMBER(3,1) (live-verified).
+            if (declared instanceof NumericType && VARIANT_NUMBER_CASTS.contains(funcName)) {
+                return declaredNumericConversionType(call.getArguments());
+            }
+            // The timestamp casts of a VARIANT declare the scale written after it: AS_TIMESTAMP_NTZ(v, 0) is
+            // TIMESTAMP_NTZ(0) (live-verified).
+            if (declared instanceof DateTimeType && VARIANT_TIMESTAMP_CASTS.contains(funcName)
+                    && call.getArguments().size() == 2) {
+                final Integer scale = intLiteral(call.getArguments().get(1));
+                if (scale != null && scale.intValue() >= 0 && scale.intValue() <= 9) {
+                    return new DateTimeType(declared.getName(), scale.intValue(),
+                        ((DateTimeType) declared).hasTimeZone());
+                }
+            }
             // GET_ABSOLUTE_PATH declares its stage's location and its path together, the other stage functions a
             // bare VARCHAR (see StageFunctionArguments).
             final DataType staged = StageFunctionArguments.resultType(funcName, call, visitor, this);
             if (staged != null) {
                 return staged;
             }
+            // LPAD and RPAD hand a BINARY back as a BINARY no plan sizes, whatever the length asked for
+            // (live-verified: BINARY in SYSTEM$TYPEOF).
+            if ((funcName.equals("LPAD") || funcName.equals("RPAD")) && !call.getArguments().isEmpty()
+                    && infer(call.getArguments().get(0)) instanceof BinaryType) {
+                return BinaryType.UNSIZED;
+            }
             if (declared instanceof StringType && !(declared instanceof UuidType)) {
                 // The registry declares one nominal VARCHAR for every string function; live computes a
                 // width from the arguments. See StringResultWidths for the measured table.
                 final List<DataType> argumentTypes = argumentTypes(call.getArguments());
                 final DataType width = StringResultWidths.forFunction(funcName, argumentTypes);
+                if (width != null && funcName.equals("BASE64_ENCODE") && call.getArguments().size() >= 2
+                        && !(argumentTypes.get(0) instanceof BinaryType)) {
+                    // The line length adds its breaks to the width when it is written as an integer literal — over a
+                    // text; a binary source's width takes none (live-verified).
+                    final Expression lineLength = call.getArguments().get(1);
+                    final Object written = lineLength instanceof LiteralExpression
+                        && ((LiteralExpression) lineLength).getType() == LiteralType.INTEGER
+                        ? ((LiteralExpression) lineLength).getValue() : null;
+                    return StringResultWidths.withLineBreaks(width,
+                        written instanceof Number ? Long.valueOf(((Number) written).longValue()) : null);
+                }
                 if (width != null) {
                     return width;
                 }
@@ -719,9 +921,18 @@ final class TypeInferencer {
         if (expr instanceof JsonArrayExpression) {
             return ArrayType.ARRAY;
         }
-        if (expr instanceof ObjectAccessExpression || expr instanceof ArrayAccessExpression) {
-            // Path extraction (v:field, v['key'], arr[0]) yields VARIANT.
-            return VariantType.VARIANT;
+        if (expr instanceof ObjectAccessExpression) {
+            // A path into a structured OBJECT or MAP reads the type the value declares there (documented); a path
+            // into a semi-structured value yields VARIANT.
+            final ObjectAccessExpression access = (ObjectAccessExpression) expr;
+            final DataType leaf = StructuredLeaf.ofPath(infer(access.getBase()), access.getPathParts());
+            return leaf != null ? leaf : VariantType.VARIANT;
+        }
+        if (expr instanceof ArrayAccessExpression) {
+            final ArrayAccessExpression access = (ArrayAccessExpression) expr;
+            final DataType leaf = StructuredLeaf.ofSubscript(infer(access.getArray()),
+                constantKey(access.getIndex()), false);
+            return leaf != null ? leaf : VariantType.VARIANT;
         }
         if (expr instanceof IsNullExpression || expr instanceof InExpression
                 || expr instanceof BetweenExpression || expr instanceof TupleInExpression
@@ -731,6 +942,16 @@ final class TypeInferencer {
         }
         return null;
     }
+
+    /** The SYSTEM$ functions that answer a string of no width. */
+    private static final Set<String> WIDTHLESS_SYSTEM_CALLS = Set.of(
+        "SYSTEM$TYPEOF", "SYSTEM$WAIT", "SYSTEM$GET_TAG", "SYSTEM$GET_TAG_ALLOWED_VALUES",
+        "SYSTEM$ABORT_TRANSACTION", "SYSTEM$CLUSTERING_INFORMATION", "SYSTEM$ALLOWLIST", "SYSTEM$WHITELIST",
+        "SYSTEM$GET_SNOWFLAKE_PLATFORM_INFO", "SYSTEM$CURRENT_USER_TASK_NAME");
+
+    /** The SYSTEM$ functions that answer a VARCHAR(1), whatever the text they answer. */
+    private static final Set<String> ONE_CHARACTER_SYSTEM_CALLS = Set.of(
+        "SYSTEM$STREAM_GET_TABLE_TIMESTAMP", "SYSTEM$QUERY_REFERENCE", "SYSTEM$REFERENCE");
 
     /**
      * The value-choosing functions, whose result is one of their branches rather than a fixed type.
@@ -782,6 +1003,22 @@ final class TypeInferencer {
             branches.add(args.get(args.size() - 1));
         }
         return branches;
+    }
+
+    /**
+     * The branches a conditional's TYPE is folded over. A DECODE without a default has one more than it writes:
+     * no default is a default of NULL, read as a CASE's missing ELSE is, so a text DECODE without one declares
+     * VARCHAR(134217728) whatever width its results carry — {@code DECODE(n, 1, 'x')} and {@code DECODE(n, 1, v)}
+     * alike — while a NUMBER one keeps its own type (live-verified).
+     */
+    private static List<Expression> foldedBranches(final String funcName, final List<Expression> args) {
+        final List<Expression> branches = conditionalBranches(funcName, args);
+        if (!funcName.equals("DECODE") || args.size() < 3 || args.size() % 2 == 0) {
+            return branches;
+        }
+        final List<Expression> withDefault = new ArrayList<>(branches);
+        withDefault.add(new LiteralExpression(null, LiteralType.NULL));
+        return withDefault;
     }
 
     /** A CASE expression's value branches: each WHEN's result, plus the ELSE when present. */
@@ -892,7 +1129,7 @@ final class TypeInferencer {
         if (expr instanceof FunctionCallExpression) {
             final FunctionCallExpression call = visitor.splicedStarArguments((FunctionCallExpression) expr);
             if (call.getNameExpression() == null) {
-                final String funcName = call.getFunctionName().toUpperCase();
+                final String funcName = call.getFunctionName().toUpperCase(Locale.ROOT);
                 if (CONDITIONAL_FUNCTIONS.contains(funcName)) {
                     return commonSemiStructuredBranch(conditionalBranches(funcName, call.getArguments()));
                 }
@@ -909,6 +1146,13 @@ final class TypeInferencer {
 
     private static final Set<String> NUMERIC_CONVERSIONS = Set.of(
         "TO_NUMBER", "TO_DECIMAL", "TO_NUMERIC", "TRY_TO_NUMBER", "TRY_TO_DECIMAL", "TRY_TO_NUMERIC");
+
+    /** The casts of a VARIANT to a fixed-point number, which take a precision and a scale after it. */
+    private static final Set<String> VARIANT_NUMBER_CASTS = Set.of("AS_DECIMAL", "AS_NUMBER");
+
+    /** The casts of a VARIANT to a timestamp, which take a scale after it. */
+    private static final Set<String> VARIANT_TIMESTAMP_CASTS = Set.of(
+        "AS_TIMESTAMP_NTZ", "AS_TIMESTAMP_LTZ", "AS_TIMESTAMP_TZ");
 
     /**
      * The NUMBER a numeric conversion declares: the trailing integer literals after the source (and
@@ -988,6 +1232,13 @@ final class TypeInferencer {
                 common = branchType;
             } else if (!common.getClass().equals(branchType.getClass())) {
                 return null;
+            } else if (StructuredTypes.isStructured(common)) {
+                // Two structured shapes meet only where one coerces to the other; ARRAY(INT) beside
+                // ARRAY(VARCHAR) is no single type, not the first branch's.
+                common = DeclaredTypeFold.combine(common, branchType);
+                if (common == null) {
+                    return null;
+                }
             }
         }
         return common;
@@ -1153,6 +1404,44 @@ final class TypeInferencer {
             : foldedBranchType(branches);
     }
 
+    /** Whether an operand is a NULL of a text type standing beside an exact number (see UntypedNullFold). */
+    private boolean isNullTextBesideNumber(final Expression operand, final DataType other) {
+        return other instanceof NumericType && !NumericType.isApproximate(other) && isNullText(operand);
+    }
+
+    /**
+     * Whether an expression is the word NULL cast to a text type, or a derived relation's column that projects
+     * one: a derived table, a common table expression and a view carry it to the query above (live-verified).
+     */
+    private boolean isNullText(final Expression expr) {
+        return UntypedNullFold.isNullTextConstant(expr)
+            || expr instanceof ColumnReferenceExpression && visitor.readsNullText((ColumnReferenceExpression) expr);
+    }
+
+    /**
+     * Whether the branches other than the bare NULLs and the NULLs of a text type are all exact numbers, and one
+     * such branch stands: where a NULL of a text type is read as the bare word.
+     */
+    private boolean everyOtherBranchIsAnExactNumber(final List<Expression> branches) {
+        boolean sawNumber = false;
+        boolean sawNullText = false;
+        for (final Expression branch : branches) {
+            if (isNullText(branch)) {
+                sawNullText = true;
+                continue;
+            }
+            if (isNullLiteral(branch)) {
+                continue;
+            }
+            final DataType type = infer(branch);
+            if (!(type instanceof NumericType) || NumericType.isApproximate(type)) {
+                return false;
+            }
+            sawNumber = true;
+        }
+        return sawNumber && sawNullText;
+    }
+
     private DataType foldedBranchType(final List<Expression> branches) {
         final List<DataType> branchTypes = new ArrayList<>(branches.size());
         // Per branch, the numeric type a STRING LITERAL measures as — a string literal beside a
@@ -1160,8 +1449,10 @@ final class TypeInferencer {
         // can say. A string COLUMN has no text to measure and stays null here.
         final List<DataType> literalMeasurements = new ArrayList<>(branches.size());
         boolean sawNullBranch = false;
+        // A NULL of a text type is the bare word where every typed branch is an exact number.
+        final boolean nullTextIsNull = everyOtherBranchIsAnExactNumber(branches);
         for (final Expression branch : branches) {
-            if (isNullLiteral(branch)) {
+            if (isNullLiteral(branch) || nullTextIsNull && isNullText(branch)) {
                 sawNullBranch = true;
                 continue;
             }
@@ -1255,13 +1546,19 @@ final class TypeInferencer {
     /**
      * The width a bitwise function declares, which follows its arguments' INTEGER digits rather than
      * the family's NUMBER(38,0) (live-measured cell by cell): a NUMBER(p,s) counts p - s and a literal its
-     * own digits. BITAND and BITXOR take the wider argument, at least two digits, a FLOAT counting for
-     * nothing and a text for thirteen — the integer part of the NUMBER(18,5) a text reads as — and a text
-     * in SECOND place caps the width at thirty-three. BITOR is one digit wider, capped at thirty-eight,
-     * with a FLOAT or a text counting eighteen. BITNOT and BITSHIFTRIGHT keep the argument's width, at
-     * least two; BITSHIFTLEFT is always thirty-eight. Null for an argument of any other kind.
+     * own digits, a fraction rounded to a whole number of two digits at the least ({@code BITOR(1.5, 2)} is
+     * NUMBER(3,0), {@code BITOR(123.5, 2)} NUMBER(4,0)). BITAND and BITXOR take the wider argument, at least
+     * two digits, a FLOAT counting for nothing and a text for thirteen — the integer part of the NUMBER(18,5)
+     * a text reads as — and a text in SECOND place caps the width at thirty-three. BITOR is one digit wider,
+     * capped at thirty-eight, with a FLOAT or a text counting eighteen. BITNOT keeps the argument's width, at
+     * least two, and BITSHIFTRIGHT the wider of the value and the shift — {@code BITSHIFTRIGHT(1, 200)} is
+     * NUMBER(3,0) — where a shift written as a text counts for nothing; BITSHIFTLEFT is always thirty-eight.
+     * Null for an argument of any other kind.
      */
-    private DataType bitwiseResultType(final String funcName, final List<Expression> args) {
+    private DataType bitwiseResultType(final String written, final List<Expression> args) {
+        // BIT_AND, BIT_OR, BIT_XOR and BIT_NOT are the same functions under a second spelling.
+        final String funcName = written.equals("BIT_AND") || written.equals("BIT_OR") || written.equals("BIT_XOR")
+            || written.equals("BIT_NOT") ? "BIT" + written.substring(4) : written;
         final boolean or = funcName.equals("BITOR");
         final boolean twoOperands = or || funcName.equals("BITAND") || funcName.equals("BITXOR");
         if (!twoOperands && !funcName.equals("BITNOT") && !funcName.equals("BITSHIFTRIGHT")
@@ -1271,11 +1568,17 @@ final class TypeInferencer {
         if (funcName.equals("BITSHIFTLEFT")) {
             return IntegerResultWidths.WIDEST;
         }
-        final int operands = Math.min(twoOperands ? 2 : 1, args.size());
+        final boolean shift = funcName.equals("BITSHIFTRIGHT");
+        final int operands = Math.min(twoOperands || shift ? 2 : 1, args.size());
         int digits = 0;
         for (int i = 0; i < operands; i++) {
-            final int counted = bitwiseDigits(args.get(i), or);
+            final boolean shiftCount = shift && i == 1;
+            final int counted = shiftCount && infer(args.get(i)) instanceof StringType ? 0
+                : bitwiseDigits(args.get(i), or);
             if (counted < 0) {
+                if (shiftCount) {
+                    continue;
+                }
                 return null;
             }
             digits = Math.max(digits, counted);
@@ -1330,6 +1633,26 @@ final class TypeInferencer {
         return new NumericType("NUMBER", Math.min(integerDigits + scale, 38), scale);
     }
 
+    /**
+     * ZIPF's type: a whole NUMBER as wide as N's integer digits (live-verified: ZIPF(1, 100, g) is NUMBER(3,0)[SB2]),
+     * or NUMBER(38,0) where N is no exact number.
+     *
+     * @return the type, or null when this is not ZIPF
+     */
+    private DataType zipfResultType(final String funcName, final List<Expression> args) {
+        if (!funcName.equals("ZIPF") || args.size() != 3) {
+            return null;
+        }
+        final DataType elements = isNullLiteral(args.get(1)) ? null : infer(args.get(1));
+        if (!(elements instanceof NumericType) || NumericType.isApproximate(elements)) {
+            return new NumericType("NUMBER", 38, 0);
+        }
+        final NumericType exact = (NumericType) elements;
+        // An N with a fraction is rounded, which may carry it into one more digit.
+        final int digits = exact.getPrecision() - exact.getScale() + (exact.getScale() > 0 ? 1 : 0);
+        return new NumericType("NUMBER", Math.max(1, Math.min(digits, 38)), 0);
+    }
+
     /** One argument's integer digits for {@link #bitwiseResultType}, or -1 for a kind it does not count. */
     private int bitwiseDigits(final Expression arg, final boolean or) {
         if (isNullLiteral(arg)) {
@@ -1344,7 +1667,8 @@ final class TypeInferencer {
                 return or ? 18 : 0;
             }
             final NumericType exact = (NumericType) type;
-            return Math.max(exact.getPrecision() - exact.getScale(), 0);
+            final int whole = Math.max(exact.getPrecision() - exact.getScale(), 0);
+            return exact.getScale() > 0 ? Math.max(whole, 2) : whole;
         }
         return -1;
     }
@@ -1608,7 +1932,10 @@ final class TypeInferencer {
      * @return true for an untyped NULL
      */
     private boolean isNullLiteral(final Expression branch) {
-        return UntypedNullFold.isUntypedNull(branch);
+        // A reference to a column that holds nothing but an untyped NULL is read as the bare word.
+        return UntypedNullFold.isUntypedNull(branch)
+            || branch instanceof ColumnReferenceExpression
+                && visitor.readsUntypedNull((ColumnReferenceExpression) branch);
     }
 
     private boolean laterBranchIsBinary(final List<Expression> branches, final Expression from) {
@@ -1677,6 +2004,11 @@ final class TypeInferencer {
             return "TIME".equalsIgnoreCase(expected.getName())
                 == "TIME".equalsIgnoreCase(offered.getName());
         }
+        if (StructuredTypes.isStructured(expected) && expected.getClass().equals(offered.getClass())) {
+            // Two structured shapes meet only where one coerces to the other (DeclaredTypeFold.combine):
+            // OBJECT(a INT) beside OBJECT(b VARCHAR) has no type the two convert into.
+            return DeclaredTypeFold.combine(expected, offered) != null;
+        }
         if (expected.getClass().equals(offered.getClass())) {
             return true;                       // one family always meets itself
         }
@@ -1687,6 +2019,16 @@ final class TypeInferencer {
             // [INTERVAL DAY(9) TO SECOND(9)] (live-verified).
             return !(expected instanceof BinaryType) && !(offered instanceof BinaryType)
                 && !IntervalCasts.isIntervalType(expected) && !IntervalCasts.isIntervalType(offered);
+        }
+        if (expected instanceof UuidType || offered instanceof UuidType) {
+            // A UUID meets only a text, which reads as one. Beside a number, a date or a boolean it is refused,
+            // whichever of the two comes first: IFF(c, u, 1) names the 1 into [UUID], IFF(c, 1, u) the UUID into
+            // [NUMBER(1,0)] — and so through CASE, COALESCE, NVL, NVL2, DECODE, GREATEST and LEAST (live-verified).
+            final DataType other = expected instanceof UuidType ? offered : expected;
+            if (other instanceof NumericType || other instanceof DateTimeType || other instanceof BooleanType) {
+                return false;
+            }
+            return true;
         }
         if (!knownRefusableFamily(expected) || !knownRefusableFamily(offered)) {
             return true;
@@ -1728,19 +2070,40 @@ final class TypeInferencer {
      * SAME container and is used to decide whether a value really has that type. This one spans the
      * three of them and picks by POSITION, which is a fold and not an agreement.
      *
+     * <p>STRUCTURED branches are not such containers. Snowflake coerces one shape to another only where
+     * the two coerce (see {@link DeclaredTypeFold#combine}), so branches that are all shapes fold as
+     * shapes: ARRAY(NUMBER(2,1)) beside ARRAY(INT) is ARRAY(NUMBER(38,1)). Shapes that do not coerce
+     * are refused before this, as a plain container beside a shape is. Taking the first branch made
+     * {@code IFF(c, OBJECT(a INT), OBJECT(b VARCHAR))} an OBJECT(a INT) that could hand back
+     * {@code {"b":"x"}}.
+     *
      * @param branches the conditional's branches
-     * @return the first branch's type when every branch is semi-structured, else null
+     * @return the first branch's type when every branch is semi-structured, the folded shape when every
+     *         branch is structured, else null
      */
     private DataType semiStructuredBranchFold(final List<Expression> branches) {
         if (branches.isEmpty()) {
             return null;
         }
+        boolean allStructured = true;
         for (final Expression branch : branches) {
             final DataType branchType = infer(branch);
             if (!(branchType instanceof ObjectType) && !(branchType instanceof ArrayType)
                     && !(branchType instanceof VariantType)) {
                 return null;
             }
+            allStructured = allStructured && StructuredTypes.isStructured(branchType);
+        }
+        if (allStructured) {
+            DataType folded = null;
+            for (final Expression branch : branches) {
+                final DataType branchType = infer(branch);
+                folded = folded == null ? branchType : DeclaredTypeFold.combine(folded, branchType);
+                if (folded == null) {
+                    return null;
+                }
+            }
+            return folded;
         }
         return infer(branches.get(0));
     }
@@ -2036,10 +2399,22 @@ final class TypeInferencer {
         final BinaryOperator operator = remainder ? BinaryOperator.MODULO : BinaryOperator.DIVIDE;
         DataType leftType = infer(args.get(0));
         DataType rightType = infer(args.get(1));
+        if (NumericType.isDecfloat(leftType) || NumericType.isDecfloat(rightType)) {
+            // MOD, DIV0 and DIV0NULL over a DECFLOAT are DECFLOATs, as the operators are (live-verified).
+            return NumericType.DECFLOAT;
+        }
+        final boolean leftNullText = isNullTextBesideNumber(args.get(0), rightType);
+        final boolean rightNullText = isNullTextBesideNumber(args.get(1), leftType);
+        if (leftNullText) {
+            leftType = null;
+        }
+        if (rightNullText) {
+            rightType = null;
+        }
         // The bare NULL is the operator's NULL here too: MOD(NULL, 7) is NUMBER(2,0), DIV0(NULL, 2)
         // NUMBER(24,6), DIV0(n10_2, NULL) NUMBER(16,8) (live-verified).
-        final boolean leftNull = leftType == null && isNullLiteral(args.get(0));
-        final boolean rightNull = rightType == null && isNullLiteral(args.get(1));
+        final boolean leftNull = leftType == null && (leftNullText || isNullLiteral(args.get(0)));
+        final boolean rightNull = rightType == null && (rightNullText || isNullLiteral(args.get(1)));
         if (leftNull && (rightNull || acceptsNullBeside(rightType))) {
             leftType = arithmeticNullType(operator, rightType);
         }
@@ -2093,11 +2468,14 @@ final class TypeInferencer {
 
     /**
      * A text operand beside an EXACT number, read as the number live reads it: a column or an
-     * expression as NUMBER(18,5); a literal as NUMBER(18, its own scale) under {@code + - * /} and
-     * DIV0, and at its OWN width under the remainder — {@code t + 0} declares NUMBER(19,5),
-     * {@code '5' + 1} NUMBER(19,0), {@code '2.5' + 1} NUMBER(19,1), {@code '5' / 2} NUMBER(24,6), but
-     * {@code '5' % 2} and {@code MOD('5', 2)} NUMBER(2,0) and {@code MOD('12345', 2)} NUMBER(5,0), as
-     * the digits themselves would (all live-verified). Every other operand is returned as it is.
+     * expression as NUMBER(18,5); a literal as the plan reads it ({@link PlanTextNumber}) under
+     * {@code + - * /} and DIV0 — eighteen digits at the scale of its VALUE when it spells a number with
+     * nothing about it, NUMBER(18,5) otherwise — and at its value's OWN width under the remainder:
+     * {@code t + 0} declares NUMBER(19,5), {@code '5' + 1} NUMBER(19,0), {@code '2.5' + 1} and
+     * {@code '1.50' + 1} NUMBER(19,1), {@code ' 1 ' * 1} NUMBER(19,5), {@code '5' / 2} NUMBER(24,6), but
+     * {@code '5' % 2} and {@code MOD('5', 2)} NUMBER(2,0), {@code '1.50' % 2} NUMBER(3,1) and
+     * {@code MOD('12345', 2)} NUMBER(5,0), as the digits themselves would (all live-verified). Every other
+     * operand is returned as it is.
      */
     private static DataType impliedNumeric(final Expression operand, final DataType type, final DataType other,
                                            final BinaryOperator operator) {
@@ -2106,11 +2484,17 @@ final class TypeInferencer {
         }
         if (ImpliedTextNumber.isTextLiteral(operand)) {
             final String written = String.valueOf(((LiteralExpression) operand).getValue());
-            final NumericType literal = operator == BinaryOperator.MODULO
-                ? ImpliedTextNumber.literalOwnWidth(written) : ImpliedTextNumber.literalReading(written);
-            return literal != null ? literal : type;
+            if (operator != BinaryOperator.MODULO) {
+                return PlanTextNumber.type(written);
+            }
+            // The remainder reads the digits the text's value has: '1.50' % 2 is NUMBER(3,1), as 1.5 % 2 is.
+            final BigDecimal spelled = PlanTextNumber.spelled(written);
+            final NumericType own = ImpliedTextNumber.literalOwnWidth(
+                spelled != null ? PlanTextNumber.value(written).toPlainString() : written);
+            return own != null ? own : type;
         }
-        return ImpliedTextNumber.COLUMN_READING;
+        final NumericType settled = PlanTextNumber.typeOfSettled(operand);
+        return settled != null ? settled : ImpliedTextNumber.COLUMN_READING;
     }
 
     private DataType roundingFamilyResultType(final String funcName, final List<Expression> args) {
@@ -2129,6 +2513,10 @@ final class TypeInferencer {
             return absolute ? new NumericType("NUMBER", 2, 0) : new NumericType("NUMBER", 18, 0);
         }
         DataType input = infer(args.get(0));
+        if (NumericType.isDecfloat(input)) {
+            // Each of the family over a DECFLOAT is a DECFLOAT (live-verified).
+            return NumericType.DECFLOAT;
+        }
         if (!(input instanceof NumericType)) {
             if (!(input instanceof StringType) && !(input instanceof VariantType)) {
                 return null;
@@ -2139,7 +2527,10 @@ final class TypeInferencer {
             if (input instanceof VariantType || args.size() < 2) {
                 return NumericType.FLOAT;
             }
-            input = IMPLIED_VARCHAR_NUMERIC;
+            // A literal reads as the plan reads it, at its value's scale: ROUND('1.50', 1) is NUMBER(18,1).
+            input = ImpliedTextNumber.isTextLiteral(args.get(0))
+                ? PlanTextNumber.type(String.valueOf(((LiteralExpression) args.get(0)).getValue()))
+                : IMPLIED_VARCHAR_NUMERIC;
         }
         if (NumericType.isApproximate(input)) {
             return input;
@@ -2195,11 +2586,29 @@ final class TypeInferencer {
      * <p>A VARCHAR or a VARIANT argument is FLOAT as well, which is not the reading of "approximate"
      * one would guess: neither is approximate, but neither carries a width live can widen from either.
      */
+    /** The math functions a DECFLOAT argument makes DECFLOATs, computed to 38 digits (see DecfloatMath). */
+    static final Set<String> DECFLOAT_MATH = new HashSet<String>(Arrays.asList(
+        "SQRT", "CBRT", "LN", "LOG", "EXP", "POWER", "POW", "SQUARE"));
+
+    /** Whether any argument is a DECFLOAT. */
+    private boolean anyDecfloatArgument(final List<Expression> args) {
+        for (final Expression arg : args) {
+            if (NumericType.isDecfloat(infer(arg))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private DataType signResultType(final String funcName, final List<Expression> args) {
         if (!funcName.equals("SIGN") || args.isEmpty()) {
             return null;
         }
         final DataType input = infer(args.get(0));
+        if (NumericType.isDecfloat(input)) {
+            // A DECFLOAT's sign is a DECFLOAT (live-verified).
+            return NumericType.DECFLOAT;
+        }
         if (input instanceof StringType || input instanceof VariantType
                 || NumericType.isApproximate(input)) {
             return NumericType.FLOAT;
@@ -2295,32 +2704,50 @@ final class TypeInferencer {
     /**
      * The width DATE_PART and EXTRACT declare, which follows the PART they are asked for rather than
      * being fixed: 'year' is four digits and 'month' or 'second' are two, exactly as YEAR and MONTH
-     * declare when called by name (live-verified). Only the parts measured through their own functions
-     * are mapped; any other part keeps the ordinary width, because a part like 'epoch_second' has a
-     * range nothing here has measured.
+     * declare when called by name, and 'epoch_second' is NUMBER(18,0) over a DATE and every TIMESTAMP
+     * flavour, and 'nanosecond' and the two time zone parts NUMBER(9,0) (all live-verified). A part is the
+     * same part under every word that names it — {@code dow}, {@code weekday}, {@code wk}, {@code doy},
+     * {@code yrs}, {@code tzh} — and declares the same width. Any other part keeps the ordinary width, which
+     * for 'epoch_millisecond', 'epoch_microsecond' and 'epoch_nanosecond' is also what the account declares
+     * (live-verified: NUMBER(38,0)).
      *
      * @return the declared type, or null when the part is not a literal or is not one of the measured
      */
     private DataType datePartWidth(final List<Expression> args) {
-        if (args.isEmpty() || !(args.get(0) instanceof LiteralExpression)) {
+        if (args.isEmpty()) {
             return null;
         }
-        final Object part = ((LiteralExpression) args.get(0)).getValue();
+        // The part is read as a name whether it is quoted or not, as the evaluator reads the unit slot:
+        // DATE_PART(year, ts) is DATE_PART('year', ts), and declares the same width.
+        final String part = DateTimeUnitSlot.unitTextOf(args.get(0));
         if (part == null) {
             return null;
         }
-        final String word = part.toString().toUpperCase(Locale.ROOT);
-        if (word.equals("YEAR") || word.equals("Y") || word.equals("YY") || word.equals("YYYY")
-                || word.equals("DAYOFYEAR") || word.equals("YEAROFWEEK")) {
-            return IntegerResultWidths.YEAR_PART;
+        // The words are the evaluator's (SharedFunctionHelpers.datePart): EPOCH is the same part as
+        // EPOCH_SECOND, and EPOCH_SECONDS reads as its singular.
+        switch (SharedFunctionHelpers.canonicalDateUnit(part.toUpperCase(Locale.ROOT))) {
+            case "YEAR": case "Y": case "YY": case "YYY": case "YYYY": case "YR":
+            case "YEAROFWEEK": case "YEAROFWEEKISO": case "YEAROFWEEK_ISO":
+            case "DAYOFYEAR": case "DOY": case "YEARDAY": case "DY":
+                return IntegerResultWidths.YEAR_PART;
+            case "QUARTER": case "Q": case "QTR":
+            case "MONTH": case "MM": case "MON": case "MONS":
+            case "WEEK": case "W": case "WY": case "WOY": case "WEEKOFYEAR": case "WEEKISO": case "WEEK_ISO":
+            case "DAY": case "DD": case "D": case "DAYOFMONTH":
+            case "DAYOFWEEK": case "DOW": case "DW": case "WEEKDAY":
+            case "DAYOFWEEKISO": case "DAYOFWEEK_ISO": case "WEEKDAY_ISO": case "DOW_ISO": case "DW_ISO":
+            case "HOUR": case "H": case "HH": case "HR":
+            case "MINUTE": case "MIN": case "MI":
+            case "SECOND": case "SEC": case "S":
+                return IntegerResultWidths.DATE_PART_SMALL;
+            case "NANOSECOND": case "NSECOND":
+            case "TIMEZONE_HOUR": case "TZH": case "TIMEZONE_MINUTE": case "TZM":
+                return IntegerResultWidths.NANOSECOND_PART;
+            case "EPOCH": case "EPOCH_SECOND":
+                return IntegerResultWidths.EPOCH_SECOND;
+            default:
+                return null;
         }
-        if (word.equals("MONTH") || word.equals("MM") || word.equals("DAY") || word.equals("DD")
-                || word.equals("DAYOFMONTH") || word.equals("DAYOFWEEK") || word.equals("WEEK")
-                || word.equals("QUARTER") || word.equals("HOUR") || word.equals("MINUTE")
-                || word.equals("SECOND")) {
-            return IntegerResultWidths.DATE_PART_SMALL;
-        }
-        return null;
     }
 
 
@@ -2403,9 +2830,14 @@ final class TypeInferencer {
     }
 
     /** A bare NULL beside one of these is refused in arithmetic. */
+    /** A type as the refusal of a NULL beside it names it: a binary at the width a value of it can have. */
+    private static String besideNull(final DataType type) {
+        return type instanceof BinaryType ? ((BinaryType) type).refusalText() : SqlTypeNames.canonical(type);
+    }
+
     private static boolean refusesNullBeside(final DataType other) {
         return other instanceof DateTimeType || other instanceof BooleanType || other instanceof IntervalDayTimeType
-            || other instanceof IntervalYearMonthType;
+            || other instanceof IntervalYearMonthType || other instanceof BinaryType;
     }
 
     /** A bare NULL beside one of these takes the arithmetic NULL's NUMBER type. */
@@ -2439,11 +2871,20 @@ final class TypeInferencer {
 
     /** The fractional-seconds precision, 0 to 9, that a clock call writes as its one argument, or null. */
     private static Integer literalPrecisionArgument(final List<Expression> args) {
-        if (args.size() != 1 || !(args.get(0) instanceof LiteralExpression)
-                || ((LiteralExpression) args.get(0)).getType() != LiteralType.INTEGER) {
+        if (args.size() != 1 || !(args.get(0) instanceof LiteralExpression)) {
             return null;
         }
-        final String digits = String.valueOf(((LiteralExpression) args.get(0)).getValue());
+        final LiteralExpression written = (LiteralExpression) args.get(0);
+        if (written.getType() == LiteralType.DECIMAL) {
+            // A whole-valued decimal is the precision it spells: CURRENT_TIME(3.0) is TIME(3) (live-verified).
+            final BigDecimal value = new BigDecimal(String.valueOf(written.getValue())).stripTrailingZeros();
+            return value.scale() <= 0 && value.signum() >= 0 && value.compareTo(BigDecimal.valueOf(9)) <= 0
+                ? Integer.valueOf(value.intValue()) : null;
+        }
+        if (written.getType() != LiteralType.INTEGER) {
+            return null;
+        }
+        final String digits = String.valueOf(written.getValue());
         if (digits.length() != 1 || !Character.isDigit(digits.charAt(0))) {
             return null;
         }
@@ -2452,6 +2893,12 @@ final class TypeInferencer {
 
     private DataType aggregateResultType(final String funcName,
                                          final FunctionCallExpression call) {
+        final BuiltInFunction user = visitor.getFunctionRegistry() == null ? null
+            : visitor.getFunctionRegistry().getAggregateFunction(funcName);
+        if (user instanceof UserAggregateFunction) {
+            // A user's aggregate function answers its declared RETURNS type (see UserAggregateFunction).
+            return ((UserAggregateFunction) user).resultType();
+        }
         if (funcName.equals("COUNT_IF")) {
             // A count of matching rows is the SUM of a one-digit indicator, and declares its width:
             // NUMBER(13,0), the same width SUM(1) declares (live-verified).
@@ -2463,13 +2910,42 @@ final class TypeInferencer {
             // argument or a tuple of them (live: NUMBER(18,0)[SB8] over (n102, n380)).
             return IntegerResultWidths.COUNTER;
         }
+        if (funcName.equals("HASH_AGG")) {
+            // The aggregate hash declares the width HASH does, whatever it hashes (live: NUMBER(19,0)[SB8], and a
+            // CTAS over it stores NUMBER(19,0)).
+            return IntegerResultWidths.WIDE_COUNTER;
+        }
         if (funcName.equals("BOOLOR_AGG") || funcName.equals("BOOLAND_AGG")
                 || funcName.equals("BOOLXOR_AGG")) {
             // The three boolean aggregates declare BOOLEAN whatever they are given, as live does.
             return BooleanType.BOOLEAN;
         }
-        if (isStandardDeviation(funcName)) {
+        if (isStandardDeviation(funcName) && !call.getArguments().isEmpty()
+                && NumericType.isDecfloat(infer(call.getArguments().get(0)))) {
+            // The deviation of a DECFLOAT is a DECFLOAT of 38 digits (live-verified).
+            return NumericType.DECFLOAT;
+        }
+        if (isStandardDeviation(funcName) || PAIR_STATISTICS.contains(funcName) || funcName.equals("SKEW")) {
+            // The deviation, the skewness and the statistics of pairs answer FLOAT whatever they read.
             return new NumericType("FLOAT", 38, 9);
+        }
+        if (funcName.equals("KURTOSIS")) {
+            // The one statistic computed as an exact number (live: NUMBER(38,12)).
+            return new NumericType("NUMBER", 38, 12);
+        }
+        if (funcName.equals("REGR_COUNT")) {
+            return IntegerResultWidths.COUNTER;
+        }
+        if (BIT_AGGREGATES.contains(funcName)) {
+            // The whole digits of what is aggregated: NUMBER(38,0) over an INT, NUMBER(8,0) over a NUMBER(10,2) —
+            // and NUMBER(2,0) over a FLOAT, as the scalar bitwise functions declare one.
+            final DataType read = call.getArguments().size() == 1 ? infer(call.getArguments().get(0)) : null;
+            if (NumericType.isApproximate(read)) {
+                return new NumericType("NUMBER", 2, 0);
+            }
+            final boolean exact = read instanceof NumericType;
+            return new NumericType("NUMBER", exact
+                ? Math.max(1, ((NumericType) read).getPrecision() - Math.max(0, ((NumericType) read).getScale())) : 38, 0);
         }
         if (funcName.equals("LISTAGG")) {
             return new StringType("VARCHAR", 134217728);
@@ -2504,7 +2980,8 @@ final class TypeInferencer {
                 return null;
             }
             final NumericType orderedNumeric = (NumericType) orderedType;
-            if (!continuous || orderedNumeric.getName().equalsIgnoreCase("FLOAT")) {
+            // Approximate by family: a DOUBLE-named value (a ::DOUBLE cast, SQRT, TO_DOUBLE) is a FLOAT.
+            if (!continuous || NumericType.isApproximate(orderedNumeric) || NumericType.isDecfloat(orderedNumeric)) {
                 return orderedNumeric;
             }
             return interpolatedWidth(orderedNumeric.getPrecision(), orderedNumeric.getScale());
@@ -2512,7 +2989,52 @@ final class TypeInferencer {
         if (!isComputingAggregate(funcName) || call.getArguments().isEmpty()) {
             return null;
         }
-        return computingAggregateType(funcName, infer(call.getArguments().get(0)));
+        final DataType argument = aggregatedType(funcName, call.getArguments().get(0));
+        if (funcName.equals("AVG") && call.isDistinct() && argument instanceof NumericType) {
+            // AVG(DISTINCT x) declares three more decimals than its argument, not six, as an AVG over a frame of
+            // its own does: NUMBER(10,2) gives NUMBER(25,5), an INT NUMBER(38,3) (live-verified).
+            return threeDecimalAverage((NumericType) argument);
+        }
+        return computingAggregateType(funcName, argument);
+    }
+
+    /**
+     * The type a computing aggregate reads its argument as: the argument's own, or for an untyped NULL — the word
+     * itself, or a column holding nothing but one — a NUMBER(18,0) to SUM, AVG and the variances and a text to
+     * MEDIAN, which then declares NUMBER(12,3) as it does over any text (live-verified).
+     *
+     * @param funcName the aggregate's upper-case name
+     * @param argument the aggregated expression
+     * @return the type it is read as, or null
+     */
+    private DataType aggregatedType(final String funcName, final Expression argument) {
+        final DataType type = infer(argument);
+        if (type != null || !isNullLiteral(argument)) {
+            return type;
+        }
+        return funcName.equals("MEDIAN") ? StringType.VARCHAR : UNTYPED_NULL_AGGREGATED;
+    }
+
+    /**
+     * What AVG declares where it averages three decimals past its argument — over a window that is not
+     * cumulative and as AVG(DISTINCT x): precision fifteen wider to a cap of 38, scale three wider. The
+     * intermediate is not capped, and live refuses it in the percentiles' words once its scale passes 38 — over
+     * NUMBER(36,36) the intermediate live names is NUMBER(41,39): the capped precision this shape declares, plus
+     * three. A FLOAT stays a FLOAT.
+     *
+     * @param numeric the argument's type
+     * @return the declared type
+     */
+    private static DataType threeDecimalAverage(final NumericType numeric) {
+        if (NumericType.isApproximate(numeric) || NumericType.isDecfloat(numeric)) {
+            // An AVG over a DECFLOAT is a DECFLOAT, however it is framed (live-verified).
+            return numeric;
+        }
+        final int declaredPrecision = Math.min(38, numeric.getPrecision() + 15);
+        if (numeric.getScale() + 3 > 38) {
+            throw new RuntimeException(invalidIntermediate(declaredPrecision + 3, numeric.getScale() + 3));
+        }
+        return new NumericType("NUMBER", declaredPrecision, numeric.getScale() + 3);
     }
 
     /** Whether the aggregate computes its answer from its argument's values: SUM, AVG, MEDIAN or a variance. */
@@ -2561,7 +3083,10 @@ final class TypeInferencer {
             return null;
         }
         final NumericType numeric = (NumericType) argument;
-        if (numeric.getName().equalsIgnoreCase("FLOAT")) {
+        // Approximate by family, not by name: SQRT, TO_DOUBLE and a ::DOUBLE cast type their result through
+        // the DOUBLE name, and SUM/AVG over any FLOAT is a FLOAT. Over a DECFLOAT each of them is a DECFLOAT
+        // (live-verified for SUM and AVG).
+        if (NumericType.isApproximate(numeric) || NumericType.isDecfloat(numeric)) {
             return numeric;
         }
         final int precision = numeric.getPrecision();
@@ -2668,6 +3193,8 @@ final class TypeInferencer {
         if (args == null || args.isEmpty()) {
             return null;
         }
+        // A subquery of several columns is refused as the ROW the call does not take, before it is typed.
+        visitor.rejectRowWindowArguments(window);
         if ((funcName.equals("LAG") || funcName.equals("LEAD")) && args.size() >= 3) {
             // The DEFAULT is one more branch of a conditional: the call declares the fold of the
             // argument and the default, and both are converted to it (live-verified).
@@ -2676,28 +3203,25 @@ final class TypeInferencer {
         if (passesItsArgumentThrough(funcName)) {
             return infer(args.get(0));
         }
-        if (funcName.equals("AVG") && !(window.isOrdered() && !window.isRowsFramed())) {
-            final DataType argument = infer(args.get(0));
-            if (!(argument instanceof NumericType)) {
-                return null;
+        if (funcName.equals("AVG") && !(window.isOrdered() && !window.isOwnFramed())) {
+            final DataType argument = aggregatedType(funcName, args.get(0));
+            if (argument instanceof NumericType) {
+                return threeDecimalAverage((NumericType) argument);
             }
-            final NumericType numeric = (NumericType) argument;
-            if (numeric.getName().equalsIgnoreCase("FLOAT")) {
-                return numeric;
-            }
-            // The whole-partition window has the same uncapped three-decimal intermediate the
-            // percentiles have, refused in the same words once its scale passes 38 — over
-            // NUMBER(36,36) the intermediate live names is NUMBER(41,39): the capped precision this
-            // shape declares, plus three.
-            final int declaredPrecision = Math.min(38, numeric.getPrecision() + 15);
-            if (numeric.getScale() + 3 > 38) {
-                throw new RuntimeException(
-                    invalidIntermediate(declaredPrecision + 3, numeric.getScale() + 3));
-            }
-            return new NumericType("NUMBER", declaredPrecision, numeric.getScale() + 3);
+            // A VARIANT or a text averages as the grouped AVG over it does, to a FLOAT (live-verified).
+            return argument == null ? null : aggregateResultType(funcName, new FunctionCallExpression(funcName, args));
         }
         return aggregateResultType(funcName, new FunctionCallExpression(funcName, args));
     }
+
+    /** The aggregates over pairs that answer FLOAT: the correlation, the covariances and a regression's terms. */
+    private static final Set<String> PAIR_STATISTICS = new HashSet<>(Arrays.asList("CORR", "COVAR_POP", "COVAR_SAMP",
+        "REGR_SLOPE", "REGR_INTERCEPT", "REGR_R2", "REGR_AVGX", "REGR_AVGY", "REGR_SXX", "REGR_SYY", "REGR_SXY"));
+
+    /** Every spelling of the three bitwise aggregates. */
+    private static final Set<String> BIT_AGGREGATES = new HashSet<>(Arrays.asList("BITAND_AGG", "BITANDAGG",
+        "BIT_AND_AGG", "BIT_ANDAGG", "BITOR_AGG", "BITORAGG", "BIT_OR_AGG", "BIT_ORAGG", "BITXOR_AGG", "BITXORAGG",
+        "BIT_XOR_AGG", "BIT_XORAGG"));
 
     /** The three spellings that answer FLOAT for an exact input, unlike the variance they root. */
     private static boolean isStandardDeviation(final String funcName) {
@@ -2909,7 +3433,7 @@ final class TypeInferencer {
         if (open <= 0 || close < open) {
             return null;
         }
-        final String base = targetType.substring(0, open).trim().toUpperCase();
+        final String base = targetType.substring(0, open).trim().toUpperCase(Locale.ROOT);
         if (!base.equals("NUMBER") && !base.equals("DECIMAL") && !base.equals("NUMERIC")
                 && !base.equals("DEC")) {
             return null;
@@ -2980,7 +3504,7 @@ final class TypeInferencer {
         final List<String> declared = lambda.getParameterTypes();
         for (int i = 0; i < parameters.size() && i < 2; i++) {
             final String written = declared != null && i < declared.size() ? declared.get(i) : null;
-            scope.put(parameters.get(i).toUpperCase(),
+            scope.put(parameters.get(i).toUpperCase(Locale.ROOT),
                 written != null ? typeForName(written) : i == 0 ? initial : element);
         }
         lambdaTypes.push(scope);
@@ -3023,10 +3547,22 @@ final class TypeInferencer {
         return DeclaredTypeFold.sameDeclaredType(initial, body) ? initial : null;
     }
 
+    /**
+     * A written cast target as the type it declares, a number's precision and scale kept, or null for a name
+     * {@link #typeForName} reads no type in.
+     *
+     * @param targetType the target type text as written
+     * @return the declared type, or null
+     */
+    static DataType declaredCastTarget(final String targetType) {
+        final NumericType number = numberTargetWithParameters(targetType);
+        return number != null ? number : typeForName(targetType);
+    }
+
     static DataType typeForName(final String targetType) {
         final int paren = targetType.indexOf('(');
         final String base = (paren > 0 ? targetType.substring(0, paren) : targetType)
-            .trim().toUpperCase().replace(" ", "");
+            .trim().toUpperCase(Locale.ROOT).replace(" ", "");
         final int parameter = firstParameter(targetType);
         switch (base) {
             case "CHAR": case "CHARACTER": case "NCHAR":
@@ -3051,8 +3587,12 @@ final class TypeInferencer {
             // distinction. Consumers that reason in coarser families still see a NumericType.
             case "FLOAT": case "FLOAT4": case "FLOAT8": case "REAL":
                 return NumericType.FLOAT;
-            case "DOUBLE": case "DOUBLEPRECISION": case "DECFLOAT":
-                return NumericType.DOUBLE;
+            // DOUBLE and DOUBLE PRECISION are FLOAT, as a declared column's type is (DataTypeParser); DECFLOAT is
+            // approximated by DOUBLE there too.
+            case "DOUBLE": case "DOUBLEPRECISION":
+                return NumericType.FLOAT;
+            case "DECFLOAT":
+                return NumericType.DECFLOAT;
             case "BOOLEAN":
                 return BooleanType.BOOLEAN;
             case "BINARY":

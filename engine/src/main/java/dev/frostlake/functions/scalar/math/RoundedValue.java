@@ -75,6 +75,11 @@ final class RoundedValue {
      */
     private static Object approximatelyRounded(final double value, final int scale,
                                                final RoundingMode mode) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            // NaN and the infinities round to themselves, at any scale (live-verified): ROUND('inf'::FLOAT) is
+            // Infinity, where rounding through a long answered the long's bound.
+            return value;
+        }
         final double factor = Math.pow(10, -scale);
         final double shifted = value / factor;
         final double rounded;

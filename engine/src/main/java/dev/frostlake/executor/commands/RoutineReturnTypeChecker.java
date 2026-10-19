@@ -33,6 +33,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
@@ -40,6 +41,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -334,8 +336,8 @@ final class RoutineReturnTypeChecker {
      * carries its own 134217728.
      */
     static String spellColumn(final DataType type) {
-        if (type instanceof StringType) {
-            return type.getName().toUpperCase() + "(" + ((StringType) type).getMaxLength() + ")";
+        if (type instanceof StringType && !(type instanceof UuidType)) {
+            return type.getName().toUpperCase(Locale.ROOT) + "(" + ((StringType) type).getMaxLength() + ")";
         }
         if (type instanceof BinaryType) {
             return "BINARY(" + ((BinaryType) type).getMaxLength() + ")";
@@ -419,13 +421,20 @@ final class RoutineReturnTypeChecker {
         if (family == ReturnTypeFamily.REAL) {
             return "FLOAT";
         }
+        if (family == ReturnTypeFamily.DECFLOAT) {
+            return "DECFLOAT(38)";
+        }
         if (type instanceof NumericType) {
             final NumericType numeric = (NumericType) type;
             return "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
         }
+        if (type instanceof UuidType) {
+            // A UUID takes no length: UUID(36) is a syntax error (UuidType).
+            return "UUID";
+        }
         if (type instanceof StringType) {
             final int length = ((StringType) type).getMaxLength();
-            return type.getName().toUpperCase() + "(" + (length == 16777216 ? 134217728 : length) + ")";
+            return type.getName().toUpperCase(Locale.ROOT) + "(" + (length == 16777216 ? 134217728 : length) + ")";
         }
         if (type instanceof BinaryType) {
             final int length = ((BinaryType) type).getMaxLength();
@@ -451,6 +460,6 @@ final class RoutineReturnTypeChecker {
                 || family == ReturnTypeFamily.ARRAY || family == ReturnTypeFamily.OBJECT) {
             return family.name();
         }
-        return type.getName().toUpperCase();
+        return type.getName().toUpperCase(Locale.ROOT);
     }
 }

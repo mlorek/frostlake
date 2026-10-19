@@ -16,6 +16,8 @@
 
 package dev.frostlake.http.rest;
 
+import dev.frostlake.executor.SqlCompilationError;
+
 /**
  * A REST request that ends in an error response: the HTTP status, the message, and the Snowflake error code
  * when the failure belongs to a family that has one. The router turns it into the {@code ErrorResponse} body
@@ -88,6 +90,19 @@ public final class RestException extends RuntimeException {
         final String sentence = message.startsWith(RestSql.COMPILATION_ERROR) || message.startsWith("\n")
             ? message : "\n" + message;
         return new RestException(404, RestSql.message(sentence), RestSql.CODE_DOES_NOT_EXIST);
+    }
+
+    /**
+     * A {@code 404 Not Found} for an object of a kind the request names by its path: the sentence a statement
+     * over the missing object refuses with, the privilege its role would need on it included — the handler pins
+     * the request's session for that. A schema's object is named by its full path, an account's by its own name
+     * (live-verified).
+     *
+     * @param kind the kind's noun, as the sentence opens with it
+     * @param name the object's name as the sentence spells it
+     */
+    public static RestException missing(final String kind, final Object name) {
+        return notFound(SqlCompilationError.doesNotExistAsSpelled(kind, String.valueOf(name)));
     }
 
     /** A {@code 501 Not Implemented}: the endpoint exists in the API but Frostlake does not provide it. */

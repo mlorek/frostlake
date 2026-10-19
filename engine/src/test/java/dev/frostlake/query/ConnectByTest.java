@@ -24,6 +24,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -345,6 +347,6 @@ public class ConnectByTest extends BaseDatabaseTest {
             SELECT CONNECT_BY_ROOT nm FROM h START WITH pid IS NULL CONNECT BY pid = PRIOR id ORDER BY 1
             """);
         assertEquals(1, rs.getColumnCount());
-        assertEquals("NM", rs.getColumns().get(0).getName().toUpperCase());
+        assertEquals("NM", rs.getColumns().get(0).getName().toUpperCase(Locale.ROOT));
     }
 }

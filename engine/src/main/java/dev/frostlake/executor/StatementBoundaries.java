@@ -34,6 +34,10 @@ public interface StatementBoundaries {
      */
     void complete(String statementText);
 
-    /** That statement failed: its own writes are undone before the failure propagates. */
-    void fail();
+    /**
+     * That statement failed: its own writes are undone before the failure propagates.
+     *
+     * @param cause what it failed with
+     */
+    void fail(RuntimeException cause);
 }

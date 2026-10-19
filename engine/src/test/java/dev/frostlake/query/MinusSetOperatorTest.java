@@ -23,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -112,7 +114,7 @@ public class MinusSetOperatorTest extends BaseDatabaseTest {
                 engine.executeQuery("SELECT id AS minus FROM set1 WHERE id = 1");
             }
         });
-        assertTrue(e.getMessage().toLowerCase().contains("syntax error"),
+        assertTrue(e.getMessage().toLowerCase(Locale.ROOT).contains("syntax error"),
             "unexpected message: " + e.getMessage());
     }
 
@@ -145,10 +147,10 @@ public class MinusSetOperatorTest extends BaseDatabaseTest {
         // EXCEPT is unreserved: alias (with and without AS), table name and column name all work.
         final ResultSet aliased = engine.executeQuery("SELECT id AS except FROM set1 WHERE id = 1");
         assertEquals(1, aliased.getRows().size());
-        assertEquals("EXCEPT", aliased.getColumns().get(0).getName().toUpperCase());
+        assertEquals("EXCEPT", aliased.getColumns().get(0).getName().toUpperCase(Locale.ROOT));
 
         final ResultSet bare = engine.executeQuery("SELECT 1 except");
-        assertEquals("EXCEPT", bare.getColumns().get(0).getName().toUpperCase());
+        assertEquals("EXCEPT", bare.getColumns().get(0).getName().toUpperCase(Locale.ROOT));
 
         engine.execute("CREATE TABLE except (i INT)");
         engine.execute("INSERT INTO except VALUES (7)");

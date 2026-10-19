@@ -2,7 +2,7 @@
 # name<TAB>default<TAB>description<TAB>type   (\n in a description is a real newline)
 ABORT_DETACHED_QUERY	false	If true, Snowflake will automatically abort queries when it detects that the client has disappeared.	BOOLEAN
 ACTIVE_PYTHON_PROFILER		Which profiler is currently active to analyze user code for Python sprocs. Possible values are "LINE" and "MEMORY".	STRING
-AI_SQL_EMBED_SIMILARITY_ERROR_HANDLING_USE_FAIL_ON_ERROR	true	When enabled, old fail on error behavior will be observed for AI_EMBED and AI_SIMILARITY	BOOLEAN
+AI_SQL_EMBED_SIMILARITY_ERROR_HANDLING_USE_FAIL_ON_ERROR	false	When enabled, old fail on error behavior will be observed for AI_EMBED and AI_SIMILARITY	BOOLEAN
 AI_SQL_ERROR_HANDLING_USE_FAIL_ON_ERROR	false	When enabled, old fail on error behavior will be observed	BOOLEAN
 AUTOCOMMIT	true	The autocommit property determines whether is statement should to be implicitly\nwrapped within a transaction or not. If autocommit is set to true, then a \nstatement that requires a transaction is executed within a transaction \nimplicitly. If autocommit is off then an explicit commit or rollback is required\nto close a transaction. The default autocommit value is true.	BOOLEAN
 AUTOCOMMIT_API_SUPPORTED	true	Whether autocommit feature is enabled for this client. This parameter is for\nSnowflake use only.	BOOLEAN
@@ -29,7 +29,7 @@ DATE_INPUT_FORMAT	AUTO	input format for date	STRING
 DATE_OUTPUT_FORMAT	YYYY-MM-DD	display format for date	STRING
 DEFAULT_NULL_ORDERING	LAST	User-visible parameter that allows customizing null ordering:- FIRST: nulls are ordered first in ASC order and last in DESC order- LAST: nulls are ordered last in ASC order and first in ASC order	STRING
 DOTNET_QUERY_RESULT_FORMAT	JSON	Format used to serialize query result to send back to .NET driver	STRING
-DYNAMIC_TABLES_VIEW_VERSION	12	INFORMATION_SCHEMA.DYNAMIC_TABLES table function definition version	NUMBER
+DYNAMIC_TABLES_VIEW_VERSION	13	INFORMATION_SCHEMA.DYNAMIC_TABLES table function definition version	NUMBER
 DYNAMIC_TABLE_GRAPH_HISTORY_VIEW_VERSION	11	INFORMATION_SCHEMA.DYNAMIC_TABLE_GRAPH_HISTORY view definition version	NUMBER
 DYNAMIC_TABLE_REFRESH_HISTORY_VIEW_VERSION	12	INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY view definition version	NUMBER
 ENABLE_CONSOLE_OUTPUT	false	Enable stdout/stderr fast path logging for anonyous stored procs. This is a public parameter (similar to LOG_LEVEL).	BOOLEAN
@@ -77,6 +77,7 @@ JDBC_TREAT_DECIMAL_AS_INT	true	When scale is 0, whether to treat Decimal as Int 
 JDBC_TREAT_TIMESTAMP_NTZ_AS_UTC	false	When true, Timestamp_NTZ values are always stored in UTC timezone	BOOLEAN
 JDBC_USE_SESSION_TIMEZONE	true	When true, JDBC driver will not display timezone offset between JVM and session.	BOOLEAN
 JSON_INDENT	2	Width of indentation in JSON output (0 for compact)	NUMBER
+JS_QUERY_RESULT_FORMAT	JSON	Format used to serialize query result to send back to the JavaScript driver	STRING
 JS_TREAT_INTEGER_AS_BIGINT	false	If true, the nodejs client will convert all integer columns to bigint type	BOOLEAN
 LANGUAGE	en	The selected language that will be used by UI, GS, Query Coordination and XP. The input languages should be in BCP-47 format. AKA. dash format.See LocaleUtil.java for the details.	STRING
 LOCK_TIMEOUT	43200	Number of seconds to wait while trying to lock a resource, before timing out \nand aborting the statement. A value of 0 turns off lock waiting i.e. the \nstatement must acquire the lock immediately or abort. If multiple resources \nneed to be locked by the statement, the timeout applies separately to each \nlock attempt.	NUMBER

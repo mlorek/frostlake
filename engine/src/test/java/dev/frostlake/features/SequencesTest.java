@@ -600,9 +600,12 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("ALTER SEQUENCE seq_inc SET INCREMENT = 10");
 
-        // The next value steps by the new increment: 1 + 10 = 11.
+        // The value already computed with the old step comes next, and the new step applies from there: 2, then 12
+        // (documented).
         final ResultSet v2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
-        assertAllocated(11L, (Number) v2.getRows().get(0).getValues().get(0));
+        assertAllocated(2L, (Number) v2.getRows().get(0).getValues().get(0));
+        final ResultSet v3 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
+        assertAllocated(12L, (Number) v3.getRows().get(0).getValues().get(0));
     }
 
     @Test

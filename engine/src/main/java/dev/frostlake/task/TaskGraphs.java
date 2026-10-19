@@ -19,6 +19,7 @@ package dev.frostlake.task;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskExecution;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -101,5 +102,74 @@ public final class TaskGraphs {
     /** The GRAPH_RUN_GROUP_ID of a root task's graph run, derived from the root and the run. */
     public static String graphRunGroupId(final Task root, final Long runId) {
         return GraphRunGroup.id(root.getId(), runId);
+    }
+
+    /**
+     * The root's runs that begin a graph run: every run of its first attempt. A run of a retry is a later attempt
+     * of the graph run before it (live-verified).
+     *
+     * @param root the root task
+     * @return its graph runs' first runs, oldest first
+     */
+    public static List<TaskExecution> graphRuns(final Task root) {
+        final List<TaskExecution> runs = new ArrayList<>();
+        for (final TaskExecution run : root.getExecutionHistory()) {
+            if (run.getAttempt() == 1) {
+                runs.add(run);
+            }
+        }
+        return runs;
+    }
+
+    /**
+     * A task's last run within one graph run: the latest that began at or after the graph run's start and before
+     * the next graph run's.
+     *
+     * @param task  the task
+     * @param start when the graph run began
+     * @param until when the next graph run began, or null for the latest one
+     * @param attempt the attempt the run has to belong to, or 0 for any
+     * @return the run, or null when the task did not run in it
+     */
+    public static TaskExecution lastRunWithin(final Task task, final LocalDateTime start, final LocalDateTime until,
+                                              final int attempt) {
+        TaskExecution last = null;
+        for (final TaskExecution run : task.getExecutionHistory()) {
+            final LocalDateTime began = run.getStartTime();
+            if (began == null || start == null || began.isBefore(start)) {
+                continue;
+            }
+            if ((until == null || began.isBefore(until)) && (attempt == 0 || run.getAttempt() == attempt)) {
+                last = run;
+            }
+        }
+        return last;
+    }
+
+    /**
+     * The last attempt one graph run reached: the highest attempt any run of the root or of its graph belongs to.
+     *
+     * @param schema the schema the graph lives in
+     * @param root   the root task
+     * @param start  when the graph run began
+     * @param until  when the next graph run began, or null for the latest one
+     * @return the attempt, 1 for a graph run never retried
+     */
+    public static int lastAttempt(final Schema schema, final Task root, final LocalDateTime start,
+                                  final LocalDateTime until) {
+        final List<Task> tasks = new ArrayList<>();
+        tasks.add(root);
+        tasks.addAll(descendants(schema, root, true));
+        int attempt = 1;
+        for (final Task task : tasks) {
+            for (final TaskExecution run : task.getExecutionHistory()) {
+                final LocalDateTime began = run.getStartTime();
+                if (began != null && start != null && !began.isBefore(start)
+                        && (until == null || began.isBefore(until))) {
+                    attempt = Math.max(attempt, run.getAttempt());
+                }
+            }
+        }
+        return attempt;
     }
 }

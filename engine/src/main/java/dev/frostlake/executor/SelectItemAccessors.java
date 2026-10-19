@@ -16,7 +16,9 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.IntervalStringText;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import org.antlr.v4.runtime.CharStream;
@@ -29,6 +31,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Stateless accessors over SELECT-item parse-tree nodes — star / qualified-star / braced-star / expression
@@ -123,6 +126,74 @@ public final class SelectItemAccessors {
     }
 
     /**
+     * Refuses a select item that is a ROW — a parenthesized list of two or more values, however many
+     * parentheses stand around it — as {@code Unsupported: SELECT list element with multiple columns.}, at the
+     * item's alias when it has one and at the row's own parenthesis otherwise (live-verified): 7 for
+     * {@code SELECT (1, 2)}, 8 for {@code SELECT ((1, 2))}, 17 for {@code SELECT (1, 2) AS r}. A FIRST_VALUE or a
+     * LAST_VALUE over a ROW answers the ROW too, and is refused so at its OVER when it has no alias. The first such
+     * item speaks.
+     *
+     * @param selectList the select list
+     */
+    public static void rejectRowItem(final FrostlakeParser.SelectListContext selectList) {
+        if (selectList == null) {
+            return;
+        }
+        for (final FrostlakeParser.SelectItemContext item : selectList.selectItem()) {
+            if (!(item instanceof FrostlakeParser.ExprItemContext)) {
+                continue;
+            }
+            final FrostlakeParser.ExprItemContext valued = (FrostlakeParser.ExprItemContext) item;
+            final FrostlakeParser.RowExprContext row = rowOf(valued.booleanExpr());
+            final Token framed = row == null ? framedRowOver(valued.booleanExpr()) : null;
+            if (row == null && framed == null) {
+                continue;
+            }
+            final Token at = valued.aliasName() != null ? valued.aliasName().getStart()
+                : valued.identifier() != null ? valued.identifier().getStart()
+                    : valued.bareAliasWord() != null ? valued.bareAliasWord().getStart()
+                        : row != null ? row.getStart() : framed;
+            final SourcePosition placed = ExpressionSource.place(at.getLine(), at.getCharPositionInLine());
+            throw new RuntimeException(SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(),
+                "Unsupported: SELECT list element with multiple columns."));
+        }
+    }
+
+    /**
+     * The OVER of a FIRST_VALUE or a LAST_VALUE whose value is a ROW, the item standing as that call alone; null for
+     * any other expression.
+     */
+    private static Token framedRowOver(final ParseTree written) {
+        if (!(written instanceof FrostlakeParser.ValueExprContext)
+                || !(((FrostlakeParser.ValueExprContext) written).expression()
+                    instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext)
+            ((FrostlakeParser.ValueExprContext) written).expression();
+        final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
+        if (call.overClause() == null || call.functionArgList() == null
+                || !("FIRST_VALUE".equals(name) || "LAST_VALUE".equals(name))) {
+            return null;
+        }
+        final FrostlakeParser.FunctionArgContext first = call.functionArgList().functionArg(0);
+        return first.exprTuple() != null || first.booleanExpr() != null && rowOf(first.booleanExpr()) != null
+            ? call.overClause().OVER().getSymbol() : null;
+    }
+
+    /** The ROW an expression is, behind any parentheses around it; null for any other expression. */
+    static FrostlakeParser.RowExprContext rowOf(final ParseTree written) {
+        if (written instanceof FrostlakeParser.RowExprContext) {
+            return (FrostlakeParser.RowExprContext) written;
+        }
+        if (written instanceof FrostlakeParser.ValueExprContext) {
+            return rowOf(((FrostlakeParser.ValueExprContext) written).expression());
+        }
+        return written instanceof FrostlakeParser.ParenExprContext
+            ? rowOf(((FrostlakeParser.ParenExprContext) written).booleanExpr()) : null;
+    }
+
+    /**
      * The select item's full expression context (the {@code booleanExpr} wrapper) — for TEXT use:
      * {@code getOriginalText}/{@code getText} of the whole projected item. Returns the full item
      * even once {@code booleanExpr} carries a real OR/AND/NOT body (e.g. {@code SELECT a AND b}).
@@ -207,7 +278,8 @@ public final class SelectItemAccessors {
      * A select item's alias as CANONICAL TEXT, or null when it has none. Text rather than a parse
      * context because the two spellings reach different rules: `AS x` matches the wider aliasName
      * (which admits CASE, CAST, CONSTRAINT, CROSS, DEFAULT, INNER, JOIN and WHEN, all live-legal
-     * there), while the bare `x` matches identifier. Every caller wanted the canonical name anyway.
+     * there), while the bare `x` matches identifier or one of those eight words. Every caller wanted the
+     * canonical name anyway.
      */
     public static String getItemAlias(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.ExprItemContext) {
@@ -215,7 +287,10 @@ public final class SelectItemAccessors {
             if (expr.aliasName() != null) {
                 return ParseTreeText.getIdentifier(expr.aliasName());
             }
-            return expr.identifier() != null ? ParseTreeText.getIdentifier(expr.identifier()) : null;
+            if (expr.identifier() != null) {
+                return ParseTreeText.getIdentifier(expr.identifier());
+            }
+            return expr.bareAliasWord() != null ? ParseTreeText.getIdentifier(expr.bareAliasWord()) : null;
         }
         if (item instanceof FrostlakeParser.ObjectStarItemContext) {
             final FrostlakeParser.ObjectStarItemContext star = (FrostlakeParser.ObjectStarItemContext) item;
@@ -358,7 +433,7 @@ public final class SelectItemAccessors {
             parts.addAll(star.starQualifiedName().namePart());
             for (int i = 0; i < parts.size(); i++) {
                 final String written = parts.get(i).getText();
-                label.append(i > 0 ? "." : "").append(written.startsWith("\"") ? written : written.toUpperCase());
+                label.append(i > 0 ? "." : "").append(written.startsWith("\"") ? written : written.toUpperCase(Locale.ROOT));
             }
             label.append('.');
         }
@@ -378,7 +453,7 @@ public final class SelectItemAccessors {
     /** One star modifier rendered back in Snowflake's echoed form, identifiers canonicalised. */
     private static String starModifierLabel(final FrostlakeParser.StarModifierContext modifier) {
         if (modifier.ILIKE() != null) {
-            return "ILIKE " + modifier.STRING_LITERAL().getText();
+            return "ILIKE " + modifier.stringText().getText();
         }
         if (modifier.EXCLUDE() != null) {
             // The account echoes the modifier AS WRITTEN: a bare list stays bare, a parenthesised one

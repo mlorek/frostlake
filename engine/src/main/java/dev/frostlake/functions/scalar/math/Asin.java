@@ -28,7 +28,9 @@ public class Asin extends NumericArgumentFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final double v = ((Number) args.get(0)).doubleValue();
-        if (v < -1 || v > 1) throw new RuntimeException("ASIN argument out of range [-1, 1]");
+        if (v < -1 || v > 1) {
+            throw FloatingPointRefusal.of("asin(" + FloatingPointRefusal.number(v) + ")");
+        }
         return Math.asin(v);
     }
 

@@ -26,6 +26,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import java.util.Map;
@@ -265,14 +266,15 @@ public final class BinaryOperationTypes {
 
     /**
      * Whether a family may stand beside an arithmetic operator: a number, a text or a VARIANT it
-     * converts, or a temporal value the measured temporal table then judges. BOOLEAN, BINARY, ARRAY and
-     * OBJECT are refused before any row (live-verified).
+     * converts, or a temporal value the measured temporal table then judges. BOOLEAN, BINARY, ARRAY,
+     * OBJECT and UUID — no text that converts, though it reads as one — are refused before any row
+     * (live-verified).
      *
      * @param type the operand's type, or null when it could not be typed
      * @return whether arithmetic takes it
      */
     public static boolean isArithmeticOperand(final DataType type) {
-        return type == null || type instanceof NumericType || type instanceof StringType
+        return type == null || type instanceof NumericType || type instanceof StringType && !(type instanceof UuidType)
             || type instanceof VariantType || type instanceof DateTimeType || IntervalArithmeticTypes.isInterval(type);
     }
 
@@ -400,6 +402,11 @@ public final class BinaryOperationTypes {
         if (left == null || right == null) {
             return null;
         }
+        if (left instanceof UuidType || right instanceof UuidType) {
+            // A UUID is converted to text first, which nothing bounds, though it is held as a text: u || 'x' is
+            // VARCHAR(134217728) (live-verified).
+            return new StringType("VARCHAR", MAX_LENGTH);
+        }
         if (left instanceof StringType && right instanceof StringType) {
             return new StringType("VARCHAR", Math.min(((StringType) left).getMaxLength()
                 + ((StringType) right).getMaxLength(), MAX_LENGTH));
@@ -432,7 +439,23 @@ public final class BinaryOperationTypes {
                 || left instanceof NumericType && right instanceof VariantType) {
             return new StringType("VARCHAR", MAX_LENGTH);
         }
+        // Two operands that are no text are each converted to one: n || n over NUMBER columns and
+        // n52 || n are VARCHAR(134217728) (live-verified).
+        if (left instanceof NumericType && right instanceof NumericType) {
+            return new StringType("VARCHAR", MAX_LENGTH);
+        }
         return null;
+    }
+
+    /**
+     * Whether an operand of {@code ||} beside a bare NULL makes the pair a text: a text itself, or a family the
+     * operator converts to one.
+     *
+     * @param type the operand's static type, or null when it has none
+     * @return true for a text and for the families that convert
+     */
+    static boolean concatenatesAsText(final DataType type) {
+        return type instanceof StringType || convertsToFullWidthText(type);
     }
 
     /** The families measured to give a full-width VARCHAR when concatenated with a string. */

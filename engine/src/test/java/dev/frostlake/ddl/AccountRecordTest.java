@@ -93,7 +93,9 @@ public class AccountRecordTest extends BaseDatabaseTest {
         engine.executeQuery("UNDROP ACCOUNT acc_one");
         assertEquals(List.of("ACC_ONE"), rows("SHOW ACCOUNTS LIKE 'ACC_ONE'", "account_name"));
         assertTrue(refusal("UNDROP ACCOUNT acc_one").contains("already exists"));
-        assertTrue(refusal("UNDROP ACCOUNT no_such_account").contains("does not exist"));
+        // An account that is not there is refused as one the role may not operate on.
+        assertTrue(refusal("UNDROP ACCOUNT no_such_account").contains(
+            "Insufficient privileges to operate on account 'NO_SUCH_ACCOUNT'."));
     }
 
     @Test

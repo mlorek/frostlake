@@ -17,8 +17,11 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.AmbiguousColumnException;
+import dev.frostlake.metastore.model.TableColumn;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -28,7 +31,9 @@ import java.util.Set;
  * which the other names a lateral scope binds, earlier items' aliases among them, still allow — does not reach
  * an outer column by a spelling it does not carry: over a column {@code V}, {@code "v"} is live's
  * {@code invalid identifier '"v"'}. A bare name two relations of the outer row share, joined otherwise than by
- * USING or NATURAL, is bound as ambiguous, and reading it is live's {@code ambiguous column name 'V'}.
+ * USING or NATURAL, is bound as ambiguous, and reading it is live's {@code ambiguous column name 'V'}. The map
+ * also records the outer columns that carry a collation under the keys their values are bound by, so a comparison
+ * inside the subquery reads an outer column under the column's collation, as a comparison beside it does.
  */
 final class OuterNameBindings {
 
@@ -43,7 +48,69 @@ final class OuterNameBindings {
     /** The key the outer columns' canonical spellings are recorded under; no identifier spells it. */
     private static final String SPELLINGS = "\u0000outer column spellings";
 
+    /** The key the collated outer columns are recorded under, by the keys their values are bound by. */
+    private static final String COLLATED = "\u0000outer collated columns";
+
     private OuterNameBindings() {
+    }
+
+    /**
+     * Whether {@code bindings} records a collated column of a row further out, which the keys a nearer row binds
+     * must shadow.
+     *
+     * @param bindings the binding map
+     * @return whether a collated column is recorded
+     */
+    static boolean recordsCollations(final Map<String, Object> bindings) {
+        return bindings.get(COLLATED) instanceof Map;
+    }
+
+    /**
+     * Record the collated columns a row binds, beside those a row further out recorded under keys this row does not
+     * bind.
+     *
+     * @param bindings the binding map
+     * @param collated this row's collated columns, by the keys their values are bound by
+     * @param bound    every key this row binds, or null where no row further out recorded a collated column
+     */
+    static void recordCollations(final Map<String, Object> bindings, final Map<String, TableColumn> collated,
+                                 final Set<String> bound) {
+        final Object earlier = bindings.get(COLLATED);
+        if (!(earlier instanceof Map) && collated.isEmpty()) {
+            return;
+        }
+        final Map<String, TableColumn> recorded = new HashMap<>();
+        if (earlier instanceof Map) {
+            for (final Map.Entry<?, ?> entry : ((Map<?, ?>) earlier).entrySet()) {
+                final String key = String.valueOf(entry.getKey());
+                if ((bound == null || !bound.contains(key)) && entry.getValue() instanceof TableColumn) {
+                    recorded.put(key, (TableColumn) entry.getValue());
+                }
+            }
+        }
+        recorded.putAll(collated);
+        bindings.put(COLLATED, recorded);
+    }
+
+    /**
+     * The collated outer column a key reads, or null: the key exactly, else its upper-cased form where folding
+     * reaches the column by a spelling it carries.
+     *
+     * @param bindings the binding map, or null
+     * @param key      the reference's key as written: its column, or its qualifier, a dot and its column
+     * @return the column, or null
+     */
+    static TableColumn collatedColumn(final Map<String, Object> bindings, final String key) {
+        if (bindings == null || !(bindings.get(COLLATED) instanceof Map)) {
+            return null;
+        }
+        final Map<?, ?> recorded = (Map<?, ?>) bindings.get(COLLATED);
+        final Object exact = recorded.get(key);
+        if (exact instanceof TableColumn) {
+            return (TableColumn) exact;
+        }
+        final Object folded = recorded.get(key.toUpperCase(Locale.ROOT));
+        return folded instanceof TableColumn && !foldMisses(bindings, key) ? (TableColumn) folded : null;
     }
 
     /**
@@ -79,7 +146,7 @@ final class OuterNameBindings {
             return false;
         }
         final String column = key.substring(key.lastIndexOf('.') + 1);
-        final String folded = column.toUpperCase();
+        final String folded = column.toUpperCase(Locale.ROOT);
         return !folded.equals(column) && ((Set<?>) recorded).contains(folded) && !((Set<?>) recorded).contains(column);
     }
 

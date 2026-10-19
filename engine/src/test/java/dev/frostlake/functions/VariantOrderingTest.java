@@ -21,6 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -66,7 +67,7 @@ public class VariantOrderingTest extends BaseDatabaseTest {
     }
 
     private static String bool(final Row row, final int index) {
-        return String.valueOf(row.getValue(index)).toLowerCase();
+        return String.valueOf(row.getValue(index)).toLowerCase(Locale.ROOT);
     }
 
     /** The ids in the order the values sort, as one text. */

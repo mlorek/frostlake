@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.NumericType;
@@ -28,16 +29,33 @@ import tools.jackson.databind.JsonNode;
  * AS_DECIMAL(v [, precision [, scale]]) — the variant's numeric value as a fixed-point number
  * rounded (HALF_UP) to the given scale, else NULL. Defaults are NUMBER(38,0), so
  * {@code AS_DECIMAL(PARSE_JSON('2.5'))} is 3 (live-verified); a rounded value wider than the
- * precision raises Snowflake's out-of-range error. AS_NUMBER is the same function.
+ * precision raises Snowflake's out-of-range error, a precision of 0 holding any. A precision past 38 and a scale
+ * past the precision are refused in the words of the call's own signature, {@code invalid value [39] for
+ * parameter 'AS_NUMBER(?, precision...)'} (live-verified). AS_NUMBER is the same function under its own name.
  */
 public class AsDecimal extends BuiltInFunction {
-    public AsDecimal() { super("AS_DECIMAL", NumericType.NUMBER); }
+
+    /** The widest precision a fixed-point number takes. */
+    private static final int MOST_DIGITS = 38;
+
+    public AsDecimal() { this("AS_DECIMAL"); }
+
+    /**
+     * The function under the name it is called by, which its refusals echo.
+     *
+     * @param name AS_DECIMAL or AS_NUMBER
+     */
+    public AsDecimal(final String name) { super(name, NumericType.NUMBER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
+        requireDigits(args);
         final JsonNode node = ArrayFunctionHelper.parseNode(args.get(0));
         final BigDecimal raw;
-        if (node != null && node.isNumber()) {
+        if (node != null && node.isFloatingPointNumber() && !node.isBigDecimal()) {
+            // A DOUBLE held in the VARIANT is no fixed-point number: NULL (live-verified).
+            return null;
+        } else if (node != null && node.isNumber()) {
             raw = node.decimalValue();
         } else if (args.get(0) instanceof Number) {
             raw = new BigDecimal(args.get(0).toString());
@@ -45,11 +63,11 @@ public class AsDecimal extends BuiltInFunction {
             return null;
         }
         final int precision = args.size() > 1 && args.get(1) != null
-            ? ((Number) args.get(1)).intValue() : 38;
+            ? ((Number) args.get(1)).intValue() : MOST_DIGITS;
         final int scale = args.size() > 2 && args.get(2) != null
             ? ((Number) args.get(2)).intValue() : 0;
         final BigDecimal rounded = raw.setScale(scale, RoundingMode.HALF_UP);
-        if (rounded.precision() > precision) {
+        if (precision > 0 && rounded.precision() > precision) {
             // Live-verified wording.
             throw new RuntimeException(
                 "Number out of representable range: type FIXED, value " + rounded.toPlainString());
@@ -64,8 +82,30 @@ public class AsDecimal extends BuiltInFunction {
         return rounded;
     }
 
+    /** Refuse a precision past 38, and a scale past the precision, before the value is read. */
+    private void requireDigits(final List<Object> args) {
+        final int precision = args.size() > 1 && args.get(1) instanceof Number
+            ? ((Number) args.get(1)).intValue() : MOST_DIGITS;
+        if (precision < 0 || precision > MOST_DIGITS) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value [" + precision + "] for parameter '"
+                + getName() + "(?, precision...)'"));
+        }
+        if (args.size() > 2 && args.get(2) instanceof Number) {
+            final int scale = ((Number) args.get(2)).intValue();
+            if (scale < 0 || scale > MOST_DIGITS - 1 || precision > 0 && scale > precision) {
+                throw new RuntimeException(SqlCompilationError.of("invalid value [" + scale + "] for parameter '"
+                    + getName() + "(?, ?, scale)'"));
+            }
+        }
+    }
+
     @Override
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 3; }
+
+    @Override
+    public boolean takesVariantOnly() {
+        return true;
+    }
 }

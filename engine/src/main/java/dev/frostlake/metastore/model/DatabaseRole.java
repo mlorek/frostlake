@@ -33,6 +33,7 @@ public class DatabaseRole extends Role {
      */
     public DatabaseRole(final String database, final String name) {
         super(name);
+        nameExactly(name);
         this.database = database;
     }
 
@@ -45,7 +46,14 @@ public class DatabaseRole extends Role {
      */
     public DatabaseRole(final String database, final String name, final LocalDateTime createdTime) {
         super(name, createdTime);
+        nameExactly(name);
         this.database = database;
+    }
+
+    /** A database role keeps the case of the name it is renamed to, as it keeps its first one's. */
+    @Override
+    public void rename(final String newName) {
+        nameExactly(newName);
     }
 
     /** The database the role lives in. */

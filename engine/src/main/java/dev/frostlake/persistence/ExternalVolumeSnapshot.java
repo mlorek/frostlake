@@ -48,4 +48,7 @@ public class ExternalVolumeSnapshot implements Serializable {
 
     /** When it was dropped, for a volume UNDROP can still restore; null for a live one. */
     public Instant droppedOn;
+
+    /** What its generated identity is made from. Null in a snapshot written before it was kept. */
+    public String identitySeed;
 }

@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -66,8 +68,8 @@ public class SetOperationStringCoercionTest extends BaseDatabaseTest {
 
     private String declared(final String table, final String column) {
         return value("SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')'"
-            + " FROM test_db.information_schema.columns WHERE table_name = '" + table.toUpperCase()
-            + "' AND column_name = '" + column.toUpperCase() + "'");
+            + " FROM test_db.information_schema.columns WHERE table_name = '" + table.toUpperCase(Locale.ROOT)
+            + "' AND column_name = '" + column.toUpperCase(Locale.ROOT) + "'");
     }
 
     private void assertFailsWith(final String sql, final String expectedFragment) {

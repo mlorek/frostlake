@@ -16,6 +16,9 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.udf.HandlerStateScope;
+import dev.frostlake.executor.udf.StatementHandlerStates;
+
 /**
  * A thread-local mode in which a relation is read for its SHAPE and never for its rows: every base
  * source resolves to zero rows and a FROM-less item that cannot be computed is left NULL, so the
@@ -27,9 +30,14 @@ package dev.frostlake.executor;
  * selects from it. A body that does not COMPILE — an unknown column or function, an argument family a
  * function refuses — is still refused at CREATE, because the static checks run over zero rows exactly
  * as they run over any.
+ *
+ * <p>A handler a shape read calls keeps what it keeps apart from the statement's own calls: the read is no
+ * evaluation an account makes, so a JavaScript function's globals and a Java function's static fields start
+ * afresh for the rows the statement reads.
  */
 public final class RelationShapeOnly {
     private static final ThreadLocal<Boolean> ACTIVE = new ThreadLocal<Boolean>();
+    private static final ThreadLocal<HandlerStateScope> HANDLER_STATES = new ThreadLocal<HandlerStateScope>();
 
     private RelationShapeOnly() {
     }
@@ -43,6 +51,9 @@ public final class RelationShapeOnly {
     public static boolean begin() {
         final boolean previous = isActive();
         ACTIVE.set(Boolean.TRUE);
+        if (!previous) {
+            HANDLER_STATES.set(StatementHandlerStates.begin());
+        }
         return previous;
     }
 
@@ -51,6 +62,8 @@ public final class RelationShapeOnly {
             ACTIVE.set(Boolean.TRUE);
         } else {
             ACTIVE.remove();
+            StatementHandlerStates.end(HANDLER_STATES.get());
+            HANDLER_STATES.remove();
         }
     }
 }

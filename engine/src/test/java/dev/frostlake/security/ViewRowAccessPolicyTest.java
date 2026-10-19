@@ -57,7 +57,8 @@ public class ViewRowAccessPolicyTest extends BaseDatabaseTest {
 
         final View view = engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getView("ORDERS_VIEW");
         assertTrue(view.hasRowAccessPolicy());
-        assertEquals("EU_ONLY", view.getRowAccessPolicyName());
+        // Recorded in full, as every policy attachment is, so it resolves the same from any schema.
+        assertEquals("TEST_DB.TEST_SCHEMA.EU_ONLY", view.getRowAccessPolicyName());
         assertEquals(1, view.getRowAccessPolicyColumns().size());
     }
 

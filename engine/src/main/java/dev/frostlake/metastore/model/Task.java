@@ -16,6 +16,9 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
+import dev.frostlake.executor.StatementTokens;
+import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.Taggable;
 
 import java.time.LocalDateTime;
@@ -26,15 +29,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
+import java.util.TreeMap;
 
 /**
  * Represents a Snowflake Task - Scheduled SQL execution
  */
-public class Task implements Taggable {
+public class Task implements Named, Taggable {
 
     private final String name;
-    private String id = UUID.randomUUID().toString();
+    /** The task's id, drawn by the statement creating it so that a replay of the statement keeps it. */
+    private String id = StatementTokens.uuid();
     private String createdByUser;
     /** Parameter names this task set explicitly, which SHOW PARAMETERS reports at the TASK level. */
     private final Set<String> explicitParameters = new LinkedHashSet<>();
@@ -44,7 +48,7 @@ public class Task implements Taggable {
     private String sqlStatement;
     private String warehouse;
     private final List<String> predecessors; // Tasks that must complete before this one
-    private final LocalDateTime createdAt;
+    private LocalDateTime createdAt;
     private TaskState state;
     private LocalDateTime lastRunTime;
     private LocalDateTime nextRunTime;
@@ -68,6 +72,8 @@ public class Task implements Taggable {
     private String overlapPolicy;
     /** The session parameters the task sets for its runs, by upper-case name, each as SHOW PARAMETERS spells it. */
     private final Map<String, String> sessionParameters = new LinkedHashMap<>();
+    /** The contacts attached to the task, by purpose, each by its full name. */
+    private final Map<String, String> contacts = new TreeMap<>();
     private String successIntegration;
     /** The root task this finalizer task is attached to, by name, or null when the task finalizes no graph. */
     private String finalizedRootTask;
@@ -82,7 +88,8 @@ public class Task implements Taggable {
         this.sqlStatement = sqlStatement;
         this.warehouse = warehouse;
         this.predecessors = new ArrayList<>();
-        this.createdAt = LocalDateTime.now();
+        // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
+        this.createdAt = StatementClock.hostLocal();
         this.state = TaskState.SUSPENDED; // Tasks start suspended by default
         this.executionHistory = new ArrayList<>();
         this.successCount = 0;
@@ -148,14 +155,15 @@ public class Task implements Taggable {
 
     /** Record that {@code parameterName} was given on the task itself rather than left at its default. */
     public void markParameterSet(final String parameterName) {
-        explicitParameters.add(parameterName.toUpperCase());
+        explicitParameters.add(parameterName.toUpperCase(Locale.ROOT));
     }
 
     /** Whether the task set this parameter itself — the difference between a TASK level and a blank one. */
     public boolean isParameterSetOnTask(final String parameterName) {
-        return explicitParameters.contains(parameterName.toUpperCase());
+        return explicitParameters.contains(parameterName.toUpperCase(Locale.ROOT));
     }
 
+    @Override
     public String getName() {
         return name;
     }
@@ -190,6 +198,18 @@ public class Task implements Taggable {
 
     public LocalDateTime getCreatedAt() {
         return createdAt;
+    }
+
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final LocalDateTime created) {
+        if (created != null) {
+            this.createdAt = created;
+        }
     }
 
     public TaskState getState() {
@@ -365,6 +385,21 @@ public class Task implements Taggable {
         return executeAsUser;
     }
 
+    /** The contacts attached to the task, by purpose in the order a description tells them. */
+    public Map<String, String> getContacts() {
+        return new TreeMap<>(contacts);
+    }
+
+    /** Attach a contact for a purpose, replacing whatever that purpose held. */
+    public void setContact(final String purpose, final String contactName) {
+        contacts.put(purpose.toUpperCase(Locale.ROOT), contactName);
+    }
+
+    /** Detach the contact held for a purpose; one that held none is left as it is. */
+    public void unsetContact(final String purpose) {
+        contacts.remove(purpose.toUpperCase(Locale.ROOT));
+    }
+
     public void setExecuteAsUser(final String executeAsUser) {
         this.executeAsUser = executeAsUser;
     }
@@ -386,6 +421,42 @@ public class Task implements Taggable {
     }
     /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -&gt; value). */
     private final Map<String, String> tags = new LinkedHashMap<>();
+
+    /**
+     * This task's whole definition, for a clone of its schema: the schedule, statement, warehouse, predecessors,
+     * WHEN condition, configuration, finalizer link, session parameters, settings, comment, owner and tags.
+     * The clone is SUSPENDED (documented) and starts with no run history and an identity of its own.
+     *
+     * @return the copy
+     */
+    public Task cloneDefinition() {
+        final Task copy = new Task(name, schedule, scheduleType, sqlStatement, warehouse);
+        copy.explicitParameters.addAll(explicitParameters);
+        copy.predecessors.addAll(predecessors);
+        copy.comment = comment;
+        copy.condition = condition;
+        copy.suspendTaskAfterNumFailures = suspendTaskAfterNumFailures;
+        copy.taskAutoRetryAttempts = taskAutoRetryAttempts;
+        copy.userTaskManagedInitialWarehouseSize = userTaskManagedInitialWarehouseSize;
+        copy.serverlessTaskMaxStatementSize = serverlessTaskMaxStatementSize;
+        copy.targetCompletionInterval = targetCompletionInterval;
+        copy.errorIntegration = errorIntegration;
+        copy.userTaskMinimumTriggerIntervalInSeconds = userTaskMinimumTriggerIntervalInSeconds;
+        copy.allowOverlappingExecution = allowOverlappingExecution;
+        copy.userTaskTimeoutMs = userTaskTimeoutMs;
+        copy.config = config;
+        copy.overlapPolicy = overlapPolicy;
+        copy.sessionParameters.putAll(sessionParameters);
+        copy.contacts.putAll(contacts);
+        copy.successIntegration = successIntegration;
+        copy.finalizedRootTask = finalizedRootTask;
+        copy.executeAsUser = executeAsUser;
+        copy.serverlessTaskMinStatementSize = serverlessTaskMinStatementSize;
+        copy.owner = owner;
+        copy.tags.putAll(tags);
+        copy.state = TaskState.SUSPENDED;
+        return copy;
+    }
 
     @Override
     public void setTag(final String tagName, final String value) {

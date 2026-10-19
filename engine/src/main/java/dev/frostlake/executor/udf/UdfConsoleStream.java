@@ -16,28 +16,20 @@
 
 package dev.frostlake.executor.udf;
 
-import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
-import java.nio.charset.Charset;
 
 /**
  * The {@link OutputStream} behind {@link UdfConsolePrintStream}: bytes written by a thread inside a
- * UDF handler ({@link UdfConsoleCapture#isCapturing()}) are buffered per thread and relayed to the
- * engine log line by line; every other write passes straight through to the original stream. Carriage
- * returns are dropped so Windows-style line ends produce clean log lines.
+ * UDF handler ({@link UdfConsoleCapture#isCapturing()}) go to {@link UdfConsoleCapture}, which buffers
+ * them per thread and logs the lines when the handler returns; every other write passes straight through
+ * to the original stream. A capturing write only buffers — it runs under the {@code PrintStream}'s
+ * monitor, where taking a log appender's lock could deadlock (see {@link UdfConsoleCapture}).
  */
 public final class UdfConsoleStream extends OutputStream {
 
     private final String streamName;
     private final PrintStream original;
-
-    private final ThreadLocal<ByteArrayOutputStream> pendingLine = new ThreadLocal<ByteArrayOutputStream>() {
-        @Override
-        protected ByteArrayOutputStream initialValue() {
-            return new ByteArrayOutputStream();
-        }
-    };
 
     public UdfConsoleStream(final String streamName, final PrintStream original) {
         this.streamName = streamName;
@@ -50,7 +42,7 @@ public final class UdfConsoleStream extends OutputStream {
             original.write(b);
             return;
         }
-        captureByte((byte) b);
+        UdfConsoleCapture.capture(streamName, b);
     }
 
     @Override
@@ -59,24 +51,11 @@ public final class UdfConsoleStream extends OutputStream {
             original.write(buf, off, len);
             return;
         }
-        for (int i = off; i < off + len; i++) {
-            captureByte(buf[i]);
-        }
+        UdfConsoleCapture.capture(streamName, buf, off, len);
     }
 
     @Override
     public void flush() {
         original.flush();
-    }
-
-    private void captureByte(final byte b) {
-        if (b == '\n') {
-            final ByteArrayOutputStream pending = pendingLine.get();
-            final String line = pending.toString(Charset.defaultCharset());
-            pending.reset();
-            UdfConsoleCapture.relayLine(streamName, line, original);
-        } else if (b != '\r') {
-            pendingLine.get().write(b);
-        }
     }
 }

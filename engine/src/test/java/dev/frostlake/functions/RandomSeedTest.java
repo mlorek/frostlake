@@ -23,6 +23,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -62,7 +63,7 @@ public class RandomSeedTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery(sql);
         final List<String> cells = new ArrayList<>();
         for (int i = 0; i < rs.getColumns().size(); i++) {
-            cells.add(String.valueOf(rs.getRows().get(0).getValue(i)).toLowerCase());
+            cells.add(String.valueOf(rs.getRows().get(0).getValue(i)).toLowerCase(Locale.ROOT));
         }
         return cells;
     }

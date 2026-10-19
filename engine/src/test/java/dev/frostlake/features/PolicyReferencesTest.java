@@ -181,8 +181,9 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "REF_ENTITY_NAME => 'NO_SUCH_T', REF_ENTITY_DOMAIN => 'TABLE'))");
             }
         });
-        assertEquals(hinted("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized."),
-            ex.getMessage());
+        // With the privilege sentence after it, as any statement over a missing table (live-verified).
+        assertEquals("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized. Your primary role"
+            + " <ROLE> must have at least one privilege granted on TABLE NO_SUCH_T.", roleMasked(ex));
     }
 
     @Test
@@ -194,8 +195,10 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "POLICY_NAME => 'NO_SUCH_P'))");
             }
         });
-        assertEquals(hinted("SQL compilation error:\nPolicy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
-            + " does not exist or not authorized."), ex.getMessage());
+        // Named in full, with the privilege sentence after it (live-verified).
+        assertEquals("SQL compilation error:\nPolicy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P' does not exist or not authorized."
+            + " Your primary role <ROLE> must have at least one privilege granted on POLICY"
+            + " TEST_DB.TEST_SCHEMA.NO_SUCH_P.", roleMasked(ex));
     }
 
     @Test
@@ -207,6 +210,7 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'NONSENSE'))");
             }
         });
+        // A domain no reference function knows is refused as TAG_REFERENCES refuses it (live-verified).
         assertEquals("Unknown domain: NONSENSE.", ex.getMessage());
     }
 
@@ -221,5 +225,10 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
             }
         });
         assertTrue(ex.getMessage().contains("Unknown policy kind: TABLE."), ex.getMessage());
+    }
+
+    /** A refusal's text with the session's role, which differs from account to account, masked. */
+    private static String roleMasked(final RuntimeException refused) {
+        return refused.getMessage().replaceAll("Your primary role \\S+ must", "Your primary role <ROLE> must");
     }
 }

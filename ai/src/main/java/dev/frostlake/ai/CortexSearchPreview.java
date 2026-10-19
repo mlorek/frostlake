@@ -16,6 +16,7 @@
 
 package dev.frostlake.ai;
 
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.table.QueryRunner;
@@ -97,17 +98,20 @@ public class CortexSearchPreview extends BuiltInFunction {
         return answer.toString();
     }
 
-    /** The service, or the error a real account gives for a name it cannot resolve. */
+    /**
+     * The service the argument names, read as an identifier path is — a quoted part keeps its case — or the error
+     * a real account gives for a name it cannot resolve, which repeats the name as written (live-verified).
+     */
     private CortexSearchService resolve(final String serviceName) {
+        final String missing = "Query failed: error_code: 390404, message: Cortex Search Service " + serviceName
+            + " does not exist or access is not authorized for the current role";
         if (registry == null || registry.getCatalog() == null) {
-            throw new RuntimeException("Cortex Search Service " + serviceName
-                + " does not exist or access is not authorized for the current role.");
+            throw new RuntimeException(missing);
         }
         try {
-            return registry.getCatalog().resolveCortexSearchService(serviceName);
+            return registry.getCatalog().resolveCortexSearchService(SqlIdentifiers.canonicalTextParts(serviceName));
         } catch (final RuntimeException unresolved) {
-            throw new RuntimeException("Cortex Search Service " + serviceName
-                + " does not exist or access is not authorized for the current role.");
+            throw new RuntimeException(missing);
         }
     }
 

@@ -29,9 +29,11 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 
+import java.util.Locale;
+
 /**
  * The compatibility classes of the SQL UDF return-type checks, exactly as a real account divides
- * them (live-verified): the fixed-point and floating-point numerics are SEPARATE families, the three
+ * them (live-verified): the fixed-point and floating-point numerics and DECFLOAT are SEPARATE families, the three
  * timestamp flavors are each their own family, and VARIANT / ARRAY / OBJECT match only themselves —
  * VARIANT does not absorb the other two; GEOGRAPHY, GEOMETRY and VECTOR are families of their own.
  * A number's precision and scale and a text's or binary's length never participate, while a TIME's
@@ -39,6 +41,7 @@ import dev.frostlake.types.VectorType;
  */
 enum ReturnTypeFamily {
     FIXED,
+    DECFLOAT,
     REAL,
     TEXT,
     BOOLEAN,
@@ -57,8 +60,12 @@ enum ReturnTypeFamily {
 
     /** The family of {@code type}, or null for the kinds the check does not judge. */
     static ReturnTypeFamily of(final DataType type) {
+        if (NumericType.isDecfloat(type)) {
+            // A DECFLOAT meets neither a NUMBER nor a FLOAT: RETURNS DECFLOAT AS '1.5' is refused (live-verified).
+            return DECFLOAT;
+        }
         if (type instanceof NumericType) {
-            final String name = type.getName().toUpperCase();
+            final String name = type.getName().toUpperCase(Locale.ROOT);
             if (name.startsWith("FLOAT") || name.startsWith("DOUBLE") || name.equals("REAL")) {
                 return REAL;
             }
@@ -71,7 +78,7 @@ enum ReturnTypeFamily {
             return BOOLEAN;
         }
         if (type instanceof DateTimeType) {
-            switch (type.getName().toUpperCase()) {
+            switch (type.getName().toUpperCase(Locale.ROOT)) {
                 case "DATE":
                     return DATE;
                 case "TIME":

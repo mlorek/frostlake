@@ -22,6 +22,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -118,7 +119,7 @@ final class FromSourceNames {
             if (ref == null) {
                 continue;
             }
-            if (ref.pivotClause() != null || ref.unpivotClause() != null) {
+            if (ref.pivotClause() != null || ref.unpivotClause() != null || ref.matchRecognizeClause() != null) {
                 return false;
             }
             final FrostlakeParser.TableSourceContext source = ref.tableSource();
@@ -161,7 +162,7 @@ final class FromSourceNames {
         if (ref.nonJoinKeywordIdentifier() != null) {
             final FrostlakeParser.NonJoinKeywordIdentifierContext alias = ref.nonJoinKeywordIdentifier();
             return alias.identifier() != null ? ParseTreeText.getIdentifier(alias.identifier())
-                : alias.getText().toUpperCase();
+                : alias.getText().toUpperCase(Locale.ROOT);
         }
         final FrostlakeParser.TableSourceContext source = ref.tableSource();
         if (source.tableQualifiedName() != null) {

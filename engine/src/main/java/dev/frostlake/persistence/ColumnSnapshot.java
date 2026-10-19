@@ -16,7 +16,10 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.types.DataType;
+
 import java.io.Serializable;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,22 +43,41 @@ public class ColumnSnapshot implements Serializable {
      * Null on snapshots written before it was persisted, where the NAME still held the spelling.
      */
     public Boolean binaryFixed;
+    /**
+     * The column's type itself, which the name and the parameters above do not fully carry: they miss a
+     * TIMESTAMP's or a TIME's fractional precision, and they restored a VECTOR or a GEOGRAPHY column as
+     * text. Null on snapshots written before it was persisted, which restore from those fields.
+     */
+    public DataType type;
     public boolean nullable;
     public boolean primaryKey;
     public String defaultValue;
     // True when defaultValue is a DEFAULT *expression* text (evaluate per row) rather than a literal.
     // Primitive → old snapshots deserialize it as false (a literal), preserving prior behavior.
     public boolean defaultIsExpression;
+    /**
+     * A literal default's value itself, which {@link #defaultValue} holds only as text; null for an expression, and
+     * on a snapshot written before it was kept, which restores the text.
+     */
+    public Serializable defaultLiteral;
     public String comment;
     // Qualified name of an attached masking policy, or null. Old snapshots predate this field (null on load).
     public String maskingPolicyName;
+    // A conditional masking policy's USING columns, the masked column first; null on snapshots that predate it.
+    public List<String> maskingPolicyArguments;
     public String projectionPolicyName;
     // Constraint/identity metadata. Primitives default to false/0 on old snapshots; objects to null.
     public boolean unique;
     public boolean autoIncrement;
     public long identityStart;
     public long identityIncrement;
+    public boolean identityOrdered;
     public String collation;
+    /**
+     * An Iceberg table's column's type in the format's own terms (see TableColumn#getFormatType); null for every other
+     * column, and on a snapshot written before it was kept.
+     */
+    public DataType formatType;
 
     // The position the table gave this column: kept so a restored table reports the same gaps a
     // dropped column left behind. 0 in a snapshot written before positions were recorded.

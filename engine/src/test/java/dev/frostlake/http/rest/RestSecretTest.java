@@ -32,6 +32,10 @@ public class RestSecretTest extends BaseRestTest {
     public static void createSchema() {
         sql("CREATE DATABASE sec_db");
         sql("CREATE SCHEMA sec_db.s");
+        sql("CREATE OR REPLACE SECURITY INTEGRATION my_int TYPE = API_AUTHENTICATION AUTH_TYPE = OAUTH2"
+            + " OAUTH_CLIENT_ID = 'cid' OAUTH_CLIENT_SECRET = 'cs' OAUTH_ALLOWED_SCOPES = ('a', 'b') ENABLED = TRUE");
+        sql("CREATE OR REPLACE SECURITY INTEGRATION aws_int TYPE = API_AUTHENTICATION AUTH_TYPE = AWS_IAM"
+            + " AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/my_role' ENABLED = TRUE");
     }
 
     @Test

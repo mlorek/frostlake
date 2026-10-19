@@ -17,6 +17,7 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.functions.scalar.SysConnectByPath;
 import dev.frostlake.functions.scalar.conditional.BoolAnd;
 import dev.frostlake.functions.scalar.conditional.BoolNot;
 import dev.frostlake.functions.scalar.conditional.BoolOr;
@@ -235,6 +236,7 @@ import dev.frostlake.functions.scalar.math.Tanh;
 import dev.frostlake.functions.scalar.math.Trunc;
 import dev.frostlake.functions.scalar.math.Uniform;
 import dev.frostlake.functions.scalar.math.WidthBucket;
+import dev.frostlake.functions.scalar.math.Zipf;
 import dev.frostlake.functions.scalar.semistructured.ArrayAppend;
 import dev.frostlake.functions.scalar.semistructured.ArrayCat;
 import dev.frostlake.functions.scalar.semistructured.ArrayCompact;
@@ -271,7 +273,9 @@ import dev.frostlake.functions.scalar.semistructured.AsDouble;
 import dev.frostlake.functions.scalar.semistructured.AsInteger;
 import dev.frostlake.functions.scalar.semistructured.AsObject;
 import dev.frostlake.functions.scalar.semistructured.AsTime;
+import dev.frostlake.functions.scalar.semistructured.AsTimestampLtz;
 import dev.frostlake.functions.scalar.semistructured.AsTimestampNtz;
+import dev.frostlake.functions.scalar.semistructured.AsTimestampTz;
 import dev.frostlake.functions.scalar.semistructured.AsVarchar;
 import dev.frostlake.functions.scalar.semistructured.CheckJson;
 import dev.frostlake.functions.scalar.semistructured.CheckXml;
@@ -290,7 +294,9 @@ import dev.frostlake.functions.scalar.semistructured.IsInteger;
 import dev.frostlake.functions.scalar.semistructured.IsNullValue;
 import dev.frostlake.functions.scalar.semistructured.IsObject;
 import dev.frostlake.functions.scalar.semistructured.IsTime;
+import dev.frostlake.functions.scalar.semistructured.IsTimestampLtz;
 import dev.frostlake.functions.scalar.semistructured.IsTimestampNtz;
+import dev.frostlake.functions.scalar.semistructured.IsTimestampTz;
 import dev.frostlake.functions.scalar.semistructured.IsVarchar;
 import dev.frostlake.functions.scalar.semistructured.JsonExtractPathText;
 import dev.frostlake.functions.scalar.semistructured.MapCat;
@@ -387,14 +393,17 @@ import dev.frostlake.functions.scalar.vector.VectorNormalize;
 import dev.frostlake.functions.scalar.vector.VectorTrunc;
 import dev.frostlake.functions.table.AlertHistoryFunction;
 import dev.frostlake.functions.table.CompleteTaskGraphsFunction;
+import dev.frostlake.functions.table.CopyHistoryFunction;
 import dev.frostlake.functions.table.CurrentTaskGraphsFunction;
 import dev.frostlake.functions.table.DataMetricReferencesFunction;
 import dev.frostlake.functions.table.Flatten;
 import dev.frostlake.functions.table.Generator;
+import dev.frostlake.functions.table.GetContactsFunction;
 import dev.frostlake.functions.table.PolicyReferencesFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.SplitToTable;
 import dev.frostlake.functions.table.StrtokSplitToTable;
+import dev.frostlake.functions.table.TagReferencesAllColumnsFunction;
 import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.functions.table.TaskDependentsFunction;
 import dev.frostlake.functions.table.TaskHistoryFunction;
@@ -470,6 +479,7 @@ import dev.frostlake.functions.scalar.GroupingIdFn;
 
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
@@ -479,6 +489,12 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class FunctionRegistry {
 
+    /**
+     * The names of the functions the engine builds in, as every registry has registered them: what a call's name is
+     * judged by where no registry is at hand, the reading of an expression's text ({@link #isBuiltInName}).
+     */
+    private static final Set<String> BUILT_IN_NAMES = ConcurrentHashMap.newKeySet();
+
     private final Map<String, BuiltInFunction> functions;
     private final Map<String, AggregateFunction> aggregateFunctions;
     private final Map<String, TableFunction> tableFunctions;
@@ -487,6 +503,8 @@ public class FunctionRegistry {
     private final Catalog catalog;
     /** Installed after construction by the executor; see {@link #setQueryRunner}. */
     private QueryRunner queryRunner;
+    /** Finds the aggregate functions users create; installed by the engine (see {@link #setUserAggregates}). */
+    private volatile UserAggregateLookup userAggregates;
     private final SessionContext sessionContext;
     private final EngineConfig config;
     /** Held so the task scheduler can be handed over once it exists — it is built after this. */
@@ -511,6 +529,19 @@ public class FunctionRegistry {
         this.sessionContext = sessionContext;
         this.config = config;
         registerBuiltInFunctions();
+        BUILT_IN_NAMES.addAll(functions.keySet());
+        BUILT_IN_NAMES.addAll(aggregateFunctions.keySet());
+        BUILT_IN_NAMES.addAll(tableFunctions.keySet());
+    }
+
+    /**
+     * Whether a name is a built-in function's, scalar, aggregate or table, as the registries built so far know them.
+     *
+     * @param name the name, upper-cased
+     * @return whether a function is built in under it
+     */
+    public static boolean isBuiltInName(final String name) {
+        return name != null && BUILT_IN_NAMES.contains(name);
     }
 
     private void registerBuiltInFunctions() {
@@ -628,6 +659,7 @@ public class FunctionRegistry {
         register(new Random());
         register(new Uniform());
         register(new Normal());
+        register(new Zipf());
 
         // Date/Time functions
         register(new CurrentDate());
@@ -671,6 +703,9 @@ public class FunctionRegistry {
         // GroupByAggregateEvaluator for super-group rows). GROUPING_ID(e1,…,en) is the multi-arg bitmask.
         register(new GroupingFn());
         register(new GroupingIdFn());
+
+        // A hierarchical query's path, read from the CONNECT BY expansion (see SysConnectByPath).
+        register(new SysConnectByPath());
 
         // Context functions
         register(new CurrentDatabase(catalog));
@@ -1008,7 +1043,7 @@ public class FunctionRegistry {
         register(new XmlGet());
         register(new CurrentIpAddress());
         register(new CurrentRoleType());
-        register(new CurrentSecondaryRoles());
+        register(new CurrentSecondaryRoles(catalog, sessionContext));
         register(new CurrentOrganizationName(config != null ? config : new EngineConfig()));
         register(new CurrentAccountName(config != null ? config : new EngineConfig()));
         register(new CurrentStatement(sessionContext));
@@ -1016,20 +1051,20 @@ public class FunctionRegistry {
         register(this.currentTransaction);
         register(new LastTransaction(sessionContext));
         register(new CurrentSchemas(catalog));
-        register(new InvokerRole(sessionContext));
-        register(new IsRoleInSession(sessionContext));
+        register(new InvokerRole(sessionContext, catalog));
+        register(new IsRoleInSession(catalog, sessionContext));
         register(new IsDatabaseRoleInSession(catalog, sessionContext));
         // Snowflake-name aliases over existing implementations.
         functions.put("AS_CHAR", new AsVarchar());
-        functions.put("AS_NUMBER", new AsDecimal());
+        functions.put("AS_NUMBER", new AsDecimal("AS_NUMBER"));
         functions.put("AS_REAL", new AsDouble());
-        functions.put("AS_TIMESTAMP_LTZ", new AsTimestampNtz());
-        functions.put("AS_TIMESTAMP_TZ", new AsTimestampNtz());
+        functions.put("AS_TIMESTAMP_LTZ", new AsTimestampLtz());
+        functions.put("AS_TIMESTAMP_TZ", new AsTimestampTz());
         functions.put("IS_CHAR", new IsVarchar());
         functions.put("IS_DATE_VALUE", new IsDate());
         functions.put("IS_REAL", new IsDoubleFn());
-        functions.put("IS_TIMESTAMP_LTZ", new IsTimestampNtz());
-        functions.put("IS_TIMESTAMP_TZ", new IsTimestampNtz());
+        functions.put("IS_TIMESTAMP_LTZ", new IsTimestampLtz());
+        functions.put("IS_TIMESTAMP_TZ", new IsTimestampTz());
         functions.put("BIT_AND", new Bitand());
         functions.put("BIT_OR", new Bitor());
         functions.put("BIT_XOR", new Bitxor());
@@ -1075,9 +1110,12 @@ public class FunctionRegistry {
         registerTableFunction(new StrtokSplitToTable());
         registerTableFunction(new Flatten());
         registerTableFunction(new TaskHistoryFunction(catalog));
+        registerTableFunction(new CopyHistoryFunction(catalog));
         registerTableFunction(new TagReferencesFunction(catalog));
+        registerTableFunction(new TagReferencesAllColumnsFunction(catalog));
         registerTableFunction(new AlertHistoryFunction(catalog));
         registerTableFunction(new TaskDependentsFunction(catalog));
+        registerTableFunction(new GetContactsFunction(catalog));
         registerTableFunction(new CurrentTaskGraphsFunction(catalog));
         registerTableFunction(new CompleteTaskGraphsFunction(catalog));
         registerTableFunction(new PolicyReferencesFunction(catalog));
@@ -1094,11 +1132,11 @@ public class FunctionRegistry {
 
     /** Registers an alias name for an already-constructed function (used by FunctionProviders). */
     public void registerAlias(final String name, final BuiltInFunction function) {
-        functions.put(name.toUpperCase(), function);
+        functions.put(name.toUpperCase(Locale.ROOT), function);
     }
 
     public void register(final BuiltInFunction function) {
-        functions.put(function.getName().toUpperCase(), function);
+        functions.put(function.getName().toUpperCase(Locale.ROOT), function);
     }
 
     /**
@@ -1109,15 +1147,15 @@ public class FunctionRegistry {
      */
     public void registerUnlisted(final BuiltInFunction function) {
         register(function);
-        unlistedNames.add(function.getName().toUpperCase());
+        unlistedNames.add(function.getName().toUpperCase(Locale.ROOT));
     }
 
     public void registerAggregate(final AggregateFunction function) {
-        aggregateFunctions.put(function.getName().toUpperCase(), function);
+        aggregateFunctions.put(function.getName().toUpperCase(Locale.ROOT), function);
     }
 
     public void registerTableFunction(final TableFunction function) {
-        tableFunctions.put(function.getName().toUpperCase(), function);
+        tableFunctions.put(function.getName().toUpperCase(Locale.ROOT), function);
     }
 
     /**
@@ -1127,7 +1165,7 @@ public class FunctionRegistry {
      */
     public void registerUnlistedTableFunction(final TableFunction function) {
         registerTableFunction(function);
-        unlistedNames.add(function.getName().toUpperCase());
+        unlistedNames.add(function.getName().toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -1176,27 +1214,84 @@ public class FunctionRegistry {
     }
 
     public BuiltInFunction getFunction(final String name) {
-        return functions.get(name.toUpperCase());
+        return functions.get(name.toUpperCase(Locale.ROOT));
     }
 
+    /**
+     * Hand over what finds the aggregate functions users create, which a call no built-in answers to may name.
+     *
+     * @param userAggregates the lookup
+     */
+    public void setUserAggregates(final UserAggregateLookup userAggregates) {
+        this.userAggregates = userAggregates;
+    }
+
+    /**
+     * The aggregate a call of this name means: a built-in, else an aggregate function the user created that the
+     * name finds (see {@link UserAggregateLookup}).
+     *
+     * @param name the name as the call writes it
+     * @return the aggregate, or null when the name means none
+     */
     public AggregateFunction getAggregateFunction(final String name) {
-        return aggregateFunctions.get(name.toUpperCase());
+        final String upper = name.toUpperCase(Locale.ROOT);
+        final AggregateFunction builtIn = aggregateFunctions.get(upper);
+        final UserAggregateLookup users = userAggregates;
+        // A built-in of any kind answers to its own name before a user's function does.
+        if (builtIn != null || users == null || functions.containsKey(upper) || tableFunctions.containsKey(upper)) {
+            return builtIn;
+        }
+        return users.find(upper);
+    }
+
+    /**
+     * Whether a call of this name may call a scalar function or an aggregate one, its arguments' types deciding: a
+     * user's name that holds scalar overloads beside aggregate ones. A built-in's name never does.
+     *
+     * @param name the name as the call writes it
+     * @return whether the call's arguments decide whether it aggregates
+     */
+    public boolean namesScalarBesideAggregate(final String name) {
+        final String upper = name.toUpperCase(Locale.ROOT);
+        final UserAggregateLookup users = userAggregates;
+        return users != null && !aggregateFunctions.containsKey(upper) && !functions.containsKey(upper)
+            && !tableFunctions.containsKey(upper) && users.namesScalarBesideAggregate(upper);
+    }
+
+    /**
+     * Whether a call of this name calls an aggregate function a user created (see {@link #getAggregateFunction}).
+     *
+     * @param name the name as the call writes it
+     * @return whether it does
+     */
+    public boolean isUserAggregateFunction(final String name) {
+        return !aggregateFunctions.containsKey(name.toUpperCase(Locale.ROOT)) && getAggregateFunction(name) != null;
+    }
+
+    /**
+     * Whether a built-in aggregate goes by this name, a user's aggregate function aside.
+     *
+     * @param name the name as the call writes it
+     * @return whether one does
+     */
+    public boolean hasBuiltInAggregateFunction(final String name) {
+        return aggregateFunctions.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public TableFunction getTableFunction(final String name) {
-        return tableFunctions.get(name.toUpperCase());
+        return tableFunctions.get(name.toUpperCase(Locale.ROOT));
     }
 
     public boolean hasFunction(final String name) {
-        return functions.containsKey(name.toUpperCase());
+        return functions.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public boolean hasAggregateFunction(final String name) {
-        return aggregateFunctions.containsKey(name.toUpperCase());
+        return getAggregateFunction(name) != null;
     }
 
     public boolean hasTableFunction(final String name) {
-        return tableFunctions.containsKey(name.toUpperCase());
+        return tableFunctions.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public Collection<BuiltInFunction> getAllFunctions() {

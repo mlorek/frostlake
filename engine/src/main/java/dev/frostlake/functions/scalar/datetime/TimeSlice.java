@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
 import java.time.LocalDate;
@@ -38,7 +39,7 @@ public class TimeSlice extends BuiltInFunction {
         if (args.get(0) == null || args.get(1) == null || args.get(2) == null) return null;
         final boolean dateInput = args.get(0) instanceof LocalDate;
         final LocalDateTime t = SharedFunctionHelpers.toLocalDateTime(args.get(0));
-        final long n = (long) Double.parseDouble(args.get(1).toString());
+        final long n = WholeNumbers.wholeLong(args.get(1));
         final IntervalUnit unit = DateUnitVocabulary.sliceUnit(args.get(2));
         if (unit == null) {
             throw SharedFunctionHelpers.notADateTimeComponent(args.get(2), "TIME_SLICE");

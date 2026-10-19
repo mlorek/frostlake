@@ -37,6 +37,7 @@ import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -224,6 +225,12 @@ final class ValuesColumnFold {
 
     /** Whether a value of the row's own type differs from the folded type's representation. */
     private static boolean needsConversion(final DataType cellType, final DataType folded) {
+        if (folded instanceof UuidType) {
+            // A text folded into UUID is converted, which checks it and lower-cases it: in a SELECT over VALUES,
+            // ('abc') beside a UUID is "UUID 'abc' is invalid, expected format is ..." (live-verified), and an
+            // INSERT's VALUES folds as that one does.
+            return !(cellType instanceof UuidType);
+        }
         if (cellType instanceof StringType && folded instanceof StringType
                 || cellType instanceof BooleanType && folded instanceof BooleanType
                 || cellType instanceof BinaryType && folded instanceof BinaryType) {

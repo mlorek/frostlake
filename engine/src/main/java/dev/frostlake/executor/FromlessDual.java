@@ -59,10 +59,24 @@ public final class FromlessDual extends Table {
         return new FromlessDual(false);
     }
 
+    /**
+     * A column that holds nothing but an untyped NULL, as DUAL's does: a zero-width string no type rule reads as
+     * a string (see {@link TableColumn#isUntypedNull}).
+     *
+     * @param name the column's name
+     * @return the column
+     */
+    public static TableColumn untypedNullColumn(final String name) {
+        final TableColumn column = new TableColumn(name, new StringType("VARCHAR", 0), true, null, false, false,
+            false);
+        column.setUntypedNull(true);
+        return column;
+    }
+
     private static List<TableColumn> columns(final boolean read) {
         final List<TableColumn> columns = new ArrayList<>();
         if (read) {
-            columns.add(new TableColumn(COLUMN, StringType.VARCHAR, true, null, false, false, false));
+            columns.add(untypedNullColumn(COLUMN));
         }
         return columns;
     }
@@ -70,7 +84,8 @@ public final class FromlessDual extends Table {
     /**
      * Whether a FROM-less select reads DUAL at its own level: a plain star item, a {@code DUAL.*} item, or a
      * name reaching COLUMN1 ({@code COLUMN1}, {@code DUAL.<name>}, {@code $n}) in its items, WHERE, GROUP BY,
-     * HAVING, QUALIFY or ORDER BY. A query nested inside reads a DUAL of its own.
+     * HAVING, QUALIFY or ORDER BY. A query nested inside reads a DUAL of its own, unless it has a FROM: no name
+     * reaches the pseudo-table written there, so its {@code DUAL.<name>} is this select's (live-verified).
      *
      * @param stmtCtx the statement the select clause belongs to, or null
      * @param ctx     the FROM-less select clause
@@ -107,8 +122,11 @@ public final class FromlessDual extends Table {
     }
 
     private static boolean readsIn(final ParseTree node) {
-        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
+        if (node == null) {
             return false;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return readsFromBelow(node);
         }
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
             final FrostlakeParser.QualifiedNameContext name =
@@ -119,6 +137,27 @@ public final class FromlessDual extends Table {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             if (readsIn(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a nested query names {@code DUAL.<name>} from a select that has a FROM of its own. */
+    private static boolean readsFromBelow(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectClauseContext
+                && ((FrostlakeParser.SelectClauseContext) node).FROM() == null) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            if (parts.length == 2 && NAME.equals(parts[0])) {
+                return true;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (readsFromBelow(node.getChild(i))) {
                 return true;
             }
         }

@@ -20,28 +20,39 @@ import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.SqlObject;
 
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
 public class MaterializedView extends SqlObject {
 
-    private final String definition;
+    // Not final: a clone of the view's schema or database re-points the query at the clone's copy of its base table.
+    private String definition;
     private final List<String> columnNames;
     /** The view's column list as resolved when it was created — see {@link #getResolvedColumns()}. */
     private List<TableColumn> resolvedColumns;
     private String warehouse;
     private boolean suspended;
+    private String invalidReason;
+    private boolean resumedWhileInvalid;
+    /** The table the view reads, bound to the table itself once known — see {@link #getBaseTable}. */
+    private Table baseTable;
+    /** Whether a column of the base table was dropped or renamed under the view — see {@link #isBaseReshaped}. */
+    private boolean baseReshaped;
     private boolean secure = false;
-    private LocalDateTime lastRefreshedTime;
     /** The source table's last data change this view has materialized, or null for none — see {@link #getMaterializedAsOf}. */
     private Instant materializedAsOf;
+    /** The rows the view materialized when it was created, which is what a listing counts. */
+    private long materializedRows;
     /** The database the view reads from, as the catalog names it — see {@link #setSource}. */
     private String sourceDatabase;
     private String sourceSchema;
     private String sourceTable;
     /** The CREATE statement as SHOW MATERIALIZED VIEWS spells it, or null — see {@link #getListedText}. */
     private String listedText;
+    /** The clustering key's expressions as written, none for an unclustered view. */
+    private final List<String> clusterKeys = new ArrayList<>();
+    /** Whether automatic reclustering is paused; it only shows on a view that has a key. */
+    private boolean reclusterSuspended;
 
     public MaterializedView(final String name, final String definition) {
         this(name, null, definition, StatementClock.instant());
@@ -67,10 +78,71 @@ public class MaterializedView extends SqlObject {
         this.suspended = false;
     }
 
+    /**
+     * A copy of this view's definition and state for a clone of its schema: the query, the written columns and
+     * the resolved ones, the warehouse, suspension, SECURE, the source it materializes and the moment it was
+     * materialized as of, and the texts it is listed and described with.
+     *
+     * @return the copy
+     */
+    public MaterializedView copy() {
+        final MaterializedView copy = new MaterializedView(getName(),
+            columnNames != null ? new ArrayList<>(columnNames) : null, definition);
+        copy.resolvedColumns = resolvedColumns != null ? new ArrayList<>(resolvedColumns) : null;
+        copy.warehouse = warehouse;
+        copy.suspended = suspended;
+        copy.invalidReason = invalidReason;
+        copy.resumedWhileInvalid = resumedWhileInvalid;
+        copy.baseReshaped = baseReshaped;
+        copy.secure = secure;
+        copy.materializedAsOf = materializedAsOf;
+        copy.materializedRows = materializedRows;
+        copy.sourceDatabase = sourceDatabase;
+        copy.sourceSchema = sourceSchema;
+        copy.sourceTable = sourceTable;
+        copy.listedText = listedText;
+        copy.originalDdl = originalDdl;
+        copy.setComment(getComment());
+        return copy;
+    }
+
     public String getDefinition() {
         return definition;
     }
 
+    /**
+     * The clustering key: each expression as the statement that set it wrote it, in order.
+     *
+     * @return the key's expressions, empty for an unclustered view
+     */
+    public List<String> getClusterKeys() {
+        return new ArrayList<>(clusterKeys);
+    }
+
+    public void setClusterKeys(final List<String> keys) {
+        clusterKeys.clear();
+        if (keys != null) {
+            clusterKeys.addAll(keys);
+        }
+    }
+
+    public boolean isReclusterSuspended() {
+        return reclusterSuspended;
+    }
+
+    public void setReclusterSuspended(final boolean reclusterSuspended) {
+        this.reclusterSuspended = reclusterSuspended;
+    }
+
+    /**
+     * Replace the query the view is read through, for a clone that refers to the clone's copy of its base table
+     * (see {@code CloneReferences}). The texts it is listed and described with stay as written.
+     *
+     * @param definition the query
+     */
+    public void setDefinition(final String definition) {
+        this.definition = definition;
+    }
     public List<String> getColumnNames() {
         return columnNames;
     }
@@ -118,12 +190,67 @@ public class MaterializedView extends SqlObject {
         this.suspended = suspended;
     }
 
-    public LocalDateTime getLastRefreshedTime() {
-        return lastRefreshedTime;
+    /**
+     * Why the view can no longer be read — its base table's shape was altered under it, or the table was
+     * dropped — in the account's own words, or null while the view is valid. A suspended view is invalid by
+     * hand, which {@link #isSuspended()} tells.
+     */
+    public String getInvalidReason() {
+        return invalidReason;
     }
 
-    public void setLastRefreshedTime(final LocalDateTime lastRefreshedTime) {
-        this.lastRefreshedTime = lastRefreshedTime;
+    /** Records why the view can no longer be read; null makes it valid again. */
+    public void setInvalidReason(final String invalidReason) {
+        this.invalidReason = invalidReason;
+    }
+
+    /** Whether a RESUME was accepted while the view was invalid, which changes how a read is refused. */
+    public boolean isResumedWhileInvalid() {
+        return resumedWhileInvalid;
+    }
+
+    /** Records that a RESUME was accepted while the view was invalid. */
+    public void setResumedWhileInvalid(final boolean resumedWhileInvalid) {
+        this.resumedWhileInvalid = resumedWhileInvalid;
+    }
+
+    /**
+     * The table the view was created over, the table itself rather than its name: a table swapped in under the name,
+     * or created anew there, is another one. Null until bound — a view a snapshot or a clone brought back binds to
+     * the table its name finds when it is first read.
+     *
+     * @return the table, or null
+     */
+    public Table getBaseTable() {
+        return baseTable;
+    }
+
+    /**
+     * Bind the view to the table it reads.
+     *
+     * @param baseTable the table
+     */
+    public void bindBaseTable(final Table baseTable) {
+        this.baseTable = baseTable;
+    }
+
+    /**
+     * Whether a column of the base table was dropped or renamed while the view stood: such a view stays invalid
+     * through a RESUME, where one invalidated by a column's type or nullability alone is valid again.
+     *
+     * @return whether the table lost or renamed a column
+     */
+    public boolean isBaseReshaped() {
+        return baseReshaped;
+    }
+
+    /**
+     * Record whether the base table lost or renamed a column.
+     *
+     * @param baseReshaped whether it did
+     */
+    public void setBaseReshaped(final boolean baseReshaped) {
+        this.baseReshaped = baseReshaped;
     }
 
     /**
@@ -137,6 +264,16 @@ public class MaterializedView extends SqlObject {
 
     public void setMaterializedAsOf(final Instant materializedAsOf) {
         this.materializedAsOf = materializedAsOf;
+    }
+
+    /** The rows the view materialized. */
+    public long getMaterializedRows() {
+        return materializedRows;
+    }
+
+    /** Records the rows the view materialized. */
+    public void setMaterializedRows(final long materializedRows) {
+        this.materializedRows = materializedRows;
     }
 
     public boolean isSecure() { return secure; }

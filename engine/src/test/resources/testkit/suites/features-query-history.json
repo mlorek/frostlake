@@ -205,7 +205,7 @@
      "sql": "INSERT INTO perf_test VALUES (1), (2), (3), (4), (5)"
     },
     {
-     "sql": "SELECT COUNT(*) >= 2, COUNT_IF(TOTAL_ELAPSED_TIME IS NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type IN ('CREATE', 'INSERT')",
+     "sql": "SELECT COUNT(*) >= 2, COUNT_IF(TOTAL_ELAPSED_TIME IS NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type IN ('CREATE_TABLE', 'INSERT')",
      "expect": {
       "rows": [
        [
@@ -306,7 +306,7 @@
      "sql": "COMMIT"
     },
     {
-     "sql": "SELECT COUNT(*) >= 2 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type IN ('BEGIN', 'COMMIT', 'CREATE', 'INSERT')",
+     "sql": "SELECT COUNT(*) >= 2 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type IN ('BEGIN', 'COMMIT', 'CREATE_TABLE', 'INSERT')",
      "expect": {
       "value": "true"
      }
@@ -382,7 +382,7 @@
      }
     },
     {
-     "sql": "SELECT COUNT(*) >= 1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED' AND error_message IS NOT NULL",
+     "sql": "SELECT COUNT(*) >= 1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED_WITH_ERROR' AND error_message IS NOT NULL",
      "expect": {
       "value": "true"
      }

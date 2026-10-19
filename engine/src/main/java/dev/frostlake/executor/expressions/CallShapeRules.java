@@ -96,6 +96,14 @@ final class CallShapeRules {
             throw new RuntimeException("Unsupported feature 'TOK_STAR'.");
         }
         final String quantifier = call.getQuantifier();
+        if (builtin == null && (call.isDistinct() || call.getWithinGroupKeys() != null)
+                && call.getFunctionName() != null
+                && functionRegistry().getAggregateFunction(call.getFunctionName().toUpperCase(Locale.ROOT)) != null) {
+            // A user's aggregate function takes neither DISTINCT nor WITHIN GROUP: the call names no function the
+            // account knows of (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Unknown function "
+                + SqlIdentifiers.spellCanonical(parts.get(parts.size() - 1)) + "."));
+        }
         if (quantifier != null && call.getArguments().isEmpty() && !call.isStar()) {
             throw invalidFunction(builtin, parts);
         }
@@ -134,7 +142,7 @@ final class CallShapeRules {
             && (takesNoQuantifier(builtin, true) || userFunction != null);
         final boolean refusedWithinGroup = window.getWithinGroupKeys() != null && builtin != null
             && !WITHIN_GROUP_FUNCTIONS.contains(builtin)
-            && (functionRegistry().hasAggregateFunction(builtin) || WindowFunctionNames.handles(builtin));
+            && (functionRegistry().hasBuiltInAggregateFunction(builtin) || WindowFunctionNames.handles(builtin));
         final String kind = parts.size() == 1 && !windowCapable(builtin)
             ? (builtin != null ? builtin : SqlIdentifiers.spellCanonical(parts.get(0))) : null;
         final boolean orderRequired = builtin != null && !window.isOrdered()
@@ -156,7 +164,8 @@ final class CallShapeRules {
         walkAll(window.getPartitionKeys(), walk);
         if (kind != null) {
             walkAll(window.getOrderKeys(), walk);
-            throw new RuntimeException(SqlCompilationError.of("Invalid function type [" + kind + "] for window function."));
+            throw new RuntimeException(SqlCompilationError.of("Invalid function type [" + echoedName(kind)
+                + "] for window function."));
         }
         throw new RuntimeException(SqlCompilationError.of("Window function type [" + builtin
             + "] requires ORDER BY in window specification."));
@@ -169,15 +178,10 @@ final class CallShapeRules {
             return;
         }
         final int slot = name == null ? -1 : DateTimeUnitSlot.positionIn(name);
-        final boolean enclosing = context.beginFunctionArgumentScope();
-        try {
-            for (int i = 0; i < arguments.size(); i++) {
-                if (i != slot) {
-                    arguments.get(i).accept(walk);
-                }
+        for (int i = 0; i < arguments.size(); i++) {
+            if (i != slot) {
+                arguments.get(i).accept(walk);
             }
-        } finally {
-            context.endFunctionArgumentScope(enclosing);
         }
     }
 
@@ -199,7 +203,7 @@ final class CallShapeRules {
     /** The quantifier's refusal: the call echoed from the plan with the quantifier as written. */
     private RuntimeException quantifierRefusal(final String name, final String quantifier,
                                                final List<Expression> arguments) {
-        final StringBuilder echo = new StringBuilder(name).append('(').append(quantifier).append(' ');
+        final StringBuilder echo = new StringBuilder(echoedName(name)).append('(').append(quantifier).append(' ');
         final int unitSlot = DateTimeUnitSlot.positionIn(name);
         for (int i = 0; i < arguments.size(); i++) {
             if (i > 0) {
@@ -216,7 +220,19 @@ final class CallShapeRules {
     }
 
     private static RuntimeException withinGroupRefusal(final String name) {
-        return new RuntimeException(SqlCompilationError.of("Function " + name + " does not support WITHIN GROUP clause."));
+        return new RuntimeException(SqlCompilationError.of("Function " + echoedName(name)
+            + " does not support WITHIN GROUP clause."));
+    }
+
+    /**
+     * The name a refusal echoes a call by: the account knows GROUPING as GROUPING_ID wherever it names the call
+     * (live-verified).
+     *
+     * @param name the call's name, upper-cased
+     * @return the name as a refusal writes it
+     */
+    public static String echoedName(final String name) {
+        return "GROUPING".equals(name) ? "GROUPING_ID" : name;
     }
 
     /**
@@ -224,7 +240,7 @@ final class CallShapeRules {
      * — and other than RATIO_TO_REPORT under OVER, which is planned as SUM.
      */
     private boolean takesNoQuantifier(final String builtin, final boolean windowed) {
-        if (builtin == null || functionRegistry().hasAggregateFunction(builtin)) {
+        if (builtin == null || functionRegistry().hasBuiltInAggregateFunction(builtin)) {
             return false;
         }
         if (WindowFunctionNames.handles(builtin)) {
@@ -236,7 +252,7 @@ final class CallShapeRules {
     /** Whether a built-in may stand before OVER: a window function or an aggregate. */
     private boolean windowCapable(final String builtin) {
         return builtin != null
-            && (WindowFunctionNames.handles(builtin) || functionRegistry().hasAggregateFunction(builtin));
+            && (WindowFunctionNames.handles(builtin) || functionRegistry().hasBuiltInAggregateFunction(builtin));
     }
 
     /** Whether the call's one argument is a bare star, {@code COUNT(*)}, however the call spells it. */
@@ -259,7 +275,7 @@ final class CallShapeRules {
             return null;
         }
         final String name = parts.get(0).toUpperCase(Locale.ROOT);
-        return functionRegistry().getFunction(name) != null || functionRegistry().hasAggregateFunction(name)
+        return functionRegistry().getFunction(name) != null || functionRegistry().hasBuiltInAggregateFunction(name)
             || WindowFunctionNames.handles(name) ? name : null;
     }
 

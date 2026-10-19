@@ -31,6 +31,7 @@ import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * JDBC Statement implementation for Frostlake SQL Engine
@@ -57,6 +58,12 @@ public class DatabaseStatement implements Statement {
 
     /** Per-statement MULTI_STATEMENT_COUNT set via {@link #setParameter}, overriding the session's. */
     private Integer statementMultiCount;
+
+    /** The query timeout in seconds, 0 for none (see {@link #setQueryTimeout}). */
+    private volatile int queryTimeoutSeconds;
+
+    /** Whether one of this object's statements is running now, which {@link #cancel()} cancels. */
+    private volatile boolean running;
 
     /**
      * The real driver's per-statement parameter surface ({@code unwrap(...).setParameter(...)});
@@ -93,7 +100,7 @@ public class DatabaseStatement implements Statement {
         if (desired == 0) {
             return;
         }
-        final int actual = JdbcMultiStatement.countStatements(sql);
+        final int actual = JdbcMultiStatement.countTokens(sql);
         if (actual != desired) {
             throw JdbcMultiStatement.countMismatch(sql, actual, desired);
         }
@@ -113,7 +120,13 @@ public class DatabaseStatement implements Statement {
             currentResultSet.close();
             currentResultSet = null;
         }
-        final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
+        final SqlResponse response;
+        running = true;
+        try {
+            response = httpClient.execute(sql, desiredMultiCount(), queryTimeoutSeconds);
+        } finally {
+            running = false;
+        }
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         return response;
     }
@@ -244,7 +257,7 @@ public class DatabaseStatement implements Statement {
             }
             for (int i = 0; i < data.getColumns().size(); i++) {
                 final String name = data.getColumns().get(i).getName();
-                if (name != null && name.toLowerCase().startsWith("number of rows")) {
+                if (name != null && name.toLowerCase(Locale.ROOT).startsWith("number of rows")) {
                     final Object value = data.getRows().get(0).get(i);
                     if (value instanceof Number) {
                         total += ((Number) value).longValue();
@@ -298,17 +311,26 @@ public class DatabaseStatement implements Statement {
 
     @Override
     public int getQueryTimeout() throws SQLException {
-        return 0;
+        return queryTimeoutSeconds;
     }
 
     @Override
     public void setQueryTimeout(final int seconds) throws SQLException {
-        // No-op
+        if (seconds < 0) {
+            throw new SQLException("Query timeout must be zero or more seconds, not " + seconds);
+        }
+        // The statements this object runs are canceled once they run this long: "SQL execution canceled".
+        queryTimeoutSeconds = seconds;
     }
 
     @Override
     public void cancel() throws SQLException {
-        throw new SQLFeatureNotSupportedException("Cancel not supported");
+        // From any thread: the running statement ends with "SQL execution canceled", and this object runs the next
+        // one as usual (live-verified). The server cancels what its session runs, so only a statement of this
+        // object's own is canceled.
+        if (running) {
+            httpClient.cancelRunning();
+        }
     }
 
     @Override
@@ -364,6 +386,21 @@ public class DatabaseStatement implements Statement {
     public ResultSet getResultSet() throws SQLException {
         checkClosed();
         return currentResultSet;
+    }
+
+    /**
+     * The grid behind the current result whichever way the driver reports it, as a result set of its own: the rows
+     * of a query, and the count grid or status line of a statement the driver reports as an update count. Null past
+     * the end.
+     *
+     * @return the current result's grid, or null
+     * @throws SQLException when the statement is closed
+     */
+    public ResultSet getResultGrid() throws SQLException {
+        checkClosed();
+        final int position = walk.position();
+        return position < pendingResultData.size()
+            ? new DatabaseResultSet(this, pendingResultData.get(position)) : null;
     }
 
     /** The current result's update count: -1 when it answers rows, and once the walk has passed the end. */

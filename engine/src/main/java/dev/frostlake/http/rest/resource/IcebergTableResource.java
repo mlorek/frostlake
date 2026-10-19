@@ -192,7 +192,7 @@ public final class IcebergTableResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW ICEBERG TABLES" + RestShow.likeName(name)
             + " IN SCHEMA " + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Iceberg table '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Iceberg table", RelationNames.qualifiedDisplay(call, name));
         }
         return details(call, rows.get(0), name, true);
     }

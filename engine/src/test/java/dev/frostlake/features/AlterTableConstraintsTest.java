@@ -229,6 +229,28 @@ public class AlterTableConstraintsTest extends BaseDatabaseTest {
     }
 
     @Test
+    public void testAlterTableDropNamedPrimaryKeyThenReAdd() {
+        engine.execute("CREATE TABLE ticket (site_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL,"
+            + " action VARCHAR NOT NULL, CONSTRAINT pk_ticket PRIMARY KEY (site_id, ticket_id))");
+
+        engine.execute("ALTER TABLE ticket DROP CONSTRAINT pk_ticket");
+        assertEquals("N", describeCell("ticket", "SITE_ID", "primary key"));
+
+        engine.execute("ALTER TABLE ticket ADD CONSTRAINT pk_ticket PRIMARY KEY (site_id, ticket_id, action)");
+        assertEquals("Y", describeCell("ticket", "ACTION", "primary key"));
+    }
+
+    @Test
+    public void testAlterTableDropNamedUniqueConstraint() {
+        engine.execute("CREATE TABLE users (id INTEGER, email VARCHAR)");
+        engine.execute("ALTER TABLE users ADD CONSTRAINT uk_users_email UNIQUE (email)");
+
+        engine.execute("ALTER TABLE users DROP CONSTRAINT uk_users_email");
+
+        assertEquals("N", describeCell("users", "EMAIL", "unique key"));
+    }
+
+    @Test
     public void testAlterTableAddMultipleConstraints() {
         logger.info("Testing ALTER TABLE with multiple constraint operations");
 

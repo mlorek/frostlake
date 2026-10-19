@@ -158,6 +158,11 @@ jdbc:frostlake://localhost:18082/demo
 
 Every module on the server is now usable from DBeaver even though its jars are nowhere near it.
 
+The server ends a session that has been idle for four hours (`http.session.idleTimeoutMinutes`), as Snowflake does.
+To keep a DBeaver connection's session for as long as the connection stays open, set the driver property
+`CLIENT_SESSION_KEEP_ALIVE` to `true`: the driver then sends a heartbeat every hour, or every
+`CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY` seconds.
+
 ---
 
 ## Configuring the modules

@@ -23,6 +23,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -49,7 +50,7 @@ final class StarModifierCheck {
      * @return true when a star reads it
      */
     static boolean starVisible(final TableColumn column) {
-        final String key = column.getName().toUpperCase();
+        final String key = column.getName().toUpperCase(Locale.ROOT);
         return !key.equals("METADATA$FILENAME") && !key.equals("METADATA$FILE_ROW_NUMBER")
             && !column.isHiddenFromStar();
     }
@@ -117,9 +118,9 @@ final class StarModifierCheck {
         }
         for (final FrostlakeParser.StarModifierContext modifier : modifiers) {
             if (modifier.ILIKE() != null) {
-                final String literal = modifier.STRING_LITERAL().getText();
                 final Pattern pattern = Pattern.compile(
-                    QueryExecutor.ilikeToRegex(literal.substring(1, literal.length() - 1)), Pattern.CASE_INSENSITIVE);
+                    QueryExecutor.ilikeToRegex(ParseTreeText.stringBody(modifier.stringText())),
+                    Pattern.CASE_INSENSITIVE);
                 final List<String> matching = new ArrayList<>();
                 for (final String name : available) {
                     if (pattern.matcher(name).matches()) {

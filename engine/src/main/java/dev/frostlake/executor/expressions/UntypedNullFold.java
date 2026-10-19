@@ -35,7 +35,8 @@ import java.util.Set;
  * <p>A conditional that can answer nothing but an untyped NULL folds the same way: IFF, NVL2, COALESCE, NVL,
  * IFNULL, GREATEST, LEAST, DECODE and CASE whose every value branch is one — {@code IFF(TRUE, NULL, NULL)},
  * {@code CASE WHEN a > 1 THEN NULL END}, {@code DECODE(1, 1, NULL, NULL)} — and a NULLIF whose first argument
- * is one, {@code NULLIF(NULL, 1)}, all read NULL[LOB] and read through a derived column, a concatenation or
+ * is one, {@code NULLIF(NULL, 1)} and {@code NULLIFZERO(NULL)}, all read NULL[LOB] and read through a derived
+ * column, a concatenation or
  * arithmetic as the bare word does (live-verified). A typed NULL branch keeps its type:
  * {@code IFF(TRUE, NULL::INT, NULL)} is NUMBER(38,0).
  */
@@ -43,8 +44,9 @@ public final class UntypedNullFold {
 
     private static final Set<String> FOLDING = new HashSet<>(Arrays.asList(
         "DATEADD", "TIMEADD", "TIMESTAMPADD", "DATEDIFF", "TIMEDIFF", "TIMESTAMPDIFF", "DATE_TRUNC", "ADD_MONTHS",
-        "YEAR", "MONTH", "DAY", "DAYOFMONTH", "HOUR", "MINUTE", "SECOND", "WEEK", "WEEKOFYEAR", "QUARTER",
-        "DAYOFWEEK", "DAYOFYEAR", "YEAROFWEEK", "EXTRACT", "DATE_PART", "LAST_DAY"));
+        "YEAR", "MONTH", "DAY", "DAYOFMONTH", "HOUR", "MINUTE", "SECOND", "WEEK", "WEEKOFYEAR", "WEEKISO", "QUARTER",
+        "DAYOFWEEK", "DAYOFWEEKISO", "DAYOFYEAR", "YEAROFWEEK", "YEAROFWEEKISO", "EXTRACT", "DATE_PART", "LAST_DAY",
+        "TIME_SLICE"));
 
     /** The conditionals that answer one of their value branches, and fold when every one is an untyped NULL. */
     private static final Set<String> PICKING = new HashSet<>(Arrays.asList(
@@ -78,6 +80,10 @@ public final class UntypedNullFold {
         if (name.equals("NULLIF")) {
             return call.getArguments().size() == 2 && isUntypedNull(call.getArguments().get(0));
         }
+        if (name.equals("NULLIFZERO")) {
+            // NULLIFZERO(NULL) is the NULLIF it stands for, over the word itself.
+            return call.getArguments().size() == 1 && isUntypedNull(call.getArguments().get(0));
+        }
         if (name.equals("TRUNC")) {
             // Over a NULL value TRUNC is neither the numeric nor the date truncation: TRUNC(NULL) is NULL[LOB].
             final Expression value = call.getArguments().isEmpty() ? null : call.getArguments().get(0);
@@ -104,6 +110,80 @@ public final class UntypedNullFold {
         return false;
     }
 
+    /** The words a text type is written with, as a cast names its target. */
+    private static final Set<String> TEXT_TYPE_WORDS = new HashSet<>(Arrays.asList(
+        "VARCHAR", "CHAR", "CHARACTER", "STRING", "TEXT", "NCHAR", "NVARCHAR", "NVARCHAR2"));
+
+    /**
+     * Whether an expression is the word NULL cast to a text type, {@code NULL::VARCHAR(10)},
+     * {@code CAST(NULL AS STRING)} or {@code TO_VARCHAR(NULL)}. Standing alone it is the text type it names;
+     * meeting an exact number it is
+     * read as the bare word, and the number decides the type: {@code NULL::VARCHAR(10) + 1} is typed as
+     * {@code NULL + 1}, {@code COALESCE(NULL::VARCHAR(10), 5)} is NUMBER(1,0), and {@code SELECT NULL::VARCHAR(10)
+     * UNION ALL SELECT 5} a NUMBER(1,0) column — where a text value there reads as NUMBER(18,5). Beside a text, a
+     * FLOAT, a BOOLEAN or another NULL it keeps its own rule (live-verified).
+     *
+     * @param expr the expression
+     * @return whether it is a NULL of a text type
+     */
+    public static boolean isNullTextConstant(final Expression expr) {
+        if (expr instanceof FunctionCallExpression) {
+            // TO_VARCHAR(NULL) is the same NULL of a text type.
+            final FunctionCallExpression call = (FunctionCallExpression) expr;
+            final String name = call.getNameExpression() != null || call.getFunctionName() == null ? ""
+                : call.getFunctionName().toUpperCase(Locale.ROOT);
+            return (name.equals("TO_VARCHAR") || name.equals("TO_CHAR")) && call.getArguments().size() == 1
+                && call.getArguments().get(0) instanceof LiteralExpression
+                && ((LiteralExpression) call.getArguments().get(0)).getType() == LiteralType.NULL;
+        }
+        if (!(expr instanceof CastExpression)) {
+            return false;
+        }
+        final CastExpression cast = (CastExpression) expr;
+        final Expression converted = cast.getExpression();
+        if (!(converted instanceof LiteralExpression) || ((LiteralExpression) converted).getType() != LiteralType.NULL
+                || cast.getTargetType() == null) {
+            return false;
+        }
+        final String target = cast.getTargetType().trim().toUpperCase(Locale.ROOT);
+        int end = 0;
+        while (end < target.length() && Character.isLetterOrDigit(target.charAt(end))) {
+            end++;
+        }
+        return TEXT_TYPE_WORDS.contains(target.substring(0, end));
+    }
+
+    /**
+     * @param call a call
+     * @return whether it is one of the date calls an untyped NULL argument folds
+     */
+    public static boolean isDateCall(final FunctionCallExpression call) {
+        return call.getFunctionName() != null && call.getNameExpression() == null
+            && FOLDING.contains(call.getFunctionName().toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Whether a call is one of the date calls with the bare word NULL among its arguments. Such a call is folded
+     * before anything else of it is judged: its unit and its other operands are never read, so
+     * {@code TIME_SLICE(CURRENT_TIMESTAMP, NULL, 'HOUR')}, {@code DATE_TRUNC('nosuch', NULL)} and
+     * {@code EXTRACT(nosuch FROM NULL)} answer NULL where the same call over a typed NULL is refused
+     * (live-verified). Only its argument count is held to the function's.
+     *
+     * @param call the call
+     * @return whether it folds over a NULL argument
+     */
+    public static boolean foldsOverNullArgument(final FunctionCallExpression call) {
+        if (!isDateCall(call)) {
+            return false;
+        }
+        for (final Expression argument : call.getArguments()) {
+            if (argument instanceof LiteralExpression && ((LiteralExpression) argument).getType() == LiteralType.NULL) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * @param name a call's name, upper-cased
      * @return whether it is a conditional that folds by answering an untyped NULL branch, where every other
@@ -111,6 +191,26 @@ public final class UntypedNullFold {
      */
     public static boolean picksABranch(final String name) {
         return PICKING.contains(name) || name.equals("NULLIF");
+    }
+
+    /**
+     * Whether an expression is MAX or MIN over an untyped NULL. The call stays an aggregate, but it has no type of
+     * its own: it projects a VARCHAR(0) column, as the bare word does, and SYSTEM$TYPEOF reads it NULL[LOB]
+     * (live-verified).
+     *
+     * @param expr the expression
+     * @return whether it is such a call
+     */
+    public static boolean isExtremeOfUntypedNull(final Expression expr) {
+        if (!(expr instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expr;
+        if (call.getFunctionName() == null || call.getNameExpression() != null || call.getArguments().size() != 1) {
+            return false;
+        }
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        return (name.equals("MAX") || name.equals("MIN")) && isUntypedNull(call.getArguments().get(0));
     }
 
     /**

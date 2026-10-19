@@ -21,6 +21,7 @@ import dev.frostlake.types.NumericType;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * AI_COUNT_TOKENS(function_name, …) — how many tokens a call to {@code function_name} would cost.
@@ -50,7 +51,7 @@ public class AiCountTokens extends BuiltInFunction {
         if (pricedFunction == null || args.size() < 2) {
             return null;
         }
-        final int textAt = TEXT_FIRST.contains(pricedFunction.trim().toUpperCase()) ? 1 : 2;
+        final int textAt = TEXT_FIRST.contains(pricedFunction.trim().toUpperCase(Locale.ROOT)) ? 1 : 2;
         if (args.size() <= textAt) {
             return null;
         }

@@ -107,13 +107,13 @@ public final class NamedCallRewrite {
         final FrostlakeParser.FrameBoundContext end = bounds.size() > 1 ? bounds.get(1) : null;
         if ("FIRST_VALUE".equals(name)) {
             final boolean endsAtOrBefore = end == null || end.CURRENT() != null
-                || end.expression() != null && end.PRECEDING() != null;
+                || end.frameOffset() != null && end.PRECEDING() != null;
             return endsAtOrBefore && start.UNBOUNDED() == null
                 && (start.CURRENT() != null || start.PRECEDING() != null);
         }
         if ("LAST_VALUE".equals(name)) {
-            return end != null && end.expression() != null && end.FOLLOWING() != null
-                && (start.CURRENT() != null || start.expression() != null && start.FOLLOWING() != null);
+            return end != null && end.frameOffset() != null && end.FOLLOWING() != null
+                && (start.CURRENT() != null || start.frameOffset() != null && start.FOLLOWING() != null);
         }
         return false;
     }

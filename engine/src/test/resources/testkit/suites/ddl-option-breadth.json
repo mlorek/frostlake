@@ -3,18 +3,15 @@
   "description": "DDL/DML option breadth from the Snowflake-corpus audit: CLONE with time travel (engine parses AT/BEFORE and clones current state - live really time-travels, so those steps skip snowflake), TAG clauses everywhere (tags must exist), ROW ACCESS POLICY attached at CREATE (DDL acceptance; the attach-metadata asserts read the in-memory catalog and stay dropped), UNDROP TAG, SAMPLE method/seed variants incl. a session-variable size, CREATE STAGE property forms, COPY INTO parenthesized option groups getting past the parser (pinned to their non-syntax runtime refusals), DESCRIBE ... TYPE=STAGE, ALTER TABLE SET property forms, per-column IF NOT EXISTS, head/tail table and view properties, sequences with WITH/commas/inline comments, and dynamic-table column lists on either side of the options. Converted from ddl/DdlOptionBreadthTest (now retired).",
   "tags": ["ddl", "converted"],
   "tests": [
-    {"name": "clone-accepts-time-travel-and-clones-current-state",
-     "skip": {"backends": ["snowflake"], "reason": "Frostlake parses AT/BEFORE and clones current state; a real account really time-travels and fails for offsets before the table's creation (Java test had the same assumption)"},
+    {"name": "clone-time-travels-and-refuses-a-point-before-the-source",
+     "skip": {"backends": ["snowflake"], "reason": "the refusal of an offset before the table's creation is live-verified (Java test); the AT (TIMESTAMP => CURRENT_TIMESTAMP()) clones are not"},
      "steps": [
       {"sql": "CREATE TABLE tt_src (id INTEGER)"},
       {"sql": "INSERT INTO tt_src VALUES (1), (2)"},
-      {"sql": "CREATE TABLE tt_at CLONE tt_src AT (OFFSET => -3600)"},
-      {"sql": "SELECT COUNT(*) FROM tt_at", "expect": {"value": "2"}},
-      {"sql": "CREATE TABLE tt_before CLONE tt_src BEFORE (STATEMENT => '8e5d0ca9-005e-44e6-b858-a8f5b37c5726')"},
-      {"sql": "SELECT COUNT(*) FROM tt_before", "expect": {"value": "2"}},
-      {"sql": "CREATE SCHEMA tt_schema_clone CLONE test_schema AT (TIMESTAMP => CURRENT_TIMESTAMP())"},
-      {"sql": "CREATE DATABASE tt_db_clone CLONE test_db AT (OFFSET => -60)"},
-      {"sql": "DROP DATABASE IF EXISTS tt_db_clone"}
+      {"sql": "CREATE TABLE tt_at CLONE tt_src AT (OFFSET => -3600)", "expect": {"error": {"messageContains": "Time travel data is not available for table TT_SRC. The requested time is either beyond the allowed time travel period or before the object creation time."}}},
+      {"sql": "CREATE TABLE tt_now CLONE tt_src AT (TIMESTAMP => CURRENT_TIMESTAMP())"},
+      {"sql": "SELECT COUNT(*) FROM tt_now", "expect": {"value": "2"}},
+      {"sql": "CREATE SCHEMA tt_schema_clone CLONE test_schema AT (TIMESTAMP => CURRENT_TIMESTAMP())"}
     ]},
     {"name": "tag-clauses-are-accepted-everywhere", "steps": [
       {"sql": "CREATE TAG IF NOT EXISTS key1"},
@@ -64,8 +61,14 @@
       {"sql": "CREATE TABLE load1 (c1 VARCHAR)"},
       {"sql": "COPY INTO load1 FROM @%load1/data1/ CREDENTIALS = (AWS_KEY_ID='id' AWS_SECRET_KEY='key' AWS_TOKEN='token') FILES = ('test1.csv', 'test2.csv') FORCE = TRUE",
        "expect": {"error": {"messageContains": "COPY statements targeting a user or table stage do not support credential properties."}}},
+      {"sql": "COPY INTO load1 (c1) FROM 's3://mybucket/data/files' STORAGE_INTEGRATION = \"storage\" FILES = ('file1.csv')",
+       "expect": {"error": {"messageContains": "Integration '\"storage\"' does not exist or not authorized."}}}
+    ]},
+    {"name": "copy-encryption-group-is-judged-before-the-integration",
+     "steps": [
+      {"sql": "CREATE TABLE load1 (c1 VARCHAR)"},
       {"sql": "COPY INTO load1 (c1) FROM 's3://mybucket/data/files' STORAGE_INTEGRATION = \"storage\" ENCRYPTION = (TYPE='NONE' MASTER_KEY='key') FILES = ('file1.csv') CREDENTIALS = ()",
-       "expect": {"error": {"messageContains": "invalid parameter 'STORAGE_INTEGRATION'"}}}
+       "expect": {"error": {"messageContains": "Incompatible number of parameters for value [TYPE]"}}}
     ]},
     {"name": "describe-type-stage-and-alter-set-forms", "steps": [
       {"sql": "CREATE TABLE d_t (id INTEGER)"},

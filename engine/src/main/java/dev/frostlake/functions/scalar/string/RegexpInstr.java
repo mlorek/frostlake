@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.CodePointText;
 
@@ -45,13 +46,21 @@ public class RegexpInstr extends TextArgumentFunction {
         if (args.get(0) == null || args.get(1) == null) {
             return 0L;
         }
-        final String subject = args.get(0).toString();
-        final String pattern = args.get(1).toString();
-        final int position = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
-        final int occurrence = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 1;
-        final int option = args.size() > 4 && args.get(4) != null ? ((Number) args.get(4)).intValue() : 0;
-        final String parameters = args.size() > 5 && args.get(5) != null ? args.get(5).toString() : null;
-        final Integer groupNum = args.size() > 6 && args.get(6) != null ? ((Number) args.get(6)).intValue() : null;
+        final String subject = SharedFunctionHelpers.textOf(args.get(0));
+        final String pattern = SharedFunctionHelpers.textOf(args.get(1));
+        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
+        final int occurrence = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
+        final int option = args.size() > 4 && args.get(4) != null ? wholeNumber(args.get(4)) : 0;
+        final String parameters = args.size() > 5 && args.get(5) != null
+            ? SharedFunctionHelpers.textOf(args.get(5)) : null;
+        final Integer groupNum = args.size() > 6 && args.get(6) != null ? Integer.valueOf(wholeNumber(args.get(6))) : null;
+        RegexpHelper.requirePosition(position);
+        RegexpHelper.requireOccurrence(occurrence);
+        RegexpHelper.requireReturnOption(option);
+        RegexpHelper.requireGroup(groupNum);
+        if (RegexpHelper.matchesNothing(pattern, parameters)) {
+            return 0L;
+        }
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);

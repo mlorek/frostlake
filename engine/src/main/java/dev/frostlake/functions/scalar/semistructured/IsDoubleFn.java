@@ -16,14 +16,14 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.BooleanType;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
 /** IS_DOUBLE(v) — TRUE when the variant holds any number (Snowflake: DOUBLE, INTEGER or DECIMAL). */
-public class IsDoubleFn extends StructuredArgumentFunction {
+public class IsDoubleFn extends VariantArgumentFunction {
     public IsDoubleFn() { super("IS_DOUBLE", BooleanType.BOOLEAN); }
 
     @Override

@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -152,7 +154,7 @@ public class VariantTypedComparisonTest extends BaseDatabaseTest {
 
     /** What an anonymous block returns, as text. */
     private String blockAnswer(final String block) {
-        return String.valueOf(scalar("EXECUTE IMMEDIATE $$" + block + "$$")).toLowerCase();
+        return String.valueOf(scalar("EXECUTE IMMEDIATE $$" + block + "$$")).toLowerCase(Locale.ROOT);
     }
 
     /** The block's refusal, which must end with {@code sentence}. */

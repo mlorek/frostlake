@@ -20,7 +20,7 @@ import dev.frostlake.http.rest.RestCall;
 import dev.frostlake.http.rest.RestException;
 import dev.frostlake.http.rest.RestIdentifier;
 import dev.frostlake.parser.FrostlakeLexer;
-import org.antlr.v4.runtime.CharStreams;
+import dev.frostlake.parser.SqlCharStream;
 import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
@@ -104,7 +104,7 @@ final class RelationNames {
         if (createText == null || createText.isEmpty()) {
             return null;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(createText));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(createText));
         lexer.removeErrorListeners();
         int depth = 0;
         for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
@@ -121,12 +121,43 @@ final class RelationNames {
         return null;
     }
 
+    /**
+     * The INITIALIZE mode a dynamic table's DDL names before its query, read from its tokens: ON_CREATE when the
+     * text names none.
+     */
+    static String initializeMode(final String createText) {
+        if (createText == null || createText.isEmpty()) {
+            return "ON_CREATE";
+        }
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(createText));
+        lexer.removeErrorListeners();
+        int depth = 0;
+        boolean named = false;
+        for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
+            final int type = token.getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth--;
+            } else if (depth == 0 && type == FrostlakeLexer.AS) {
+                break;
+            } else if (depth == 0 && type == FrostlakeLexer.INITIALIZE) {
+                named = true;
+            } else if (named && type == FrostlakeLexer.ON_SCHEDULE) {
+                return "ON_SCHEDULE";
+            } else if (named && type == FrostlakeLexer.ON_CREATE) {
+                return "ON_CREATE";
+            }
+        }
+        return "ON_CREATE";
+    }
+
     /** Whether the CREATE text carries the given keyword before the object kind's keyword, e.g. TRANSIENT before DYNAMIC. */
     static boolean declares(final String createText, final int keyword, final int kindKeyword) {
         if (createText == null || createText.isEmpty()) {
             return false;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(createText));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(createText));
         lexer.removeErrorListeners();
         for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
             if (token.getType() == keyword) {

@@ -16,7 +16,8 @@
 
 package dev.frostlake.executor.commands;
 
-import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.SearchPath;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
@@ -25,7 +26,6 @@ import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Where a schema-level SHOW listing looks, as live resolves its scope — one rule for every listing, measured
@@ -67,27 +67,44 @@ final class ShowListingScope {
      */
     static ShowListingScope of(final FrostlakeParser.ShowStatementContext ctx, final ShowListing listing,
                                final Catalog catalog, final String writtenName) {
-        if (ctx.ACCOUNT() != null) {
+        return of(ctx.IN() != null, ctx.ACCOUNT() != null, ctx.DATABASE() != null, ctx.SCHEMA() != null,
+            listing.listsCurrentSchemaUnscoped(), catalog, writtenName);
+    }
+
+    /**
+     * {@link #of(FrostlakeParser.ShowStatementContext, ShowListing, Catalog, String)} for a listing of another
+     * statement rule, its IN clause given word by word.
+     *
+     * @param in            whether the statement writes an IN clause
+     * @param account       whether the clause says ACCOUNT
+     * @param database      whether it says DATABASE
+     * @param schema        whether it says SCHEMA
+     * @param readsSchemaUnscoped whether the listing, written with no IN clause, reads the current schema
+     * @param catalog       the catalog holding the session's current database and schema
+     * @param writtenName   the canonical name the scope writes, or null when it writes none
+     * @return the resolved scope
+     */
+    static ShowListingScope of(final boolean in, final boolean account, final boolean database, final boolean schema,
+                               final boolean readsSchemaUnscoped, final Catalog catalog, final String writtenName) {
+        if (account) {
             return new ShowListingScope(ShowScopeLevel.ACCOUNT, null);
         }
-        if (ctx.IN() != null && ctx.DATABASE() == null && ctx.SCHEMA() == null) {
+        if (in && !database && !schema) {
             // IN <name>: a schema, named as written.
             return new ShowListingScope(ShowScopeLevel.SCHEMA, writtenName);
         }
         if (writtenName != null) {
-            return new ShowListingScope(ctx.DATABASE() != null ? ShowScopeLevel.DATABASE : ShowScopeLevel.SCHEMA,
-                writtenName);
+            return new ShowListingScope(database ? ShowScopeLevel.DATABASE : ShowScopeLevel.SCHEMA, writtenName);
         }
-        final String database = catalog.getCurrentDatabase();
-        if (database == null) {
+        final String current = catalog.getCurrentDatabase();
+        if (current == null) {
             return new ShowListingScope(ShowScopeLevel.ACCOUNT, null);
         }
-        final boolean schemaWanted = ctx.SCHEMA() != null
-            || ctx.IN() == null && listing.listsCurrentSchemaUnscoped();
+        final boolean schemaWanted = schema || !in && readsSchemaUnscoped;
         if (schemaWanted && catalog.getCurrentSchema() != null) {
             return new ShowListingScope(ShowScopeLevel.SCHEMA, null);
         }
-        return new ShowListingScope(ShowScopeLevel.DATABASE, database);
+        return new ShowListingScope(ShowScopeLevel.DATABASE, current);
     }
 
     /**
@@ -120,66 +137,46 @@ final class ShowListingScope {
         if (ctx.IN() != null || ctx.BUILTIN() != null || !listing.listsSearchPathUnscoped()) {
             return null;
         }
-        final String databaseName = catalog.getCurrentDatabase();
-        final String schemaName = catalog.getCurrentSchema();
-        if (databaseName == null || schemaName == null) {
+        if (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null) {
             return null;
         }
-        final Database database = catalog.getDatabase(databaseName);
-        final List<Schema> schemas = new ArrayList<>();
-        for (final String written : entries(searchPath)) {
-            final Schema schema = pathSchema(written, database, schemaName, catalog);
-            if (schema != null && !schemas.contains(schema)) {
-                schemas.add(schema);
-            }
-        }
         final List<String> names = new ArrayList<>();
-        for (final Schema schema : schemas) {
+        for (final Schema schema : SearchPath.schemas(catalog, searchPath)) {
             names.add(QualifiedName.join(schema.getDatabaseName(), schema.getName()));
         }
         return names;
     }
 
-    /** The comma-separated entries of a search path, trimmed; a comma inside double quotes separates nothing. */
-    private static List<String> entries(final String searchPath) {
-        final List<String> entries = new ArrayList<>();
-        final StringBuilder entry = new StringBuilder();
-        boolean quoted = false;
-        for (int i = 0; i < searchPath.length(); i++) {
-            final char c = searchPath.charAt(i);
-            if (c == '"') {
-                quoted = !quoted;
-            }
-            if (c == ',' && !quoted) {
-                entries.add(entry.toString().trim());
-                entry.setLength(0);
-            } else {
-                entry.append(c);
-            }
-        }
-        entries.add(entry.toString().trim());
-        return entries;
-    }
-
-    /** The schema one search-path entry names in the session, or null when it names none. */
-    private static Schema pathSchema(final String written, final Database database, final String currentSchema,
-                                     final Catalog catalog) {
-        if (written.isEmpty()) {
-            return null;
-        }
-        final String lower = written.toLowerCase(Locale.ROOT);
+    /**
+     * The schemas the scope covers. A scope naming a schema or a database that does not exist is refused: by the
+     * sentence that names nothing for the kinds answering so, by the missing container's own refusal for the
+     * others — see {@link SqlCompilationError#objectDoesNotExist()} for which kinds are which.
+     *
+     * @param catalog             the catalog the scope resolves against
+     * @param reportedGenerically whether the listing's kind does not name what was missing
+     * @return the schemas, in catalog order
+     */
+    List<Schema> schemas(final Catalog catalog, final boolean reportedGenerically) {
+        final List<Schema> schemas = new ArrayList<>();
         try {
-            if ("$current".equals(lower)) {
-                return database.getSchema(currentSchema);
+            if (isAccount()) {
+                for (final Database database : catalog.getAllDatabases()) {
+                    schemas.addAll(database.getAllSchemas());
+                }
+            } else if (isDatabase()) {
+                schemas.addAll(catalog.databaseExact(name).getAllSchemas());
+            } else if (name != null) {
+                schemas.add(catalog.resolveSchema(name));
+            } else {
+                schemas.add(catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema()));
             }
-            if ("$public".equals(lower)) {
-                return database.hasSchemaExact("PUBLIC") ? database.getSchema("PUBLIC") : null;
-            }
-            // Any other entry is written as an identifier: unquoted parts fold, quoted ones keep their case.
-            return catalog.resolveSchema(SqlIdentifiers.canonicalText(written));
         } catch (final RuntimeException missing) {
-            return null;
+            if (reportedGenerically) {
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            throw missing;
         }
+        return schemas;
     }
 
     /** @return the container level the listing looks in */

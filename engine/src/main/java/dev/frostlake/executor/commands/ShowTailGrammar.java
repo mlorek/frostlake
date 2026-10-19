@@ -32,6 +32,9 @@ enum ShowTailGrammar {
     /** LIMIT alone: ORGANIZATION ACCOUNTS. */
     LIMIT_ONLY(false, true, false),
 
+    /** LIMIT and its count, with no FROM after it: the grant listings. */
+    LIMIT_COUNT(false, true, false),
+
     /** None of the three: LOCKS, TRANSACTIONS, VARIABLES and the KEYS listings. */
     NONE(false, false, false);
 
@@ -53,6 +56,11 @@ enum ShowTailGrammar {
     /** Whether the listing reads {@code LIMIT n [FROM 'name']}. */
     boolean readsLimit() {
         return limit;
+    }
+
+    /** Whether a LIMIT the listing reads may carry {@code FROM 'name'}. */
+    boolean readsLimitFrom() {
+        return this != LIMIT_COUNT;
     }
 
     /** Whether the listing reads {@code WITH PRIVILEGES p [, p]}. */

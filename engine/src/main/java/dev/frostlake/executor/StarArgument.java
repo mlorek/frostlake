@@ -23,6 +23,7 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,12 +37,13 @@ import java.util.regex.Pattern;
  * qualified star expands to that relation's columns only, an EXCLUDE drops the named columns, an ILIKE
  * keeps the matching ones, and {@code HASH_AGG(t.*)} equals {@code HASH_AGG(t.a, t.b, t.c)}).
  *
- * <p>The three refusals are the account's: a qualifier naming no relation in scope is "Object 'X' does
- * not exist or not authorized.", an EXCLUDE naming no column is "column 'X' does not exist", and one
- * naming a column twice is "duplicate column name 'X'". With no FROM the star stands for no column,
- * whatever it qualifies or filters, and none of the three is raised. A star that expands to nothing is
- * left to the caller's arity rule, which spells "not enough arguments for function [COUNT()], expected 1,
- * got 0".
+ * <p>The four refusals are the account's: a qualifier naming no relation in scope is "Object 'X' does
+ * not exist or not authorized.", an EXCLUDE naming no column is "column 'X' does not exist", one
+ * naming a column twice is "duplicate column name 'X'", and one naming a column more than one relation of
+ * an unqualified star holds — a USING key aside — is "ambiguous column name 'X'". With no FROM the star
+ * stands for no column, whatever it qualifies or filters, and none of them is raised. A star that expands to
+ * nothing is left to the caller's arity rule, which spells "not enough arguments for function [COUNT()],
+ * expected 1, got 0".
  *
  * <p>The one star this does NOT expand is the bare, unqualified, unmodified {@code *} under COUNT,
  * which counts rows; every other shape — a qualifier, an EXCLUDE, an ILIKE, another aggregate — is
@@ -68,8 +70,20 @@ public final class StarArgument {
 
     /** The star of a star-call parse tree ({@code COUNT(t.* EXCLUDE (a))}). */
     public static StarArgument of(final FrostlakeParser.FunctionCallStarExprContext starCall) {
-        return new StarArgument(qualifierOf(starCall.starQualifiedName()),
-            excludesOf(starCall.starArgumentModifier()), ilikeOf(starCall.starArgumentModifier()));
+        final List<FrostlakeParser.StarArgumentModifierContext> modifiers = modifiers(starCall.starArgumentModifier());
+        return new StarArgument(qualifierOf(starCall.starQualifiedName()), excludesOf(modifiers), ilikeOf(modifiers));
+    }
+
+    /**
+     * A star's modifier as the list the readers take: none, or the one a star argument holds at most.
+     *
+     * @param modifier the modifier written, or null
+     * @return the list
+     */
+    public static List<FrostlakeParser.StarArgumentModifierContext> modifiers(
+            final FrostlakeParser.StarArgumentModifierContext modifier) {
+        return modifier == null ? Collections.<FrostlakeParser.StarArgumentModifierContext>emptyList()
+            : Collections.singletonList(modifier);
     }
 
     /** The star of a star function argument, or null when the argument is not a star. */
@@ -78,7 +92,13 @@ public final class StarArgument {
             return null;
         }
         return new StarArgument(qualifierOf(arg.starQualifiedName()),
-            excludesOf(arg.starArgumentModifier()), ilikeOf(arg.starArgumentModifier()));
+            excludesOf(modifiers(arg.starArgumentModifier())), ilikeOf(modifiers(arg.starArgumentModifier())));
+    }
+
+    /** The star written first among a named call's positional arguments ({@code SEARCH(*, 'q', SEARCH_MODE => …)}). */
+    public static StarArgument of(final FrostlakeParser.MixedStarArgumentContext arg) {
+        final List<FrostlakeParser.StarArgumentModifierContext> modifiers = modifiers(arg.starArgumentModifier());
+        return new StarArgument(qualifierOf(arg.starQualifiedName()), excludesOf(modifiers), ilikeOf(modifiers));
     }
 
     /** The star a star-shaped call node carries. */
@@ -96,6 +116,16 @@ public final class StarArgument {
 
     public String getQualifier() {
         return qualifier;
+    }
+
+    /** The EXCLUDE names, in their canonical spelling. */
+    public List<String> getExcludes() {
+        return excludes;
+    }
+
+    /** The ILIKE pattern between its quotes, or null. */
+    public String getIlike() {
+        return ilike;
     }
 
     /** Whether this is the bare {@code *} — no qualifier and no filter — that COUNT counts rows by. */
@@ -159,9 +189,12 @@ public final class StarArgument {
             if (!hasColumn(chosen, name)) {
                 throw new RuntimeException(SqlCompilationError.of("column '" + name + "' does not exist"));
             }
+            if (qualifier == null && holders(chosen, name) > 1 && !joinKey(table, name)) {
+                // An unqualified star over relations that each hold the name cannot tell which it drops.
+                throw new RuntimeException(SqlCompilationError.of("ambiguous column name '" + name + "'"));
+            }
         }
-        final Pattern pattern = ilike == null ? null
-            : Pattern.compile(ilikeToRegex(ilike), Pattern.CASE_INSENSITIVE);
+        final Pattern pattern = ilike == null ? null : ilikePattern(ilike);
         final List<String[]> columns = new ArrayList<>();
         for (final Table source : chosen) {
             final String spelledAs = spelling(source, aliasToTable);
@@ -177,6 +210,26 @@ public final class StarArgument {
         return columns;
     }
 
+    /** How many of the relations hold a column of exactly this name. */
+    private static int holders(final List<Table> relations, final String name) {
+        int held = 0;
+        for (final Table relation : relations) {
+            for (final TableColumn column : relation.getColumns()) {
+                if (column.getName().equals(name)) {
+                    held++;
+                    break;
+                }
+            }
+        }
+        return held;
+    }
+
+    /** Whether the name is a key a USING or NATURAL join merged, which the relations hold as one column. */
+    private static boolean joinKey(final Table table, final String name) {
+        final List<String> keys = table == null ? null : table.getJoinKeyNames();
+        return keys != null && keys.contains(name);
+    }
+
     /** How a relation is reached in the query: its alias when it has one, else its own name. */
     private static String spelling(final Table source, final Map<String, Table> aliasToTable) {
         if (aliasToTable != null) {
@@ -189,19 +242,23 @@ public final class StarArgument {
         return source.getName();
     }
 
-    /** The relations the qualifier names — by alias or by name — or the account's refusal. */
+    /**
+     * The relations the qualifier names — by alias or by name, each by its canonical name exactly, as a star item's
+     * qualifier names one: a quoted part names itself, an unquoted one its upper-cased self (live-verified) — or the
+     * account's refusal, which echoes the qualifier quoted where its name needs it.
+     */
     private List<Table> matching(final List<Table> sources, final Map<String, Table> aliasToTable) {
         final List<Table> chosen = new ArrayList<>();
         if (aliasToTable != null) {
             for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
-                if (qualifier.equalsIgnoreCase(entry.getKey()) && !chosen.contains(entry.getValue())) {
+                if (qualifier.equals(entry.getKey()) && !chosen.contains(entry.getValue())) {
                     chosen.add(entry.getValue());
                 }
             }
         }
         if (chosen.isEmpty()) {
             for (final Table source : sources) {
-                if (source.getName() != null && qualifier.equalsIgnoreCase(source.getName())
+                if (source.getName() != null && qualifier.equals(source.getName())
                         && !aliasedAway(source, aliasToTable)) {
                     chosen.add(source);
                 }
@@ -209,7 +266,7 @@ public final class StarArgument {
         }
         if (chosen.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + qualifier + "' does not exist or not authorized."));
+                "Object '" + SqlIdentifiers.spellCanonical(qualifier) + "' does not exist or not authorized."));
         }
         return chosen;
     }
@@ -221,7 +278,7 @@ public final class StarArgument {
         }
         for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
             if (entry.getValue() == source) {
-                return !entry.getKey().equalsIgnoreCase(source.getName());
+                return !entry.getKey().equals(source.getName());
             }
         }
         return false;
@@ -245,7 +302,7 @@ public final class StarArgument {
         // The LAST part names the relation, as a column's qualifier does: COUNT(db.sch.t.*) and
         // COUNT(t.*) resolve alike (live-verified).
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
-        return parts[parts.length - 1].toUpperCase();
+        return parts[parts.length - 1];
     }
 
     private static List<String> excludesOf(final List<FrostlakeParser.StarArgumentModifierContext> modifiers) {
@@ -264,11 +321,20 @@ public final class StarArgument {
     private static String ilikeOf(final List<FrostlakeParser.StarArgumentModifierContext> modifiers) {
         for (final FrostlakeParser.StarArgumentModifierContext modifier : modifiers) {
             if (modifier.ILIKE() != null) {
-                final String written = modifier.STRING_LITERAL().getText();
-                return written.substring(1, written.length() - 1);
+                return ParseTreeText.stringBody(modifier.stringText());
             }
         }
         return null;
+    }
+
+    /**
+     * The test an ILIKE pattern puts a column's name to.
+     *
+     * @param ilike the pattern between its quotes
+     * @return the pattern, matching whole names whatever their case
+     */
+    public static Pattern ilikePattern(final String ilike) {
+        return Pattern.compile(ilikeToRegex(ilike), Pattern.CASE_INSENSITIVE);
     }
 
     private static String ilikeToRegex(final String pattern) {

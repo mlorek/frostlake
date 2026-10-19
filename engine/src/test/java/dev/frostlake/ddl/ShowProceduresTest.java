@@ -22,6 +22,7 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,14 +46,14 @@ public class ShowProceduresTest extends BaseDatabaseTest {
         // while SHOW FUNCTIONS lists each with is_builtin = 'Y' — even though CALL SYSTEM$WAIT(1) works.
         final Set<String> procedures = new HashSet<String>();
         for (final Row row : engine.executeQuery("SHOW PROCEDURES").getRows()) {
-            procedures.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+            procedures.add(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT));
         }
         assertFalse(procedures.contains("SYSTEM$WAIT"), "SYSTEM$WAIT is not a procedure");
 
         final Set<String> functions = new HashSet<String>();
         boolean sawBuiltin = false;
         for (final Row row : engine.executeQuery("SHOW FUNCTIONS").getRows()) {
-            functions.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+            functions.add(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT));
             if ("Y".equals(row.getValue(IS_BUILTIN))) {
                 sawBuiltin = true;
             }
@@ -84,7 +85,7 @@ public class ShowProceduresTest extends BaseDatabaseTest {
         for (final Row row : userOnly.getRows()) {
             assertEquals("N", row.getValue(IS_BUILTIN),
                 "SHOW USER PROCEDURES should list only user-defined procedures");
-            if ("MY_PROC".equals(String.valueOf(row.getValue(NAME)).toUpperCase())) {
+            if ("MY_PROC".equals(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT))) {
                 sawUdf = true;
             }
         }
@@ -99,7 +100,7 @@ public class ShowProceduresTest extends BaseDatabaseTest {
         for (final Row row : userOnly.getRows()) {
             assertEquals("N", row.getValue(IS_BUILTIN),
                 "SHOW USER FUNCTIONS should list only user-defined functions");
-            if ("MY_FN".equals(String.valueOf(row.getValue(NAME)).toUpperCase())) {
+            if ("MY_FN".equals(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT))) {
                 sawUdf = true;
             }
         }

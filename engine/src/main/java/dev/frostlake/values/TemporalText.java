@@ -16,6 +16,7 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.TypeCategory;
@@ -113,7 +114,7 @@ public final class TemporalText {
      * text back to what {@code getString} shows.
      */
     public static String wireText(final Object value, final DataType declared) {
-        final String type = declared.getName().toUpperCase();
+        final String type = declared.getName().toUpperCase(Locale.ROOT);
         if ("TIME".equals(type) && value instanceof LocalTime) {
             final LocalTime time = (LocalTime) value;
             return time.getNano() == 0 ? TIME.format(time) : TIME.format(time) + "." + fraction(time.getNano());
@@ -168,7 +169,7 @@ public final class TemporalText {
         if (wire == null || typeName == null) {
             return wire;
         }
-        final String type = typeName.toUpperCase();
+        final String type = typeName.toUpperCase(Locale.ROOT);
         if ("TIME".equals(type)) {
             return wire.length() > 8 && wire.charAt(8) == '.' ? wire.substring(0, 8) : wire;
         }
@@ -209,7 +210,8 @@ public final class TemporalText {
             return ((OffsetDateTime) value).toLocalDateTime();
         }
         if (value instanceof Instant) {
-            return LocalDateTime.ofInstant((Instant) value, ZoneId.systemDefault());
+            // An instant shows its wall clock in the session's zone, as a TIMESTAMP_LTZ does, never the host's.
+            return LocalDateTime.ofInstant((Instant) value, SessionZone.current());
         }
         if (value instanceof java.sql.Timestamp) {
             return ((java.sql.Timestamp) value).toLocalDateTime();
@@ -226,7 +228,7 @@ public final class TemporalText {
             return ((OffsetDateTime) value).toZonedDateTime();
         }
         if (value instanceof Instant) {
-            return ((Instant) value).atZone(ZoneId.systemDefault());
+            return ((Instant) value).atZone(SessionZone.current());
         }
         if (value instanceof LocalDateTime) {
             return ((LocalDateTime) value).atZone(ZoneId.systemDefault());
@@ -251,7 +253,7 @@ public final class TemporalText {
                 || declared.getCategory() != TypeCategory.DATE_TIME) {
             return value.toString();
         }
-        final String type = declared.getName().toUpperCase();
+        final String type = declared.getName().toUpperCase(Locale.ROOT);
         if ("DATE".equals(type)) {
             return format(value, DATE);
         }
@@ -297,7 +299,7 @@ public final class TemporalText {
             return formatter.format(((OffsetDateTime) value).toLocalDateTime());
         }
         if (value instanceof Instant) {
-            return formatter.format(((Instant) value).atZone(ZoneId.systemDefault()));
+            return formatter.format(((Instant) value).atZone(SessionZone.current()));
         }
         if (value instanceof java.sql.Timestamp) {
             return formatter.format(((java.sql.Timestamp) value).toLocalDateTime());

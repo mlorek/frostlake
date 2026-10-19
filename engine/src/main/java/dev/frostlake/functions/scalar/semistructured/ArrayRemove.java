@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -32,7 +33,7 @@ public class ArrayRemove extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         // A SQL NULL "value to remove" propagates — live: ARRAY_REMOVE(ARRAY_CONSTRUCT(1,NULL,2),
         // NULL) is SQL NULL (it does NOT strip the undefined), while ARRAY_REMOVE over the same array with a
@@ -56,5 +57,16 @@ public class ArrayRemove extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        if (position == 1) {
+            return ArrayArgumentKind.VALUE;
+        }
+        return null;
     }
 }

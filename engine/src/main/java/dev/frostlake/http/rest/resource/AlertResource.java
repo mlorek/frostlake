@@ -108,8 +108,8 @@ public final class AlertResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW ALERTS" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Alert '" + call.identifier("database") + "." + call.identifier("schema")
-                + "." + name + "' does not exist or not authorized.");
+            throw RestException.missing("Alert",
+                call.identifier("database") + "." + call.identifier("schema") + "." + name);
         }
         return toJson(rows.get(0));
     }

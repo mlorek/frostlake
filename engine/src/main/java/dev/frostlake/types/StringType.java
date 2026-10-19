@@ -18,15 +18,45 @@ package dev.frostlake.types;
 
 public class StringType extends DataType {
 
+    /**
+     * Pinned at the value the class had before {@link #unsized} was added, so a snapshot written before it still
+     * reads (its strings read as sized, which every one of them was).
+     */
+    private static final long serialVersionUID = 7234115287022531106L;
+
     private final int maxLength;
 
+    /**
+     * Whether the string was written with no width of its own where a structured cast target names its leaves:
+     * {@code ::OBJECT(a VARCHAR)}. SYSTEM$TYPEOF names such a leaf bare, while DESCRIBE RESULT and a refusal
+     * name the width it is held at (live-verified). Every other string is sized.
+     */
+    private final boolean unsized;
+
     public StringType(final String name, final int maxLength) {
+        this(name, maxLength, false);
+    }
+
+    /**
+     * A string held at {@code maxLength}, written without a width of its own when {@code unsized} says so.
+     *
+     * @param name      the spelling
+     * @param maxLength the width it is held at
+     * @param unsized   whether it was written with no width (see {@link #isUnsized})
+     */
+    public StringType(final String name, final int maxLength, final boolean unsized) {
         super(name, TypeCategory.STRING);
         this.maxLength = maxLength;
+        this.unsized = unsized;
     }
 
     public int getMaxLength() {
         return maxLength;
+    }
+
+    /** Whether a structured cast target wrote this leaf with no width: see {@link StructuredLeafWidths}. */
+    public boolean isUnsized() {
+        return unsized;
     }
 
     @Override

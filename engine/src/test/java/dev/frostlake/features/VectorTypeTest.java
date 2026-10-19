@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -60,7 +62,7 @@ public class VectorTypeTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE vt_d (emb VECTOR(FLOAT, 4))");
         final ResultSet rs = engine.executeQuery("DESCRIBE TABLE vt_d");
         assertEquals(1, rs.getRows().size());
-        final String type = String.valueOf(rs.getRows().get(0).getValue(1)).toUpperCase();
+        final String type = String.valueOf(rs.getRows().get(0).getValue(1)).toUpperCase(Locale.ROOT);
         assertTrue(type.contains("VECTOR"), "DESCRIBE must render the VECTOR type, got: " + type);
     }
 }

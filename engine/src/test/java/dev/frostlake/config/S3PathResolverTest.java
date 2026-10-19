@@ -94,6 +94,28 @@ public class S3PathResolverTest {
     }
 
     @Test
+    public void aKeysDotSegmentsAreNamesUnderTheRoot() {
+        final S3PathResolver r = resolver("/tmp/s3root", "");
+        // An S3 key is a flat name: `..` is two characters of it, never a step up out of the root.
+        assertEquals(Paths.get("/tmp/s3root/bucket/%2E%2E/%2E%2E/outside/x.csv"),
+            r.toLocalPath("s3://bucket/../../outside/x.csv"));
+        assertEquals(Paths.get("/tmp/s3root/bucket/%2E/x.csv"), r.toLocalPath("s3://bucket/./x.csv"));
+    }
+
+    @Test
+    public void aUrlWithNoBucketIsNoAbsolutePath() {
+        final S3PathResolver r = resolver("/tmp/s3root", "");
+        assertEquals(Paths.get("/tmp/s3root/%2F/etc/passwd"), r.toLocalPath("s3:///etc/passwd"));
+    }
+
+    @Test
+    public void aMappedKeysDotSegmentsStayInTheMapping() {
+        final S3PathResolver r = resolver("/tmp/s3root", "s3://b/lib/=/opt/jars");
+        assertEquals(Paths.get("/opt/jars/%2E%2E/%2E%2E/etc/x.jar"), r.toLocalPath("s3://b/lib/../../etc/x.jar"));
+        assertEquals(Paths.get("/opt/jars/handler.jar"), r.toLocalPath("s3://b/lib//handler.jar"));
+    }
+
+    @Test
     public void malformedMappingEntriesAreIgnored() {
         // Missing '=', non-s3 key, and a blank entry are all skipped; the valid one still applies.
         final S3PathResolver r = resolver("/tmp/s3root", "garbage; /not/s3=/d; ; s3://b/=/good");

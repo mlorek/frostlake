@@ -33,6 +33,9 @@ import java.util.regex.Pattern;
 
 public class ToNumber extends BuiltInFunction {
 
+    /** The precision a call naming none converts to: NUMBER(38,0)'s (documented default). */
+    private static final int DEFAULT_PRECISION = 38;
+
     // Compiled once — this ran String.matches (a fresh Pattern compile) per CALL.
     private static final Pattern PLAIN_NUMBER =
         Pattern.compile("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
@@ -50,8 +53,9 @@ public class ToNumber extends BuiltInFunction {
         // A VARIANT reads through its member — a JSON number, a boolean as 1 / 0, numeric text — and
         // anything else fails the variant cast to FIXED (live: TO_NUMBER over {"x":1}).
         Object source = args.get(0);
-        if (source instanceof VariantValue) {
-            final Number member = VariantNumbers.numberOf((VariantValue) source, VariantNumbers.FIXED);
+        final VariantValue variant = source instanceof VariantValue ? (VariantValue) source : null;
+        if (variant != null) {
+            final Number member = VariantNumbers.numberOf(variant, VariantNumbers.FIXED);
             if (member == null) {
                 return null;
             }
@@ -63,7 +67,7 @@ public class ToNumber extends BuiltInFunction {
         }
         BigDecimal value = parseNumeric(source, formatModel(args));
         final Integer scale = targetScale(args);
-        rejectPastDeclaredWidth(args, value, scale == null ? 0 : scale.intValue());
+        rejectPastDeclaredWidth(args, value, scale == null ? 0 : scale.intValue(), variant);
         // Snowflake TO_NUMBER / TO_DECIMAL / TO_NUMERIC default to NUMBER(38,0): with no explicit scale the
         // result is a whole number (e.g. TO_NUMBER(405.958) -> 406), rounded HALF_UP.
         value = value.setScale(scale != null ? scale : 0, RoundingMode.HALF_UP);
@@ -71,17 +75,22 @@ public class ToNumber extends BuiltInFunction {
     }
 
     /**
-     * A value the call's own declared width cannot hold. The precision argument IS enforced — a
+     * A value the call's declared width cannot hold. The precision argument IS enforced — a
      * {@code TO_NUMBER(1000, 2)} refuses exactly as {@code CAST(1000 AS NUMBER(2,0))} does, and a lone
-     * precision argument means scale 0 — and the two source families keep the two sentences they have
-     * everywhere else: a STRING is named as text, with the decoration it was WRITTEN with rather than the
-     * digits the format model left behind.
+     * precision argument means scale 0 — and a call naming no width converts to NUMBER(38,0), its default, so
+     * {@code TO_NUMBER('1e38')} is refused too (live-verified). The source families keep the sentences they have
+     * everywhere else: a STRING is named as text, with the decoration it was WRITTEN with rather than the digits the
+     * format model left behind - not recognized when no number of the target's scale holds it (see
+     * {@link NumericRangeRefusal#pastEveryNumber}), out of range when only the declared width cannot - and a VARIANT
+     * fails the variant's cast to FIXED (live-verified).
      *
-     * @param args the call's arguments, for the source's form and the declared width
-     * @param value the parsed value
-     * @param scale the declared scale, zero when the call names only a precision
+     * @param args    the call's arguments, for the source's form and the declared width
+     * @param value   the parsed value
+     * @param scale   the declared scale, zero when the call names only a precision
+     * @param variant the VARIANT the value was read from, or null
      */
-    private void rejectPastDeclaredWidth(final List<Object> args, final BigDecimal value, final int scale) {
+    private void rejectPastDeclaredWidth(final List<Object> args, final BigDecimal value, final int scale,
+                                         final VariantValue variant) {
         // Past what any number holds the text was never readable as one, and live says so whether or
         // not the call declares a width — which is why this comes before the target is looked at.
         if (args.get(0) instanceof CharSequence
@@ -89,15 +98,19 @@ public class ToNumber extends BuiltInFunction {
             throw new RuntimeException(
                 NumericRangeRefusal.unreadableText(args.get(0).toString().trim()));
         }
-        final Integer precision = targetPrecision(args);
-        if (precision == null || !NumericRangeRefusal.exceeds(value, precision.intValue(), scale)) {
+        final Integer named = targetPrecision(args);
+        final int precision = named != null ? named.intValue() : DEFAULT_PRECISION;
+        if (!NumericRangeRefusal.exceeds(value, precision, scale)) {
             return;
+        }
+        if (variant != null) {
+            throw VariantNumbers.refusal(variant.node(), VariantNumbers.FIXED);
         }
         if (args.get(0) instanceof CharSequence) {
             throw new RuntimeException(NumericRangeRefusal.unconvertibleText(args.get(0).toString().trim()));
         }
         throw new RuntimeException(NumericRangeRefusal.typed(SignedStorageWidth.tagOf(value, scale),
-            precision.intValue(), scale, false, value));
+            precision, scale, false, value));
     }
 
     /**
@@ -138,6 +151,11 @@ public class ToNumber extends BuiltInFunction {
     static BigDecimal parseNumeric(final Object o, final String format) {
         if (o instanceof BigDecimal) {
             return (BigDecimal) o;
+        }
+        if ((o instanceof Double || o instanceof Float) && Double.isFinite(((Number) o).doubleValue())) {
+            // A FLOAT converts by its binary value: 1e38 is 99999999999999997748809823456034029568, which NUMBER(38,0)
+            // holds (live-verified).
+            return new BigDecimal(((Number) o).doubleValue());
         }
         if (o instanceof Number) {
             return new BigDecimal(o.toString());

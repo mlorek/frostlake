@@ -16,16 +16,21 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.FileFormatClause;
+import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
  * The stage options a CREATE TABLE writes — {@code STAGE_FILE_FORMAT = (TYPE = JSON)} and
  * {@code STAGE_COPY_OPTIONS = (ON_ERROR = CONTINUE)} — kept on the table, because
  * {@code DESCRIBE TABLE … TYPE = STAGE} reports them: the written value stands in the value column
- * while the default column keeps the format's own default (live-verified).
+ * while the default column keeps the format's own default (live-verified). The format's options are read as
+ * every FILE_FORMAT list is (see {@link FileFormatClause}) and kept as a named format keeps its own.
  */
 final class TableStageOptions {
 
@@ -50,42 +55,30 @@ final class TableStageOptions {
             if (tail.optionKey() == null || tail.parenOptionList() == null) {
                 continue;
             }
-            final String key = tail.optionKey().getText().toUpperCase();
+            final String key = tail.optionKey().getText().toUpperCase(Locale.ROOT);
             if ("STAGE_FILE_FORMAT".equals(key)) {
-                readGroup(tail.parenOptionList(), table.getStageFileFormat());
+                keepFormat(tail.parenOptionList(), table.getStageFileFormat());
             } else if ("STAGE_COPY_OPTIONS".equals(key)) {
-                readGroup(tail.parenOptionList(), table.getStageCopyOptions());
+                table.getStageCopyOptions().putAll(StageCopyOptions.read(tail.parenOptionList()));
             }
         }
     }
 
-    /** Each {@code NAME = value} of one group, the value unquoted as it was written. */
-    private static void readGroup(final FrostlakeParser.ParenOptionListContext group,
-                                  final java.util.Map<String, String> into) {
-        for (final FrostlakeParser.ParenOptionContext option : group.parenOption()) {
-            if (option.optionKey() == null) {
-                continue;
-            }
-            into.put(option.optionKey().getText().toUpperCase(), writtenValue(option));
+    /**
+     * Keep a written format group as a stage keeps one: TYPE as written, FORMAT_NAME as the listing spells it, and
+     * the options as a named format keeps them.
+     *
+     * @param group the group
+     * @param into  the map the table keeps its stage file format in
+     */
+    static void keepFormat(final FrostlakeParser.ParenOptionListContext group, final Map<String, String> into) {
+        final FileFormatClause written = FileFormatClause.read(group, new FileFormat("WRITTEN", "CSV"), true);
+        if (written.writtenType() != null) {
+            into.put("TYPE", written.writtenType());
         }
-    }
-
-    /** One option's value: a string literal without its quotes, a list as written, anything else verbatim. */
-    private static String writtenValue(final FrostlakeParser.ParenOptionContext option) {
-        if (option.copyOptionValue() == null) {
-            final StringBuilder list = new StringBuilder("[");
-            if (option.stringLiteralList() != null) {
-                for (final org.antlr.v4.runtime.tree.TerminalNode item : option.stringLiteralList().STRING_LITERAL()) {
-                    list.append(list.length() > 1 ? ", " : "").append(unquoted(item.getText()));
-                }
-            }
-            return list.append(']').toString();
+        if (written.formatNameWritten() != null) {
+            into.put("FORMAT_NAME", written.formatNameWritten());
         }
-        return unquoted(option.copyOptionValue().getText());
-    }
-
-    private static String unquoted(final String written) {
-        return written.length() > 1 && written.charAt(0) == '\'' && written.charAt(written.length() - 1) == '\''
-            ? written.substring(1, written.length() - 1).replace("''", "'") : written;
+        into.putAll(written.format().getOptions());
     }
 }

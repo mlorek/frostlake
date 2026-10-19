@@ -18,18 +18,21 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.DateTimeUnitSlot;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -60,28 +63,6 @@ import java.util.Set;
  */
 final class GroupBySelectListValidator {
 
-    /**
-     * Date/time part names that appear as a BARE identifier in an argument position —
-     * {@code DATEADD(day, 1, x)}, {@code DATE_PART(month, x)}, {@code DATEDIFF(week, a, b)}. They parse as
-     * ordinary column references, so a table with a column of the same name would otherwise be reported as
-     * ungrouped. Skipping them costs only a missed rejection.
-     */
-    private static final Set<String> DATE_PART_WORDS = new HashSet<>(Arrays.asList(
-        "YEAR", "YEARS", "Y", "YY", "YYY", "YYYY", "YR", "YRS", "YEAROFWEEK", "YEAROFWEEKISO",
-        "QUARTER", "QUARTERS", "Q", "QTR", "QTRS",
-        "MONTH", "MONTHS", "MM", "MON", "MONS",
-        "WEEK", "WEEKS", "W", "WK", "WEEKOFYEAR", "WOY", "WY", "WEEKISO", "WEEKOFYEARISO",
-        "DAY", "DAYS", "D", "DD", "DAYOFMONTH", "DAYOFWEEK", "DAYOFWEEKISO", "DAYOFYEAR", "YEARDAY", "DOW",
-        "DOY", "DW", "DY",
-        "HOUR", "HOURS", "H", "HH", "HR", "HRS",
-        "MINUTE", "MINUTES", "M", "MI", "MIN", "MINS",
-        "SECOND", "SECONDS", "S", "SEC", "SECS",
-        "MILLISECOND", "MILLISECONDS", "MS", "MSEC", "MSECS", "MILLISECS",
-        "MICROSECOND", "MICROSECONDS", "US", "USEC", "USECS", "MICROSECS",
-        "NANOSECOND", "NANOSECONDS", "NS", "NSEC", "NSECS", "NANOSEC", "NSECONDS", "NANOSECS",
-        "EPOCH_SECOND", "EPOCH_MILLISECOND", "EPOCH_MICROSECOND", "EPOCH_NANOSECOND",
-        "EPOCH", "TIMEZONE_HOUR", "TIMEZONE_MINUTE", "TZH", "TZM"));
-
     private final QueryExecutor executor;
     private final Table table;
     private final Map<String, Table> aliasToTable;
@@ -100,6 +81,9 @@ final class GroupBySelectListValidator {
 
     /** Aliases of the items BEFORE the one being walked — the only ones it may reference. */
     private final Set<String> earlierAliases = new HashSet<>();
+    /** How the bracketed refusal ends. */
+    private static final String NOT_A_GROUP_KEY = "] is not a valid group by expression";
+
     /** Aliases of the item being walked and every item after it — referencing one is a forward reference. */
     private final Set<String> laterAliases = new HashSet<>();
 
@@ -125,6 +109,7 @@ final class GroupBySelectListValidator {
 
     /** True while HAVING is walked: its refusal is always the bracketed family (live-verified). */
     private boolean insideHaving;
+    private boolean havingProvenTrue;
 
     /**
      * Whether this run validates IMPLICIT aggregation (an aggregate or HAVING with no GROUP BY):
@@ -201,9 +186,9 @@ final class GroupBySelectListValidator {
                     continue;
                 }
                 if (a < i) {
-                    earlierAliases.add(aliasNames.get(a).toUpperCase());
+                    earlierAliases.add(aliasNames.get(a).toUpperCase(Locale.ROOT));
                 } else {
-                    laterAliases.add(aliasNames.get(a).toUpperCase());
+                    laterAliases.add(aliasNames.get(a).toUpperCase(Locale.ROOT));
                 }
             }
             try {
@@ -224,10 +209,11 @@ final class GroupBySelectListValidator {
             laterAliases.clear();
             for (final String alias : aliasNames) {
                 if (alias != null) {
-                    earlierAliases.add(alias.toUpperCase());
+                    earlierAliases.add(alias.toUpperCase(Locale.ROOT));
                 }
             }
             insideHaving = true;
+            havingProvenTrue = provenTrue(ctx.havingClause().booleanExpr());
             try {
                 checkNode(ctx.havingClause().booleanExpr());
             } catch (final RuntimeException unexpected) {
@@ -249,7 +235,7 @@ final class GroupBySelectListValidator {
             laterAliases.clear();
             for (final String alias : aliasNames) {
                 if (alias != null) {
-                    earlierAliases.add(alias.toUpperCase());
+                    earlierAliases.add(alias.toUpperCase(Locale.ROOT));
                 }
             }
             checkWindowsWithin(ctx.qualifyClause());
@@ -257,6 +243,89 @@ final class GroupBySelectListValidator {
                 throw new RuntimeException(rejection);
             }
         }
+        final FrostlakeParser.OrderByClauseContext orderBy = implicitAggregation ? ownOrderBy(ctx) : null;
+        if (orderBy != null) {
+            // The one row an aggregate query with no GROUP BY answers is never sorted, and its ORDER BY is
+            // dropped — but a window call among the keys is held to the grouping before that, as the select
+            // list's are: {@code SELECT MAX(id) FROM fz ORDER BY MAX(id) OVER ()} is "[FZ.ID] is not a valid
+            // group by expression" (live-verified). Every select alias is referencable there.
+            earlierAliases.clear();
+            laterAliases.clear();
+            for (final String alias : aliasNames) {
+                if (alias != null) {
+                    earlierAliases.add(alias.toUpperCase(Locale.ROOT));
+                }
+            }
+            // A name a window call there reads that nothing answers is refused first, where it stands
+            // (live-verified): ORDER BY SUM(id) OVER (PARTITION BY nosuch) is the invalid identifier.
+            if (!nestedQuery(ctx)) {
+                requireWindowNames(orderBy);
+            }
+            checkWindowsWithin(orderBy);
+            if (rejection != null) {
+                throw new RuntimeException(rejection);
+            }
+        }
+    }
+
+    /** Whether a select stands inside another query, whose names its own may read. */
+    private static boolean nestedQuery(final FrostlakeParser.SelectClauseContext ctx) {
+        int queries = 0;
+        for (ParserRuleContext up = ctx; up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.SelectStatementContext) {
+                queries++;
+            }
+        }
+        return queries > 1;
+    }
+
+    /** Refuses the first bare name of a window call under {@code node} that no column or alias answers. */
+    private void requireWindowNames(final ParseTree node) {
+        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
+        if (isWindowCall(node)) {
+            requireNames(node);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            requireWindowNames(node.getChild(i));
+        }
+    }
+
+    private void requireNames(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext
+                || node instanceof FrostlakeParser.LambdaFunctionContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final FrostlakeParser.QualifiedNameExprContext ref = (FrostlakeParser.QualifiedNameExprContext) node;
+            final String[] parts = ParseTreeText.qualifiedNameParts(ref.qualifiedName());
+            final String last = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            if (parts.length == 1 && !inUnitSlot(ref) && !namesAColumn(last) && !earlierAliases.contains(last)) {
+                final Token at = ref.getStart();
+                final List<String> rawParts = rawNameParts(ref);
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    "invalid identifier '" + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)) + "'"));
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            requireNames(node.getChild(i));
+        }
+    }
+
+    /** The ORDER BY that sorts this select's own rows, or null: a set operation's belongs to the whole of it. */
+    private static FrostlakeParser.OrderByClauseContext ownOrderBy(final FrostlakeParser.SelectClauseContext ctx) {
+        ParserRuleContext up = ctx.getParent();
+        while (up != null && !(up instanceof FrostlakeParser.SelectStatementContext)) {
+            up = up.getParent();
+        }
+        if (up == null) {
+            return null;
+        }
+        final FrostlakeParser.SelectStatementContext statement = (FrostlakeParser.SelectStatementContext) up;
+        return statement.selectOperand().size() == 1 ? statement.orderByClause() : null;
     }
 
     /** Runs the grouped walk over every window call inside {@code node}, leaving the rest alone. */
@@ -309,8 +378,14 @@ final class GroupBySelectListValidator {
             final boolean enclosing = insideWindowCall;
             insideWindowCall = true;
             try {
-                for (int i = 0; i < node.getChildCount(); i++) {
-                    checkNode(node.getChild(i));
+                final List<ParserRuleContext> units = new ArrayList<>();
+                collectWindowUnits(node, units);
+                for (final ParserRuleContext unit : units) {
+                    checkNode(unit);
+                    if (rejection != null) {
+                        nameWindowUnit(unit);
+                        return;
+                    }
                 }
             } finally {
                 insideWindowCall = enclosing;
@@ -318,7 +393,12 @@ final class GroupBySelectListValidator {
             return;
         }
         if (isAggregateOrWindowCall(node)) {
-            return;   // an aggregate's argument is per-row, whatever the grouping
+            // An aggregate's argument is per-row, whatever the grouping — but in HAVING a query written as a
+            // value inside it still reads this query's columns against the groups.
+            if (insideHaving && !havingProvenTrue) {
+                checkValueQueriesIn(node);
+            }
+            return;
         }
         if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
             checkScalarStarArgument((FrostlakeParser.FunctionCallStarExprContext) node);
@@ -327,6 +407,81 @@ final class GroupBySelectListValidator {
         for (int i = 0; i < node.getChildCount(); i++) {
             checkNode(node.getChild(i));
         }
+    }
+
+    /**
+     * What a window call holds to the grouping, in the order the account judges it: each argument, each
+     * PARTITION BY key and each ORDER BY key, as the whole expression it is written as.
+     */
+    private static void collectWindowUnits(final ParseTree node, final List<ParserRuleContext> units) {
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final ParseTree child = node.getChild(i);
+            if (child instanceof FrostlakeParser.ExpressionContext
+                    || child instanceof FrostlakeParser.BooleanExprContext) {
+                units.add((ParserRuleContext) child);
+            } else {
+                collectWindowUnits(child, units);
+            }
+        }
+    }
+
+    /**
+     * A window call's argument or key that is not grouped is named WHOLE, as the plan holds it, once it is more
+     * than the column: {@code MAX(id + 1) OVER ()} beside an aggregate is "[FZ.ID + 1] is not a valid group by
+     * expression", {@code MAX(ABS(id)) OVER ()} is "[ABS(FZ.ID)] …", while {@code MAX(id) OVER ()} stays
+     * "[FZ.ID] …" (live-verified).
+     */
+    private void nameWindowUnit(final ParserRuleContext unit) {
+        if (unit instanceof FrostlakeParser.QualifiedNameExprContext || !rejection.endsWith(NOT_A_GROUP_KEY)) {
+            return;
+        }
+        final String planned = new PlanEcho(table, aliasToTable, allTables, executor.getFunctionRegistry(),
+            executor.getCatalog(), executor).printPlanned(unit);
+        if (planned != null && !planned.isEmpty()) {
+            rejectImplicit(planned);
+        }
+    }
+
+    /**
+     * Holds the queries written as values under a HAVING aggregate's argument to the grouping:
+     * {@code HAVING MAX((SELECT MAX(fz.id + g.v) FROM g)) > 0} beside {@code GROUP BY b} is "[FZ.ID] is not a
+     * valid group by expression". A query with no FROM and one under EXISTS are not judged, and neither is a
+     * condition that an {@code OR TRUE} settles (all live-verified).
+     */
+    private void checkValueQueriesIn(final ParseTree node) {
+        if (rejection != null || node instanceof FrostlakeParser.ExistsExprContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            if (readsARelation((FrostlakeParser.SelectStatementContext) node)) {
+                checkEnclosingReferences((FrostlakeParser.SelectStatementContext) node);
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            checkValueQueriesIn(node.getChild(i));
+        }
+    }
+
+    /** Whether a query's first operand has a FROM clause. */
+    private static boolean readsARelation(final FrostlakeParser.SelectStatementContext query) {
+        return !query.selectOperand().isEmpty() && query.selectOperand(0).selectClause() != null
+            && query.selectOperand(0).selectClause().tableExpression() != null;
+    }
+
+    /** Whether a condition is settled true by a TRUE among the operands of its ORs. */
+    private static boolean provenTrue(final ParseTree node) {
+        if (node instanceof TerminalNode) {
+            return ((TerminalNode) node).getSymbol().getType() == FrostlakeParser.TRUE;
+        }
+        if (node.getChildCount() == 1) {
+            return provenTrue(node.getChild(0));
+        }
+        if (node.getChildCount() == 3 && node.getChild(1) instanceof TerminalNode
+                && ((TerminalNode) node.getChild(1)).getSymbol().getType() == FrostlakeParser.OR) {
+            return provenTrue(node.getChild(0)) || provenTrue(node.getChild(2));
+        }
+        return false;
     }
 
     /**
@@ -347,10 +502,10 @@ final class GroupBySelectListValidator {
             final int dot = column.lastIndexOf('.');
             final String relation = column.substring(0, dot);
             final String name = column.substring(dot + 1);
-            if (groupedFor(relation, name.toUpperCase())) {
+            if (groupedFor(relation, name.toUpperCase(Locale.ROOT))) {
                 continue;
             }
-            final String spelled = spellResolvedName(relation.toUpperCase()) + "." + spellResolvedName(name);
+            final String spelled = spellResolvedName(relation.toUpperCase(Locale.ROOT)) + "." + spellResolvedName(name);
             if (implicitAggregation || insideWindowCall || insideHaving) {
                 rejectImplicit(spelled);
             } else {
@@ -363,8 +518,11 @@ final class GroupBySelectListValidator {
 
     /** One bare (possibly qualified) column reference, classified against the columns and the aliases. */
     private void checkColumnReference(final FrostlakeParser.QualifiedNameExprContext ref) {
+        if (inUnitSlot(ref)) {
+            return;   // DATEADD(day, …), LAST_DAY(d, month): the unit's name, never a column
+        }
         final String[] parts = ParseTreeText.qualifiedNameParts(ref.qualifiedName());
-        final String last = parts[parts.length - 1].toUpperCase();
+        final String last = parts[parts.length - 1].toUpperCase(Locale.ROOT);
         if (parts.length > 1) {
             // Only a name whose immediate qualifier is a relation in scope is a column reference; anything
             // else is a path INTO a column (a VARIANT field) or a qualifier this validator cannot see.
@@ -381,16 +539,13 @@ final class GroupBySelectListValidator {
                     // 'DB.PUBLIC.A.V' for db.PUBLIC.A.v, an omitted schema read as PUBLIC.
                     final StringBuilder spelled = new StringBuilder();
                     for (int i = 0; i < parts.length - 1; i++) {
-                        spelled.append(parts[i].isEmpty() ? "PUBLIC" : parts[i].toUpperCase()).append('.');
+                        spelled.append(parts[i].isEmpty() ? "PUBLIC" : parts[i].toUpperCase(Locale.ROOT)).append('.');
                     }
                     reject(ref, "'" + spelled + (variants ? SqlIdentifiers.spellCanonicalEscaped(parts[parts.length - 1])
                         : last) + "' in select clause is neither an aggregate nor in the group by clause.");
                 }
             }
             return;
-        }
-        if (DATE_PART_WORDS.contains(last) && isBareFunctionArgument(ref)) {
-            return;   // DATEADD(day, …) — a unit keyword, not this table's DAY column
         }
         if (namesAColumn(last)) {
             // A real column outranks a same-named alias, so it must be grouped or aggregated. Beside a column of
@@ -435,7 +590,7 @@ final class GroupBySelectListValidator {
                 .enclosingReferencesWithMixedAggregates(subquery, insideHaving);
         for (final FrostlakeParser.QualifiedNameExprContext reference : references) {
             final String[] parts = ParseTreeText.qualifiedNameParts(reference.qualifiedName());
-            final String column = parts[parts.length - 1].toUpperCase();
+            final String column = parts[parts.length - 1].toUpperCase(Locale.ROOT);
             final boolean ownColumn = parts.length > 1
                 ? namesATable(parts[parts.length - 2]) && namesAColumn(column) : namesAColumn(column);
             if (ownColumn) {
@@ -480,7 +635,7 @@ final class GroupBySelectListValidator {
         }
         final String prefix = qualified ? SelectItemAccessors.getItemQualifierSpelled(item) + "." : "";
         for (final StarColumn sc : columns) {
-            final String name = sc.getSourceName().toUpperCase();
+            final String name = sc.getSourceName().toUpperCase(Locale.ROOT);
             if (!sc.getExpression().equalsIgnoreCase(prefix + sc.getSourceName())) {
                 continue;   // a REPLACE'd column projects an expression, not the column itself
             }
@@ -516,7 +671,7 @@ final class GroupBySelectListValidator {
 
     /** The implicit-aggregation refusal — bracketed, positionless, live's other family. */
     private void rejectImplicit(final String reference) {
-        rejection = SqlCompilationError.of("[" + reference + "] is not a valid group by expression");
+        rejection = SqlCompilationError.of("[" + reference + NOT_A_GROUP_KEY);
     }
 
     /**
@@ -545,7 +700,7 @@ final class GroupBySelectListValidator {
                 if (entry.getKey() != null && entry.getValue() != null && entry.getValue().hasColumn(column)) {
                     // An unaliased derived table goes by the internal "values" moniker, which the
                     // message spells quoted; a written alias folds to upper case.
-                    return "values".equals(entry.getKey()) ? "\"values\"" : entry.getKey().toUpperCase();
+                    return "values".equals(entry.getKey()) ? "\"values\"" : entry.getKey().toUpperCase(Locale.ROOT);
                 }
             }
         }
@@ -622,19 +777,44 @@ final class GroupBySelectListValidator {
         if (name == null) {
             return true;
         }
-        final String called = name.getText().toUpperCase();
+        final String called = name.getText().toUpperCase(Locale.ROOT);
         return executor.getFunctionRegistry().hasAggregateFunction(called)
             || !executor.getFunctionRegistry().hasFunction(called);
     }
 
-    /** True when the reference sits directly in a function's argument list, where a bare unit word lives. */
-    private static boolean isBareFunctionArgument(final FrostlakeParser.QualifiedNameExprContext ref) {
+    /**
+     * Whether the reference is a call's date or time unit slot (see {@link DateTimeUnitSlot}), where a word is the
+     * unit's name whatever it spells and however it is qualified. Anywhere else a word that spells a part — YEAR,
+     * DAY, MONTH — is a column like any other: live holds {@code ABS(year)} and {@code COALESCE(day, 0)} to the
+     * grouping and reads the unit only in {@code DATEADD(day, day, d)}'s first argument (live-verified).
+     */
+    private static boolean inUnitSlot(final FrostlakeParser.QualifiedNameExprContext ref) {
         final ParseTree parent = ref.getParent();
-        if (parent instanceof FrostlakeParser.ValueExprContext) {
-            return parent.getParent() instanceof FrostlakeParser.FunctionArgContext;
+        if (parent instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            final FrostlakeParser.FunctionCallMixedArgsExprContext call =
+                (FrostlakeParser.FunctionCallMixedArgsExprContext) parent;
+            return call.expression().indexOf(ref) == DateTimeUnitSlot.positionIn(calledName(call.functionName()));
         }
-        return parent instanceof FrostlakeParser.FunctionCallMixedArgsExprContext
-            || parent instanceof FrostlakeParser.NamedArgumentContext;
+        if (!(parent instanceof FrostlakeParser.ValueExprContext)
+                || !(parent.getParent() instanceof FrostlakeParser.FunctionArgContext)) {
+            return false;
+        }
+        final ParseTree argument = parent.getParent();
+        if (!(argument.getParent() instanceof FrostlakeParser.FunctionArgListContext)
+                || !(argument.getParent().getParent() instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.FunctionArgListContext arguments =
+            (FrostlakeParser.FunctionArgListContext) argument.getParent();
+        final FrostlakeParser.FunctionCallExprContext call =
+            (FrostlakeParser.FunctionCallExprContext) arguments.getParent();
+        return arguments.functionArg().indexOf(argument)
+            == DateTimeUnitSlot.positionIn(calledName(call.functionName()));
+    }
+
+    /** A call's function name as the unit slots are listed by, upper-cased. */
+    private static String calledName(final FrostlakeParser.FunctionNameContext name) {
+        return name.getText().toUpperCase(Locale.ROOT);
     }
 
     private boolean namesAColumn(final String name) {
@@ -691,18 +871,18 @@ final class GroupBySelectListValidator {
         if (aliasToTable != null) {
             for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
                 if (entry.getKey() != null && entry.getValue() != null && entry.getValue().hasColumn(column)) {
-                    return entry.getKey().toUpperCase();
+                    return entry.getKey().toUpperCase(Locale.ROOT);
                 }
             }
         }
         if (allTables != null) {
             for (final Table candidate : allTables) {
                 if (candidate != null && candidate.hasColumn(column) && candidate.getName() != null) {
-                    return candidate.getName().toUpperCase();
+                    return candidate.getName().toUpperCase(Locale.ROOT);
                 }
             }
         }
-        return table != null && table.getName() != null ? table.getName().toUpperCase() : column;
+        return table != null && table.getName() != null ? table.getName().toUpperCase(Locale.ROOT) : column;
     }
 
     // ── text canonicalisation ────────────────────────────────────────────────
@@ -710,7 +890,7 @@ final class GroupBySelectListValidator {
     private static String canonicalPrint(final String text) {
         try {
             final Expression parsed = ExpressionEvaluator.parse(text);
-            return AstPrinterVisitor.print(parsed).toUpperCase();
+            return AstPrinterVisitor.print(parsed).toUpperCase(Locale.ROOT);
         } catch (final RuntimeException notAnExpression) {
             return null;
         }
@@ -733,7 +913,7 @@ final class GroupBySelectListValidator {
         try {
             final Expression parsed = ExpressionEvaluator.parse(text);
             if (parsed instanceof ColumnReferenceExpression) {
-                return ((ColumnReferenceExpression) parsed).getColumnName().toUpperCase();
+                return ((ColumnReferenceExpression) parsed).getColumnName().toUpperCase(Locale.ROOT);
             }
         } catch (final RuntimeException notAnExpression) {
             return null;

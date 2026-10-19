@@ -21,6 +21,7 @@ public class DeclareResultSetStatement extends Statement {
     private final String selectQuery;
     private int queryLine = -1;
     private int queryColumn = -1;
+    private boolean async;
 
     public DeclareResultSetStatement(final String resultSetName, final String selectQuery) {
         super(StatementType.DECLARE_RESULTSET);
@@ -45,6 +46,15 @@ public class DeclareResultSetStatement extends Statement {
     public void setQueryAt(final int line, final int column) {
         this.queryLine = line;
         this.queryColumn = column;
+    }
+
+    /** Whether the initialiser is {@code ASYNC (<statement>)}: a job that fills the RESULTSET when it is awaited. */
+    public boolean isAsync() {
+        return async;
+    }
+
+    public void setAsync(final boolean async) {
+        this.async = async;
     }
 
     public int getQueryLine() {

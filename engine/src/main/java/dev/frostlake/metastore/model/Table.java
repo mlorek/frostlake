@@ -16,8 +16,12 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.ExpressionColumns;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StatementDraws;
+import dev.frostlake.storage.Row;
 import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.RelationStatistics;
@@ -25,14 +29,19 @@ import dev.frostlake.values.RelationStatistics;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
-public class Table extends SqlObject {
+public class Table extends SqlObject implements SessionScoped {
 
     /**
      * The DATA_RETENTION_TIME_IN_DAYS this object declares, or null when it declares none and
@@ -48,6 +57,28 @@ public class Table extends SqlObject {
         this.dataRetentionTimeInDays = dataRetentionTimeInDays;
     }
 
+    /** The MAX_DATA_EXTENSION_TIME_IN_DAYS this table declares, or null when it inherits its container's. */
+    private Integer maxDataExtensionTimeInDays;
+
+    public Integer getMaxDataExtensionTimeInDays() {
+        return maxDataExtensionTimeInDays;
+    }
+
+    public void setMaxDataExtensionTimeInDays(final Integer maxDataExtensionTimeInDays) {
+        this.maxDataExtensionTimeInDays = maxDataExtensionTimeInDays;
+    }
+
+    /** The DEFAULT_DDL_COLLATION this table declares, or null when it inherits its container's. */
+    private String defaultDdlCollation;
+
+    public String getDefaultDdlCollation() {
+        return defaultDdlCollation;
+    }
+
+    public void setDefaultDdlCollation(final String defaultDdlCollation) {
+        this.defaultDdlCollation = defaultDdlCollation;
+    }
+
 
     private final List<TableColumn> columns;
     // The highest position ever given to a column of this table; a dropped column's number stays spent.
@@ -60,18 +91,28 @@ public class Table extends SqlObject {
     // another case; the fold keeps the FIRST column of each folded spelling.
     private final Map<String, Integer> columnIndex;
     private final Map<String, Integer> exactColumnIndex;
+    /** How many times the columns have changed (see {@link #getShapeVersion()}). */
+    private int shapeVersion;
     private final boolean isTemporary;
-    private final boolean isTransient;
+    private boolean isTransient;
     // Declared with CREATE HYBRID TABLE. Frostlake stores hybrid tables as ordinary tables (row storage,
     // constraints not specially enforced); this flag only preserves the declaration for SHOW HYBRID TABLES
     // and the reported kind.
     private boolean hybrid;
     // Declared with CREATE EVENT TABLE: the fixed OpenTelemetry column set, reported by SHOW EVENT TABLES.
     private boolean eventTable;
+    // The names a VALUES clause's columns keep in the plan when an alias list renames them; null for any other table.
+    private List<String> planColumnNames;
     // Declared with CREATE ICEBERG TABLE: the Iceberg metadata SHOW ICEBERG TABLES reports; null for other tables.
     private IcebergTableMetadata icebergMetadata;
     private Instant lastDataChange;
+    // When a DML statement last ran against the table, whether or not it changed a row; see markDmlRan.
+    private Instant lastDml;
+    // Writes that reached the rows since the table was made or restored: below the millisecond in getChangeToken.
+    private final AtomicLong dataChanges = new AtomicLong();
     private List<String> clusterKeys;
+    // The clustering key as its statement wrote it after CLUSTER BY; null when the keys alone are known.
+    private String clusterByText;
     // CHECK constraints, in declaration order — the order GET_DDL renders them in.
     private final List<CheckConstraint> checkConstraints = new ArrayList<>();
     private String rowAccessPolicyName;  // qualified name of attached row access policy, or null
@@ -109,6 +150,17 @@ public class Table extends SqlObject {
     // per-column flags cannot express. A bare column-level UNIQUE has no entry here; getUniqueConstraints()
     // synthesizes its single-column constraint from the flag.
     private final List<UniqueConstraint> uniqueConstraints = new ArrayList<>();
+    // The PRIMARY KEY's own RELY, null when unspecified: a key keeps its own, apart from any other key over its
+    // columns (live-verified).
+    private Boolean primaryKeyRely;
+    // The columns, upper-cased, whose own definition declared UNIQUE: each is a key of its own beside any
+    // table-level UNIQUE that spans it too (live-verified).
+    private final Set<String> ownUniqueColumns = new LinkedHashSet<>();
+    // When a constraint an ALTER TABLE added was created, and when an ALTER last changed one, by upper-cased
+    // constraint name. A constraint with no entry was made with the table and never altered since.
+    // In the order the constraints were created, the latest last (see constraintCreationOrder).
+    private final Map<String, Instant> constraintCreated = new LinkedHashMap<>();
+    private final Map<String, Instant> constraintAltered = new HashMap<>();
     // Whether this instance is the CATALOG's own object for its name — see isCatalogResident().
     private boolean catalogResident;
     // Set only on a self-join's second instance of a table: the catalog table it was copied from.
@@ -134,6 +186,15 @@ public class Table extends SqlObject {
     private JoinedRelations joinedRelations;
     // Set only on a staged-file query's relation: which positions a $n reads. Null for every other table.
     private StagePositions stagePositions;
+    // The value IDENTITY/AUTOINCREMENT hands out next, or null before the first draw, when it is START. The sequence
+    // belongs to the table rather than its rows, so a clone, a restored snapshot and an UNDROP continue it instead
+    // of handing out values the table already holds.
+    private Long nextIdentityValue;
+    // The table's shapes over its history, oldest first (see TableStructure). Seeded as the table's storage comes into
+    // being, so a derived relation, which never holds rows of its own, keeps none.
+    private final List<TableStructure> structureHistory = new ArrayList<>();
+
+    private boolean namedByAliasList;
 
     public Table(final String name, final List<TableColumn> columns, final boolean isTemporary) {
         this(name, columns, isTemporary, false);
@@ -217,6 +278,20 @@ public class Table extends SqlObject {
         this.joinKeyNames = joinKeyNames;
     }
 
+    /**
+     * Whether the relation's column names come from an alias list written after it — {@code FROM t AS q (x, y)},
+     * {@code (VALUES …) v (a, b)}. Such a list may give one name twice, and a reference to it then reads the
+     * first column of the name, where two columns a query projects under one name are ambiguous (live-verified).
+     */
+    public boolean isNamedByAliasList() {
+        return namedByAliasList;
+    }
+
+    /** Records that an alias list written after the relation names its columns. */
+    public void setNamedByAliasList(final boolean namedByAliasList) {
+        this.namedByAliasList = namedByAliasList;
+    }
+
     /** The relations a join's merged relation joins and which of them an outer join extends with NULLs,
      *  or null for any other table. */
     public JoinedRelations getJoinedRelations() {
@@ -288,14 +363,350 @@ public class Table extends SqlObject {
         this.highestOrdinal = Math.max(this.highestOrdinal, highestOrdinal);
     }
 
+    /**
+     * A copy of this table's whole definition under another name, as a clone takes it. It carries every column with
+     * all of its attributes and its position (gaps and the high-water mark too), the constraints and their names,
+     * the IDENTITY sequence where it stands, the attached policies, search optimization, data metrics, contacts,
+     * table-stage options, the table's own settings, its comment and its tags. The rows are the storage's to copy.
+     * Neither the owner, which the creating statement sets, nor what only a query's derived relations carry is copied.
+     *
+     * @param newName        the copy's name
+     * @param temporary      whether the copy is TEMPORARY
+     * @param transientTable whether the copy is TRANSIENT
+     * @return the copy
+     */
+    public Table copyAs(final String newName, final boolean temporary, final boolean transientTable) {
+        final List<TableColumn> copiedColumns = new ArrayList<>(columns.size());
+        for (final TableColumn column : columns) {
+            copiedColumns.add(column.copy());
+        }
+        final Table copy = new Table(newName, copiedColumns, temporary, transientTable);
+        copy.setHighestOrdinal(highestOrdinal);
+        copyConstraintsInto(copy);
+        copy.clusterKeys = getClusterKeys();
+        copy.clusterByText = clusterByText;
+        copy.dataRetentionTimeInDays = dataRetentionTimeInDays;
+        copy.maxDataExtensionTimeInDays = maxDataExtensionTimeInDays;
+        copy.defaultDdlCollation = defaultDdlCollation;
+        copy.hybrid = hybrid;
+        copy.eventTable = eventTable;
+        copy.icebergMetadata = icebergMetadata != null ? icebergMetadata.copy() : null;
+        copy.rowAccessPolicyName = rowAccessPolicyName;
+        copy.rowAccessPolicyColumns = new ArrayList<>(rowAccessPolicyColumns);
+        copy.aggregationPolicyName = aggregationPolicyName;
+        copy.aggregationEntityKey = new ArrayList<>(aggregationEntityKey);
+        copy.joinPolicyName = joinPolicyName;
+        for (final SearchOptimizationExpression expression : searchOptimization) {
+            copy.restoreSearchOptimization(expression);
+        }
+        copy.nextSearchOptimizationId = Math.max(copy.nextSearchOptimizationId, nextSearchOptimizationId);
+        for (final DataMetricAttachment metric : dataMetrics) {
+            final DataMetricAttachment copied = new DataMetricAttachment(metric.getMetricName(), metric.getColumns());
+            copied.setSuspended(metric.isSuspended());
+            copy.dataMetrics.add(copied);
+        }
+        copy.dataMetricSchedule = dataMetricSchedule;
+        copy.contacts.putAll(contacts);
+        copy.stageFileFormat.putAll(stageFileFormat);
+        copy.stageCopyOptions.putAll(stageCopyOptions);
+        // Change tracking on the copy starts with the copy: it holds no change from before it existed.
+        copy.setChangeTracking(changeTracking);
+        copy.schemaEvolution = schemaEvolution;
+        copy.reclusterSuspended = reclusterSuspended;
+        copy.nextIdentityValue = getNextIdentityValue();
+        copy.setComment(getComment());
+        copyTagsInto(copy);
+        return copy;
+    }
+
+    /**
+     * A new table shaped like this one, as CREATE TABLE … LIKE makes it: the columns with their names, types,
+     * defaults (IDENTITY included, its sequence starting afresh), nullability, collation and comments, the
+     * constraints and their names, the clustering keys and the tags. Policies are not set on the new table
+     * (documented for masking and row access policies), the table's settings and comment stay behind, and the
+     * columns are numbered afresh.
+     *
+     * @param newName        the new table's name
+     * @param temporary      whether it is TEMPORARY
+     * @param transientTable whether it is TRANSIENT
+     * @return the new table
+     */
+    public Table likeCopy(final String newName, final boolean temporary, final boolean transientTable) {
+        final List<TableColumn> likeColumns = new ArrayList<>(columns.size());
+        for (final TableColumn column : columns) {
+            // An Iceberg column holds a table's type in the copy, and not the format's own (live-verified).
+            final TableColumn like = column.copy();
+            like.setFormatType(null);
+            like.setMaskingPolicyName(null);
+            like.setMaskingPolicyArguments(null);
+            like.setProjectionPolicyName(null);
+            like.setOrdinalPosition(0);
+            likeColumns.add(like);
+        }
+        final Table copy = new Table(newName, likeColumns, temporary, transientTable);
+        copyConstraintsInto(copy);
+        copy.clusterKeys = getClusterKeys();
+        copy.clusterByText = clusterByText;
+        copyTagsInto(copy);
+        return copy;
+    }
+
+    /** Copies the foreign keys, CHECK constraints, UNIQUE constraints and every constraint name into a copy. */
+    private void copyConstraintsInto(final Table copy) {
+        for (final ForeignKeyConstraint fk : foreignKeys) {
+            copy.foreignKeys.add(new ForeignKeyConstraint(fk.getConstraintName(), new ArrayList<>(fk.getColumnNames()),
+                fk.getReferencedTable(), new ArrayList<>(fk.getReferencedColumns()), fk.getOnDelete(),
+                fk.getOnUpdate(), fk.getRely()));
+        }
+        copy.checkConstraints.addAll(checkConstraints);
+        for (final UniqueConstraint constraint : uniqueConstraints) {
+            copy.uniqueConstraints.add(constraint.withColumns(new ArrayList<>(constraint.getColumnNames())));
+        }
+        copy.ownUniqueColumns.addAll(ownUniqueColumns);
+        // The key in the order it was declared, which the copy's columns alone would not tell (live-verified).
+        copy.orderPrimaryKey(primaryKeys);
+        copy.primaryKeyRely = primaryKeyRely;
+        copy.primaryKeyConstraintName = primaryKeyConstraintName;
+        copy.uniqueConstraintNames.putAll(uniqueConstraintNames);
+        copy.columnForeignKeyConstraintNames.putAll(columnForeignKeyConstraintNames);
+    }
+
+    /** Copies the table-level tag assignments into a copy; the columns carry their own. */
+    private void copyTagsInto(final Table copy) {
+        for (final Map.Entry<String, String> tag : getTagValues().entrySet()) {
+            copy.setTag(tag.getKey(), tag.getValue());
+        }
+    }
+
+    /**
+     * Gives this table, a clone {@link #copyAs} has just made, the columns its source had at the clone's AT | BEFORE
+     * point: the columns that stood then, in their order, each with the name, type, nullability, default, comment, key
+     * flags and position it had, a column dropped since included, and the highest position handed out by then. A
+     * column that still stands keeps the policies and tags attached to it now, so a clone never answers a column its
+     * source protects without that protection.
+     *
+     * <p>A column keeps its position for life and a dropped column's is never handed out again, so what names columns
+     * at the table level follows them by position: a column renamed since is named as it was then, and a constraint
+     * or CHECK over a column that did not stand then goes. The columns a row access or aggregation policy is attached
+     * on follow the renames, and one that did not stand then is kept as written, so the policy refuses the read rather
+     * than let rows through. Clustering keys and search optimization are kept as written.
+     *
+     * @param shape the source's shape at the point
+     */
+    public void restructureAsOf(final TableStructure shape) {
+        final List<TableColumn> then = shape.getColumns();
+        final Map<Integer, TableColumn> standing = new HashMap<>();
+        for (final TableColumn column : columns) {
+            standing.put(column.getOrdinalPosition(), column);
+        }
+        // Each standing column's name now, upper-cased as the constraint-name maps key it, to its name then.
+        final Map<String, String> namedThen = new HashMap<>();
+        final List<TableColumn> restored = new ArrayList<>(then.size());
+        for (final TableColumn past : then) {
+            final TableColumn column = past.copy();
+            final TableColumn now = standing.get(past.getOrdinalPosition());
+            if (now != null) {
+                column.setMaskingPolicyName(now.getMaskingPolicyName());
+                column.setMaskingPolicyArguments(now.getMaskingPolicyArguments());
+                column.setProjectionPolicyName(now.getProjectionPolicyName());
+                for (final String tag : column.getTagValues().keySet()) {
+                    column.unsetTag(tag);
+                }
+                for (final Map.Entry<String, String> tag : now.getTagValues().entrySet()) {
+                    column.setTag(tag.getKey(), tag.getValue());
+                }
+                namedThen.put(now.getName().toUpperCase(Locale.ROOT), past.getName());
+            }
+            restored.add(column);
+        }
+        // A masking policy taken as it is now reads its USING columns by the names they had then.
+        for (final TableColumn column : restored) {
+            if (standing.containsKey(column.getOrdinalPosition()) && !column.getMaskingPolicyArguments().isEmpty()) {
+                column.setMaskingPolicyArguments(renamedWhereStanding(column.getMaskingPolicyArguments(), namedThen));
+            }
+        }
+        columns.clear();
+        columns.addAll(restored);
+        highestOrdinal = shape.getHighestOrdinal();
+        reindexColumns();
+        primaryKeys.clear();
+        for (final TableColumn column : columns) {
+            if (column.isPrimaryKey()) {
+                primaryKeys.add(column.getName());
+            }
+        }
+        if (primaryKeys.isEmpty()) {
+            primaryKeyConstraintName = null;
+        }
+        renameKeys(uniqueConstraintNames, namedThen);
+        renameKeys(columnForeignKeyConstraintNames, namedThen);
+        final List<String> ownThen = new ArrayList<>();
+        for (final String column : ownUniqueColumns) {
+            if (namedThen.containsKey(column)) {
+                ownThen.add(namedThen.get(column).toUpperCase(Locale.ROOT));
+            }
+        }
+        ownUniqueColumns.clear();
+        ownUniqueColumns.addAll(ownThen);
+        if (primaryKeys.isEmpty()) {
+            primaryKeyRely = null;
+        }
+        for (int i = uniqueConstraints.size() - 1; i >= 0; i--) {
+            final UniqueConstraint constraint = uniqueConstraints.get(i);
+            final List<String> named = namedAsThen(constraint.getColumnNames(), namedThen);
+            if (named == null) {
+                uniqueConstraints.remove(i);
+            } else {
+                uniqueConstraints.set(i, constraint.withColumns(named));
+            }
+        }
+        for (int i = foreignKeys.size() - 1; i >= 0; i--) {
+            final ForeignKeyConstraint fk = foreignKeys.get(i);
+            final List<String> named = namedAsThen(fk.getColumnNames(), namedThen);
+            if (named == null) {
+                foreignKeys.remove(i);
+            } else {
+                foreignKeys.set(i, new ForeignKeyConstraint(fk.getConstraintName(), named, fk.getReferencedTable(),
+                    new ArrayList<>(fk.getReferencedColumns()), fk.getOnDelete(), fk.getOnUpdate(), fk.getRely()));
+            }
+        }
+        for (int i = checkConstraints.size() - 1; i >= 0; i--) {
+            for (final String referenced : checkConstraints.get(i).getReferencedColumns()) {
+                if (indexOf(referenced) == null) {
+                    checkConstraints.remove(i);
+                    break;
+                }
+            }
+        }
+        rowAccessPolicyColumns = renamedWhereStanding(rowAccessPolicyColumns, namedThen);
+        aggregationEntityKey = renamedWhereStanding(aggregationEntityKey, namedThen);
+        purgeBrokenUniqueConstraints();
+    }
+
+    /** Re-keys a map keyed by upper-cased column name to the names then; a column that did not stand then goes. */
+    private static void renameKeys(final Map<String, String> byColumn, final Map<String, String> namedThen) {
+        final Map<String, String> renamed = new HashMap<>();
+        for (final Map.Entry<String, String> entry : byColumn.entrySet()) {
+            final String then = namedThen.get(entry.getKey().toUpperCase(Locale.ROOT));
+            if (then != null) {
+                renamed.put(then.toUpperCase(Locale.ROOT), entry.getValue());
+            }
+        }
+        byColumn.clear();
+        byColumn.putAll(renamed);
+    }
+
+    /** The columns as they were named then, or null when one of them did not stand then. */
+    private static List<String> namedAsThen(final List<String> names, final Map<String, String> namedThen) {
+        final List<String> then = new ArrayList<>(names.size());
+        for (final String name : names) {
+            final String named = namedThen.get(name.toUpperCase(Locale.ROOT));
+            if (named == null) {
+                return null;
+            }
+            then.add(named);
+        }
+        return then;
+    }
+
+    /** The columns as they were named then; one that did not stand then is kept as written. */
+    private static List<String> renamedWhereStanding(final List<String> names, final Map<String, String> namedThen) {
+        final List<String> then = new ArrayList<>(names.size());
+        for (final String name : names) {
+            final String named = namedThen.get(name.toUpperCase(Locale.ROOT));
+            then.add(named != null ? named : name);
+        }
+        return then;
+    }
+
+    /** The table's IDENTITY/AUTOINCREMENT column, or null when it has none. */
+    private TableColumn identityColumn() {
+        for (final TableColumn column : columns) {
+            if (column.isAutoIncrement()) {
+                return column;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Draws the next IDENTITY/AUTOINCREMENT value: START on the first draw, then INCREMENT further on each.
+     * A table without such a column counts from 1 by 1.
+     *
+     * @return the value
+     */
+    public synchronized long drawIdentityValue() {
+        final TableColumn identity = identityColumn();
+        final long current = nextIdentityValue != null ? nextIdentityValue
+            : identity != null ? identity.getIdentityStart() : 1L;
+        final long step = identity != null ? identity.getIdentityIncrement() : 1L;
+        // A statement replayed from the write-ahead log takes the value it first drew (StatementDraws).
+        final String counter = "IDENTITY:" + getName();
+        final Long replayed = StatementDraws.replayed(counter);
+        final long drawn = replayed != null ? replayed.longValue() : current;
+        nextIdentityValue = replayed != null ? StatementDraws.nextAfter(current, drawn, step) : current + step;
+        StatementDraws.record(counter, drawn);
+        return drawn;
+    }
+
+    /**
+     * The value the next IDENTITY draw answers, START before the first one: what a copy and a snapshot carry.
+     *
+     * @return the value, or null when the table has no IDENTITY column
+     */
+    public synchronized Long getNextIdentityValue() {
+        final TableColumn identity = identityColumn();
+        if (identity == null) {
+            return null;
+        }
+        return nextIdentityValue != null ? nextIdentityValue : identity.getIdentityStart();
+    }
+
+    /**
+     * Continues the IDENTITY sequence from a recorded value; null starts it again at START.
+     *
+     * @param next the value the next draw answers, or null
+     */
+    public synchronized void setNextIdentityValue(final Long next) {
+        this.nextIdentityValue = next;
+    }
+
+    /**
+     * Moves the IDENTITY sequence past every value its column holds in {@code rows}, for a table restored from a
+     * snapshot written before the sequence was recorded. Such a table restarted at START and handed out values
+     * it already held.
+     *
+     * @param rows the table's rows
+     */
+    public synchronized void continueIdentityPast(final List<Row> rows) {
+        final TableColumn identity = identityColumn();
+        if (identity == null) {
+            return;
+        }
+        final int index = columns.indexOf(identity);
+        final long increment = identity.getIdentityIncrement();
+        long next = nextIdentityValue != null ? nextIdentityValue : identity.getIdentityStart();
+        for (final Row row : rows) {
+            final Object value = index < row.size() ? row.getValue(index) : null;
+            if (value instanceof Number) {
+                final long held = ((Number) value).longValue();
+                if (increment >= 0 ? held >= next : held <= next) {
+                    next = held + increment;
+                }
+            }
+        }
+        nextIdentityValue = next;
+    }
+
     /** Rebuild both column indexes from the column list. */
     private void reindexColumns() {
+        shapeVersion++;
         columnIndex.clear();
         exactColumnIndex.clear();
         for (int i = 0; i < columns.size(); i++) {
             final String name = columns.get(i).getName();
             exactColumnIndex.put(name, i);
-            columnIndex.putIfAbsent(name.toUpperCase(), i);
+            columnIndex.putIfAbsent(name.toUpperCase(Locale.ROOT), i);
         }
     }
 
@@ -305,7 +716,7 @@ public class Table extends SqlObject {
      */
     private Integer indexOf(final String name) {
         final Integer exact = exactColumnIndex.get(name);
-        return exact != null ? exact : columnIndex.get(name.toUpperCase());
+        return exact != null ? exact : columnIndex.get(name.toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -318,6 +729,16 @@ public class Table extends SqlObject {
      */
     public boolean hasColumnExactly(final String name) {
         return exactColumnIndex.containsKey(name);
+    }
+
+    /**
+     * How many times the table's columns have changed: added, dropped, replaced or reordered. A fact cached about
+     * the columns of this one instance — which column a name reads — holds while this does not change.
+     *
+     * @return the count
+     */
+    public int getShapeVersion() {
+        return shapeVersion;
     }
 
     public List<TableColumn> getColumns() {
@@ -401,6 +822,48 @@ public class Table extends SqlObject {
     }
 
     /**
+     * Puts the primary key's columns in the order its declaration wrote them, which a foreign key that points
+     * at the key has to follow. A list that is not exactly the key's columns changes nothing.
+     *
+     * @param declared the key's columns as declared
+     */
+    public void orderPrimaryKey(final List<String> declared) {
+        if (declared == null || declared.size() != primaryKeys.size()) {
+            return;
+        }
+        final List<String> ordered = new ArrayList<>();
+        for (final String name : declared) {
+            for (final String key : primaryKeys) {
+                if (key.equalsIgnoreCase(name) && !ordered.contains(key)) {
+                    ordered.add(key);
+                }
+            }
+        }
+        if (ordered.size() == primaryKeys.size()) {
+            primaryKeys.clear();
+            primaryKeys.addAll(ordered);
+        }
+    }
+
+    /**
+     * Give every constraint that was declared without a name the one it keeps: its primary key, each column-level
+     * UNIQUE and each inline REFERENCES. A name is drawn the first time it is read, so the statement that declares
+     * the constraints reads them all here — its replay from the write-ahead log then draws the same names, where a
+     * name left for a later SHOW to draw would be another one after every recovery.
+     */
+    public void settleConstraintNames() {
+        primaryKeyConstraintName();
+        for (final TableColumn column : columns) {
+            if (column.isUnique()) {
+                uniqueConstraintName(column.getName());
+            }
+            if (column.hasForeignKey()) {
+                columnForeignKeyConstraintName(column.getName());
+            }
+        }
+    }
+
+    /**
      * Record the name an explicit {@code CONSTRAINT <name> PRIMARY KEY} declaration gave this table's
      * primary key. A null or blank name changes nothing, leaving the constraint to auto-name itself.
      */
@@ -419,10 +882,32 @@ public class Table extends SqlObject {
         return memoizedConstraintName(uniqueConstraintNames, columnName);
     }
 
+    /**
+     * The name of the key a foreign key referencing these columns references: a UNIQUE key of exactly these columns,
+     * or else the primary key — whose name answers too when no columns are named.
+     *
+     * @param columns the referenced columns, empty or null for the primary key
+     * @return the constraint's name, or null when the table has no such key
+     */
+    public String referencedKeyName(final List<String> columns) {
+        if (columns != null && !columns.isEmpty()
+                && !new HashSet<String>(columns).equals(new HashSet<String>(primaryKeys))) {
+            for (final UniqueConstraint unique : uniqueConstraints) {
+                if (new HashSet<String>(unique.getColumnNames()).equals(new HashSet<String>(columns))) {
+                    return unique.getConstraintName();
+                }
+            }
+            if (columns.size() == 1 && hasColumn(columns.get(0)) && getColumn(columns.get(0)).isUnique()) {
+                return uniqueConstraintName(columns.get(0));
+            }
+        }
+        return primaryKeys.isEmpty() ? null : primaryKeyConstraintName();
+    }
+
     /** Restore a persisted name for the single-column UNIQUE constraint on one column. */
     public void setUniqueConstraintName(final String columnName, final String name) {
         if (name != null && !name.isEmpty()) {
-            uniqueConstraintNames.put(columnName.toUpperCase(), name);
+            uniqueConstraintNames.put(columnName.toUpperCase(Locale.ROOT), name);
         }
     }
 
@@ -466,6 +951,33 @@ public class Table extends SqlObject {
         return false;
     }
 
+    /**
+     * Whether the table has a constraint of exactly this name: a primary or unique key, a foreign key or a check.
+     *
+     * @param constraintName the name, as stored
+     * @return whether a constraint carries it
+     */
+    public boolean hasConstraintNamed(final String constraintName) {
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equals(constraintName)) {
+                return true;
+            }
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equals(constraintName)) {
+                return true;
+            }
+        }
+        for (final CheckConstraint check : checkConstraints) {
+            if (check.getName().equals(constraintName)) {
+                return true;
+            }
+        }
+        return hasPrimaryKeyColumn() && constraintName.equals(primaryKeyConstraintName)
+            || uniqueConstraintNames.containsValue(constraintName)
+            || columnForeignKeyConstraintNames.containsValue(constraintName);
+    }
+
     /** The columns a named constraint covers, or an empty list when no constraint carries that name. */
     public List<String> constraintColumns(final String constraintName) {
         for (final UniqueConstraint unique : uniqueConstraints) {
@@ -501,7 +1013,7 @@ public class Table extends SqlObject {
     /** Restore a persisted name for the FOREIGN KEY constraint an inline {@code REFERENCES} declares. */
     public void setColumnForeignKeyConstraintName(final String columnName, final String name) {
         if (name != null && !name.isEmpty()) {
-            columnForeignKeyConstraintNames.put(columnName.toUpperCase(), name);
+            columnForeignKeyConstraintNames.put(columnName.toUpperCase(Locale.ROOT), name);
         }
     }
 
@@ -519,9 +1031,10 @@ public class Table extends SqlObject {
             }
         }
         for (final TableColumn column : columns) {
-            if (column.isUnique() && !coveredByDeclaredConstraint(column.getName())) {
+            if (column.isUnique()
+                    && (hasOwnUnique(column.getName()) || !coveredByDeclaredConstraint(column.getName()))) {
                 all.add(new UniqueConstraint(uniqueConstraintName(column.getName()),
-                    Collections.singletonList(column.getName())));
+                    Collections.singletonList(column.getName()), column.getRely()));
             }
         }
         return all;
@@ -562,7 +1075,7 @@ public class Table extends SqlObject {
     }
 
     private String memoizedConstraintName(final Map<String, String> names, final String columnName) {
-        final String key = columnName.toUpperCase();
+        final String key = columnName.toUpperCase(Locale.ROOT);
         String name = names.get(key);
         if (name == null) {
             name = ConstraintNames.generate();
@@ -582,13 +1095,27 @@ public class Table extends SqlObject {
 
     /** Forget the generated names tied to one column, so a re-added constraint gets a fresh name. */
     private void forgetColumnConstraintNames(final String columnName) {
-        final String key = columnName.toUpperCase();
+        final String key = columnName.toUpperCase(Locale.ROOT);
         uniqueConstraintNames.remove(key);
         columnForeignKeyConstraintNames.remove(key);
+        ownUniqueColumns.remove(key);
     }
 
     public void addForeignKey(final ForeignKeyConstraint foreignKey) {
         foreignKeys.add(foreignKey);
+    }
+
+    /**
+     * Put {@code replacement} where {@code existing} stands, keeping the constraints' order.
+     *
+     * @param existing    one of this table's foreign keys
+     * @param replacement the constraint to stand in its place
+     */
+    public void replaceForeignKey(final ForeignKeyConstraint existing, final ForeignKeyConstraint replacement) {
+        final int at = foreignKeys.indexOf(existing);
+        if (at >= 0) {
+            foreignKeys.set(at, replacement);
+        }
     }
 
     public void dropForeignKey(final String constraintName) {
@@ -600,15 +1127,119 @@ public class Table extends SqlObject {
         }
     }
 
+    /**
+     * Drop the PRIMARY KEY, UNIQUE or FOREIGN KEY constraint named {@code constraintName}
+     * ({@code ALTER TABLE … DROP CONSTRAINT name}); false when no such constraint carries that name.
+     */
+    public boolean dropNamedConstraint(final String constraintName) {
+        List<String> uniqueColumns = null;
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(constraintName)) {
+                uniqueColumns = unique.getColumnNames();
+                break;
+            }
+        }
+        if (uniqueColumns != null) {
+            dropUnique(uniqueColumns);
+            return true;
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equalsIgnoreCase(constraintName)) {
+                dropForeignKey(constraintName);
+                return true;
+            }
+        }
+        if (constraintName.equalsIgnoreCase(primaryKeyConstraintName())) {
+            dropPrimaryKey();
+            return true;
+        }
+        final List<String> columnUniques = columnsNamed(uniqueConstraintNames, constraintName);
+        if (!columnUniques.isEmpty()) {
+            dropUnique(columnUniques);
+            return true;
+        }
+        final List<String> columnForeignKeys = columnsNamed(columnForeignKeyConstraintNames, constraintName);
+        if (!columnForeignKeys.isEmpty()) {
+            dropForeignKeyColumns(columnForeignKeys);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * The columns of the PRIMARY KEY or UNIQUE constraint named {@code constraintName} — the key a foreign key may
+     * reference — or null when neither kind carries that name.
+     *
+     * @param constraintName the name as the statement writes it
+     * @return the key's columns, or null
+     */
+    public List<String> keyColumnsNamed(final String constraintName) {
+        if (!primaryKeys.isEmpty() && constraintName.equalsIgnoreCase(primaryKeyConstraintName())) {
+            return new ArrayList<>(primaryKeys);
+        }
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(constraintName)) {
+                return new ArrayList<>(unique.getColumnNames());
+            }
+        }
+        final List<String> columnUniques = columnsNamed(uniqueConstraintNames, constraintName);
+        return columnUniques.isEmpty() ? null : columnUniques;
+    }
+
+    private static List<String> columnsNamed(final Map<String, String> names, final String constraintName) {
+        final List<String> columns = new ArrayList<>();
+        for (final Map.Entry<String, String> entry : names.entrySet()) {
+            if (entry.getValue() != null && entry.getValue().equalsIgnoreCase(constraintName)) {
+                columns.add(entry.getKey());
+            }
+        }
+        return columns;
+    }
+
+    @Override
     public boolean isTemporary() {
         return isTemporary;
+    }
+
+    /**
+     * Whether this is a temporary table a session created: that session's own, which no other session reaches, lists
+     * or contends for (see Schema and StorageEngine). One the engine's own session created is everybody's.
+     *
+     * @return true for a session's temporary table
+     */
+    public boolean isSessionTemporary() {
+        return isTemporary && getCreatedInSession() != null;
     }
 
     public boolean isTransient() {
         return isTransient;
     }
 
+    /**
+     * Makes the table transient. A table in a transient schema or database is transient by definition (documented),
+     * so one a CLONE brings into such a container becomes transient with it, as one created there is; nothing makes a
+     * transient table permanent again.
+     */
+    public void markTransient() {
+        this.isTransient = true;
+    }
+
     /** Whether the table is an event table. */
+    /**
+     * The names a VALUES clause's columns keep in the plan when an alias list renames them — COLUMN1, COLUMN2, … —
+     * which a star argument's echo prints and a USING join matches by (live-verified: {@code FROM (VALUES (1)) AS
+     * w (id) JOIN fz USING (id)} is {@code Invalid identifier ID}); null for any other table.
+     *
+     * @return the names, or null
+     */
+    public List<String> getPlanColumnNames() {
+        return planColumnNames;
+    }
+
+    public void setPlanColumnNames(final List<String> planColumnNames) {
+        this.planColumnNames = planColumnNames;
+    }
+
     public boolean isEventTable() {
         return eventTable;
     }
@@ -689,6 +1320,335 @@ public class Table extends SqlObject {
     /** Records that a statement wrote this table's rows at {@code instant}. */
     public void markDataChanged(final Instant instant) {
         this.lastDataChange = instant;
+        dataChanges.incrementAndGet();
+    }
+
+    /** How many statements have written this table's rows: what a snapshot keeps beside {@link #getLastDataChange}. */
+    public long getDataChangeCount() {
+        return dataChanges.get();
+    }
+
+    /**
+     * Put back when a statement last wrote this table's rows and how many writes there had been. Rows a snapshot
+     * restores, or an UNDROP puts back, are written again, which would otherwise move LAST_ALTERED and the change
+     * token to that moment.
+     *
+     * @param instant the last write, or null when nothing had written the rows
+     * @param changes the count of writes
+     */
+    public void restoreDataChange(final Instant instant, final long changes) {
+        this.lastDataChange = instant;
+        dataChanges.set(changes);
+    }
+
+    /**
+     * SYSTEM$LAST_CHANGE_COMMIT_TIME's token for this table: its last write's instant in nanoseconds since the
+     * epoch, or its creation's while only statements that changed no row have written it, and 0 while no statement
+     * has (live-verified: a CREATE TABLE AS whose query holds no row, and an INSERT of none, end the 0). Below the
+     * millisecond the token counts the writes, so two writes in one millisecond give two tokens. The documentation
+     * calls the value a rough estimate of the last change time, to be compared between calls rather than read as a
+     * time.
+     *
+     * @return the token, the same until the table's rows change
+     */
+    public long getChangeToken() {
+        if (lastDataChange == null && lastDml == null) {
+            return 0L;
+        }
+        final Instant at = lastDataChange != null ? lastDataChange : getCreatedTime();
+        return at.toEpochMilli() * 1_000_000L + dataChanges.get() % 1_000_000L;
+    }
+
+    /**
+     * A DML statement ran against this table — an INSERT, UPDATE, DELETE or MERGE naming it as its target — at
+     * {@code instant}. LAST_ALTERED moves even when the statement changed no row (documented: the column "is updated
+     * even when no rows are affected by the DML statement"); the table's data, its change token and what a
+     * materialized view refreshes from, stays as it was.
+     *
+     * @param instant the statement's instant
+     */
+    public void markDmlRan(final Instant instant) {
+        if (lastDml == null || instant.isAfter(lastDml)) {
+            lastDml = instant;
+        }
+    }
+
+    /**
+     * INFORMATION_SCHEMA's LAST_ALTERED: the latest of the table's last DDL, the last write to its rows and the last
+     * DML run against it. The documentation has both DDL and DML move it, a DML at the instant its statement began,
+     * and a DML that changes no row too.
+     *
+     * @return the instant
+     */
+    public Instant getLastAlteredTime() {
+        Instant latest = getLastDdlTime();
+        if (lastDataChange != null && lastDataChange.isAfter(latest)) {
+            latest = lastDataChange;
+        }
+        if (lastDml != null && lastDml.isAfter(latest)) {
+            latest = lastDml;
+        }
+        return latest;
+    }
+
+    /**
+     * An ALTER TABLE … ADD created the named constraint: TABLE_CONSTRAINTS and REFERENTIAL_CONSTRAINTS report the
+     * statement's instant as its CREATED and LAST_ALTERED, where a constraint the CREATE TABLE declared reports the
+     * table's.
+     *
+     * @param constraintName the constraint's name
+     */
+    public void markConstraintCreated(final String constraintName) {
+        final String key = constraintName.toUpperCase(Locale.ROOT);
+        constraintCreated.remove(key);
+        constraintCreated.put(key, StatementClock.instant());
+        constraintAltered.remove(key);
+    }
+
+    /**
+     * The constraints an ALTER TABLE added, by upper-cased name, in the order they were created, the latest last:
+     * the order GET_DDL lists them in, after the ones the CREATE TABLE declared.
+     *
+     * @return the names
+     */
+    public List<String> constraintCreationOrder() {
+        return new ArrayList<>(constraintCreated.keySet());
+    }
+
+    /**
+     * An ALTER changed the named constraint — its RELY or ENFORCED property — so its LAST_ALTERED moves to the
+     * statement's instant.
+     *
+     * @param constraintName the constraint's name
+     */
+    public void markConstraintAltered(final String constraintName) {
+        constraintAltered.put(constraintName.toUpperCase(Locale.ROOT), StatementClock.instant());
+    }
+
+    /**
+     * RENAME CONSTRAINT moved a constraint to a new name: it keeps when it was created, and the rename moves its
+     * LAST_ALTERED.
+     *
+     * @param oldName the name it had
+     * @param newName the name it has now
+     */
+    public void markConstraintRenamed(final String oldName, final String newName) {
+        final Instant created = constraintCreated.remove(oldName.toUpperCase(Locale.ROOT));
+        constraintAltered.remove(oldName.toUpperCase(Locale.ROOT));
+        if (created != null) {
+            constraintCreated.put(newName.toUpperCase(Locale.ROOT), created);
+        }
+        markConstraintAltered(newName);
+    }
+
+    /**
+     * When the named constraint was created: the ALTER TABLE that added it, else the table's own creation, which is
+     * when every constraint the CREATE TABLE declared came to be.
+     *
+     * @param constraintName the constraint's name
+     * @return the instant
+     */
+    public Instant constraintCreatedTime(final String constraintName) {
+        final Instant created = constraintName == null ? null
+            : constraintCreated.get(constraintName.toUpperCase(Locale.ROOT));
+        return created != null ? created : getCreatedTime();
+    }
+
+    /**
+     * When the named constraint was last altered: the last ALTER that renamed it or changed its properties, else its
+     * creation.
+     *
+     * @param constraintName the constraint's name
+     * @return the instant
+     */
+    public Instant constraintLastAlteredTime(final String constraintName) {
+        final Instant altered = constraintName == null ? null
+            : constraintAltered.get(constraintName.toUpperCase(Locale.ROOT));
+        return altered != null ? altered : constraintCreatedTime(constraintName);
+    }
+
+    /** When a DML statement last ran against the table, whether or not it changed a row, or null when none has. */
+    public Instant getLastDml() {
+        return lastDml;
+    }
+
+    /**
+     * Put back when a DML statement last ran against the table, as a snapshot recorded it ({@link #markDmlRan}).
+     *
+     * @param instant the recorded instant, or null when none had run
+     */
+    public void restoreLastDml(final Instant instant) {
+        this.lastDml = instant;
+    }
+
+    /** When each constraint an ALTER TABLE added was created, by upper-cased name: what a snapshot keeps. */
+    public Map<String, Instant> getConstraintCreatedTimes() {
+        return new HashMap<>(constraintCreated);
+    }
+
+    /** When an ALTER last changed each constraint it changed, by upper-cased name: what a snapshot keeps. */
+    public Map<String, Instant> getConstraintAlteredTimes() {
+        return new HashMap<>(constraintAltered);
+    }
+
+    /**
+     * Put back the constraint dates a snapshot recorded ({@link #markConstraintCreated}, {@link #markConstraintAltered}).
+     * A null, from a snapshot that never recorded them, leaves every constraint dated from the table.
+     *
+     * @param created when each constraint an ALTER TABLE added was created, or null
+     * @param altered when an ALTER last changed each constraint, or null
+     */
+    public void restoreConstraintTimes(final Map<String, Instant> created, final Map<String, Instant> altered) {
+        constraintCreated.clear();
+        constraintAltered.clear();
+        if (created != null) {
+            // Put back in the order they were created, which their instants tell.
+            final List<Map.Entry<String, Instant>> byTime = new ArrayList<>(created.entrySet());
+            byTime.sort(new Comparator<Map.Entry<String, Instant>>() {
+                @Override
+                public int compare(final Map.Entry<String, Instant> a, final Map.Entry<String, Instant> b) {
+                    return a.getValue().compareTo(b.getValue());
+                }
+            });
+            for (final Map.Entry<String, Instant> entry : byTime) {
+                constraintCreated.put(entry.getKey(), entry.getValue());
+            }
+        }
+        if (altered != null) {
+            constraintAltered.putAll(altered);
+        }
+    }
+
+    /** A DDL on the table may have changed its shape, which then takes effect with it. */
+    @Override
+    public void markDdl(final String user) {
+        super.markDdl(user);
+        recordStructure();
+    }
+
+    /**
+     * Starts the table's structure history with the shape it has as its storage comes into being, unless it has one
+     * already: an undropped table keeps its own.
+     *
+     * @param millis   the storage's creation instant
+     * @param sequence the storage's place in the order snapshots are taken in
+     */
+    public void seedStructure(final long millis, final long sequence) {
+        synchronized (structureHistory) {
+            if (structureHistory.isEmpty()) {
+                structureHistory.add(new TableStructure(millis, sequence, columns, highestOrdinal));
+            }
+        }
+    }
+
+    /**
+     * Records the table's shape when a statement has changed it (an ALTER TABLE, a COMMENT, a CREATE OR ALTER), taking
+     * effect at that statement's instant. Nothing is recorded while the shape stands, nor before the table's storage
+     * exists.
+     */
+    public void recordStructure() {
+        synchronized (structureHistory) {
+            if (!structureHistory.isEmpty()
+                    && !structureHistory.get(structureHistory.size() - 1).describes(columns)) {
+                structureHistory.add(new TableStructure(StatementClock.instant().toEpochMilli(),
+                    SnapshotSequence.mark(), columns, highestOrdinal));
+            }
+        }
+    }
+
+    /**
+     * The shape the table has now, recorded first if a change has not been: the layout a snapshot taken now holds its
+     * rows in.
+     *
+     * @return the shape, or null before the table's storage exists
+     */
+    public TableStructure currentStructure() {
+        synchronized (structureHistory) {
+            recordStructure();
+            return structureHistory.isEmpty() ? null : structureHistory.get(structureHistory.size() - 1);
+        }
+    }
+
+    /**
+     * The shape the table had at an instant: the last to take effect at it, or before it for a BEFORE point.
+     *
+     * @param millis the instant
+     * @param before whether the point is just before the instant
+     * @return the shape, or null when the table keeps no history
+     */
+    public TableStructure structureAt(final long millis, final boolean before) {
+        synchronized (structureHistory) {
+            TableStructure found = structureHistory.isEmpty() ? null : structureHistory.get(0);
+            for (final TableStructure shape : structureHistory) {
+                if (before ? shape.getFromMillis() < millis : shape.getFromMillis() <= millis) {
+                    found = shape;
+                } else {
+                    break;
+                }
+            }
+            return found;
+        }
+    }
+
+    /**
+     * The shape the table had at a place in the order snapshots are taken in, which is how a STATEMENT point reads.
+     *
+     * @param sequence the place
+     * @return the shape, or null when the table keeps no history
+     */
+    public TableStructure structureUpTo(final long sequence) {
+        synchronized (structureHistory) {
+            TableStructure found = structureHistory.isEmpty() ? null : structureHistory.get(0);
+            for (final TableStructure shape : structureHistory) {
+                if (shape.getFromSequence() <= sequence) {
+                    found = shape;
+                } else {
+                    break;
+                }
+            }
+            return found;
+        }
+    }
+
+    /**
+     * The table's shapes over its history, oldest first: what a snapshot of the engine's state keeps.
+     *
+     * @return a copy of the list
+     */
+    public List<TableStructure> structureHistory() {
+        synchronized (structureHistory) {
+            return new ArrayList<>(structureHistory);
+        }
+    }
+
+    /**
+     * Puts back the shapes a snapshot of the engine's state kept, in place of the one the restore seeded: a clone as
+     * of a point before a column change takes the shape of the point, as on the engine the snapshot copies.
+     *
+     * @param shapes the shapes, oldest first; none leaves the table's own
+     */
+    public void restoreStructureHistory(final List<TableStructure> shapes) {
+        if (shapes.isEmpty()) {
+            return;
+        }
+        synchronized (structureHistory) {
+            structureHistory.clear();
+            structureHistory.addAll(shapes);
+        }
+    }
+
+    /**
+     * Forgets the shapes that gave way before a place in the snapshot order, once no time-travel point can reach
+     * back past it.
+     *
+     * @param sequence the oldest place still reachable
+     */
+    public void forgetStructureBefore(final long sequence) {
+        synchronized (structureHistory) {
+            while (structureHistory.size() > 1 && structureHistory.get(1).getFromSequence() <= sequence) {
+                structureHistory.remove(0);
+            }
+        }
     }
 
     public List<String> getClusterKeys() {
@@ -696,7 +1656,46 @@ public class Table extends SqlObject {
     }
 
     public void setClusterKeys(final List<String> clusterKeys) {
+        setClusterKeys(clusterKeys, null);
+    }
+
+    /**
+     * Sets the clustering key with the text its statement wrote, which every surface reads back.
+     *
+     * @param clusterKeys the key expressions, each as written; null or empty for no key
+     * @param written the text after CLUSTER BY as written — {@code (a, b)} or {@code linear(a, b)} — or null
+     */
+    public void setClusterKeys(final List<String> clusterKeys, final String written) {
         this.clusterKeys = clusterKeys != null ? new ArrayList<>(clusterKeys) : new ArrayList<>();
+        this.clusterByText = this.clusterKeys.isEmpty() ? null : written;
+    }
+
+    /**
+     * The clustering key as written after CLUSTER BY: the statement's own text where it is known, the keys in
+     * parentheses otherwise.
+     *
+     * @return the text, or null for a table with no key
+     */
+    public String getClusterByText() {
+        if (clusterKeys == null || clusterKeys.isEmpty()) {
+            return null;
+        }
+        return clusterByText != null ? clusterByText : "(" + String.join(", ", clusterKeys) + ")";
+    }
+
+    /**
+     * Whether a clustering key expression reads the column.
+     *
+     * @param columnName the column's canonical name
+     * @return true when a key reads it
+     */
+    public boolean isClusteringKeyColumn(final String columnName) {
+        for (final String key : getClusterKeys()) {
+            if (ExpressionColumns.reads(key, columnName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public void addColumn(final TableColumn column) {
@@ -757,46 +1756,104 @@ public class Table extends SqlObject {
         addColumn(new TableColumn(name, dataType, true, null, false, false, false));
     }
 
-    public void renameColumn(final String oldName, final String newName) {
+    /**
+     * Renames a column, which moves its name and nothing else: the column keeps its position, type, default, IDENTITY,
+     * collation, comment, foreign-key reference, masking and projection policies and tags (a rename is no way around
+     * a policy), and everything the table holds by the column's name follows it: the primary key in its order, the
+     * UNIQUE and FOREIGN KEY constraints and their names, the CHECK constraints, the clustering key, search
+     * optimization, the columns a row access or aggregation policy is attached on and the data metric functions. A
+     * foreign key in another table naming this column is the caller's to follow ({@code ColumnRenames}).
+     *
+     * @param oldName the column, as written
+     * @param newName its new name
+     * @return the column's name before the rename, as the table spelled it
+     */
+    public String renameColumn(final String oldName, final String newName) {
         final Integer index = indexOf(oldName);
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", oldName));
         }
         if (exactColumnIndex.containsKey(newName)) {
             // The account treats the rename target as an OBJECT, spelled table.column.
-            throw new RuntimeException(SqlCompilationError.of("Object '" + getName().toUpperCase()
-                + "." + newName.toUpperCase() + "' already exists."));
+            throw new RuntimeException(SqlCompilationError.of("Object '" + getName().toUpperCase(Locale.ROOT)
+                + "." + newName.toUpperCase(Locale.ROOT) + "' already exists."));
         }
 
         final TableColumn oldColumn = columns.get(index);
-        final TableColumn newColumn = new TableColumn(newName, oldColumn.getDataType(), oldColumn.isNullable(),
-                oldColumn.getDefaultValue(), oldColumn.isPrimaryKey(), oldColumn.isUnique(),
-                oldColumn.isAutoIncrement());
-        newColumn.setComment(oldColumn.getComment());
-        // A rename moves the column's name, not its position.
-        newColumn.setOrdinalPosition(oldColumn.getOrdinalPosition());
-
-        columns.set(index, newColumn);
+        final String was = oldColumn.getName();
+        columns.set(index, oldColumn.renamedCopy(newName));
         reindexColumns();
 
-        // Update primary keys list
-        if (oldColumn.isPrimaryKey()) {
-            primaryKeys.remove(oldName);
-            primaryKeys.add(newName);
+        // The key keeps its column order: a composite key renamed in its first column still starts with it.
+        for (int i = 0; i < primaryKeys.size(); i++) {
+            if (primaryKeys.get(i).equalsIgnoreCase(was)) {
+                primaryKeys.set(i, newName);
+            }
         }
 
         // Renaming a column does not replace its constraints, so their generated names move with it.
-        moveConstraintName(uniqueConstraintNames, oldName, newName);
-        moveConstraintName(columnForeignKeyConstraintNames, oldName, newName);
-        for (final UniqueConstraint declared : uniqueConstraints) {
-            declared.renameColumn(oldName, newName);
+        moveConstraintName(uniqueConstraintNames, was, newName);
+        moveConstraintName(columnForeignKeyConstraintNames, was, newName);
+        if (ownUniqueColumns.remove(was.toUpperCase(Locale.ROOT))) {
+            ownUniqueColumns.add(newName.toUpperCase(Locale.ROOT));
         }
+        for (final UniqueConstraint declared : uniqueConstraints) {
+            declared.renameColumn(was, newName);
+        }
+        for (int i = 0; i < foreignKeys.size(); i++) {
+            foreignKeys.set(i, foreignKeys.get(i).withColumnRenamed(was, newName));
+        }
+        for (int i = 0; i < checkConstraints.size(); i++) {
+            final CheckConstraint check = checkConstraints.get(i);
+            checkConstraints.set(i, new CheckConstraint(check.getName(),
+                ExpressionColumns.renamed(check.getExpression(), was, newName), check.isAutoNamed(),
+                renamedIn(check.getReferencedColumns(), was, newName)));
+        }
+        final List<String> clustered = new ArrayList<>();
+        for (final String key : getClusterKeys()) {
+            clustered.add(ExpressionColumns.renamed(key, was, newName));
+        }
+        if (!clustered.equals(getClusterKeys())) {
+            clusterByText = null;
+        }
+        clusterKeys = clustered;
+        for (int i = 0; i < searchOptimization.size(); i++) {
+            final SearchOptimizationExpression expression = searchOptimization.get(i);
+            searchOptimization.set(i, new SearchOptimizationExpression(expression.getExpressionId(),
+                expression.getMethod(), ExpressionColumns.renamed(expression.getTarget(), was, newName),
+                expression.getTargetDataType()));
+        }
+        rowAccessPolicyColumns = renamedIn(rowAccessPolicyColumns, was, newName);
+        aggregationEntityKey = renamedIn(aggregationEntityKey, was, newName);
+        // A conditional masking policy's USING columns, on any column of the table, the renamed one's own included.
+        for (final TableColumn column : columns) {
+            if (!column.getMaskingPolicyArguments().isEmpty()) {
+                column.setMaskingPolicyArguments(renamedIn(column.getMaskingPolicyArguments(), was, newName));
+            }
+        }
+        for (int i = 0; i < dataMetrics.size(); i++) {
+            final DataMetricAttachment metric = dataMetrics.get(i);
+            final DataMetricAttachment renamed = new DataMetricAttachment(metric.getMetricName(),
+                renamedIn(metric.getColumns(), was, newName));
+            renamed.setSuspended(metric.isSuspended());
+            dataMetrics.set(i, renamed);
+        }
+        return was;
+    }
+
+    /** The names with {@code oldName} replaced by {@code newName}, matched as a column is (ignoring case). */
+    private static List<String> renamedIn(final List<String> names, final String oldName, final String newName) {
+        final List<String> renamed = new ArrayList<>(names.size());
+        for (final String name : names) {
+            renamed.add(name.equalsIgnoreCase(oldName) ? newName : name);
+        }
+        return renamed;
     }
 
     private void moveConstraintName(final Map<String, String> names, final String oldName, final String newName) {
-        final String existing = names.remove(oldName.toUpperCase());
+        final String existing = names.remove(oldName.toUpperCase(Locale.ROOT));
         if (existing != null) {
-            names.put(newName.toUpperCase(), existing);
+            names.put(newName.toUpperCase(Locale.ROOT), existing);
         }
     }
 
@@ -807,13 +1864,7 @@ public class Table extends SqlObject {
         }
 
         final TableColumn oldColumn = columns.get(index);
-        final TableColumn newColumn = new TableColumn(oldColumn.getName(), newDataType, oldColumn.isNullable(),
-                oldColumn.getDefaultValue(), oldColumn.isPrimaryKey(), oldColumn.isUnique(),
-                oldColumn.isAutoIncrement());
-        newColumn.setComment(oldColumn.getComment());
-        newColumn.setCollation(oldColumn.getCollation());
-
-        columns.set(index, newColumn);
+        columns.set(index, copyColumn(oldColumn, newDataType, oldColumn.isPrimaryKey(), oldColumn.isUnique()));
     }
 
     public void addPrimaryKeyConstraint(final List<String> columnNames) {
@@ -831,24 +1882,17 @@ public class Table extends SqlObject {
         }
     }
 
-    // Rebuild a column with different PRIMARY KEY / UNIQUE flags (both are final on TableColumn), carrying
-    // over the rest of its metadata — comment, collation, identity seed/step, foreign-key reference and
-    // masking policy — so adding or dropping one constraint never silently discards another property of
-    // the column it shares.
     private TableColumn copyColumnWithConstraintFlags(final TableColumn oldColumn,
                                                       final boolean primaryKey, final boolean unique) {
-        final TableColumn newColumn = new TableColumn(oldColumn.getName(), oldColumn.getDataType(),
-                oldColumn.isNullable(), oldColumn.getDefaultValue(), primaryKey, unique,
-                oldColumn.isAutoIncrement(), oldColumn.getIdentityStart(), oldColumn.getIdentityIncrement());
-        newColumn.setComment(oldColumn.getComment());
-        newColumn.setCollation(oldColumn.getCollation());
-        newColumn.setReferencedTable(oldColumn.getReferencedTable());
-        newColumn.setReferencedColumn(oldColumn.getReferencedColumn());
-        newColumn.setOnDelete(oldColumn.getOnDelete());
-        newColumn.setOnUpdate(oldColumn.getOnUpdate());
-        newColumn.setRely(oldColumn.getRely());
-        newColumn.setMaskingPolicyName(oldColumn.getMaskingPolicyName());
-        return newColumn;
+        return copyColumn(oldColumn, oldColumn.getDataType(), primaryKey, unique);
+    }
+
+    // Rebuild a column with a different type or PRIMARY KEY / UNIQUE flags (all final on TableColumn),
+    // carrying over the rest of its metadata — policies and tags included — so changing one property never
+    // silently discards another, and the column keeps its place in INFORMATION_SCHEMA.COLUMNS.
+    private TableColumn copyColumn(final TableColumn oldColumn, final DataType dataType,
+                                   final boolean primaryKey, final boolean unique) {
+        return oldColumn.rebuiltCopy(dataType, oldColumn.isNullable(), primaryKey, unique);
     }
 
     public void dropPrimaryKey() {
@@ -860,6 +1904,7 @@ public class Table extends SqlObject {
         }
         primaryKeys.clear();
         primaryKeyConstraintName = null;   // a re-added PRIMARY KEY is a new constraint, with a new name
+        primaryKeyRely = null;
     }
 
     public void dropUnique(final List<String> columnNames) {
@@ -882,7 +1927,8 @@ public class Table extends SqlObject {
                 columns.set(index, copyColumnWithConstraintFlags(oldColumn, oldColumn.isPrimaryKey(), false));
             }
         }
-        uniqueConstraintNames.remove(columnName.toUpperCase());
+        uniqueConstraintNames.remove(columnName.toUpperCase(Locale.ROOT));
+        ownUniqueColumns.remove(columnName.toUpperCase(Locale.ROOT));
     }
 
     // A UNIQUE constraint is all-or-nothing: once one of its columns stops being unique (dropped, or named
@@ -915,7 +1961,7 @@ public class Table extends SqlObject {
                 final TableColumn col = columns.get(index);
                 col.setReferencedTable(null);
                 col.setReferencedColumn(null);
-                columnForeignKeyConstraintNames.remove(colName.toUpperCase());
+                columnForeignKeyConstraintNames.remove(colName.toUpperCase(Locale.ROOT));
             }
         }
     }
@@ -923,7 +1969,7 @@ public class Table extends SqlObject {
     private List<String> upperCased(final List<String> names) {
         final List<String> out = new ArrayList<>(names.size());
         for (final String n : names) {
-            out.add(n.toUpperCase());
+            out.add(n.toUpperCase(Locale.ROOT));
         }
         return out;
     }
@@ -951,6 +1997,129 @@ public class Table extends SqlObject {
             }
         }
         uniqueConstraints.add(constraint);
+    }
+
+    /** The PRIMARY KEY's own RELY: true for RELY, false for NORELY, null when unspecified. */
+    public Boolean getPrimaryKeyRely() {
+        return primaryKeyRely;
+    }
+
+    /** Sets the PRIMARY KEY's own RELY, as its declaration or an ALTER … CONSTRAINT writes it. */
+    public void setPrimaryKeyRely(final Boolean rely) {
+        this.primaryKeyRely = rely;
+    }
+
+    /**
+     * Records a column's own UNIQUE: a key of its own, beside any table-level UNIQUE that spans the column too.
+     *
+     * @param columnName the column
+     */
+    public void markOwnUnique(final String columnName) {
+        ownUniqueColumns.add(columnName.toUpperCase(Locale.ROOT));
+    }
+
+    /** Whether the column's own definition declared UNIQUE. */
+    public boolean hasOwnUnique(final String columnName) {
+        return ownUniqueColumns.contains(columnName.toUpperCase(Locale.ROOT));
+    }
+
+    /** The columns whose own definition declared UNIQUE, upper-cased — for persistence. */
+    public List<String> getOwnUniqueColumns() {
+        return new ArrayList<>(ownUniqueColumns);
+    }
+
+    /**
+     * Drops every UNIQUE key whose columns, in order, are the primary key's: the primary key takes its place, a key
+     * declared beside it or one it is added over alike, and the name of the key it replaced is free again
+     * (live-verified). A key over the same columns in another order stays.
+     */
+    public void absorbUniqueKeysIntoPrimaryKey() {
+        if (primaryKeys.isEmpty()) {
+            return;
+        }
+        final List<String> key = upperCased(primaryKeys);
+        final List<String> released = new ArrayList<>();
+        for (int i = uniqueConstraints.size() - 1; i >= 0; i--) {
+            if (upperCased(uniqueConstraints.get(i).getColumnNames()).equals(key)) {
+                released.addAll(uniqueConstraints.remove(i).getColumnNames());
+            }
+        }
+        if (key.size() == 1 && ownUniqueColumns.remove(key.get(0))) {
+            released.add(primaryKeys.get(0));
+            uniqueConstraintNames.remove(key.get(0));
+        }
+        for (final String column : released) {
+            if (!hasOwnUnique(column) && !coveredByAnyDeclared(column)) {
+                clearUniqueFlag(column);
+            }
+        }
+    }
+
+    private boolean coveredByAnyDeclared(final String columnName) {
+        for (final UniqueConstraint declared : uniqueConstraints) {
+            if (declared.covers(columnName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Refuses a UNIQUE key an ALTER TABLE … ADD would put over the columns of a key the table has, in the same order
+     * (live-verified): the primary key's ({@code Primary Key with the signature already exists on the table}) or
+     * another unique key's ({@code constraint with the same signature already exists on table 'T'}).
+     *
+     * @param columnNames the new key's columns, in order
+     */
+    public void requireNewUniqueSignature(final List<String> columnNames) {
+        final List<String> key = upperCased(columnNames);
+        if (!primaryKeys.isEmpty() && upperCased(primaryKeys).equals(key)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Primary Key with the signature already exists on the table"));
+        }
+        for (final UniqueConstraint unique : getUniqueConstraints()) {
+            if (upperCased(unique.getColumnNames()).equals(key)) {
+                throw new RuntimeException(SqlCompilationError.duplicateConstraintSignature(
+                    getName().toUpperCase(Locale.ROOT)));
+            }
+        }
+    }
+
+    /**
+     * Sets the RELY of the key named — ALTER TABLE … {ALTER | MODIFY} CONSTRAINT name RELY | NORELY — on that key
+     * alone: the primary key, a table-level UNIQUE or FOREIGN KEY, or the key a column's own definition declared.
+     *
+     * @param constraintName the key's name
+     * @param rely           RELY or NORELY
+     * @return whether a key carries that name
+     */
+    public boolean setKeyRely(final String constraintName, final boolean rely) {
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(constraintName)) {
+                unique.setRely(rely);
+                return true;
+            }
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equalsIgnoreCase(constraintName)) {
+                replaceForeignKey(foreignKey, new ForeignKeyConstraint(foreignKey.getConstraintName(),
+                    foreignKey.getColumnNames(), foreignKey.getReferencedTable(), foreignKey.getReferencedColumns(),
+                    foreignKey.getOnDelete(), foreignKey.getOnUpdate(), rely));
+                return true;
+            }
+        }
+        if (!primaryKeys.isEmpty() && constraintName.equalsIgnoreCase(primaryKeyConstraintName())) {
+            primaryKeyRely = rely;
+            return true;
+        }
+        final List<String> columnKeys = columnsNamed(uniqueConstraintNames, constraintName);
+        columnKeys.addAll(columnsNamed(columnForeignKeyConstraintNames, constraintName));
+        for (final String column : columnKeys) {
+            if (hasColumn(column)) {
+                getColumn(column).setRely(rely);
+            }
+        }
+        return !columnKeys.isEmpty();
     }
 
     @Override

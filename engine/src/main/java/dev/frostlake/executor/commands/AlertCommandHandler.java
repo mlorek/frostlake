@@ -24,10 +24,12 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AlertState;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
@@ -72,6 +74,7 @@ public final class AlertCommandHandler {
     public Object create(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName(0));
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        schema.requireCreatable(Privilege.CREATE_ALERT);
         final String name = parts[parts.length - 1];
         final FrostlakeParser.AlertDefinitionContext definition = ctx.alertDefinition();
         if (ctx.or_alter() != null && definition.CLONE() != null) {
@@ -89,6 +92,8 @@ public final class AlertCommandHandler {
                 WarehouseReference.requireForTask(catalog, warehouseName(property.warehouseClause()));
             }
         }
+        // Asked once the warehouse is known to be there (live-verified).
+        queryExecutor.requireCreatePrivilege(Privilege.CREATE_ALERT, schema);
         if (schema.hasAlert(name)) {
             if (ctx.or_alter() != null) {
                 alterInPlace(schema, schema.getAlert(name), definition);
@@ -101,7 +106,8 @@ public final class AlertCommandHandler {
                 return null;
             }
             if (ctx.or_replace() == null) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + name + "' already exists."));
+                throw DDLCommandHandler.namedAsWritten(new NameTakenException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(name) + "' already exists.")), parts);
             }
         }
         final Alert alert;
@@ -110,7 +116,8 @@ public final class AlertCommandHandler {
             final Schema sourceSchema = catalog.requireOwningSchema(QualifiedName.of(sourceParts));
             alert = sourceSchema.getAlert(sourceParts[sourceParts.length - 1]).copy(name);
         } else {
-            alert = new Alert(name, sourceText(definition.alertCondition()), sourceText(definition.taskBody()));
+            alert = new Alert(name, sourceText(definition.alertCondition()),
+                ParseTreeText.taskBodyText(definition.taskBody()));
             applyProperties(catalog, alert, definition.alertProperty());
         }
         if (schema.hasAlert(name)) {
@@ -147,7 +154,7 @@ public final class AlertCommandHandler {
         alert.setSuspendAfterNumFailures(null);
         applyProperties(catalog, alert, definition.alertProperty());
         alert.setCondition(sourceText(definition.alertCondition()));
-        alert.setAction(sourceText(definition.taskBody()));
+        alert.setAction(ParseTreeText.taskBodyText(definition.taskBody()));
         rescheduleIfChanged(schema, alert, schedule);
     }
 
@@ -190,7 +197,8 @@ public final class AlertCommandHandler {
 
     private static String warehouseName(final FrostlakeParser.WarehouseClauseContext clause) {
         if (clause.STRING_LITERAL() != null) {
-            return SqlStringLiterals.decode(clause.STRING_LITERAL().getText());
+            // The text names the warehouse as an identifier reference does.
+            return SqlIdentifiers.canonicalText(SqlStringLiterals.decode(clause.STRING_LITERAL().getText()));
         }
         if (clause.identifier() != null) {
             return SqlIdentifiers.canonical(clause.identifier());
@@ -251,7 +259,7 @@ public final class AlertCommandHandler {
         } else if (action.CONDITION() != null) {
             alert.setCondition(sourceText(action.alertCondition()));
         } else if (action.ACTION() != null) {
-            alert.setAction(sourceText(action.taskBody()));
+            alert.setAction(ParseTreeText.taskBodyText(action.taskBody()));
         }
     }
 
@@ -273,6 +281,9 @@ public final class AlertCommandHandler {
             : ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String name = parts[parts.length - 1];
+        if (DropPurge.written(ctx.dropBehavior()) && (ifExists || schema.hasAlert(name))) {
+            throw DropPurge.refusal(parts);
+        }
         if (!schema.hasAlert(name)) {
             if (ifExists) {
                 ConditionalDdlOutcome.dropSkipped();

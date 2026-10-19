@@ -28,4 +28,6 @@ public class UniqueConstraintSnapshot implements Serializable {
 
     public String constraintName;
     public List<String> columnNames;
+    // The key's own RELY; null when unspecified, and on snapshots that kept RELY on the columns.
+    public Boolean rely;
 }

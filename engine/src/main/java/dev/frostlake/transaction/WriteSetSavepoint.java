@@ -16,6 +16,7 @@
 
 package dev.frostlake.transaction;
 
+import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.storage.Row;
 
 import java.util.HashMap;
@@ -34,6 +35,10 @@ import java.util.Set;
  * <p>A null pre-image list/map/set means the table had NO entry of that kind before the statement
  * (restore removes the entry). The lock map is snapshotted eagerly — it holds one entry per touched
  * table, never per row.
+ *
+ * <p>A savepoint of a statement that completed is kept by its write set for a while (see
+ * {@link TransactionWriteSet#overlayRowsAsOf}): the pre-images are the tables as the transaction saw them before
+ * the statement, which is what a time-travel read naming one of the transaction's own statements reads.
  */
 public final class WriteSetSavepoint {
 
@@ -43,8 +48,90 @@ public final class WriteSetSavepoint {
     private final Map<String, Set<Long>> deletesBefore = new HashMap<>();
     private final Map<String, TableLock> locksBefore;
 
-    WriteSetSavepoint(final Map<String, TableLock> lockSnapshot) {
+    /** Where the statement falls among the transaction's statements, from 1. */
+    private final long ordinal;
+
+    /** Whether a statement began a savepoint of its own while this one's was running. */
+    private boolean superseded;
+
+    /** The streams the transaction's consuming reads had registered when the statement began, or null. */
+    private Map<Stream, StreamReadScope> streamReadsBefore;
+
+    private int outcomesBefore = -1;
+
+    WriteSetSavepoint(final Map<String, TableLock> lockSnapshot, final long ordinal) {
         this.locksBefore = lockSnapshot;
+        this.ordinal = ordinal;
+    }
+
+    long ordinal() {
+        return ordinal;
+    }
+
+    /**
+     * Whether the statement ran statements with savepoints of their own — a block's, a procedure's, a handler's.
+     * Each of those undid itself when it failed and keeps its changes when it did not, so the statement that ran
+     * them has nothing left to undo.
+     */
+    public boolean isSuperseded() {
+        return superseded;
+    }
+
+    void markSuperseded() {
+        superseded = true;
+    }
+
+    /**
+     * Notes the streams the transaction's consuming reads had registered when the statement began, which a failure
+     * of the statement puts back: a stream it read is not advanced by the transaction's COMMIT.
+     *
+     * @param registered the registrations, copied
+     */
+    void noteStreamReads(final Map<Stream, StreamReadScope> registered) {
+        this.streamReadsBefore = registered;
+    }
+
+    /**
+     * The streams registered when the statement began (see {@link #noteStreamReads}).
+     *
+     * @return the registrations, or null when none were noted
+     */
+    Map<Stream, StreamReadScope> streamReadsBefore() {
+        return streamReadsBefore;
+    }
+
+    /**
+     * Notes how many outcomes the transaction's statements had registered when the statement began, which a failure
+     * of the statement takes back down to.
+     *
+     * @param count the outcomes registered
+     */
+    void noteOutcomes(final int count) {
+        this.outcomesBefore = count;
+    }
+
+    /**
+     * The outcomes registered when the statement began (see {@link #noteOutcomes}).
+     *
+     * @return their count, or -1 when none was noted
+     */
+    int outcomesBefore() {
+        return outcomesBefore;
+    }
+
+    /** How many rows and row ids the pre-images hold: what keeping this savepoint costs. */
+    long heldEntries() {
+        long held = 0;
+        for (final List<Row> rows : insertsBefore.values()) {
+            held += rows == null ? 0 : rows.size();
+        }
+        for (final Map<Long, Row> rows : updatesBefore.values()) {
+            held += rows == null ? 0 : rows.size();
+        }
+        for (final Set<Long> ids : deletesBefore.values()) {
+            held += ids == null ? 0 : ids.size();
+        }
+        return held;
     }
 
     boolean isTouched(final String table) {
@@ -77,5 +164,19 @@ public final class WriteSetSavepoint {
 
     Map<String, TableLock> locksBefore() {
         return locksBefore;
+    }
+
+    /** Follows tables whose storage moved (see {@link TransactionWriteSet#retarget}). */
+    void retarget(final Map<String, String> moved) {
+        final Set<String> touchedNow = new HashSet<>();
+        for (final String table : touched) {
+            touchedNow.add(moved.containsKey(table) ? moved.get(table) : table);
+        }
+        touched.clear();
+        touched.addAll(touchedNow);
+        MovedTables.rekey(insertsBefore, moved);
+        MovedTables.rekey(updatesBefore, moved);
+        MovedTables.rekey(deletesBefore, moved);
+        MovedTables.rekey(locksBefore, MovedTables.upperCased(moved));
     }
 }

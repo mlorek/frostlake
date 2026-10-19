@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -73,8 +74,53 @@ public class ForeignKeyConstraint {
         return referencedTable;
     }
 
+    /**
+     * This constraint naming another parent table: the same name, columns, actions and RELY. A clone's foreign key
+     * refers to the clone's copy of a parent cloned with it (see {@code CloneReferences}).
+     *
+     * @param table the parent table, as a reference is written
+     * @return the copy
+     */
+    public ForeignKeyConstraint referencing(final String table) {
+        return new ForeignKeyConstraint(constraintName, columnNames, table, referencedColumns, getOnDelete(),
+            getOnUpdate(), rely);
+    }
+
     public List<String> getReferencedColumns() {
         return referencedColumns;
+    }
+
+    /**
+     * This constraint after one of its own columns was renamed: the same name, parent, actions and RELY.
+     *
+     * @param oldName the column's name before the rename
+     * @param newName its name after it
+     * @return the copy
+     */
+    public ForeignKeyConstraint withColumnRenamed(final String oldName, final String newName) {
+        return new ForeignKeyConstraint(constraintName, renamedIn(columnNames, oldName, newName), referencedTable,
+            referencedColumns, getOnDelete(), getOnUpdate(), rely);
+    }
+
+    /**
+     * This constraint after a column of its parent table was renamed: the referenced column follows the rename.
+     *
+     * @param oldName the parent column's name before the rename
+     * @param newName its name after it
+     * @return the copy
+     */
+    public ForeignKeyConstraint withReferencedColumnRenamed(final String oldName, final String newName) {
+        return new ForeignKeyConstraint(constraintName, columnNames, referencedTable,
+            renamedIn(referencedColumns, oldName, newName), getOnDelete(), getOnUpdate(), rely);
+    }
+
+    /** The names with {@code oldName} replaced by {@code newName}, matched as a column is (ignoring case). */
+    private static List<String> renamedIn(final List<String> names, final String oldName, final String newName) {
+        final List<String> renamed = new ArrayList<>(names.size());
+        for (final String name : names) {
+            renamed.add(name.equalsIgnoreCase(oldName) ? newName : name);
+        }
+        return renamed;
     }
 
     public String getOnDelete() {

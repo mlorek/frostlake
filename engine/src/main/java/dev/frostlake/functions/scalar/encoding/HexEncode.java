@@ -43,6 +43,10 @@ public class HexEncode extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
         final char[] digits = args.size() > 1 && args.get(1) != null
             ? digitsFor(args.get(1)) : HEX_UPPER;
@@ -56,7 +60,7 @@ public class HexEncode extends BuiltInFunction {
 
     /** The digit table the case flag selects; anything but 0 or 1 is out of range. */
     private char[] digitsFor(final Object caseFlag) {
-        final int chosen = new java.math.BigDecimal(caseFlag.toString()).intValue();
+        final int chosen = SharedFunctionHelpers.numberArgument(caseFlag).intValue();
         if (chosen == 1) {
             return HEX_UPPER;
         }

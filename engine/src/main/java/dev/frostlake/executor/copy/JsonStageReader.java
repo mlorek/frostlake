@@ -22,13 +22,15 @@ import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * JSON staged-file reader: a top-level array yields one record per element, otherwise the file is read as
- * newline-delimited JSON (one record per non-blank line).
+ * JSON staged-file reader: a file is read as newline-delimited JSON, one record per non-blank line, and a top-level
+ * array is one record — or, under STRIP_OUTER_ARRAY = TRUE, one record per element (live-verified). The reader's
+ * own {@link #readRecords(Path)} strips the outer array, as callers that know no file format read it.
  */
 public class JsonStageReader implements StageFileReader {
 
@@ -36,13 +38,58 @@ public class JsonStageReader implements StageFileReader {
 
     @Override
     public List<JsonNode> readRecords(final Path file) throws IOException {
-        final String text = StagedFileIo.readString(file).trim();
+        return readRecords(file, true);
+    }
+
+    /**
+     * A file's records under the format's STRIP_OUTER_ARRAY.
+     *
+     * @param file             the file
+     * @param stripOuterArray  whether a top-level array's elements are records of their own
+     * @return the records
+     * @throws IOException when the file cannot be read
+     */
+    public List<JsonNode> readRecords(final Path file, final boolean stripOuterArray) throws IOException {
+        return records(StagedFileIo.readString(file).trim(), stripOuterArray, file);
+    }
+
+    /**
+     * A file's records under the format's STRIP_OUTER_ARRAY and REPLACE_INVALID_CHARACTERS: a byte that is no part of
+     * UTF-8 refuses the file in the account's words — {@code Error parsing JSON: invalid UTF-8 sequence: 0xE9}, the
+     * file, the line and the byte's character within it — unless the option reads each such sequence as U+FFFD
+     * (live-verified).
+     *
+     * @param file             the file
+     * @param stripOuterArray  whether a top-level array's elements are records of their own
+     * @param replaceInvalid   whether REPLACE_INVALID_CHARACTERS = TRUE
+     * @param shownName        the file as the refusal names it
+     * @return the records
+     * @throws IOException when the file cannot be read
+     */
+    public List<JsonNode> readRecords(final Path file, final boolean stripOuterArray, final boolean replaceInvalid,
+                                      final String shownName) throws IOException {
+        final String marked = StagedFileIo.readMarked(file, StandardCharsets.UTF_8);
+        final int unreadable = StagedFileIo.firstUnreadable(marked);
+        if (unreadable >= 0 && !replaceInvalid) {
+            final int lineStart = marked.lastIndexOf('\n', unreadable - 1) + 1;
+            int line = 1;
+            for (int i = 0; i < lineStart; i++) {
+                line += marked.charAt(i) == '\n' ? 1 : 0;
+            }
+            throw new RuntimeException("Error parsing JSON: invalid UTF-8 sequence: "
+                + StagedFileIo.unreadableByte(marked.charAt(unreadable)) + "\n  File '" + shownName + "', line " + line
+                + ", character " + (unreadable - lineStart + 1) + "\n  Row 0, column $1");
+        }
+        return records(StagedFileIo.unreadableReplaced(marked).trim(), stripOuterArray, file);
+    }
+
+    private static List<JsonNode> records(final String text, final boolean stripOuterArray, final Path file) {
         final List<JsonNode> records = new ArrayList<>();
         if (text.isEmpty()) {
             return records;
         }
         try {
-            if (text.charAt(0) == '[') {
+            if (text.charAt(0) == '[' && stripOuterArray) {
                 final JsonNode array = MAPPER.readTree(text);
                 for (int i = 0; i < array.size(); i++) {
                     records.add(array.get(i));

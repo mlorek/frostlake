@@ -16,6 +16,7 @@
 
 package dev.frostlake;
 
+import dev.frostlake.executor.StatementCount;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.jdbc.DirectConnection;
 import dev.frostlake.jdbc.DirectResultSet;
@@ -43,6 +44,7 @@ import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * A {@link DatabaseEngine} whose SQL surface ({@code execute} / {@code executeQuery} /
@@ -80,14 +82,6 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
     public FrostlakeJdbcEngine() {
         // The harness reads this engine's settings directly, so its connection shares them.
         this.connection = new DirectConnection(this, false);
-        // The suite freely passes multi-statement scripts through engine.execute, and the driver
-        // now runs the real driver's MULTI_STATEMENT_COUNT gate — lift it for the harness the way
-        // a real caller would, which also exercises the driver's ALTER SESSION detector.
-        try (final Statement bootstrap = connection.createStatement()) {
-            bootstrap.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
-        } catch (final SQLException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     @Override
@@ -108,6 +102,12 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
         String queryId = null;
         try (final Statement statement = connection.createStatement()) {
             syncEngineToConnection();
+            // The suite freely passes multi-statement scripts through engine.execute, and the driver runs the real
+            // driver's MULTI_STATEMENT_COUNT gate: each submission declares its own statement count, as the live
+            // harness's does, so a script passes the gate and the session's count stays the session's — an
+            // EXECUTE IMMEDIATE among the statements is held to the count the request declares.
+            // A text of no statement declares none, and is answered as the empty statement it is.
+            ((DirectStatement) statement).setParameter("MULTI_STATEMENT_COUNT", StatementCount.countStatements(sql));
             statement.execute(sql);
             queryId = ((DirectStatement) statement).getQueryId();
             // Walked by what each position HOLDS, not by what getMoreResults() answered: like Snowflake's
@@ -220,7 +220,7 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
         final boolean[] semiStructured = new boolean[columnCount];
         final boolean[] interval = new boolean[columnCount];
         for (int i = 1; i <= columnCount; i++) {
-            final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase();
+            final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase(Locale.ROOT);
             semiStructured[i - 1] = typeName.startsWith("VARIANT") || typeName.startsWith("OBJECT")
                 || typeName.startsWith("ARRAY");
             interval[i - 1] = typeName.startsWith("INTERVAL");

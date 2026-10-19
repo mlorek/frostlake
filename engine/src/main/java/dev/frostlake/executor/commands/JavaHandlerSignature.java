@@ -121,11 +121,14 @@ final class JavaHandlerSignature {
         }
         if (argumentTypes != null) {
             for (int i = 0; i < parameters.length && i < argumentTypes.size(); i++) {
-                final String refusal = refusal(argumentTypes.get(i), parameters[i], true);
+                // A list is paired as a map is: an OBJECT's alone, and any other type is refused in the words the
+                // account has for the map (live-verified).
+                final Class<?> judged = "java.util.List".equals(parameters[i].getName()) ? Map.class : parameters[i];
+                final String refusal = refusal(argumentTypes.get(i), judged, true);
                 if (refusal != null) {
                     throw new RuntimeException(refusal.isEmpty()
                         ? "Snowflake type " + storage(argumentTypes.get(i)) + "{nullable} is not supported as input"
-                            + " to argument at index " + i + " with Java type " + SUPPORTED.get(parameters[i].getName())
+                            + " to argument at index " + i + " with Java type " + SUPPORTED.get(judged.getName())
                             + where
                         : refusal + where);
                 }

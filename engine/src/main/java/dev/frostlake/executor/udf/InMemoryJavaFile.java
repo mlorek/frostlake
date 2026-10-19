@@ -20,18 +20,28 @@ import java.net.URI;
 import javax.tools.SimpleJavaFileObject;
 
 /**
- * In-memory Java file object
+ * An inline body as the compiler's source: one compilation unit named {@code InlineCode.java} whatever class
+ * it declares, which is the name the compiler's report gives a fault's place by (live-verified).
  */
 public class InMemoryJavaFile extends SimpleJavaFileObject {
     private final String sourceCode;
 
-    public InMemoryJavaFile(final String className, final String sourceCode) {
-        super(URI.create("string:///" + className.replace('.', '/') + Kind.SOURCE.extension), Kind.SOURCE);
+    /**
+     * @param sourceCode the body
+     */
+    public InMemoryJavaFile(final String sourceCode) {
+        super(URI.create("string:///InlineCode" + Kind.SOURCE.extension), Kind.SOURCE);
         this.sourceCode = sourceCode;
     }
 
     @Override
     public CharSequence getCharContent(final boolean ignoreEncodingErrors) {
         return sourceCode;
+    }
+
+    /** A public class of any name may stand in the unit: the body is not a file named for its class. */
+    @Override
+    public boolean isNameCompatible(final String simpleName, final Kind kind) {
+        return kind == Kind.SOURCE;
     }
 }

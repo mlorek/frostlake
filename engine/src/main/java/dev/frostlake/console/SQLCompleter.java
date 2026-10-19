@@ -28,6 +28,7 @@ import org.jline.reader.ParsedLine;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * SQL auto-completion for console client
@@ -92,13 +93,13 @@ public class SQLCompleter implements Completer {
             return;
         }
 
-        final String wordUpper = word.toUpperCase();
+        final String wordUpper = word.toUpperCase(Locale.ROOT);
 
         // Get the text before the current word to determine context
         final int wordStart = line.wordIndex();
         final String beforeWord = wordStart > 0 ? buffer.substring(0, wordStart).trim() : "";
         final String[] tokens = beforeWord.split("\\s+");
-        final String lastToken = tokens.length > 0 ? tokens[tokens.length - 1].toUpperCase() : "";
+        final String lastToken = tokens.length > 0 ? tokens[tokens.length - 1].toUpperCase(Locale.ROOT) : "";
 
         // Determine what type of completion to provide based on context
         final boolean afterFrom = containsToken(tokens, "FROM");
@@ -173,7 +174,7 @@ public class SQLCompleter implements Completer {
                     if (schema != null) {
                         for (final Table table : schema.getTables()) {
                             final String tableName = table.getName();
-                            if (tableName.toUpperCase().startsWith(prefix)) {
+                            if (tableName.toUpperCase(Locale.ROOT).startsWith(prefix)) {
                                 candidates.add(new Candidate(tableName, tableName, "table", null, null, null, true));
                             }
                         }
@@ -189,7 +190,7 @@ public class SQLCompleter implements Completer {
         try {
             for (final Database db : engine.getCatalog().getAllDatabases()) {
                 final String dbName = db.getName();
-                if (dbName.toUpperCase().startsWith(prefix)) {
+                if (dbName.toUpperCase(Locale.ROOT).startsWith(prefix)) {
                     candidates.add(new Candidate(dbName, dbName, "database", null, null, null, true));
                 }
             }
@@ -206,7 +207,7 @@ public class SQLCompleter implements Completer {
                 if (db != null) {
                     for (final Schema schema : db.getAllSchemas()) {
                         final String schemaName = schema.getName();
-                        if (schemaName.toUpperCase().startsWith(prefix)) {
+                        if (schemaName.toUpperCase(Locale.ROOT).startsWith(prefix)) {
                             candidates.add(new Candidate(schemaName, schemaName, "schema", null, null, null, true));
                         }
                     }
@@ -231,7 +232,7 @@ public class SQLCompleter implements Completer {
                         for (final Table table : schema.getTables()) {
                             for (final TableColumn column : table.getColumns()) {
                                 final String columnName = column.getName();
-                                if (columnName.toUpperCase().startsWith(prefix)) {
+                                if (columnName.toUpperCase(Locale.ROOT).startsWith(prefix)) {
                                     candidates.add(new Candidate(
                                             columnName,
                                             columnName,

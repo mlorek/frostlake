@@ -42,7 +42,9 @@ public class WindowFunctionExpression implements Expression {
     /** The star-shaped call a windowed star argument stands for ({@code COUNT(t.* EXCLUDE (a)) OVER ()}), or null. */
     private FunctionCallExpression starCall;
     private boolean ordered;
-    private boolean rowsFramed;
+    private boolean ownFramed;
+    /** Whether the frame written runs from the partition's first row to its last. */
+    private boolean wholeFramed;
     private boolean distinct;
     /** The OVER clause's keys, or null when the call was not described that far (a star call). */
     private List<Expression> partitionKeys;
@@ -94,18 +96,33 @@ public class WindowFunctionExpression implements Expression {
      * it back — a distinction nothing but these two flags can make, and one the call text must not be
      * re-read to recover.
      *
-     * @param hasOrderBy      whether the OVER clause carries an ORDER BY
-     * @param hasRowsFrame whether it carries a ROWS frame of its own — a RANGE frame does NOT
-     *     count, because live treats a RANGE-framed window as CUMULATIVE for width purposes
+     * @param hasOrderBy  whether the OVER clause carries an ORDER BY
+     * @param hasOwnFrame whether it carries a frame of its own — see {@link #isOwnFramed()}
      */
-    public void describeWindow(final boolean hasOrderBy, final boolean hasRowsFrame) {
+    public void describeWindow(final boolean hasOrderBy, final boolean hasOwnFrame) {
         this.ordered = hasOrderBy;
-        this.rowsFramed = hasRowsFrame;
+        this.ownFramed = hasOwnFrame;
     }
 
     /** Whether the OVER clause carries an ORDER BY. */
     public boolean isOrdered() {
         return ordered;
+    }
+
+    /**
+     * Whether the frame written is the whole partition, {@code BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
+     * FOLLOWING}: an aggregate over one reads the same rows whatever the order, and the tree as parsed names an
+     * AVG over it without the ORDER BY (live-verified).
+     *
+     * @return true for a frame of the whole partition
+     */
+    public boolean isWholeFramed() {
+        return wholeFramed;
+    }
+
+    /** Mark the frame as the whole partition — see {@link #isWholeFramed()}. */
+    public void markWholeFramed() {
+        this.wholeFramed = true;
     }
 
     /**
@@ -151,15 +168,15 @@ public class WindowFunctionExpression implements Expression {
     }
 
     /**
-     * Whether the OVER clause carries a ROWS frame of its own.
+     * Whether the OVER clause carries a frame of its own: any ROWS frame, and any RANGE frame but the running one.
      *
-     * <p>A RANGE frame deliberately does NOT count: live-verified, {@code OVER (ORDER BY y RANGE
+     * <p>The running RANGE frame deliberately does NOT count: live-verified, {@code OVER (ORDER BY y RANGE
      * BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)} declares the same width as a bare ORDER BY, while
-     * the ROWS spelling of the same span narrows it. The distinction is the FRAME KEYWORD, not what
-     * the frame actually spans.
+     * the ROWS spelling of the same span narrows it, and so does every other RANGE frame — an offset's, the
+     * current row's alone, the whole partition's.
      */
-    public boolean isRowsFramed() {
-        return rowsFramed;
+    public boolean isOwnFramed() {
+        return ownFramed;
     }
 
     /** The window function's name, or null when this node was built without one. */

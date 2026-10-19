@@ -40,10 +40,14 @@ import java.util.Set;
  */
 final class NamespaceProperties {
 
-    /** Documented CREATE properties that SHOW PARAMETERS does not list. */
-    private static final Set<String> CREATE_ONLY = new HashSet<>(Arrays.asList(
-        "CATALOG_SYNC_NAMESPACE_MODE", "CATALOG_SYNC_NAMESPACE_FLATTEN_DELIMITER", "CLASSIFICATION_PROFILE",
-        "OBJECT_VISIBILITY"));
+    /** Documented CREATE DATABASE properties that SHOW PARAMETERS does not list. */
+    private static final Set<String> DATABASE_CREATE_ONLY = new HashSet<>(Arrays.asList(
+        "CATALOG_SYNC_NAMESPACE_MODE", "CATALOG_SYNC_NAMESPACE_FLATTEN_DELIMITER",
+        ParameterLevels.CLASSIFICATION_PROFILE, "OBJECT_VISIBILITY"));
+
+    /** The ones CREATE SCHEMA takes: a catalog's namespace properties are no schema's (live-verified). */
+    private static final Set<String> SCHEMA_CREATE_ONLY = new HashSet<>(Arrays.asList(
+        ParameterLevels.CLASSIFICATION_PROFILE, "OBJECT_VISIBILITY"));
 
     private final List<FrostlakeParser.CommentClauseContext> comments = new ArrayList<>();
     private final List<FrostlakeParser.TagListContext> tags = new ArrayList<>();
@@ -57,6 +61,7 @@ final class NamespaceProperties {
     /** The properties of a CREATE DATABASE. */
     static NamespaceProperties ofDatabase(final List<FrostlakeParser.DatabasePropertyContext> properties) {
         final NamespaceProperties read = new NamespaceProperties();
+        judgeNames(properties, "DATABASE");
         for (final FrostlakeParser.DatabasePropertyContext property : properties) {
             read.read(property, "DATABASE");
         }
@@ -66,6 +71,13 @@ final class NamespaceProperties {
     /** The properties of a CREATE SCHEMA. */
     static NamespaceProperties ofSchema(final List<FrostlakeParser.SchemaPropertyContext> properties) {
         final NamespaceProperties read = new NamespaceProperties();
+        final List<FrostlakeParser.DatabasePropertyContext> written = new ArrayList<>();
+        for (final FrostlakeParser.SchemaPropertyContext property : properties) {
+            if (property.databaseProperty() != null) {
+                written.add(property.databaseProperty());
+            }
+        }
+        judgeNames(written, "SCHEMA");
         for (final FrostlakeParser.SchemaPropertyContext property : properties) {
             if (property.MANAGED() != null) {
                 read.managedAccess = true;
@@ -74,6 +86,30 @@ final class NamespaceProperties {
             }
         }
         return read;
+    }
+
+    /** Whether a CREATE of the kind takes a property no parameter list holds. */
+    private static boolean createOnly(final String key, final String kind) {
+        return ("SCHEMA".equals(kind) ? SCHEMA_CREATE_ONLY : DATABASE_CREATE_ONLY).contains(key);
+    }
+
+    /** Judges the names a CREATE writes before any is read (see {@link ParameterLevels}). */
+    private static void judgeNames(final List<FrostlakeParser.DatabasePropertyContext> properties, final String kind) {
+        final List<String> names = new ArrayList<>();
+        final List<Boolean> taken = new ArrayList<>();
+        for (final FrostlakeParser.DatabasePropertyContext property : properties) {
+            if (property.optionKey() == null) {
+                continue;
+            }
+            final String key = ParameterRegistry.canonical(property.optionKey().getText());
+            names.add(property.optionKey().getText());
+            final boolean levelParameter = "SCHEMA".equals(kind)
+                ? ParameterRegistry.isSchemaParameter(key) || ContainerParameterCatalog.isSchemaParameter(key)
+                : ParameterRegistry.isDatabaseParameter(key) || ContainerParameterCatalog.isDatabaseParameter(key);
+            taken.add(Boolean.valueOf("DATA_RETENTION_TIME_IN_DAYS".equals(key) || createOnly(key, kind)
+                || levelParameter));
+        }
+        ParameterLevels.judgeCreate(names, taken, kind);
     }
 
     private void read(final FrostlakeParser.DatabasePropertyContext property, final String kind) {
@@ -93,9 +129,10 @@ final class NamespaceProperties {
             final boolean known = "SCHEMA".equals(kind)
                 ? ParameterRegistry.isSchemaParameter(key) || ContainerParameterCatalog.isSchemaParameter(key)
                 : ParameterRegistry.isDatabaseParameter(key) || ContainerParameterCatalog.isDatabaseParameter(key);
-            if (!known && !CREATE_ONLY.contains(key)) {
+            if (!known && !createOnly(key, kind)) {
                 throw ParameterRegistry.invalidProperty(ParameterRegistry.spell(raw), kind);
             }
+            ParameterLevels.refuseClassificationProfile(key, property.copyOptionValue());
             parameters.put(key, render(property.copyOptionValue()));
         }
     }

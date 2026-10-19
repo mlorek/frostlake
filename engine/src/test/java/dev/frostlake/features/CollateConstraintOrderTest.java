@@ -22,6 +22,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -44,7 +46,7 @@ public class CollateConstraintOrderTest extends BaseDatabaseTest {
     /** Asserts the column's DESCRIBE type cell carries exactly this collation spec. */
     private void assertCollation(final String table, final String column, final String spec) {
         final String type = describeCell(table, column, "type");
-        assertTrue(type.toUpperCase().contains("COLLATE '" + spec.toUpperCase() + "'"),
+        assertTrue(type.toUpperCase(Locale.ROOT).contains("COLLATE '" + spec.toUpperCase(Locale.ROOT) + "'"),
             column + " should be collated '" + spec + "' but its type reads: " + type);
     }
 

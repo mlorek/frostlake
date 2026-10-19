@@ -34,6 +34,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -56,7 +57,7 @@ public class SessionNumberTest {
 
     @BeforeEach
     public void open() throws SQLException {
-        database = "FL_SESSION_NUMBER_" + Long.toString(System.nanoTime(), 36).toUpperCase();
+        database = "FL_SESSION_NUMBER_" + Long.toString(System.nanoTime(), 36).toUpperCase(Locale.ROOT);
         if (LiveSnowflake.enabled()) {
             connections = new Connection[] {LiveSnowflake.open(), LiveSnowflake.open(), LiveSnowflake.open()};
         } else {

@@ -41,6 +41,7 @@ import java.util.Set;
  *   BASE64_ENCODE(v)                          VARCHAR(28)          4 per 3 bytes, and a character is 4 bytes
  *   TO_CHAR / CAST(x AS VARCHAR) / CURRENT_*  VARCHAR(134217728)   nothing bounds it, so the maximum
  *   UPPER(d) / SUBSTR(n, 1, 2)                VARCHAR(134217728)   a number, date or BOOLEAN converted to text first
+ *   UPPER(u) / CONCAT(u, 'x')                 VARCHAR(134217728)   a UUID too, though it is held as a text
  * </pre>
  *
  * <p>Everything saturates at 134217728: {@code CONCAT} of eight 16MB columns is exactly that, and of
@@ -68,10 +69,12 @@ public final class StringResultWidths {
         "REPLACE", "TO_VARCHAR", "TO_CHAR", "TO_JSON", "ARRAY_TO_STRING", "TYPEOF", "COLLATION", "LAST_QUERY_ID",
         "CURRENT_DATABASE", "CURRENT_SCHEMA", "CURRENT_USER", "CURRENT_ROLE", "CURRENT_WAREHOUSE", "CURRENT_VERSION",
         "CURRENT_REGION", "CURRENT_ACCOUNT", "CURRENT_STATEMENT", "CURRENT_SESSION", "GETVARIABLE",
-        "CURRENT_TRANSACTION", "LAST_TRANSACTION",
+        "CURRENT_TRANSACTION", "LAST_TRANSACTION", "GET_DDL", "CURRENT_SECONDARY_ROLES",
         // A replacement can be any length, so the account bounds it at nothing at all — a widthless
         // VARCHAR, not the 128MB one, at every arity and over a column as well as a literal.
-        "REGEXP_REPLACE"));
+        "REGEXP_REPLACE",
+        // A parser's sentence, or nothing, over a text and a VARIANT alike.
+        "CHECK_JSON", "CHECK_XML"));
 
     /** Of the functions that keep their source's width, those that take a bare cut of it: over a widthless source
      *  SUBSTR and LEFT answer the width nothing bounds, where LOWER or TRIM stay widthless (live-verified). */
@@ -184,7 +187,9 @@ public final class StringResultWidths {
         if (funcName.equals("BASE64_ENCODE")) {
             return bytes < 0 ? null : varchar((bytes + 2) / 3 * 4);
         }
-        final long characters = stringWidth(argTypes, 0);
+        // An untyped NULL is read as the text of the length nothing bounds: HEX_DECODE_STRING(NULL) is
+        // VARCHAR(67108864) and BASE64_DECODE_STRING(NULL) VARCHAR(100663296) (live-verified).
+        final long characters = !argTypes.isEmpty() && argTypes.get(0) == null ? UNBOUNDED : stringWidth(argTypes, 0);
         if (funcName.equals("HEX_DECODE_STRING") || funcName.equals("TRY_HEX_DECODE_STRING")) {
             return characters < 0 ? null : varchar(characters / 2);
         }
@@ -197,7 +202,9 @@ public final class StringResultWidths {
 
     /**
      * How many bytes the first argument can hold — its own length for a BINARY, four times its
-     * length for a string.
+     * length for a string. A binary the plan never sized — the result of TO_BINARY, of a cast to a bare BINARY — is
+     * read at the 64MB maximum, whatever width the engine holds it at: {@code BASE64_ENCODE(TO_BINARY('ab'))} is
+     * VARCHAR(89478488) where a BINARY column's is VARCHAR(11184812) (live-verified).
      *
      * @param argTypes the argument types
      * @return the byte count, or -1 when the argument determines none
@@ -208,7 +215,8 @@ public final class StringResultWidths {
         }
         final DataType first = argTypes.get(0);
         if (first instanceof BinaryType) {
-            return ((BinaryType) first).getMaxLength();
+            return ((BinaryType) first).getWidthSpelling() == BinaryWidthSpelling.DECLARED
+                ? ((BinaryType) first).getMaxLength() : BinaryType.NOMINAL_MAXIMUM;
         }
         final long characters = stringWidth(argTypes, 0);
         return characters < 0 ? -1 : characters * BYTES_PER_CHARACTER;
@@ -221,13 +229,18 @@ public final class StringResultWidths {
      * @param index    the position to read
      * @return the width, or -1
      */
-    /** Whether a string function reads a value of this type through its conversion to text. */
+    /**
+     * Whether a string function reads a value of this type through its conversion to text, which nothing bounds: a
+     * UUID among them, though it is held as a text (live-verified).
+     */
     private static boolean convertedToText(final DataType type) {
-        return type instanceof NumericType || type instanceof DateTimeType || type instanceof BooleanType;
+        return type instanceof NumericType || type instanceof DateTimeType || type instanceof BooleanType
+            || type instanceof UuidType;
     }
 
     private static long stringWidth(final List<DataType> argTypes, final int index) {
-        if (index >= argTypes.size() || !(argTypes.get(index) instanceof StringType)) {
+        if (index >= argTypes.size() || !(argTypes.get(index) instanceof StringType)
+                || argTypes.get(index) instanceof UuidType) {
             return -1;
         }
         return ((StringType) argTypes.get(index)).getMaxLength();
@@ -282,6 +295,28 @@ public final class StringResultWidths {
      * @param width the computed width
      * @return the declared type
      */
+    /**
+     * BASE64_ENCODE's width with the line breaks its second argument asks for: a positive integer literal L below the
+     * unbroken width W adds a break after every L characters but the last run, W + ceil(W / L) - 1; a 0 or an L of
+     * W or more adds none; and any other value - an expression, a cast, a NULL, a text, a decimal - is not read,
+     * and the width allows a break after every character, 2W - 1 (live-verified).
+     *
+     * @param unbroken   the width without breaks
+     * @param lineLength the line length when it is written as an integer literal, or null
+     * @return the declared type
+     */
+    public static DataType withLineBreaks(final DataType unbroken, final Long lineLength) {
+        if (!(unbroken instanceof StringType)) {
+            return unbroken;
+        }
+        final long width = ((StringType) unbroken).getMaxLength();
+        final long length = lineLength == null ? 1 : lineLength.longValue();
+        if (width <= 0 || length <= 0 || length >= width) {
+            return unbroken;
+        }
+        return varchar(width + (width + length - 1) / length - 1);
+    }
+
     private static StringType varchar(final long width) {
         return new StringType("VARCHAR", (int) Math.max(0, Math.min(width, UNBOUNDED)));
     }

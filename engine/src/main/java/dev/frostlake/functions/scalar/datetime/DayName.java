@@ -21,6 +21,7 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
+import java.util.Locale;
 
 public class DayName extends BuiltInFunction {
     public DayName() { super("DAYNAME", StringType.VARCHAR); }
@@ -31,7 +32,7 @@ public class DayName extends BuiltInFunction {
         // Three letters, not the full name — live answers Mon,Tue,Wed,Thu,Fri,Sat,Sun, measured
         // across a whole week, and NULL for NULL. A TIMESTAMP argument answers the same way.
         final String day = SharedFunctionHelpers.toLocalDate(args.get(0)).getDayOfWeek().name();
-        return day.substring(0, 1) + day.substring(1, 3).toLowerCase();
+        return day.substring(0, 1) + day.substring(1, 3).toLowerCase(Locale.ROOT);
     }
 
     @Override

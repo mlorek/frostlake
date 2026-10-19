@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -45,7 +47,7 @@ public class TaskBlockBodyTest extends BaseDatabaseTest {
     /** One SHOW TASKS cell for a task created in this test's schema. */
     private String taskCell(final String name, final String column) {
         final ResultSet tasks = engine.executeQuery("SHOW TASKS LIKE '" + name + "'");
-        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase()), column);
+        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase(Locale.ROOT)), column);
     }
 
     private void assertRefused(final String sql) {

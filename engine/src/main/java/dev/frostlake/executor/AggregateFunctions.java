@@ -107,6 +107,13 @@ public final class AggregateFunctions {
         final AggregateFunction.Accumulator acc = "PERCENTILE_CONT".equalsIgnoreCase(funcCtx.functionName().getText())
             ? new PercentileContAccumulator(percentile)
             : new PercentileDiscAccumulator(percentile);
+        // WITHIN GROUP (ORDER BY x DESC) counts the fraction from the greatest value.
+        final boolean ordersDown = withinGroup.orderItem(0).DESC() != null;
+        if (acc instanceof PercentileContAccumulator) {
+            ((PercentileContAccumulator) acc).setDescending(ordersDown);
+        } else {
+            ((PercentileDiscAccumulator) acc).setDescending(ordersDown);
+        }
         if (acc instanceof ApproximateAwareAccumulator) {
             ((ApproximateAwareAccumulator) acc).setApproximateArgument(approximateKey);
         }

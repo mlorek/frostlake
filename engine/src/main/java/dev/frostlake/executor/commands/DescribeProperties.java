@@ -24,6 +24,7 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -49,26 +50,24 @@ final class DescribeProperties {
      * Refuse the first property live refuses, and answer whether the TYPE written last asks for the stage
      * properties.
      *
-     * @param statement     the DESCRIBE, its properties in the order written
+     * @param statement     the DESCRIBE of any kind, its properties in the order written
      * @param queryExecutor the executor whose session variables a TYPE may read
      * @return whether the last TYPE is STAGE
      */
-    static boolean describesStage(final FrostlakeParser.DescribeStatementContext statement,
-                                  final QueryExecutor queryExecutor) {
-        final List<FrostlakeParser.DescribePropertyContext> properties = statement.describeProperty();
+    static boolean describesStage(final ParserRuleContext statement, final QueryExecutor queryExecutor) {
+        final List<FrostlakeParser.DescribePropertyContext> properties =
+            statement.getRuleContexts(FrostlakeParser.DescribePropertyContext.class);
         int types = 0;
         for (final FrostlakeParser.DescribePropertyContext property : properties) {
             if (isType(property)) {
                 types++;
             }
         }
+        requireValues(statement);
         boolean stage = false;
         int typeIndex = 0;
         for (final FrostlakeParser.DescribePropertyContext property : properties) {
             final FrostlakeParser.DescribeParameterContext parameter = property.describeParameter();
-            if (parameter != null && parameter.EQ() == null) {
-                throw new RuntimeException(syntaxErrorAfter(statement, property));
-            }
             if (!isType(property)) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "invalid parameter '" + parameter.getChild(0).getText() + "'"));
@@ -83,6 +82,31 @@ final class DescribeProperties {
     }
 
     /**
+     * The statement is read whole before any property is judged: a name left without its value is the syntax
+     * error, whatever was written before it. The words after a name are read in pairs to the end of the statement,
+     * the first of a pair taken as a property's name and the token after it refused — a word, the semicolon or the
+     * end — so {@code x y z w v;} is the y, the w and the ';' (live-verified).
+     *
+     * @param statement the DESCRIBE of any kind, its properties in the order written
+     */
+    static void requireValues(final ParserRuleContext statement) {
+        final List<FrostlakeParser.DescribePropertyContext> properties =
+            statement.getRuleContexts(FrostlakeParser.DescribePropertyContext.class);
+        final List<String> lines = new ArrayList<>();
+        for (int i = 0; i < properties.size(); i++) {
+            final FrostlakeParser.DescribeParameterContext parameter = properties.get(i).describeParameter();
+            if (parameter != null && parameter.EQ() == null) {
+                lines.add(syntaxErrorAfter(statement, properties.get(i)));
+                // The refused token is the next property's first, and the reading takes up again behind it.
+                i++;
+            }
+        }
+        if (!lines.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", lines)));
+        }
+    }
+
+    /**
      * Whether a property is a TYPE: the ordinary spelling, or the word TYPE given a session variable, a negative
      * number or a parenthesised value, which read as TYPE's own value and are refused as one.
      */
@@ -93,7 +117,8 @@ final class DescribeProperties {
         }
         final FrostlakeParser.DescribeParameterValueContext value = parameter.describeParameterValue();
         return parameter.identifier() != null && parameter.identifier().getStart().getType() == FrostlakeLexer.TYPE
-            && value != null && (value.SESSION_VAR_REF() != null || value.MINUS() != null || value.LPAREN() != null);
+            && value != null && (value.SESSION_VAR_REF() != null || value.MINUS() != null || value.LPAREN() != null
+                || value.QUESTION() != null || value.COLON() != null || value.stageRef() != null);
     }
 
     /**
@@ -126,8 +151,18 @@ final class DescribeProperties {
      */
     private static boolean isStage(final FrostlakeParser.DescribeParameterContext parameter, final Object variable) {
         final FrostlakeParser.DescribeParameterValueContext value = parameter.describeParameterValue();
+        if (!value.describePropertyList().isEmpty()) {
+            // A list of property lists is named by the kind the account's parse gives it (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("invalid value [TOK_LIST] for parameter 'TYPE'"));
+        }
         if (value.LPAREN() != null) {
             throw new RuntimeException("Invalid value specified for property 'TYPE'");
+        }
+        if (value.QUESTION() != null || value.COLON() != null) {
+            // A bind is read where it stands, and none is set here.
+            final Token bind = value.getStart();
+            throw new RuntimeException(SqlCompilationError.at(bind.getLine(), bind.getCharPositionInLine(),
+                "Bind variable " + (value.QUESTION() != null ? "?" : value.identifier().getText()) + " not set."));
         }
         if (value.SESSION_VAR_REF() != null && variable instanceof String) {
             if ("STAGE".equalsIgnoreCase((String) variable)) {
@@ -146,7 +181,7 @@ final class DescribeProperties {
      * A name written without its value: live reads it as a property still waiting for its '=', so the token
      * after it is the syntax error — the next property, the semicolon or the end of the input.
      */
-    private static String syntaxErrorAfter(final FrostlakeParser.DescribeStatementContext statement,
+    private static String syntaxErrorAfter(final ParserRuleContext statement,
                                            final FrostlakeParser.DescribePropertyContext property) {
         final int index = statement.children.indexOf(property);
         final int[] shown;
@@ -162,8 +197,7 @@ final class DescribeProperties {
             shown = LeadingCommentOffset.rebase(last.getLine(), last.getCharPositionInLine() + last.getText().length());
             text = "<EOF>";
         }
-        return SqlCompilationError.of("syntax error line " + shown[0] + " at position " + shown[1]
-            + " unexpected '" + text + "'.");
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + text + "'.";
     }
 
     /** Whether one TYPE property names STAGE, or COLUMNS; any other value is refused as written. */
@@ -171,6 +205,9 @@ final class DescribeProperties {
         final String value;
         if (type.STRING_LITERAL() != null) {
             value = SqlStringLiterals.decode(type.STRING_LITERAL().getText());
+        } else if (type.DOLLAR_QUOTED_STRING() != null) {
+            final String written = type.DOLLAR_QUOTED_STRING().getText();
+            value = written.substring(2, written.length() - 2);
         } else if (type.identifier() != null) {
             value = ParseTreeText.getIdentifier(type.identifier());
         } else {

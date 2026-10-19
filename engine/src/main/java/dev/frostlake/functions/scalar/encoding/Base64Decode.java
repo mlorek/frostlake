@@ -27,12 +27,14 @@ public class Base64Decode extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
+        // A NULL alphabet makes the call NULL, where an absent one is the standard alphabet (live-verified).
+        if (args.get(0) == null || args.size() > 1 && args.get(1) == null) {
+            return null;
+        }
         final String text = args.get(0).toString();
         final byte[] decoded;
         try {
-            decoded = Base64.getDecoder().decode(
-                Base64Options.toStandardAlphabet(text, Base64Options.alphabetOf(args, 1)));
+            decoded = Base64.getDecoder().decode(Base64Options.decodable(text, Base64Options.alphabetOf(args, 1)));
         } catch (final IllegalArgumentException notBase64) {
             throw Base64Options.notBase64(text);
         }

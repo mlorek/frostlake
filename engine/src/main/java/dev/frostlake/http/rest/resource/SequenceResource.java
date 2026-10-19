@@ -92,8 +92,7 @@ public final class SequenceResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW SEQUENCES" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Sequence '" + RelationNames.qualifiedDisplay(call, name)
-                + "' does not exist or not authorized.");
+            throw RestException.missing("Sequence", RelationNames.qualifiedDisplay(call, name));
         }
         return toJson(rows.get(0));
     }

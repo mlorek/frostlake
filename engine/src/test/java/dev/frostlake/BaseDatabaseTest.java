@@ -133,6 +133,22 @@ public abstract class BaseDatabaseTest {
         }
     }
 
+    /**
+     * {@link #stageLocalFile} for a file that is no text, a jar: the bytes are written to a fresh local temp file
+     * and PUT with {@code AUTO_COMPRESS=FALSE}.
+     */
+    protected void stageLocalBytes(final String stage, final String fileName, final byte[] content) {
+        try {
+            final Path dir = Files.createTempDirectory("fl_stage_put");
+            final Path file = dir.resolve(fileName);
+            Files.write(file, content);
+            engine.execute("PUT file://" + file.toAbsolutePath() + " @" + stage
+                + " AUTO_COMPRESS=FALSE");
+        } catch (final IOException e) {
+            throw new RuntimeException("could not stage " + fileName, e);
+        }
+    }
+
     @AfterEach
     public void baseTeardown() {
         // Allow subclasses to add their own teardown

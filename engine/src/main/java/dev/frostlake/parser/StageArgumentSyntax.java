@@ -30,7 +30,6 @@ import java.util.Locale;
 import java.util.Set;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStream;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
@@ -136,10 +135,29 @@ public final class StageArgumentSyntax {
      * @param sql    the text
      */
     public static void requirePlacement(final ParseTree script, final String sql) {
+        requirePlacement(script, sql, LeadingCommentOffset.of(sql));
+    }
+
+    /**
+     * Both phases over the text of one statement EXECUTE IMMEDIATE runs, its places counted from an origin given.
+     * A text the request hands over itself has none, and is placed as it is written: a comment that opens it moves
+     * nothing — {@code $$  /&#42; c &#42;/ SELECT 1, UPPER(@st)$$} is refused at position 20, and after a comment
+     * and a line break on line 2. A text a block runs is counted from its own first token, at position 10
+     * (live-verified).
+     *
+     * @param script the parsed text
+     * @param sql    the text
+     * @param origin the text's first token when a comment opens it and the text is placed past it, else null
+     */
+    public static void requirePlacementFrom(final ParseTree script, final String sql, final SourcePosition origin) {
+        requirePlacement(script, sql, origin);
+    }
+
+    private static void requirePlacement(final ParseTree script, final String sql, final SourcePosition origin) {
         if (script == null || sql == null || sql.indexOf('@') < 0) {
             return;
         }
-        final SourcePosition displaced = LeadingCommentOffset.begin(LeadingCommentOffset.of(sql));
+        final SourcePosition displaced = LeadingCommentOffset.begin(origin);
         try {
             requireSyntax(script, sql);
             requireArguments(script);
@@ -149,18 +167,20 @@ public final class StageArgumentSyntax {
     }
 
     /**
-     * The first phase alone over the text EXECUTE IMMEDIATE runs, its places counted from the text's own first token:
-     * the text is refused for where its stages stand before its statements are counted, and a statement of several is
-     * judged for its arguments when it runs, as a statement of a request is ({@link #requireArguments}).
+     * The first phase alone over the text EXECUTE IMMEDIATE runs, its places counted as
+     * {@link #requirePlacementFrom} counts them: the text is refused for where its stages stand before its
+     * statements are counted, and a statement of several is judged for its arguments when it runs, as a statement
+     * of a request is ({@link #requireArguments}).
      *
      * @param script the parsed text
      * @param sql    the text
+     * @param origin the text's first token when a comment opens it and the text is placed past it, else null
      */
-    public static void requireTextSyntax(final ParseTree script, final String sql) {
+    public static void requireTextSyntax(final ParseTree script, final String sql, final SourcePosition origin) {
         if (script == null || sql == null || sql.indexOf('@') < 0) {
             return;
         }
-        final SourcePosition displaced = LeadingCommentOffset.begin(LeadingCommentOffset.of(sql));
+        final SourcePosition displaced = LeadingCommentOffset.begin(origin);
         try {
             requireSyntax(script, sql);
         } finally {
@@ -411,7 +431,7 @@ public final class StageArgumentSyntax {
             lines.add(wordLine);
             return lines;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(
             source.getText(Interval.of(0, source.size() - 1))));
         final int[] lexerErrors = new int[1];
         lexer.removeErrorListeners();
@@ -649,7 +669,7 @@ public final class StageArgumentSyntax {
     /** The line the frame's closing parenthesis earns: it stands where the body's text ends. */
     private static String endOfFrame(final FrostlakeParser.StageReferenceExprContext stage) {
         final CharStream source = stage.getStart().getInputStream();
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(
             source.getText(Interval.of(0, source.size() - 1))));
         lexer.removeErrorListeners();
         Token next = lexer.nextToken();

@@ -25,6 +25,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.List;
 
@@ -61,7 +63,8 @@ public class Trunc extends NumericArgumentFunction {
         // second argument is always a scale, so `TRUNC(123.45, '1')` truncates to one decimal place
         // where it once looked for a date part and refused (live-verified).
         final Object first = args.get(0);
-        if (first instanceof LocalDate || first instanceof LocalDateTime || first instanceof LocalTime) {
+        if (first instanceof LocalDate || first instanceof LocalDateTime || first instanceof LocalTime
+                || first instanceof ZonedDateTime || first instanceof OffsetDateTime) {
             if (args.size() > 1 && args.get(1) == null) {
                 return null;   // a NULL unit is NULL, not the DAY default an ABSENT one takes
             }

@@ -16,6 +16,8 @@
 
 package dev.frostlake.console;
 
+import java.util.Locale;
+
 /**
  * The result-rendering format for the console clients, chosen with {@code set output_format <name>}. Replaces a
  * raw {@code String} field previously duplicated across the two clients: {@link #fromString} validates the
@@ -35,7 +37,7 @@ enum OutputFormat {
             return null;
         }
         try {
-            return valueOf(value.trim().toUpperCase());
+            return valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (final IllegalArgumentException e) {
             return null;
         }
@@ -43,6 +45,6 @@ enum OutputFormat {
 
     /** The lowercase name shown to the user (e.g. {@code "table"}). */
     String displayName() {
-        return name().toLowerCase();
+        return name().toLowerCase(Locale.ROOT);
     }
 }

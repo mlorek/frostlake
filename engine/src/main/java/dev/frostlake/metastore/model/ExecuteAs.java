@@ -17,16 +17,37 @@
 package dev.frostlake.metastore.model;
 
 /**
- * A stored procedure's caller-rights mode: {@link #OWNER} (the default — runs with the owner's privileges) or
- * {@link #CALLER} (runs with the caller's privileges). The enum name is the canonical SQL spelling.
+ * A stored procedure's caller-rights mode: {@link #OWNER} (the default — runs with the owner's privileges),
+ * {@link #CALLER} (runs with the caller's privileges) or {@link #RESTRICTED_CALLER}, which runs with the
+ * caller's too and is told as {@code RESTRICTED CALLER}.
  */
 public enum ExecuteAs {
-    OWNER, CALLER;
+    OWNER("OWNER"), CALLER("CALLER"), RESTRICTED_CALLER("RESTRICTED CALLER");
+
+    private final String sqlText;
+
+    ExecuteAs(final String sqlText) {
+        this.sqlText = sqlText;
+    }
+
+    /** The mode as SQL writes it and a description tells it. */
+    public String sqlText() {
+        return sqlText;
+    }
+
+    /** Whether a procedure of this mode runs with its caller's privileges. */
+    public boolean isCallersRights() {
+        return this != OWNER;
+    }
 
     /** Parse an {@code EXECUTE AS} value case-insensitively; null/unrecognized → the default {@link #OWNER}. */
     public static ExecuteAs fromString(final String value) {
-        if (value != null && value.trim().equalsIgnoreCase("CALLER")) {
-            return CALLER;
+        if (value != null) {
+            for (final ExecuteAs mode : values()) {
+                if (mode.sqlText.equalsIgnoreCase(value.trim())) {
+                    return mode;
+                }
+            }
         }
         return OWNER;
     }

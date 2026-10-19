@@ -65,4 +65,10 @@ public class Variance extends AggregateFunction {
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.MULTIPLY_OPERANDS;
     }
+
+    /** A VECTOR is refused as a semi-structured value is (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return semiStructuredRejection(position);
+    }
 }

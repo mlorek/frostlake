@@ -38,13 +38,17 @@ public class RPad extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
         if (args.get(0) instanceof BinaryValue) {
             return padBytes((BinaryValue) args.get(0), args);
         }
-        final String str = args.get(0).toString();
-        final int targetLength = ((Number) args.get(1)).intValue();
-        final String padStr = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : " ";
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
+        final int targetLength = wholeNumber(args.get(1));
+        final String padStr = args.size() > 2 && args.get(2) != null ? SharedFunctionHelpers.textOf(args.get(2)) : " ";
 
         // Live-verified: an input longer than the target length is TRUNCATED to it (RPAD('world', 3, '*')
         // is 'wor'), not returned unchanged.
@@ -58,7 +62,7 @@ public class RPad extends TextArgumentFunction {
     /** The BINARY form: pad bytes on the right, truncating to the leading bytes when already longer. */
     private Object padBytes(final BinaryValue value, final List<Object> args) {
         final byte[] bytes = value.bytes();
-        final int targetLength = ((Number) args.get(1)).intValue();
+        final int targetLength = wholeNumber(args.get(1));
         if (bytes.length >= targetLength) {
             return BinaryValue.of(Arrays.copyOfRange(bytes, 0, Math.max(targetLength, 0)));
         }

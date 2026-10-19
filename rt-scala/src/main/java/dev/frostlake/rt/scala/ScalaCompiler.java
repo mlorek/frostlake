@@ -16,8 +16,11 @@
 
 package dev.frostlake.rt.scala;
 
+import scala.collection.Iterator;
+import scala.reflect.internal.util.Position;
 import scala.tools.nsc.Global;
 import scala.tools.nsc.Settings;
+import scala.tools.nsc.reporters.StoreReporter;
 
 import java.io.File;
 import java.net.URL;
@@ -40,10 +43,13 @@ final class ScalaCompiler {
 
     private static final int MAX_CACHED = 256;
 
+    /** The name a compile error and a handler's frame place the body in. */
+    static final String SOURCE_NAME = "ScalaUDF";
+
     // key -> kept-alive temp dir (the URLClassLoader resolves classes from it); only touched under CACHE's lock.
     private static final Map<String, Path> CACHE_DIRS = new HashMap<>();
 
-    // Compiled handler classes keyed by class name + source hash, so a Scala UDF/procedure compiles ONCE
+    // Compiled handler classes keyed by class name + source text, so a Scala UDF/procedure compiles ONCE
     // instead of on every per-row invocation (per-row recompiles made Scala UDFs unusable in queries — see
     // UdfQueryPerformanceTest). Bounded access-order LRU; an evicted entry's temp dir is deleted.
     private static final Map<String, Class<?>> CACHE = Collections.synchronizedMap(
@@ -59,8 +65,10 @@ final class ScalaCompiler {
         });
 
     /** Compile (or reuse a cached) Scala handler class — reused across invocations to avoid per-row recompiles. */
-    static Class<?> compileCached(final String sourceCode, final String className) throws Exception {
-        final String key = className + ":" + (sourceCode == null ? 0 : sourceCode.hashCode());
+    static Class<?> compileCached(final String sourceCode, final String className, final String where)
+            throws Exception {
+        // The whole source names the entry: two sources that merely share a hash are two classes.
+        final String key = className + ":" + sourceCode;
         synchronized (CACHE) {
             final Class<?> hit = CACHE.get(key);
             if (hit != null) {
@@ -68,7 +76,14 @@ final class ScalaCompiler {
             }
         }
         final Path dir = Files.createTempDirectory("scala_udf_");
-        final Class<?> compiled = compile(sourceCode, className, dir);
+        final Class<?> compiled;
+        try {
+            compiled = compile(sourceCode, className, dir);
+        } catch (final ScalaCompileFailure failure) {
+            deleteRecursively(dir);
+            // The compiler's report is the refusal, as an account's is (live-verified).
+            throw new RuntimeException(failure.getMessage() + "\n" + where, failure);
+        }
         synchronized (CACHE) {
             final Class<?> raced = CACHE.get(key);
             if (raced != null) {
@@ -91,11 +106,13 @@ final class ScalaCompiler {
         settings.usejavacp().value_$eq(true);                 // compile against the running JVM classpath
         settings.outputDirs().setSingleOutput(tempDir.toString());
 
-        final Global global = new Global(settings);
+        // The compiler's complaints are KEPT rather than printed to the console, where a client never sees them.
+        final StoreReporter reporter = new StoreReporter(settings);
+        final Global global = new Global(settings, reporter);
         final Global.Run run = global.new Run();
         run.compile(scalaSingletonList(sourceFile.toString()));
-        if (global.reporter().hasErrors()) {
-            throw new RuntimeException("Scala compilation failed for " + className);
+        if (reporter.hasErrors()) {
+            throw new ScalaCompileFailure(describe(reporter));
         }
 
         // A Scala `object` compiles to ClassName$ (the singleton, holding MODULE$ and the methods) plus a
@@ -109,6 +126,36 @@ final class ScalaCompiler {
         } catch (final ClassNotFoundException e) {
             return classLoader.loadClass(className);
         }
+    }
+
+    /**
+     * The compiler's errors as its console would print them, the source named {@code ScalaUDF}: the place and
+     * the complaint, the line and a mark under the place.
+     */
+    private static String describe(final StoreReporter reporter) {
+        final StringBuilder text = new StringBuilder();
+        final Iterator<StoreReporter.Info> infos = reporter.infos().iterator();
+        while (infos.hasNext()) {
+            final StoreReporter.Info info = infos.next();
+            if (info.severity() != reporter.ERROR()) {
+                continue;
+            }
+            if (text.length() > 0) {
+                text.append('\n');
+            }
+            final Position place = info.pos();
+            if (!place.isDefined()) {
+                text.append("error: ").append(info.msg());
+                continue;
+            }
+            text.append(SOURCE_NAME).append(':').append(place.line()).append(": error: ").append(info.msg())
+                .append('\n').append(place.lineContent()).append('\n');
+            for (int i = 1; i < place.column(); i++) {
+                text.append(' ');
+            }
+            text.append('^');
+        }
+        return text.length() == 0 ? "Scala compilation failed" : text.toString();
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

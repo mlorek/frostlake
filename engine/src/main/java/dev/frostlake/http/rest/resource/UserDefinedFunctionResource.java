@@ -102,7 +102,8 @@ public final class UserDefinedFunctionResource implements RestResource {
             final RestIdentifier name = RestIdentifier.ofResolved(row.string("name"));
             final List<RestRow> describe = RoutineSupport.describe(call, "FUNCTION", name,
                 RoutineSupport.showArgumentTypes(row));
-            out.add(RoutineSupport.toJson(row, describe, false, true));
+            out.add(RoutineSupport.toJson(row, describe, false, true,
+                RoutineSupport.defaults(call, "FUNCTION", name, RoutineSupport.showArgumentTypes(row))));
         }
         return RestResponse.json(200, out);
     }
@@ -112,14 +113,13 @@ public final class UserDefinedFunctionResource implements RestResource {
         final List<RestRow> shows = call.sql().showNamed(show(call, RestShow.likeName(signature.name())),
             signature.name());
         if (shows.isEmpty()) {
-            throw RestException.notFound("Function '"
-                + qualified(call, signature.name()) + "' does not exist or not authorized.");
+            throw RestException.missing("Function", qualified(call, signature.name()));
         }
         final List<String> types = signature.hasArguments() ? signature.types()
             : RoutineSupport.showArgumentTypes(shows.get(0));
         final List<RestRow> describe = RoutineSupport.describe(call, "FUNCTION", signature.name(), types);
         return RoutineSupport.toJson(RoutineSupport.pick(shows, RoutineSupport.signatureTypes(describe)), describe,
-            false);
+            false, false, RoutineSupport.defaults(call, "FUNCTION", signature.name(), types));
     }
 
     private static RestResponse delete(final RestCall call) {

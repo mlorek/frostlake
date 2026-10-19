@@ -79,6 +79,7 @@ public class SessionConcurrencyTest {
             CREATE OR REPLACE PROCEDURE worker_queries()
             RETURNS VARCHAR
             LANGUAGE JAVA
+            PACKAGES = ('com.snowflake:snowpark:latest')
             HANDLER='WorkerQueries.run'
             AS
             $$

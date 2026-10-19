@@ -80,6 +80,64 @@ public final class BinaryValue implements Comparable<BinaryValue>, Serializable 
         }
     }
 
+    /**
+     * Reads a text as hex the way a conversion to BINARY does — a cast, TO_BINARY, a text written into a BINARY
+     * column: a space anywhere is passed over, so {@code '4 8 6 9'} is {@code 4869}, where a tab is not hex and is
+     * refused with the text as written (live-verified).
+     */
+    public static BinaryValue fromHexInput(final String text) {
+        final String digits = text.indexOf(' ') < 0 ? text : text.replace(" ", "");
+        if (digits.length() % 2 != 0) {
+            throw notHex(text);
+        }
+        final byte[] out = new byte[digits.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            final int hi = Character.digit(digits.charAt(2 * i), 16);
+            final int lo = Character.digit(digits.charAt(2 * i + 1), 16);
+            if (hi < 0 || lo < 0) {
+                throw notHex(text);
+            }
+            out[i] = (byte) ((hi << 4) + lo);
+        }
+        return new BinaryValue(out);
+    }
+
+    /**
+     * Reads a text as base64 the way a conversion to BINARY does: a space anywhere is passed over, and what remains is
+     * whole groups of four from the standard alphabet, padded with at most two {@code =} at its end. A group left
+     * short ({@code 'SGk'}), padding anywhere else, the URL-safe {@code -} and {@code _}, a tab, a line break and a
+     * NUL are refused with the text as written (live-verified).
+     */
+    public static BinaryValue fromBase64Input(final String text) {
+        final String groups = text.indexOf(' ') < 0 ? text : text.replace(" ", "");
+        if (groups.length() % 4 != 0) {
+            throw notBase64(text);
+        }
+        final int padded = groups.endsWith("==") ? 2 : groups.endsWith("=") ? 1 : 0;
+        for (int i = 0; i < groups.length() - padded; i++) {
+            if (!isBase64Digit(groups.charAt(i))) {
+                throw notBase64(text);
+            }
+        }
+        try {
+            return new BinaryValue(Base64.getDecoder().decode(groups));
+        } catch (final IllegalArgumentException e) {
+            throw notBase64(text);
+        }
+    }
+
+    private static boolean isBase64Digit(final char c) {
+        return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/';
+    }
+
+    private static RuntimeException notHex(final String text) {
+        return new RuntimeException("The following string is not a legal hex-encoded value: '" + text + "'");
+    }
+
+    private static RuntimeException notBase64(final String text) {
+        return new RuntimeException("The following string is not a legal base64-encoded value: '" + text + "'");
+    }
+
     /** The underlying bytes. Callers must not mutate the returned array. */
     public byte[] bytes() {
         return bytes;

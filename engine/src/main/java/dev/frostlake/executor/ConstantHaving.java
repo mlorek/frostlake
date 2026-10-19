@@ -18,12 +18,14 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.BetweenExpression;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
+import dev.frostlake.executor.expressions.BindVariableExpression;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.InExpression;
 import dev.frostlake.executor.expressions.IsNullExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
+import dev.frostlake.executor.expressions.SessionVarExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.FunctionRegistry;
 
@@ -58,47 +60,68 @@ final class ConstantHaving {
      * @return true when nothing in it reads the query or draws a value
      */
     static boolean isConstant(final Expression predicate, final FunctionRegistry functions) {
+        return isConstant(predicate, functions, false);
+    }
+
+    /**
+     * Whether an expression is constant, a block's bind and a session variable counted as constants where
+     * {@code bindsConstant} says so: a statement is compiled with their values in place.
+     *
+     * @param predicate     the parsed expression
+     * @param functions     the registry that tells a scalar call from an aggregate
+     * @param bindsConstant whether a {@code :name} and a {@code $name} are constants
+     * @return true when nothing in it reads the query or draws a value
+     */
+    static boolean isConstant(final Expression predicate, final FunctionRegistry functions,
+                              final boolean bindsConstant) {
         if (predicate instanceof LiteralExpression) {
             return true;
         }
+        if (bindsConstant && (predicate instanceof BindVariableExpression
+                || predicate instanceof SessionVarExpression)) {
+            return true;
+        }
         if (predicate instanceof UnaryOperationExpression) {
-            return isConstant(((UnaryOperationExpression) predicate).getOperand(), functions);
+            return isConstant(((UnaryOperationExpression) predicate).getOperand(), functions, bindsConstant);
         }
         if (predicate instanceof CastExpression) {
-            return isConstant(((CastExpression) predicate).getExpression(), functions);
+            return isConstant(((CastExpression) predicate).getExpression(), functions, bindsConstant);
         }
         if (predicate instanceof IsNullExpression) {
-            return isConstant(((IsNullExpression) predicate).getOperand(), functions);
+            return isConstant(((IsNullExpression) predicate).getOperand(), functions, bindsConstant);
         }
         if (predicate instanceof BinaryOperationExpression) {
             final BinaryOperationExpression binary = (BinaryOperationExpression) predicate;
-            return binary.getEscape() == null && isConstant(binary.getLeft(), functions)
-                && isConstant(binary.getRight(), functions);
+            return binary.getEscape() == null && isConstant(binary.getLeft(), functions, bindsConstant)
+                && isConstant(binary.getRight(), functions, bindsConstant);
         }
         if (predicate instanceof BetweenExpression) {
             final BetweenExpression between = (BetweenExpression) predicate;
-            return isConstant(between.getValue(), functions) && isConstant(between.getLower(), functions)
-                && isConstant(between.getUpper(), functions);
+            return isConstant(between.getValue(), functions, bindsConstant)
+                && isConstant(between.getLower(), functions, bindsConstant)
+                && isConstant(between.getUpper(), functions, bindsConstant);
         }
         if (predicate instanceof InExpression) {
             final InExpression in = (InExpression) predicate;
-            if (in.getSubquery() != null || in.getValues() == null || !isConstant(in.getValue(), functions)) {
+            if (in.getSubquery() != null || in.getValues() == null
+                    || !isConstant(in.getValue(), functions, bindsConstant)) {
                 return false;
             }
             for (final Expression value : in.getValues()) {
-                if (!isConstant(value, functions)) {
+                if (!isConstant(value, functions, bindsConstant)) {
                     return false;
                 }
             }
             return true;
         }
         if (predicate instanceof FunctionCallExpression) {
-            return isConstantCall((FunctionCallExpression) predicate, functions);
+            return isConstantCall((FunctionCallExpression) predicate, functions, bindsConstant);
         }
         return false;
     }
 
-    private static boolean isConstantCall(final FunctionCallExpression call, final FunctionRegistry functions) {
+    private static boolean isConstantCall(final FunctionCallExpression call, final FunctionRegistry functions,
+                                          final boolean bindsConstant) {
         if (call.getFunctionName() == null || call.getNameExpression() != null || call.isStar() || call.isDistinct()
                 || functions == null) {
             return false;
@@ -108,7 +131,7 @@ final class ConstantHaving {
             return false;
         }
         for (final Expression argument : call.getArguments()) {
-            if (!isConstant(argument, functions)) {
+            if (!isConstant(argument, functions, bindsConstant)) {
                 return false;
             }
         }

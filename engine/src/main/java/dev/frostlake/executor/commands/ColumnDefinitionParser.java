@@ -20,19 +20,26 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.IntegerLiteralRange;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ReturnColumnTypes;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.expressions.BinaryLiteralText;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.IntervalCasts;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.ConstraintNames;
+import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.SequenceDefault;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.parser.FrostlakeParser;
@@ -42,13 +49,16 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.IcebergTypes;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import dev.frostlake.values.CodePointText;
@@ -87,6 +97,44 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     /**
+     * Whether a key written in a column definition is left out of the table although its statement succeeds: by
+     * its properties ({@link KeyConstraintProperties}), and a foreign key by its MATCH or its rules as well.
+     */
+    static boolean leavesOut(final FrostlakeParser.ColumnConstraintContext constraint) {
+        if (KeyConstraintProperties.read(constraint.keyConstraintProperty()).leavesOut()) {
+            return true;
+        }
+        if (constraint.REFERENCES() == null) {
+            return false;
+        }
+        return KeyConstraintProperties.matchLeavesOut(constraint.foreignKeyMatch())
+            || dropsForeignKey(constraint.referentialActions());
+    }
+
+    /** As {@link #leavesOut(FrostlakeParser.ColumnConstraintContext)}, for a table-level key. */
+    static boolean leavesOut(final FrostlakeParser.TableConstraintContext constraint) {
+        if (constraint.checkConstraint() != null) {
+            return false;
+        }
+        if (KeyConstraintProperties.read(constraint.keyConstraintProperty()).leavesOut()) {
+            return true;
+        }
+        if (constraint.FOREIGN() == null) {
+            return false;
+        }
+        return KeyConstraintProperties.matchLeavesOut(constraint.foreignKeyMatch())
+            || dropsForeignKey(constraint.referentialActions());
+    }
+
+    private static boolean dropsForeignKey(final FrostlakeParser.ReferentialActionsContext written) {
+        if (written == null) {
+            return false;
+        }
+        final String[] actions = parseReferentialActions(written);
+        return dropsForeignKey(actions[0], actions[1]);
+    }
+
+    /**
      * A BINARY column takes NO default at all — not even a binary literal — and the refusal names the
      * family rather than the column, on CREATE TABLE and ALTER TABLE ADD COLUMN alike (live-verified).
      */
@@ -100,8 +148,12 @@ public class ColumnDefinitionParser implements CommandHandler {
     /**
      * ALTER TABLE ADD COLUMN takes a BARE LITERAL default and nothing else — not a cast, not
      * arithmetic, not even {@code CURRENT_TIMESTAMP()}, all of which CREATE TABLE accepts
-     * (live-verified). The refused expression is echoed in brackets, and a {@code ::} cast is echoed
-     * in its CAST spelling rather than as written.
+     * (live-verified). The refused expression is echoed in brackets as the plan prints it: a niladic
+     * keyword with its parentheses, {@code CURRENT_DATE()}, a {@code ::} cast as {@code CAST(… AS …)}, and
+     * date arithmetic as the function it plans, {@code DATE_ADDDAYSTODATE(NEGATE(1), CURRENT_DATE())} for
+     * {@code CURRENT_DATE - 1}. The default is compiled first, so an operand its operator does not take is
+     * refused at the operator, placed in the statement: {@code CURRENT_TIMESTAMP + 1} is "Invalid argument
+     * types for function '+'" (live-verified).
      */
     private void rejectComputedDefaultOnAddColumn(
             final FrostlakeParser.DefaultExpressionContext defaultExpression) {
@@ -109,8 +161,36 @@ public class ColumnDefinitionParser implements CommandHandler {
                 || negatedLiteral(defaultExpression.expression()) != null) {
             return;
         }
+        // A sequence's NEXTVAL is a default ADD COLUMN takes on a table that holds no rows; one that holds rows has
+        // refused it already, as a non-constant default (live-verified).
+        if (isSequenceNextval(defaultExpression.expression())) {
+            return;
+        }
+        // A default that calls a user-defined function is echoed as the plan prints it, the function under its
+        // bare name in upper case, and a name that is no function is refused as one first (live-verified).
+        final DefaultExpressionCalls calls = new DefaultExpressionCalls(queryExecutor);
+        calls.requireKnownFunctions(defaultExpression.expression());
+        final FrostlakeParser.ExpressionContext written = defaultExpression.expression();
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(written.getStart().getLine(), written.getStart().getCharPositionInLine()));
+        try {
+            staticDefaultType(written);
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+        final String planned = calls.addColumnEcho(written);
         throw new RuntimeException(SqlCompilationError.of("Invalid column default expression ["
-            + castSpelling(defaultExpression.expression()) + "]"));
+            + (planned != null ? planned : castSpelling(written)) + "]"));
+    }
+
+    /** Whether a default is a sequence's next value, {@code seq.NEXTVAL}, qualified or not. */
+    private static boolean isSequenceNextval(final FrostlakeParser.ExpressionContext expression) {
+        if (!(expression instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return false;
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(
+            ((FrostlakeParser.QualifiedNameExprContext) expression).qualifiedName());
+        return parts.length >= 2 && parts.length <= 4 && "NEXTVAL".equals(parts[parts.length - 1]);
     }
 
     /**
@@ -149,7 +229,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (expr instanceof FrostlakeParser.CastExpr2Context) {
             final FrostlakeParser.CastExpr2Context cast = (FrostlakeParser.CastExpr2Context) expr;
             return "CAST(" + getOriginalText(cast.expression()) + " AS "
-                + getOriginalText(cast.dataTypeName()).toUpperCase()
+                + getOriginalText(cast.dataTypeName()).toUpperCase(Locale.ROOT)
                 + (cast.typeParameters() != null ? getOriginalText(cast.typeParameters()) : "") + ")";
         }
         return getOriginalText(expr);
@@ -182,7 +262,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of(
                 "Expression type does not match column data type, expecting "
                 + SqlTypeNames.canonical(dataType) + " but got " + SqlTypeNames.canonical(literalType)
-                + " for column " + colName.toUpperCase()));
+                + " for column " + colName.toUpperCase(Locale.ROOT)));
         }
     }
 
@@ -267,7 +347,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             return;
         }
         throw new RuntimeException(SqlCompilationError.of(
-            "Default value data type does not match data type for column " + colName.toUpperCase()));
+            "Default value data type does not match data type for column " + colName.toUpperCase(Locale.ROOT)));
     }
 
     /**
@@ -289,7 +369,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
         evaluator.inferStaticType(parsed);
         throw new RuntimeException(SqlCompilationError.of(
-            "Default value data type does not match data type for column " + colName.toUpperCase()));
+            "Default value data type does not match data type for column " + colName.toUpperCase(Locale.ROOT)));
     }
 
     /** The DEFAULT's own type: a literal's measured type, or a computed expression's static type. */
@@ -350,7 +430,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
-            final String name = call.functionName().getText().toUpperCase();
+            final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
             if (queryExecutor.getFunctionRegistry().hasAggregateFunction(name)) {
                 final Token at = call.getStart();
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
@@ -426,7 +506,7 @@ public class ColumnDefinitionParser implements CommandHandler {
 
     /** A temporal type's flavour: DATE, TIME, or a TIMESTAMP's NTZ, LTZ or TZ. */
     private static String temporalFlavour(final DateTimeType type) {
-        final String name = type.getName().toUpperCase();
+        final String name = type.getName().toUpperCase(Locale.ROOT);
         if ("DATE".equals(name) || "TIME".equals(name)) {
             return name;
         }
@@ -469,6 +549,45 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     /**
+     * Refuses a column type that declares a member NOT NULL inside an ARRAY or a MAP: a table cannot hold one,
+     * {@code a ARRAY(INT NOT NULL)} is "DDL operation failed because it would result in a non-nullable structured
+     * type field 'A.element' contained within an array or map" (live-verified). The field is named by its path: an
+     * element {@code element}, a value {@code value}, a field its name.
+     *
+     * @param type     the type, or a member of it
+     * @param path     the path to it, the column's name first
+     * @param withinMany whether it stands inside an ARRAY or a MAP
+     */
+    private static void rejectNonNullableMember(final DataType type, final String path, final boolean withinMany) {
+        if (type instanceof StructuredArrayType) {
+            final String element = path + ".element";
+            if (((StructuredArrayType) type).isElementNotNull()) {
+                throw nonNullableMember(element);
+            }
+            rejectNonNullableMember(((StructuredArrayType) type).getElementType(), element, true);
+        } else if (type instanceof MapType) {
+            final String value = path + ".value";
+            if (((MapType) type).isValueNotNull()) {
+                throw nonNullableMember(value);
+            }
+            rejectNonNullableMember(((MapType) type).getValueType(), value, true);
+        } else if (type instanceof StructuredObjectType) {
+            for (final StructuredField field : ((StructuredObjectType) type).getFields()) {
+                final String named = path + "." + field.getName();
+                if (withinMany && field.isNotNull()) {
+                    throw nonNullableMember(named);
+                }
+                rejectNonNullableMember(field.getDataType(), named, withinMany);
+            }
+        }
+    }
+
+    private static RuntimeException nonNullableMember(final String path) {
+        return new RuntimeException(SqlCompilationError.inline("DDL operation failed because it would result in a"
+            + " non-nullable structured type field '" + path + "' contained within an array or map"));
+    }
+
+    /**
      * As above, with {@code addColumn} telling which surface asked. It matters for DEFAULTs: CREATE
      * TABLE judges one by COERCION (a string default is refused for the numeric and datetime families,
      * a numeric default for VARCHAR / BOOLEAN / VARIANT, and {@code BOOLEAN DEFAULT 'true'} is taken),
@@ -477,15 +596,31 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     public TableColumn parseSingleColumnDef(final FrostlakeParser.ColumnDefContext colDef,
                                             final boolean addColumn) {
+        return parseSingleColumnDef(colDef, addColumn, false);
+    }
+
+    /**
+     * As above, with {@code iceberg} telling that the column is an Iceberg table's: its type is the one the
+     * format holds for what was written (see {@link IcebergColumnTypes}).
+     */
+    public TableColumn parseSingleColumnDef(final FrostlakeParser.ColumnDefContext colDef,
+                                            final boolean addColumn, final boolean iceberg) {
         final String colName = ParseTreeText.namePartText(colDef.columnDefName());
         rejectAnsiReservedColumnName(colName, colDef);
-        final DataType dataType = parseDataType(colDef.dataTypeName(), colDef.typeParameters());
+        final DataType tableType = parseDataType(colDef.dataTypeName(), colDef.typeParameters());
+        rejectNonNullableMember(tableType, colName.toUpperCase(Locale.ROOT), false);
+        final DataType formatType = iceberg ? IcebergColumnTypes.declared(colDef.dataTypeName(),
+            colDef.typeParameters(), tableType, colName) : null;
+        final DataType dataType = formatType != null ? IcebergTypes.tableType(formatType) : tableType;
 
         boolean primaryKey = false;
+        boolean keyLeftOut = false;
+        boolean foreignKeyLeftOut = false;
         boolean sawDefault = false;
         boolean notNull = false;
         boolean unique = false;
         boolean autoIncrement = false;
+        boolean identityOrdered = false;
         long identityStart = 1;
         long identityIncrement = 1;
         Object defaultValue = null;
@@ -497,20 +632,31 @@ public class ColumnDefinitionParser implements CommandHandler {
         Boolean rely = null;
         String collation = null;
         String maskingPolicy = null;
+        final List<String> maskingArguments = new ArrayList<>();
         String projectionPolicy = null;
 
         rejectRepeatedColumnConstraints(colName, colDef.columnConstraint());
 
         for (final FrostlakeParser.ColumnConstraintContext constraint : colDef.columnConstraint()) {
             if (constraint.PRIMARY() != null) {
-                primaryKey = true;
-                rely = parseRelyOption(constraint.relyOption());
+                final KeyConstraintProperties properties =
+                    KeyConstraintProperties.read(constraint.keyConstraintProperty());
+                if (properties.leavesOut()) {
+                    // A key the account leaves out still makes its column NOT NULL (live-verified).
+                    keyLeftOut = true;
+                } else {
+                    primaryKey = true;
+                    rely = properties.rely();
+                }
             } else if (constraint.NOT() != null) {
                 notNull = true;
-                rely = parseRelyOption(constraint.relyOption());
             } else if (constraint.UNIQUE() != null) {
-                unique = true;
-                rely = parseRelyOption(constraint.relyOption());
+                final KeyConstraintProperties properties =
+                    KeyConstraintProperties.read(constraint.keyConstraintProperty());
+                if (!properties.leavesOut()) {
+                    unique = true;
+                    rely = properties.rely();
+                }
             } else if (constraint.AUTOINCREMENT() != null || constraint.IDENTITY() != null) {
                 autoIncrement = true;
                 // Seed + step from either (start, step) or START <n> INCREMENT <n> (both yield two
@@ -522,13 +668,21 @@ public class ColumnDefinitionParser implements CommandHandler {
                         identityStart = parseSignedInteger(props.signedInteger(0));
                         identityIncrement = parseSignedInteger(props.signedInteger(1));
                     }
+                    identityOrdered = props.ORDER() != null;
+                    int orderings = 0;
                     for (final FrostlakeParser.IdentityWordOptionContext opt : props.identityWordOption()) {
                         if (opt.START() != null) {
                             identityStart = parseSignedInteger(opt.signedInteger());
                         } else if (opt.INCREMENT() != null) {
                             identityIncrement = parseSignedInteger(opt.signedInteger());
+                        } else {
+                            // The sequence behind the column hands its numbers out in order, or not.
+                            orderings++;
+                            identityOrdered = opt.ORDER() != null;
                         }
-                        // ORDER / NOORDER parse but don't change values.
+                    }
+                    if (orderings > 1) {
+                        throw new RuntimeException(SqlCompilationError.of("duplicate property 'SEQUENCE_ORDER';"));
                     }
                 }
             } else if (constraint.DEFAULT() != null) {
@@ -547,16 +701,24 @@ public class ColumnDefinitionParser implements CommandHandler {
                     onDelete = actions[0];
                     onUpdate = actions[1];
                 }
-                rely = parseRelyOption(constraint.relyOption());
+                foreignKeyLeftOut = leavesOut(constraint);
+                final Boolean written = KeyConstraintProperties.read(constraint.keyConstraintProperty()).rely();
+                if (!foreignKeyLeftOut && written != null) {
+                    rely = written;
+                }
             } else if (constraint.PROJECTION() != null) {
                 // A projection policy attaches in the column definition too, WITH optional.
                 projectionPolicy = getText(constraint.qualifiedName());
             } else if (constraint.MASKING() != null) {
                 // A masking policy attached in the column definition itself, on CREATE TABLE and on
-                // ALTER TABLE ADD COLUMN alike (live-verified). Its USING argument list is a
-                // conditional-policy detail the ALTER path already models; the attachment is what the
-                // definition records.
+                // ALTER TABLE ADD COLUMN alike (live-verified), with the columns a conditional policy's USING
+                // gives its arguments.
                 maskingPolicy = getText(constraint.qualifiedName());
+                if (constraint.identifierList() != null) {
+                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList().identifier()) {
+                        maskingArguments.add(getText(id));
+                    }
+                }
             } else if (constraint.collateClause() != null) {
                 // A COLLATE that FOLLOWS the DEFAULT retypes the column under a default already
                 // typed without it, and Snowflake refuses the pair (live-verified). The other
@@ -565,7 +727,7 @@ public class ColumnDefinitionParser implements CommandHandler {
                 if (sawDefault) {
                     throw new RuntimeException(SqlCompilationError.of(
                         "Default value data type does not match data type for column "
-                        + colName.toUpperCase()));
+                        + colName.toUpperCase(Locale.ROOT)));
                 }
                 collation = extractCollation(constraint.collateClause());
             }
@@ -576,7 +738,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // specification itself is judged; one that parses is kept lower-cased.
             if (!(dataType instanceof StringType)) {
                 throw new RuntimeException(SqlCompilationError.of("Cannot specify column collation for data type '"
-                    + SqlTypeNames.canonical(dataType) + "' for column '" + colName.toUpperCase() + "'"));
+                    + SqlTypeNames.canonical(dataType) + "' for column '" + colName.toUpperCase(Locale.ROOT) + "'"));
             }
             collation = CollationSpec.parse(collation).getText();
         }
@@ -588,37 +750,53 @@ public class ColumnDefinitionParser implements CommandHandler {
         rejectUnsupportedDefaultShape(defaultExpression);
         rejectCollatedDefault(colName, defaultExpression);
         rejectUncoercibleDefault(colName, dataType, defaultExpression, defaultValue);
+        if (defaultExpression != null && defaultExpression.expression() != null) {
+            // A user-defined function a default cannot expand is refused once the default's type fits: such a
+            // function's FLOAT is no default of an exact NUMBER column, which is refused for the type first.
+            final DataType source = dataType instanceof NumericType && !NumericType.isApproximate(dataType)
+                ? defaultSourceType(defaultExpression, defaultValue) : null;
+            new DefaultExpressionCalls(queryExecutor).requireColumnDefault(defaultExpression.expression(),
+                source instanceof NumericType && NumericType.isApproximate(source)
+                    ? new RuntimeException(SqlCompilationError.of(
+                        "Default value data type does not match data type for column " + colName.toUpperCase(Locale.ROOT)))
+                    : null);
+        }
         rejectNonNullableFieldsInNullableStructure(colName, dataType, notNull);
 
         // A PRIMARY KEY column is NOT NULL whether or not the definition says so, and an explicit NULL
         // beside the key does not win. The rule belongs to the declaration: a key added later by
         // ALTER TABLE ... ADD PRIMARY KEY leaves nullability alone.
-        final TableColumn column = new TableColumn(colName, dataType, !notNull && !primaryKey, defaultValue,
-                                    primaryKey, unique, autoIncrement, identityStart, identityIncrement);
+        final TableColumn column = new TableColumn(colName, dataType, !notNull && !primaryKey && !keyLeftOut,
+                                    defaultValue, primaryKey, unique, autoIncrement, identityStart, identityIncrement);
+        column.setIdentityOrdered(identityOrdered);
+        column.setFormatType(formatType);
         if (projectionPolicy != null) {
-            if (catalog.findProjectionPolicy(projectionPolicy) == null) {
+            // The policy of exactly that name, recorded so (live-verified).
+            if (catalog.findProjectionPolicyExact(projectionPolicy) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
-                    catalog.qualifiedObjectName(projectionPolicy)));
+                    catalog.qualifiedExactName(projectionPolicy)));
             }
-            column.setProjectionPolicyName(catalog.qualifiedObjectName(projectionPolicy));
+            column.setProjectionPolicyName(catalog.qualifiedExactName(projectionPolicy));
         }
         if (maskingPolicy != null) {
             // Recorded in full, exactly as the ALTER path records it: DESCRIBE and GET_DDL report an
             // attached policy fully qualified whichever statement attached it (live-verified). The
             // policy has to be there — live refuses this column definition otherwise, in the same
             // sentence the ALTER form uses.
-            if (catalog.findMaskingPolicy(maskingPolicy) == null) {
+            if (catalog.findMaskingPolicyExact(maskingPolicy) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
-                    catalog.qualifiedObjectName(maskingPolicy)));
+                    catalog.qualifiedExactName(maskingPolicy)));
             }
-            MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicy(maskingPolicy), column);
-            column.setMaskingPolicyName(catalog.qualifiedObjectName(maskingPolicy));
+            MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicyExact(maskingPolicy), column);
+            column.setMaskingPolicyName(catalog.qualifiedExactName(maskingPolicy));
+            column.setMaskingPolicyArguments(maskingArguments);
         }
 
-        // Set foreign key info if present. A referential action other than NO ACTION silently
-        // drops the WHOLE constraint (live-verified: the table is created, but the foreign key
-        // appears in neither SHOW IMPORTED KEYS nor GET_DDL; explicit NO ACTION is kept).
-        if (referencedTable != null && !dropsForeignKey(onDelete, onUpdate)) {
+        // Set foreign key info if present. A referential action other than NO ACTION, a MATCH other than FULL
+        // or a property the account cannot keep silently drops the WHOLE constraint (live-verified: the table
+        // is created, but the foreign key appears in neither SHOW IMPORTED KEYS nor GET_DDL; explicit NO ACTION
+        // is kept).
+        if (referencedTable != null && !foreignKeyLeftOut) {
             column.setReferencedTable(referencedTable);
             column.setReferencedColumn(referencedColumn);
             column.setOnDelete(onDelete);
@@ -693,96 +871,59 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     public List<TableColumn> parseColumnList(final FrostlakeParser.ColumnListContext ctx) {
+        return parseColumnList(ctx, false);
+    }
+
+    /** The columns of a column list, an Iceberg table's at the types the format holds. */
+    public List<TableColumn> parseColumnList(final FrostlakeParser.ColumnListContext ctx, final boolean iceberg) {
         List<TableColumn> columns = new ArrayList<>();
         final List<String> tablePrimaryKeys = new ArrayList<>();
+        final List<String> tableNotNullColumns = new ArrayList<>();
         final List<String> tableUniqueColumns = new ArrayList<>();
-        final List<ForeignKeyConstraint> tableForeignKeys = new ArrayList<>();
 
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             if (item.columnDef() != null) {
-                columns.add(parseSingleColumnDef(item.columnDef()));
+                columns.add(parseSingleColumnDef(item.columnDef(), false, iceberg));
             } else if (item.tableConstraint() != null) {
                 final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
-                if (constraint.PRIMARY() != null) {
-                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
-                        tablePrimaryKeys.add(getText(id));
-                    }
-                } else if (constraint.UNIQUE() != null) {
+                if (constraint.checkConstraint() != null || constraint.FOREIGN() != null) {
+                    // A check is the table's own record and a foreign key is read by parseForeignKeys.
+                    continue;
+                }
+                final KeyConstraintProperties properties =
+                    KeyConstraintProperties.read(constraint.keyConstraintProperty());
+                final List<String> named = new ArrayList<>();
+                for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
+                    named.add(getText(id));
+                }
+                if (constraint.PRIMARY() != null && properties.leavesOut()) {
+                    // A key the account leaves out still makes its columns NOT NULL (live-verified).
+                    tableNotNullColumns.addAll(named);
+                } else if (constraint.PRIMARY() != null) {
+                    tablePrimaryKeys.addAll(named);
+                } else if (!properties.leavesOut()) {
                     // Table-level UNIQUE (a, b): every listed column carries the uniqueness flag. The fact
                     // that they form ONE constraint (and any CONSTRAINT <name>) is kept separately — see
                     // parseUniqueConstraints, which the CREATE TABLE handler records on the table.
-                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
-                        tableUniqueColumns.add(getText(id));
-                    }
-                } else if (constraint.FOREIGN() != null) {
-                    // Table-level foreign key
-                    final String constraintName = constraint.constraintName() != null ?
-                        getText(constraint.constraintName().identifier()) : null;
-
-                    final List<String> columnNames = new ArrayList<>();
-                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
-                        columnNames.add(getText(id));
-                    }
-
-                    final String refTable = getText(constraint.qualifiedName());
-
-                    final List<String> refColumns = new ArrayList<>();
-                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(1).identifier()) {
-                        refColumns.add(getText(id));
-                    }
-
-                    String onDelete = null;
-                    String onUpdate = null;
-                    if (constraint.referentialActions() != null) {
-                        final String[] actions = parseReferentialActions(constraint.referentialActions());
-                        onDelete = actions[0];
-                        onUpdate = actions[1];
-                    }
-
-                    final Boolean rely = parseRelyOption(constraint.relyOption());
-
-                    // Same silent drop as the column-level form: any action but NO ACTION
-                    // discards the constraint while the CREATE succeeds (live-verified).
-                    if (!dropsForeignKey(onDelete, onUpdate)) {
-                        tableForeignKeys.add(new ForeignKeyConstraint(
-                            constraintName, columnNames, refTable, refColumns, onDelete, onUpdate, rely
-                        ));
-                    }
+                    tableUniqueColumns.addAll(named);
                 }
             }
         }
 
-        if (!tablePrimaryKeys.isEmpty() || !tableUniqueColumns.isEmpty()) {
+        if (!tablePrimaryKeys.isEmpty() || !tableUniqueColumns.isEmpty() || !tableNotNullColumns.isEmpty()) {
             final List<TableColumn> updatedColumns = new ArrayList<>();
             for (final TableColumn col : columns) {
                 final boolean isPrimaryKey = namesContain(tablePrimaryKeys, col.getName(), columns);
                 final boolean isUnique = namesContain(tableUniqueColumns, col.getName(), columns);
+                final boolean notNullOnly = namesContain(tableNotNullColumns, col.getName(), columns);
 
-                final TableColumn newCol = new TableColumn(
-                    col.getName(),
-                    col.getDataType(),
-                    // Named out of line, the key makes each of its columns NOT NULL exactly as the
-                    // inline form does, over whatever the column definition declared.
-                    col.isNullable() && !isPrimaryKey,
-                    col.getDefaultValue(),
-                    isPrimaryKey || col.isPrimaryKey(),
-                    isUnique || col.isUnique(),
-                    col.isAutoIncrement(),
-                    col.getIdentityStart(),      // 9-arg ctor: the 7-arg one resets identity to (1,1)
-                    col.getIdentityIncrement()
-                );
-                newCol.setComment(col.getComment());
-                newCol.setCollation(col.getCollation());
-                newCol.setRely(col.getRely());
-
-                // Copy foreign key info
-                if (col.hasForeignKey()) {
-                    newCol.setReferencedTable(col.getReferencedTable());
-                    newCol.setReferencedColumn(col.getReferencedColumn());
-                    newCol.setOnDelete(col.getOnDelete());
-                    newCol.setOnUpdate(col.getOnUpdate());
-                }
-
+                // Named out of line, the key makes each of its columns NOT NULL exactly as the inline form
+                // does, over whatever the column definition declared; everything else the column carries —
+                // policies and tags included — goes with it.
+                // A table-level key's RELY is the key's own, kept on it, not on the columns it spans.
+                final TableColumn newCol = col.rebuiltCopy(col.getDataType(),
+                    col.isNullable() && !isPrimaryKey && !notNullOnly,
+                    isPrimaryKey || col.isPrimaryKey(), isUnique || col.isUnique());
                 updatedColumns.add(newCol);
             }
             columns = updatedColumns;
@@ -843,6 +984,85 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     /**
+     * Every column a table-level key names is one of the table's, a key the account leaves out included; a name
+     * that is not is refused where it stands (live-verified for PRIMARY KEY, UNIQUE and FOREIGN KEY).
+     *
+     * @param columnList the parsed column list
+     */
+    static void requireConstraintColumns(final FrostlakeParser.ColumnListContext columnList) {
+        final List<String> declared = new ArrayList<>();
+        for (final FrostlakeParser.ColumnOrConstraintContext item : columnList.columnOrConstraint()) {
+            if (item.columnDef() != null) {
+                declared.add(ParseTreeText.namePartText(item.columnDef().columnDefName()));
+            }
+        }
+        for (final FrostlakeParser.ColumnOrConstraintContext item : columnList.columnOrConstraint()) {
+            final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
+            if (constraint == null || constraint.checkConstraint() != null) {
+                continue;
+            }
+            for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
+                final String name = ParseTreeText.getIdentifier(id);
+                boolean found = false;
+                for (final String column : declared) {
+                    found = found || column.equalsIgnoreCase(name);
+                }
+                if (!found) {
+                    throw new RuntimeException(SqlCompilationError.invalidIdentifier(id.getStart().getLine(),
+                        id.getStart().getCharPositionInLine(), name.toUpperCase(Locale.ROOT)));
+                }
+            }
+        }
+    }
+
+    /**
+     * No two constraints a table keeps carry one name. A second one of the name is refused naming the table, and a
+     * foreign key in words of its own (live-verified); the name of a key the account leaves out stays free.
+     *
+     * @param tableName  the table's bare name
+     * @param columnList the parsed column list
+     */
+    static void rejectDuplicateConstraintNames(final String tableName,
+            final FrostlakeParser.ColumnListContext columnList) {
+        final Set<String> taken = new HashSet<>();
+        for (final FrostlakeParser.ColumnOrConstraintContext item : columnList.columnOrConstraint()) {
+            if (item.columnDef() != null) {
+                for (final FrostlakeParser.ColumnConstraintContext constraint
+                        : item.columnDef().columnConstraint()) {
+                    if (constraint.constraintName() != null
+                            && (constraint.CHECK() != null || !leavesOut(constraint))) {
+                        claimConstraintName(taken, constraint.constraintName(), constraint.REFERENCES() != null,
+                            tableName);
+                    }
+                }
+            } else if (item.tableConstraint() != null) {
+                final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
+                if (constraint.checkConstraint() != null) {
+                    if (constraint.checkConstraint().constraintName() != null) {
+                        claimConstraintName(taken, constraint.checkConstraint().constraintName(), false, tableName);
+                    }
+                } else if (constraint.constraintName() != null && !leavesOut(constraint)) {
+                    claimConstraintName(taken, constraint.constraintName(), constraint.FOREIGN() != null, tableName);
+                }
+            }
+        }
+    }
+
+    private static void claimConstraintName(final Set<String> taken, final FrostlakeParser.ConstraintNameContext named,
+                                            final boolean foreignKey, final String tableName) {
+        final String name = ParseTreeText.getIdentifier(named.identifier());
+        if (!taken.add(name)) {
+            throw constraintNameTaken(name, foreignKey, tableName);
+        }
+    }
+
+    /** The refusal of a constraint name the table already has: a foreign key's is worded as any object's. */
+    static RuntimeException constraintNameTaken(final String name, final boolean foreignKey, final String tableName) {
+        return new RuntimeException(SqlCompilationError.of(foreignKey ? "Object '" + name + "' already exists."
+            : "constraint '" + name + "' already exists for table '" + tableName.toUpperCase(Locale.ROOT) + "'"));
+    }
+
+    /**
      * A table declares at most ONE primary key and no two constraints over the SAME columns, however
      * they are spelled — inline on a column or table-level, live-verified for all four shapes (twice
      * on one column, once on each of two columns, inline beside table-level, two table-level). The
@@ -858,14 +1078,20 @@ public class ColumnDefinitionParser implements CommandHandler {
                     ParseTreeText.namePartText(item.columnDef().columnDefName()).toUpperCase(Locale.ROOT);
                 for (final FrostlakeParser.ColumnConstraintContext constraint
                         : item.columnDef().columnConstraint()) {
+                    if (constraint.PRIMARY() == null && constraint.UNIQUE() == null || leavesOut(constraint)) {
+                        continue;
+                    }
                     if (constraint.PRIMARY() != null) {
                         primaryKeys++;
-                    } else if (constraint.UNIQUE() != null) {
+                    } else {
                         uniqueSignatures.add(column);
                     }
                 }
             } else if (item.tableConstraint() != null) {
                 final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
+                if (leavesOut(constraint)) {
+                    continue;
+                }
                 if (constraint.PRIMARY() != null) {
                     primaryKeys++;
                 } else if (constraint.UNIQUE() != null && !constraint.identifierList().isEmpty()) {
@@ -897,13 +1123,98 @@ public class ColumnDefinitionParser implements CommandHandler {
      * one primary key, so the first such declaration wins.
      */
     public String parsePrimaryKeyConstraintName(final FrostlakeParser.ColumnListContext ctx) {
+        final FrostlakeParser.TableConstraintContext key = tablePrimaryKey(ctx);
+        return key == null || key.constraintName() == null ? null : getText(key.constraintName().identifier());
+    }
+
+    /**
+     * The columns of the table-level PRIMARY KEY a column list keeps, in the order the key wrote them; empty when
+     * the list declares none.
+     *
+     * @param ctx the parsed column list
+     * @return the key's columns as declared
+     */
+    public List<String> parsePrimaryKeyColumns(final FrostlakeParser.ColumnListContext ctx) {
+        final List<String> columns = new ArrayList<>();
+        final FrostlakeParser.TableConstraintContext key = tablePrimaryKey(ctx);
+        if (key != null) {
+            for (final FrostlakeParser.IdentifierContext id : key.identifierList(0).identifier()) {
+                columns.add(getText(id));
+            }
+        }
+        return columns;
+    }
+
+    /** The first table-level PRIMARY KEY a column list keeps, or null. */
+    private static FrostlakeParser.TableConstraintContext tablePrimaryKey(
+            final FrostlakeParser.ColumnListContext ctx) {
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
-            if (constraint != null && constraint.PRIMARY() != null && constraint.constraintName() != null) {
-                return getText(constraint.constraintName().identifier());
+            if (constraint != null && constraint.PRIMARY() != null && !leavesOut(constraint)) {
+                return constraint;
             }
         }
         return null;
+    }
+
+    /**
+     * Names the keys a column definition declared under a CONSTRAINT name of their own: the primary key, a
+     * unique column's constraint and a referencing column's foreign key. A key the account leaves out takes no
+     * name, so the name stays free for another constraint.
+     *
+     * @param ctx   the parsed column list
+     * @param table the table the columns were built into
+     */
+    public void applyInlineConstraintNames(final FrostlakeParser.ColumnListContext ctx, final Table table) {
+        for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
+            if (item.columnDef() != null) {
+                applyInlineConstraintNames(item.columnDef(),
+                    ParseTreeText.namePartText(item.columnDef().columnDefName()), table);
+            }
+        }
+    }
+
+    /** The CONSTRAINT names one column definition gives its keys. */
+    private void applyInlineConstraintNames(final FrostlakeParser.ColumnDefContext colDef, final String column,
+                                            final Table table) {
+        for (final FrostlakeParser.ColumnConstraintContext constraint : colDef.columnConstraint()) {
+            if (constraint.constraintName() == null || constraint.CHECK() != null || leavesOut(constraint)) {
+                continue;
+            }
+            final String name = getText(constraint.constraintName().identifier());
+            if (constraint.PRIMARY() != null) {
+                table.setPrimaryKeyConstraintName(name);
+            } else if (constraint.UNIQUE() != null) {
+                table.setUniqueConstraintName(column, name);
+            } else if (constraint.REFERENCES() != null) {
+                table.setColumnForeignKeyConstraintName(column, name);
+            }
+        }
+    }
+
+    /**
+     * The parents of the foreign keys a column list declares and the account leaves out: each has to exist all
+     * the same, which the caller checks.
+     *
+     * @param ctx the parsed column list
+     * @return the parents as written
+     */
+    public List<String> leftOutForeignKeyParents(final FrostlakeParser.ColumnListContext ctx) {
+        final List<String> parents = new ArrayList<>();
+        for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
+            if (item.columnDef() != null) {
+                for (final FrostlakeParser.ColumnConstraintContext constraint
+                        : item.columnDef().columnConstraint()) {
+                    if (constraint.REFERENCES() != null && leavesOut(constraint)) {
+                        parents.add(getText(constraint.qualifiedName()));
+                    }
+                }
+            } else if (item.tableConstraint() != null && item.tableConstraint().FOREIGN() != null
+                    && leavesOut(item.tableConstraint())) {
+                parents.add(getText(item.tableConstraint().qualifiedName()));
+            }
+        }
+        return parents;
     }
 
     /**
@@ -916,7 +1227,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         final List<UniqueConstraint> uniques = new ArrayList<>();
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
-            if (constraint == null || constraint.UNIQUE() == null) {
+            if (constraint == null || constraint.UNIQUE() == null || leavesOut(constraint)) {
                 continue;
             }
             final String constraintName = constraint.constraintName() != null
@@ -925,9 +1236,88 @@ public class ColumnDefinitionParser implements CommandHandler {
             for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
                 columnNames.add(getText(id));
             }
-            uniques.add(new UniqueConstraint(constraintName, columnNames));
+            uniques.add(new UniqueConstraint(constraintName, columnNames,
+                KeyConstraintProperties.read(constraint.keyConstraintProperty()).rely()));
         }
         return uniques;
+    }
+
+    /**
+     * The RELY the primary key a column list declares was written with: the table-level key's own, or the one a
+     * column's own PRIMARY KEY carries; null when unspecified or when the list declares no key.
+     *
+     * @param ctx the parsed column list
+     * @return the key's RELY
+     */
+    public Boolean parsePrimaryKeyRely(final FrostlakeParser.ColumnListContext ctx) {
+        final FrostlakeParser.TableConstraintContext key = tablePrimaryKey(ctx);
+        if (key != null) {
+            return KeyConstraintProperties.read(key.keyConstraintProperty()).rely();
+        }
+        for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
+            if (item.columnDef() != null) {
+                final Boolean rely = ownPrimaryKeyRely(item.columnDef());
+                if (rely != null) {
+                    return rely;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The RELY of a column definition's own PRIMARY KEY, or null. */
+    private static Boolean ownPrimaryKeyRely(final FrostlakeParser.ColumnDefContext colDef) {
+        for (final FrostlakeParser.ColumnConstraintContext constraint : colDef.columnConstraint()) {
+            if (constraint.PRIMARY() != null && !leavesOut(constraint)) {
+                return KeyConstraintProperties.read(constraint.keyConstraintProperty()).rely();
+            }
+        }
+        return null;
+    }
+
+    /** Whether a column definition declares a UNIQUE of its own that the account keeps. */
+    private static boolean declaresOwnUnique(final FrostlakeParser.ColumnDefContext colDef) {
+        for (final FrostlakeParser.ColumnConstraintContext constraint : colDef.columnConstraint()) {
+            if (constraint.UNIQUE() != null && !leavesOut(constraint)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Records each column whose own definition declared UNIQUE: a key of its own, beside any table-level UNIQUE
+     * that spans the column too (live-verified).
+     *
+     * @param ctx   the parsed column list
+     * @param table the table the columns were built into
+     */
+    public void markOwnUniqueColumns(final FrostlakeParser.ColumnListContext ctx, final Table table) {
+        for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
+            if (item.columnDef() != null && declaresOwnUnique(item.columnDef())) {
+                table.markOwnUnique(ParseTreeText.namePartText(item.columnDef().columnDefName()));
+            }
+        }
+    }
+
+    /**
+     * The keys a column an ALTER TABLE … ADD COLUMN adds declares in its own definition, as a CREATE TABLE keeps
+     * them: their CONSTRAINT names, its own UNIQUE, and a primary key's RELY (live-verified). The primary key then
+     * takes the place of a UNIQUE over the same column.
+     *
+     * @param colDef the added column's definition
+     * @param table  the table it was added to
+     */
+    public void applyAddedColumnConstraints(final FrostlakeParser.ColumnDefContext colDef, final Table table) {
+        final String column = ParseTreeText.namePartText(colDef.columnDefName());
+        applyInlineConstraintNames(colDef, column, table);
+        if (declaresOwnUnique(colDef)) {
+            table.markOwnUnique(column);
+        }
+        if (table.hasColumn(column) && table.getColumn(column).isPrimaryKey()) {
+            table.setPrimaryKeyRely(ownPrimaryKeyRely(colDef));
+            table.absorbUniqueKeysIntoPrimaryKey();
+        }
     }
 
     /**
@@ -946,7 +1336,8 @@ public class ColumnDefinitionParser implements CommandHandler {
                 for (final FrostlakeParser.ColumnConstraintContext constraint
                         : item.columnDef().columnConstraint()) {
                     if (constraint.CHECK() != null) {
-                        checks.add(buildCheckConstraint(null, constraint.booleanExpr(), columnNames));
+                        checks.add(buildCheckConstraint(constraint.constraintName(), constraint.booleanExpr(),
+                            columnNames));
                     }
                 }
             } else if (item.tableConstraint() != null && item.tableConstraint().checkConstraint() != null) {
@@ -1018,9 +1409,13 @@ public class ColumnDefinitionParser implements CommandHandler {
 
                     final String refTable = getText(constraint.qualifiedName());
 
+                    // Left empty when the key names no columns of its parent: they are the parent's own key's,
+                    // found when the constraint is registered (ForeignKeyTargets).
                     final List<String> refColumns = new ArrayList<>();
-                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(1).identifier()) {
-                        refColumns.add(getText(id));
+                    if (constraint.identifierList().size() > 1) {
+                        for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(1).identifier()) {
+                            refColumns.add(getText(id));
+                        }
                     }
 
                     String onDelete = null;
@@ -1031,11 +1426,12 @@ public class ColumnDefinitionParser implements CommandHandler {
                         onUpdate = actions[1];
                     }
 
-                    final Boolean rely = parseRelyOption(constraint.relyOption());
+                    final Boolean rely = KeyConstraintProperties.read(constraint.keyConstraintProperty()).rely();
 
-                    // Same silent drop as the column-level form: any action but NO ACTION
-                    // discards the constraint while the CREATE succeeds (live-verified).
-                    if (!dropsForeignKey(onDelete, onUpdate)) {
+                    // Same silent drop as the column-level form: an action but NO ACTION, a MATCH but FULL or a
+                    // property the account cannot keep discards the constraint while the CREATE succeeds
+                    // (live-verified).
+                    if (!leavesOut(constraint)) {
                         foreignKeys.add(new ForeignKeyConstraint(
                             constraintName, columnNames, refTable, refColumns, onDelete, onUpdate, rely
                         ));
@@ -1058,7 +1454,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (p.typeParameters() == null && parameter.getDataType() instanceof StringType) {
             return new Parameter(parameter.getName(),
                 new StringType(parameter.getDataType().getName(), POLICY_VARCHAR_LENGTH),
-                parameter.getDefaultValue());
+                parameter.getDefaultValue(), parameter.isUnsized(), parameter.getDefaultTold());
         }
         return parameter;
     }
@@ -1067,10 +1463,10 @@ public class ColumnDefinitionParser implements CommandHandler {
     private static final int POLICY_VARCHAR_LENGTH = 134217728;
 
     public Parameter parseParameterDef(final FrostlakeParser.ParameterDefContext p) {
-        final String name = getText(p.identifier());
-        final DataType type = parseDataType(p.dataTypeName(), p.typeParameters());
-        final String defaultVal = p.expression() != null ? getOriginalText(p.expression()) : null;
-        return new Parameter(name, type, defaultVal);
+        final String name = getText(p.variableName());
+        final DataType type = parseRoutineDataType(p.dataTypeName(), p.typeParameters());
+        final String defaultVal = p.booleanExpr() != null ? getOriginalText(p.booleanExpr()) : null;
+        return new Parameter(name, type, defaultVal, p.typeParameters() == null && Parameter.holdsDefaultLength(type));
     }
 
 
@@ -1082,7 +1478,7 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     private static void rejectAnsiReservedColumnName(final String colName,
                                                      final FrostlakeParser.ColumnDefContext colDef) {
-        final String upper = colName.toUpperCase();
+        final String upper = colName.toUpperCase(Locale.ROOT);
         if (!"CURRENT_DATE".equals(upper) && !"CURRENT_TIME".equals(upper)
                 && !"CURRENT_TIMESTAMP".equals(upper) && !"CURRENT_USER".equals(upper)) {
             return;
@@ -1099,6 +1495,38 @@ public class ColumnDefinitionParser implements CommandHandler {
 
     public DataType parseDataType(final FrostlakeParser.DataTypeNameContext ctx, final FrostlakeParser.TypeParametersContext typeParams) {
         return sessionMappedTimestamp(DataTypeParser.parse(ctx, typeParams));
+    }
+
+    /**
+     * The type a routine's or a policy's signature declares, a parameter's or a result's: a column's, but for the
+     * leaves of a structured shape written with no width, which are of none of their own there, as a cast target's
+     * are — {@code OBJECT(a VARCHAR)} reads bare in DESCRIBE and GET_DDL and {@code VARCHAR(134217728)} in
+     * INFORMATION_SCHEMA (live-verified; see {@code StructuredLeafWidths}).
+     *
+     * @param ctx        the type's name
+     * @param typeParams its parameters, or null
+     * @return the type
+     */
+    public DataType parseRoutineDataType(final FrostlakeParser.DataTypeNameContext ctx,
+                                         final FrostlakeParser.TypeParametersContext typeParams) {
+        final DataType declared = parseDataType(ctx, typeParams);
+        return StructuredTypes.isStructured(declared)
+            ? DataTypeParser.parse(ctx, typeParams, DataTypeParser.CAST_STRING_DEFAULT) : declared;
+    }
+
+    /**
+     * The type of a column a routine's RETURNS TABLE declares: a column's type, but for a text or a binary written
+     * with no width, which is of no width of its own there ({@link ReturnColumnTypes}).
+     *
+     * @param ctx        the type's name
+     * @param typeParams its parameters, or null
+     * @return the declared type
+     */
+    public DataType parseReturnColumnType(final FrostlakeParser.DataTypeNameContext ctx,
+                                          final FrostlakeParser.TypeParametersContext typeParams) {
+        final boolean widthWritten = typeParams != null && typeParams.INTEGER_LITERAL() != null
+            && !typeParams.INTEGER_LITERAL().isEmpty();
+        return ReturnColumnTypes.declared(parseDataType(ctx, typeParams), widthWritten);
     }
 
     /**
@@ -1220,18 +1648,6 @@ public class ColumnDefinitionParser implements CommandHandler {
         return null;
     }
 
-    private Boolean parseRelyOption(final FrostlakeParser.RelyOptionContext ctx) {
-        if (ctx == null) {
-            return null;
-        }
-        if (ctx.RELY() != null) {
-            return true;
-        } else if (ctx.NORELY() != null) {
-            return false;
-        }
-        return null;
-    }
-
     public Object parseDefaultExpression(final FrostlakeParser.DefaultExpressionContext ctx) {
         if (ctx.expression() != null) {
             final FrostlakeParser.ExpressionContext expr = ctx.expression();
@@ -1250,12 +1666,24 @@ public class ColumnDefinitionParser implements CommandHandler {
             // Handle qualified names (identifiers like CURRENT_TIMESTAMP, TRUE, FALSE, NULL)
             if (expr instanceof FrostlakeParser.QualifiedNameExprContext) {
                 final FrostlakeParser.QualifiedNameExprContext nameCtx = (FrostlakeParser.QualifiedNameExprContext) expr;
-                final String name = getText(nameCtx.qualifiedName()).toUpperCase();
+                final String name = getText(nameCtx.qualifiedName()).toUpperCase(Locale.ROOT);
                 // Return recognized special values
                 if (name.equals("CURRENT_TIMESTAMP") || name.equals("CURRENT_DATE") ||
                     name.equals("CURRENT_TIME") || name.equals("TRUE") ||
                     name.equals("FALSE") || name.equals("NULL")) {
                     return name;
+                }
+                // A sequence default, seq.NEXTVAL, is bound to the sequence it names; a name no sequence
+                // carries is refused at CREATE, where the name stands (live-verified).
+                final String[] parts = ParseTreeText.qualifiedNameParts(nameCtx.qualifiedName());
+                if (parts.length >= 2 && parts.length <= 4 && "NEXTVAL".equals(parts[parts.length - 1])) {
+                    final Sequence sequence = sequenceNamed(parts);
+                    if (sequence == null) {
+                        final Token start = nameCtx.qualifiedName().getStart();
+                        throw new RuntimeException(SqlCompilationError.at(start.getLine(),
+                            start.getCharPositionInLine(), "invalid identifier '" + name + "'"));
+                    }
+                    return new SequenceDefault(sequence);
                 }
                 // A BARE identifier in a DEFAULT has nothing legal to name: a column reference is
                 // refused AT CREATE, at the identifier's own position (live-verified — the table
@@ -1271,7 +1699,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // Handle function calls (store as canonical name for evaluation at insert time)
             if (expr instanceof FrostlakeParser.FunctionCallExprContext) {
                 final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) expr;
-                final String funcName = funcCtx.functionName().getText().toUpperCase();
+                final String funcName = funcCtx.functionName().getText().toUpperCase(Locale.ROOT);
                 if (funcName.equals("CURRENT_TIMESTAMP") || funcName.equals("CURRENT_DATE") ||
                     funcName.equals("CURRENT_TIME")) {
                     return funcName;
@@ -1295,7 +1723,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // Recognized context/datetime keywords can reach here as other context shapes (e.g. bare
             // CURRENT_TIMESTAMP); keep returning their canonical string so evaluateDefaultValue resolves
             // them and the stored metadata stays a plain keyword (not an opaque expression).
-            final String canonical = getOriginalText(expr).trim().toUpperCase();
+            final String canonical = getOriginalText(expr).trim().toUpperCase(Locale.ROOT);
             switch (canonical) {
                 case "CURRENT_TIMESTAMP":
                 case "CURRENT_TIMESTAMP()":
@@ -1327,6 +1755,32 @@ public class ColumnDefinitionParser implements CommandHandler {
         return null;
     }
 
+    /**
+     * The sequence a DEFAULT's {@code seq.NEXTVAL} names: a bare name in the session's schema, a two-part one in a
+     * schema of the session's database, a three-part one where it says.
+     *
+     * @param parts the name's canonical parts, NEXTVAL last
+     * @return the sequence, or null when no sequence carries the name
+     */
+    private Sequence sequenceNamed(final String[] parts) {
+        try {
+            if (parts.length == 4) {
+                return catalog.databaseExact(parts[0]).schemaExact(parts[1]).getSequenceExact(parts[2]);
+            }
+            if (catalog.getCurrentDatabase() == null) {
+                return null;
+            }
+            final Database database = catalog.getDatabase(catalog.getCurrentDatabase());
+            if (parts.length == 3) {
+                return database.getSchema(parts[0]).getSequence(parts[1]);
+            }
+            return catalog.getCurrentSchema() == null ? null
+                : database.getSchema(catalog.getCurrentSchema()).getSequence(parts[0]);
+        } catch (final RuntimeException absent) {
+            return null;
+        }
+    }
+
     public Object parseLiteral(final FrostlakeParser.LiteralContext ctx) {
         if (ctx.INTEGER_LITERAL() != null) {
             // A DEFAULT reads its literal here rather than through the expression AST, so it needs the
@@ -1345,6 +1799,9 @@ public class ColumnDefinitionParser implements CommandHandler {
                 return text.substring(2, text.length() - 2);
             }
             return text;
+        } else if (ctx.HEX_LITERAL() != null) {
+            // X'41' is the BINARY it spells; read as no literal at all, it was a NULL wherever a block wrote one.
+            return BinaryLiteralText.decode(ctx.HEX_LITERAL().getText());
         } else if (ctx.TRUE() != null) {
             return true;
         } else if (ctx.FALSE() != null) {

@@ -85,6 +85,35 @@ public class DirectConnectionSessionIsolationTest {
         assertEquals("DB_TWO", b.getCatalog());
     }
 
+    /** A connection's current warehouse is its own: a USE, a CREATE or a DROP on one leaves the other's alone. */
+    @Test
+    public void testCurrentWarehouseIsPerConnection() throws Exception {
+        final String initial = currentWarehouse(b);
+        try (final Statement sa = a.createStatement()) {
+            sa.execute("CREATE WAREHOUSE wh_one");
+            sa.execute("CREATE WAREHOUSE wh_two");
+            sa.execute("USE WAREHOUSE wh_one");
+        }
+        assertEquals(initial, currentWarehouse(b), "another connection's CREATE and USE do not reach this one");
+        try (final Statement sb = b.createStatement()) {
+            sb.execute("USE WAREHOUSE wh_two");
+        }
+        assertEquals("WH_ONE", currentWarehouse(a));
+        assertEquals("WH_TWO", currentWarehouse(b));
+        try (final Statement sa = a.createStatement()) {
+            sa.execute("DROP WAREHOUSE wh_two");
+        }
+        assertEquals("WH_ONE", currentWarehouse(a));
+        assertEquals(null, currentWarehouse(b), "the connection whose warehouse was dropped has none");
+    }
+
+    private String currentWarehouse(final Connection c) throws Exception {
+        try (final Statement s = c.createStatement(); final ResultSet rs = s.executeQuery("SELECT CURRENT_WAREHOUSE()")) {
+            assertTrue(rs.next());
+            return rs.getString(1);
+        }
+    }
+
     @Test
     public void testSetCatalogIsPerConnection() throws Exception {
         a.setCatalog("db_one");

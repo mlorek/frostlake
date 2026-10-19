@@ -17,8 +17,11 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A Cortex search service as it survives a restart: the whole definition, since nothing about it is
@@ -39,4 +42,12 @@ public class CortexSearchServiceSnapshot implements Serializable {
     public String owner;
     public boolean indexingSuspended;
     public boolean servingSuspended;
+    // What ALTER … SET changes after creation. Null or empty on snapshots written before these were saved.
+    public List<String> primaryKeyColumns = new ArrayList<>();
+    public Integer fullIndexBuildIntervalDays;
+    public boolean requestLogging;
+    public Integer autoSuspend;
+    public Map<String, String> tags = new LinkedHashMap<>();
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public LocalDateTime createdAt;
 }

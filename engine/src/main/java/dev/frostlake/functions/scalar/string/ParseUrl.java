@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ObjectType;
 
 import tools.jackson.databind.ObjectMapper;
@@ -46,7 +47,7 @@ public class ParseUrl extends TextArgumentFunction {
         final boolean permissive = args.size() > 1 && args.get(1) != null
             && ((Number) args.get(1)).intValue() != 0;
         try {
-            final URI uri = new URI(args.get(0).toString());
+            final URI uri = new URI(SharedFunctionHelpers.textOf(args.get(0)));
             if (uri.getScheme() == null) {
                 return onError("scheme not specified", permissive);
             }

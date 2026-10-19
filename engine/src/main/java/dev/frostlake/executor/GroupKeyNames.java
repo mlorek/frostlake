@@ -18,8 +18,10 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.KeyContexts;
 
-import java.util.ArrayList;
+import org.antlr.v4.runtime.ParserRuleContext;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -64,14 +66,14 @@ final class GroupKeyNames {
         if (ctx.groupByClause() == null || ctx.groupByClause().ALL() != null || readsPivot(ctx)) {
             return;
         }
-        final List<FrostlakeParser.ExpressionContext> keys = keysOf(ctx.groupByClause());
+        final List<ParserRuleContext> keys = KeyContexts.groupKeys(ctx.groupByClause());
         final Set<String> aliasNames = executor.selectItemAliasNames(ctx);
-        for (final FrostlakeParser.ExpressionContext key : keys) {
+        for (final ParserRuleContext key : keys) {
             executor.validateClauseColumnScope(ParseTreeText.getOriginalText(key), table, aliasToTable, allTables,
                 aliasNames, key);
         }
         int width = -1;
-        for (final FrostlakeParser.ExpressionContext key : keys) {
+        for (final ParserRuleContext key : keys) {
             final String text = ParseTreeText.getOriginalText(key);
             final long position = OrdinalLiteral.positionOf(text);
             if (position == OrdinalLiteral.NOT_AN_ORDINAL) {
@@ -94,25 +96,6 @@ final class GroupKeyNames {
         }
         final FrostlakeParser.TableReferenceContext first = ctx.tableExpression().tableReference(0);
         return first.pivotClause() != null || first.unpivotClause() != null;
-    }
-
-    /** Every key a GROUP BY lists: a plain key, and each member of a ROLLUP, a CUBE or a grouping set. */
-    private static List<FrostlakeParser.ExpressionContext> keysOf(final FrostlakeParser.GroupByClauseContext clause) {
-        final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
-        for (final FrostlakeParser.GroupByElementContext element : clause.groupByElement()) {
-            if (element.expression() != null) {
-                keys.add(element.expression());
-            }
-            if (element.groupByColumnList() != null) {
-                keys.addAll(element.groupByColumnList().expression());
-            }
-            if (element.groupingSetList() != null) {
-                for (final FrostlakeParser.GroupingSetContext set : element.groupingSetList().groupingSet()) {
-                    keys.addAll(set.expression());
-                }
-            }
-        }
-        return keys;
     }
 
     /** How many positions the select list offers a key: a star counts each column it expands to. */

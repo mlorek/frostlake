@@ -59,7 +59,7 @@ final class OuterJoinMarkerRecovery {
      */
     static List<String> lines(final String sql, final List<Token> spoken, final int faultIndex,
                               final boolean statementParse) {
-        if (sql == null || !statementParse || sql.length() != sql.codePointCount(0, sql.length()) || spoken.isEmpty()
+        if (sql == null || !statementParse || spoken.isEmpty()
                 || spoken.get(0).getType() == FrostlakeLexer.BEGIN || spoken.get(0).getType() == FrostlakeLexer.DECLARE) {
             return null;
         }

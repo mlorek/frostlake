@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore.model;
 
+import java.util.Locale;
+
 /**
  * A foreign-key referential action ({@code ON DELETE} / {@code ON UPDATE}). Informational only — the engine
  * records but does not enforce these. {@link #getSqlText} is the canonical DDL spelling (with spaces, e.g.
@@ -46,7 +48,7 @@ public enum ReferentialAction {
      */
     public static ReferentialAction fromString(final String value) {
         if (value != null) {
-            switch (value.trim().toUpperCase().replace(" ", "").replace("_", "")) {
+            switch (value.trim().toUpperCase(Locale.ROOT).replace(" ", "").replace("_", "")) {
                 case "NOACTION": return NO_ACTION;
                 case "RESTRICT": return RESTRICT;
                 case "CASCADE": return CASCADE;

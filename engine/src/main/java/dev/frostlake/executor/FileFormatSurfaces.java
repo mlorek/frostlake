@@ -16,10 +16,14 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.copy.StagedFileIo;
+import dev.frostlake.metastore.model.FileFormat;
+
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -31,19 +35,24 @@ import java.util.Set;
  * default column still reads {@code [\N]}). One table drives DESC FILE FORMAT, DESC STAGE's
  * format group, SHOW FILE FORMATS' format_options blob and the option validation. The ORC tree
  * follows the documented option set; every other tree is account-measured.
+ *
+ * <p>A String property's default is kept decoded - a record delimiter is a line feed, an unenclosed escape one
+ * backslash - as a written value is kept, and each surface renders both the same way: DESCRIBE and the listings
+ * spell a backslash, a quote and a control character behind a backslash ({@link #shown}), the format_options blob
+ * spells them as JSON does ({@link #json}). A List property's default is kept as DESCRIBE shows it.
  */
 public final class FileFormatSurfaces {
 
 private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap<>();
 
     private static FormatProperty prop(final String name, final String type, final String both) {
-        return new FormatProperty(name, type, both, both);
+        return new FormatProperty(name, type, both, "String".equals(type) ? shown(both) : both);
     }
 
     static {
         TREES.put("CSV", Arrays.asList(
             prop("TYPE", "String", "CSV"),
-            prop("RECORD_DELIMITER", "String", "\\n"),
+            prop("RECORD_DELIMITER", "String", "\n"),
             prop("FIELD_DELIMITER", "String", ","),
             prop("FILE_EXTENSION", "String", ""),
             prop("SKIP_HEADER", "Integer", "0"),
@@ -53,7 +62,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             prop("TIMESTAMP_FORMAT", "String", "AUTO"),
             prop("BINARY_FORMAT", "String", "HEX"),
             prop("ESCAPE", "String", "NONE"),
-            prop("ESCAPE_UNENCLOSED_FIELD", "String", "\\\\"),
+            prop("ESCAPE_UNENCLOSED_FIELD", "String", "\\"),
             prop("TRIM_SPACE", "Boolean", "false"),
             prop("FIELD_OPTIONALLY_ENCLOSED_BY", "String", "NONE"),
             prop("NULL_IF", "List", "[\\\\N]"),
@@ -113,7 +122,6 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             prop("TYPE", "String", "ORC"),
             prop("TRIM_SPACE", "Boolean", "false"),
             new FormatProperty("NULL_IF", "List", "[]", "[\\\\N]"),
-            prop("COMPRESSION", "String", "AUTO"),
             prop("REPLACE_INVALID_CHARACTERS", "Boolean", "false")));
     }
 
@@ -124,11 +132,11 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
     }
 
     public static boolean isKnownType(final String type) {
-        return type != null && TREES.containsKey(type.toUpperCase());
+        return type != null && TREES.containsKey(type.toUpperCase(Locale.ROOT));
     }
 
     public static List<FormatProperty> tree(final String type) {
-        final List<FormatProperty> tree = TREES.get(type == null ? "CSV" : type.toUpperCase());
+        final List<FormatProperty> tree = TREES.get(type == null ? "CSV" : type.toUpperCase(Locale.ROOT));
         return tree != null ? tree : TREES.get("CSV");
     }
 
@@ -138,6 +146,18 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             for (final FormatProperty property : tree) {
                 if (property.name.equalsIgnoreCase(name)) {
                     return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether any type's tree declares the option Boolean. */
+    private static boolean isBooleanOption(final String name) {
+        for (final List<FormatProperty> tree : TREES.values()) {
+            for (final FormatProperty property : tree) {
+                if (property.name.equalsIgnoreCase(name)) {
+                    return "Boolean".equals(property.type);
                 }
             }
         }
@@ -189,7 +209,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
         if (value == null) {
             return;
         }
-        final String upper = name.toUpperCase();
+        final String upper = name.toUpperCase(Locale.ROOT);
         if ("TYPE".equals(upper) && !isKnownType(value)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'TYPE'"));
@@ -204,7 +224,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
                 // A non-numeric SKIP_HEADER never parses this far.
             }
         }
-        if ("COMPRESSION".equals(upper) && !COMPRESSION_VALUES.contains(value.toUpperCase())) {
+        if ("COMPRESSION".equals(upper) && !COMPRESSION_VALUES.contains(value.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'COMPRESSION'"));
         }
@@ -216,9 +236,26 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter '" + upper + "'"));
         }
-        if ("FIELD_OPTIONALLY_ENCLOSED_BY".equals(upper) && !ENCLOSERS.contains(value.toUpperCase())) {
+        if ("FIELD_OPTIONALLY_ENCLOSED_BY".equals(upper) && !ENCLOSERS.contains(value.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'FIELD_OPTIONALLY_ENCLOSED_BY'"));
+        }
+        // A Boolean option takes the bare words TRUE and FALSE in any case: a quoted 'TRUE', a number or any other word
+        // is refused (live-verified).
+        if (isBooleanOption(upper) && !"TRUE".equalsIgnoreCase(written) && !"FALSE".equalsIgnoreCase(written)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter '" + upper + "'"));
+        }
+        // BINARY_FORMAT names how a BINARY column's text reads, in any case, and the refusal echoes the name without
+        // its quotes (live-verified).
+        if ("BINARY_FORMAT".equals(upper) && !SessionInputFormats.isBinaryFormat(value)) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid binary format string '" + value
+                + "': Must be 'HEX', 'BASE64', or 'UTF-8'"));
+        }
+        // ENCODING names one of the account's character sets, by its own name (ISO88591) or the set's (ISO-8859-1).
+        if ("ENCODING".equals(upper) && !StagedFileIo.isEncodingName(value)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter 'ENCODING'"));
         }
     }
 
@@ -231,5 +268,148 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
     /** An escape: exactly one character, or the word NONE (live-verified). */
     private static boolean isOneCharacter(final String value) {
         return "NONE".equalsIgnoreCase(value) || value.length() == 1;
+    }
+
+    /**
+     * A value as DESCRIBE and the listings spell it (live-verified): a backslash, a double quote and a backspace,
+     * form-feed, tab, line-feed or carriage-return character behind a backslash, every other character as it is.
+     *
+     * @param decoded the value as kept
+     * @return the value as shown
+     */
+    public static String shown(final String decoded) {
+        final StringBuilder out = new StringBuilder();
+        for (int i = 0; i < decoded.length(); i++) {
+            final char c = decoded.charAt(i);
+            switch (c) {
+                case '\\':
+                    out.append("\\\\");
+                    break;
+                case '"':
+                    out.append("\\\"");
+                    break;
+                case '\b':
+                    out.append("\\b");
+                    break;
+                case '\f':
+                    out.append("\\f");
+                    break;
+                case '\t':
+                    out.append("\\t");
+                    break;
+                case '\n':
+                    out.append("\\n");
+                    break;
+                case '\r':
+                    out.append("\\r");
+                    break;
+                default:
+                    out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    /**
+     * A property's value as DESCRIBE FILE FORMAT, DESCRIBE STAGE and DESCRIBE TABLE … TYPE = STAGE list it: the
+     * stored value, or the property's default when none is stored, a boolean in lower case, a string
+     * {@link #shown}, a NULL_IF list as {@code [a, b]} with each value shown.
+     *
+     * @param property the property
+     * @param stored   the value as the format or the stage keeps it, or null for none
+     * @return the value as listed
+     */
+    public static String described(final FormatProperty property, final String stored) {
+        if ("List".equals(property.type)) {
+            return stored == null ? property.valueDefault : listed(FileFormat.nullIfValues(stored));
+        }
+        if (stored == null) {
+            return "String".equals(property.type) ? shown(property.valueDefault) : property.valueDefault;
+        }
+        if ("Boolean".equals(property.type)) {
+            return stored.toLowerCase(Locale.ROOT);
+        }
+        return "String".equals(property.type) ? shown(stored) : stored;
+    }
+
+    /** NULL_IF's values as a listing spells them: {@code [\\N, NULL]}. */
+    private static String listed(final List<String> values) {
+        final StringBuilder out = new StringBuilder("[");
+        for (int i = 0; i < values.size(); i++) {
+            out.append(i > 0 ? ", " : "").append(shown(values.get(i)));
+        }
+        return out.append(']').toString();
+    }
+
+    /**
+     * A property's value as SHOW FILE FORMATS' format_options blob spells it: a number and a boolean bare, a
+     * string as a JSON string, NULL_IF as a JSON array, and FILE_EXTENSION null until one is written
+     * (live-verified).
+     *
+     * @param property the property
+     * @param stored   the value as the format keeps it, or null for none
+     * @return the value as JSON
+     */
+    public static String json(final FormatProperty property, final String stored) {
+        if ("List".equals(property.type)) {
+            final List<String> values = FileFormat.nullIfValues(stored);
+            if (values == null) {
+                return "[]".equals(property.valueDefault) ? "[]" : "[\"\\\\N\"]";
+            }
+            final StringBuilder array = new StringBuilder("[");
+            for (int i = 0; i < values.size(); i++) {
+                array.append(i > 0 ? "," : "").append(jsonText(values.get(i)));
+            }
+            return array.append(']').toString();
+        }
+        if (stored == null && "FILE_EXTENSION".equals(property.name)) {
+            return "null";
+        }
+        final String value = stored == null ? property.valueDefault : stored;
+        if ("Boolean".equals(property.type)) {
+            return value.isEmpty() ? "null" : value.toLowerCase(Locale.ROOT);
+        }
+        if ("Integer".equals(property.type) || "Long".equals(property.type)) {
+            return value.isEmpty() ? "null" : value;
+        }
+        return jsonText(value);
+    }
+
+    /** A text as a JSON string, quoted and escaped. */
+    private static String jsonText(final String text) {
+        final StringBuilder out = new StringBuilder("\"");
+        for (int i = 0; i < text.length(); i++) {
+            final char c = text.charAt(i);
+            switch (c) {
+                case '\\':
+                    out.append("\\\\");
+                    break;
+                case '"':
+                    out.append("\\\"");
+                    break;
+                case '\b':
+                    out.append("\\b");
+                    break;
+                case '\f':
+                    out.append("\\f");
+                    break;
+                case '\t':
+                    out.append("\\t");
+                    break;
+                case '\n':
+                    out.append("\\n");
+                    break;
+                case '\r':
+                    out.append("\\r");
+                    break;
+                default:
+                    if (c < ' ') {
+                        out.append(String.format("\\u%04x", Integer.valueOf(c)));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+        return out.append('"').toString();
     }
 }

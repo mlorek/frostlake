@@ -19,6 +19,7 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import dev.frostlake.task.TaskScheduler;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -35,6 +37,8 @@ import java.util.List;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -51,10 +55,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class CatalogObjectPersistenceTest {
 
+    private static final String GENERATED_ID = "[A-Z0-9]+_SFCRole=\\d+_[A-Za-z0-9+/]{27}=";
+
     private static final String LOCATIONS = "STORAGE_LOCATIONS = ((NAME = 'loc1' STORAGE_PROVIDER = 'S3'"
         + " STORAGE_BASE_URL = 's3://bucket/path/' STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
         + " ENCRYPTION = (TYPE = 'AWS_SSE_KMS' KMS_KEY_ID = 'key1')),"
         + " (NAME = 'loc2' STORAGE_PROVIDER = 'GCS' STORAGE_BASE_URL = 'gcs://bucket/'))";
+
+    /** The main file a Streamlit app created FROM a location has to find there. */
+    private static final String STAGED_APP = "COPY INTO @stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
+        + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE";
 
     private Path dir;
 
@@ -94,6 +104,62 @@ public class CatalogObjectPersistenceTest {
             Arrays.asList("SHOW INTEGRATIONS", "DESCRIBE INTEGRATION it_api", "DESCRIBE INTEGRATION it_ns",
                 "DESCRIBE INTEGRATION ice_cat", "SHOW EXTERNAL VOLUMES", "DESCRIBE EXTERNAL VOLUME ev_a",
                 "SHOW ACCOUNTS HISTORY", "SHOW MANAGED ACCOUNTS", "SHOW COMPUTE POOLS"));
+    }
+
+    /** The external ID an integration and a volume were given when they were created is theirs after a restart. */
+    @Test
+    public void aGeneratedExternalIdSurvivesARestart() {
+        assertKeepsEveryCell(Arrays.asList(
+            "CREATE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
+                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
+                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+            "CREATE OR REPLACE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
+                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
+                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+            "CREATE EXTERNAL VOLUME ev_ident " + LOCATIONS),
+            Arrays.asList("DESCRIBE INTEGRATION it_ident", "DESCRIBE EXTERNAL VOLUME ev_ident"));
+    }
+
+    /** The parameters set on a user and on the account, a session's own beside them and the account's alone. */
+    @Test
+    public void userAndAccountParametersSurviveARestart() {
+        assertSurvivesRestart(Arrays.asList(
+            "CREATE USER pu",
+            "ALTER USER pu SET QUERY_TAG = 'ut' LOCK_TIMEOUT = 5, AUTOCOMMIT = FALSE",
+            "ALTER USER pu SET WEEK_START = 3",
+            "ALTER USER pu UNSET WEEK_START",
+            "ALTER ACCOUNT SET QUERY_TAG = 'at', TIMEZONE = 'Asia/Tokyo', DATA_RETENTION_TIME_IN_DAYS = 3",
+            "ALTER ACCOUNT SET JSON_INDENT = 4",
+            "ALTER ACCOUNT UNSET JSON_INDENT"),
+            Arrays.asList("SHOW PARAMETERS IN USER pu", "SHOW PARAMETERS IN ACCOUNT", "SHOW PARAMETERS",
+                "SELECT TO_CHAR(TO_TIMESTAMP_LTZ('2026-01-15 12:00:00 +00:00'), 'HH24:MI TZH:TZM')"));
+    }
+
+    /**
+     * A RETURNS TABLE column written with no width stays one of no width, and one written with the default width
+     * stays sized: what the routine's result declares and what its DDL writes back are the same after a restart.
+     */
+    @Test
+    public void aRoutinesUnsizedReturnColumnsSurviveARestart() {
+        assertSurvivesRestart(Arrays.asList(
+            "CREATE DATABASE rd",
+            "CREATE SCHEMA rd.rs",
+            "USE SCHEMA rd.rs",
+            """
+                CREATE PROCEDURE rp() RETURNS TABLE (a VARCHAR, b BINARY, c VARCHAR(16777216), d BINARY(8388608))
+                LANGUAGE SQL AS $$
+                DECLARE r RESULTSET DEFAULT (SELECT 'x'::VARCHAR AS a, TO_BINARY('00') AS b, 'y'::VARCHAR AS c,
+                    TO_BINARY('01') AS d);
+                BEGIN RETURN TABLE(r); END $$
+                """,
+            """
+                CREATE FUNCTION rf() RETURNS TABLE (a VARCHAR, b BINARY, c VARCHAR(16777216), d BINARY(8388608))
+                AS $$ SELECT 'x'::VARCHAR, TO_BINARY('00'), 'y'::VARCHAR, TO_BINARY('01') $$
+                """),
+            Arrays.asList(
+                "SELECT SYSTEM$TYPEOF(a), SYSTEM$TYPEOF(b), SYSTEM$TYPEOF(c), SYSTEM$TYPEOF(d) FROM TABLE(rd.rs.rp())",
+                "SELECT SYSTEM$TYPEOF(a), SYSTEM$TYPEOF(b), SYSTEM$TYPEOF(c), SYSTEM$TYPEOF(d) FROM TABLE(rd.rs.rf())",
+                "SELECT GET_DDL('PROCEDURE', 'rd.rs.rp()')", "SELECT GET_DDL('FUNCTION', 'rd.rs.rf()')"));
     }
 
     /** An account created after a restart takes a locator no restored account holds. */
@@ -222,6 +288,8 @@ public class CatalogObjectPersistenceTest {
             "CREATE WAREHOUSE IF NOT EXISTS fl_app_wh1 INITIALLY_SUSPENDED = TRUE",
             "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb' QUERY_WAREHOUSE = fl_app_wh1"
                 + " COMMENT = 'first' IDLE_AUTO_SHUTDOWN_TIME_SECONDS = 600",
+            "CREATE STAGE stg",
+            STAGED_APP,
             "CREATE STREAMLIT app FROM '@stg/app' MAIN_FILE = 'streamlit_app.py' TITLE = 'My app'"
                 + " QUERY_WAREHOUSE = fl_app_wh1 IMPORTS = ('@stg/lib.py') EXTERNAL_ACCESS_INTEGRATIONS = (ext1)",
             "ALTER STREAMLIT app ADD LIVE VERSION FROM LAST",
@@ -231,7 +299,8 @@ public class CatalogObjectPersistenceTest {
                 + " MAX_INSTANCES = 2 COMMENT = 'svc'",
             "ALTER SERVICE svc SUSPEND",
             "EXECUTE JOB SERVICE IN COMPUTE POOL cs_pool FROM SPECIFICATION 'spec: {}' NAME = d1.s1.job1",
-            "CREATE ARTIFACT REPOSITORY ar TYPE = PYPI API_INTEGRATION = 'pypi_int' COMMENT = 'x'",
+            "CREATE API INTEGRATION pypi_int API_PROVIDER = pypi ENABLED = TRUE",
+            "CREATE ARTIFACT REPOSITORY ar TYPE = PYPI API_INTEGRATION = pypi_int COMMENT = 'x'",
             "CREATE FUNCTION echo(x VARCHAR) RETURNS VARCHAR SERVICE = svc ENDPOINT = api MAX_BATCH_ROWS = 10"
                 + " AS '/echo'"),
             Arrays.asList("SHOW NOTEBOOKS IN SCHEMA d1.s1", "DESCRIBE NOTEBOOK d1.s1.nb1",
@@ -274,10 +343,12 @@ public class CatalogObjectPersistenceTest {
             "CREATE TABLE t1 (id INT, txt VARCHAR) DATA_RETENTION_TIME_IN_DAYS = 4 CHANGE_TRACKING = TRUE",
             "ALTER TABLE t1 SET DATA_METRIC_SCHEDULE = '5 MINUTE'",
             "ALTER TABLE t1 ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)",
-            "ALTER TABLE t1 SET STAGE_FILE_FORMAT = (TYPE = CSV FIELD_DELIMITER = '|')"),
+            "ALTER TABLE t1 SET STAGE_FILE_FORMAT = (TYPE = CSV FIELD_DELIMITER = '|')",
+            "CREATE TABLE t2 (id INT) MAX_DATA_EXTENSION_TIME_IN_DAYS = 5 DEFAULT_DDL_COLLATION = 'en-ci'"),
             Arrays.asList("SHOW EVENT TABLES IN SCHEMA d1.s1", "SHOW ICEBERG TABLES IN SCHEMA d1.s1",
                 "SELECT * FROM d1.s1.ice1 ORDER BY a", "SHOW TABLES IN SCHEMA d1.s1",
                 "USE SCHEMA d1.s1",
+                "SHOW PARAMETERS IN TABLE d1.s1.t1", "SHOW PARAMETERS IN TABLE d1.s1.t2",
                 "SELECT metric_name, ref_entity_name, schedule_status FROM TABLE(INFORMATION_SCHEMA"
                     + ".DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'T1', REF_ENTITY_DOMAIN => 'TABLE'))",
                 "DESCRIBE TABLE d1.s1.t1 TYPE = STAGE"));
@@ -293,6 +364,9 @@ public class CatalogObjectPersistenceTest {
             "CREATE TABLE src (a INT, b VARCHAR)",
             "INSERT INTO src VALUES (1, 'x'), (2, 'y')",
             "CREATE MATERIALIZED VIEW mv1 COMMENT = 'mat' AS SELECT a FROM src WHERE a > 1",
+            "CREATE MATERIALIZED VIEW mv2 CLUSTER BY (a, b) AS SELECT a, b FROM src",
+            "CREATE MATERIALIZED VIEW mv3 CLUSTER BY (a) AS SELECT a, b FROM src",
+            "ALTER MATERIALIZED VIEW mv3 SUSPEND RECLUSTER",
             "CREATE ALERT al1 WAREHOUSE = compute_wh SCHEDULE = '60 MINUTE'"
                 + " IF (EXISTS (SELECT 1 FROM src)) THEN SELECT 1",
             "CREATE ALERT al2 SCHEDULE = '30 MINUTE' IF (EXISTS (SELECT 2)) THEN SELECT 2"),
@@ -310,10 +384,16 @@ public class CatalogObjectPersistenceTest {
             "ALTER WAREHOUSE wh2 SET GENERATION = '1'",
             "CREATE DATABASE d1",
             "CREATE SCHEMA d1.s1",
-            "CREATE STAGE d1.s1.st1 ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY = (ENABLE = TRUE)"
-                + " FILE_FORMAT = (TYPE = CSV FIELD_DELIMITER = '|') COPY_OPTIONS = (ON_ERROR = CONTINUE)"),
+            // REFRESH_ON_CREATE = FALSE leaves the directory table without a moment of its own, which two engines
+            // running these statements would not share.
+            "CREATE STAGE d1.s1.st1 ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"
+                + " DIRECTORY = (ENABLE = TRUE AUTO_REFRESH = TRUE REFRESH_ON_CREATE = FALSE)"
+                + " FILE_FORMAT = (TYPE = CSV FIELD_DELIMITER = '|') COPY_OPTIONS = (ON_ERROR = CONTINUE)",
+            "CREATE STAGE d1.s1.st2",
+            "ALTER STAGE d1.s1.st2 SET DIRECTORY = (ENABLE = FALSE)"),
             Arrays.asList("SHOW WAREHOUSES LIKE 'WH2'", "SHOW PARAMETERS IN WAREHOUSE wh2",
-                "SHOW STAGES IN SCHEMA d1.s1", "DESCRIBE STAGE d1.s1.st1"));
+                "SHOW STAGES IN SCHEMA d1.s1", "DESCRIBE STAGE d1.s1.st1",
+                "SELECT stage_name, directory_enabled FROM d1.information_schema.stages ORDER BY 1"));
     }
 
     /**
@@ -338,15 +418,21 @@ public class CatalogObjectPersistenceTest {
             "CREATE SCHEMA d1.s1",
             "USE SCHEMA d1.s1",
             "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb'",
+            "CREATE STAGE stg",
+            STAGED_APP,
             "CREATE STREAMLIT app FROM '@stg/app' MAIN_FILE = 'streamlit_app.py'",
             "CREATE IMAGE REPOSITORY repo",
             "CREATE SERVICE svc IN COMPUTE POOL p1 FROM SPECIFICATION 'spec: {}'",
             "ALTER SERVICE svc SUSPEND",
             "ALTER SERVICE svc RESUME",
             "EXECUTE JOB SERVICE IN COMPUTE POOL p1 FROM SPECIFICATION 'spec: {}'",
-            "CREATE ARTIFACT REPOSITORY ar TYPE = PYPI API_INTEGRATION = 'pypi_int'",
+            "CREATE API INTEGRATION pypi_int API_PROVIDER = pypi ENABLED = TRUE",
+            "CREATE ARTIFACT REPOSITORY ar TYPE = PYPI API_INTEGRATION = pypi_int",
             "CREATE TABLE src (a INT)",
             "CREATE MATERIALIZED VIEW mv1 AS SELECT a FROM src",
+            "CREATE STAGE st_dir DIRECTORY = (ENABLE = TRUE)",
+            "COPY INTO @st_dir/kept.csv FROM (SELECT 1) FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE",
+            "ALTER STAGE st_dir REFRESH",
             "CREATE ALERT al1 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1",
             "CREATE DATABASE ROLE d1.dr1",
             "GRANT USAGE ON DATABASE d1 TO DATABASE ROLE d1.dr1",
@@ -359,6 +445,7 @@ public class CatalogObjectPersistenceTest {
                 "SHOW IMAGE REPOSITORIES IN SCHEMA d1.s1", "SHOW SERVICES IN SCHEMA d1.s1",
                 "SHOW JOB SERVICES IN SCHEMA d1.s1", "SHOW ARTIFACT REPOSITORIES IN SCHEMA d1.s1",
                 "SHOW MATERIALIZED VIEWS IN SCHEMA d1.s1", "SHOW ALERTS IN SCHEMA d1.s1",
+                "DESCRIBE STAGE d1.s1.st_dir", "SELECT relative_path, size, md5, etag FROM DIRECTORY(@d1.s1.st_dir)",
                 "SHOW DATABASE ROLES IN DATABASE d1", "SHOW GRANTS TO DATABASE ROLE d1.dr1",
                 "SHOW GRANTS TO ROLE r1", "SHOW FUTURE GRANTS IN SCHEMA d1.s1"));
     }
@@ -376,7 +463,10 @@ public class CatalogObjectPersistenceTest {
                 "CREATE DATABASE d1",
                 "CREATE SCHEMA d1.s1",
                 "CREATE NOTEBOOK d1.s1.nb_d FROM '@stg/nb' MAIN_FILE = 'nb.ipynb' COMMENT = 'dropped'",
-                "CREATE STREAMLIT d1.s1.st_d FROM '@stg/app' MAIN_FILE = 'streamlit_app.py'"),
+                "CREATE STAGE d1.s1.stg",
+                "COPY INTO @d1.s1.stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
+                    + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE",
+                "CREATE STREAMLIT d1.s1.st_d FROM '@d1.s1.stg/app' MAIN_FILE = 'streamlit_app.py'"),
             Arrays.asList("DROP EXTERNAL VOLUME ev_d", "DROP NOTEBOOK d1.s1.nb_d", "DROP STREAMLIT d1.s1.st_d"),
             Arrays.asList("UNDROP EXTERNAL VOLUME ev_d", "UNDROP NOTEBOOK d1.s1.nb_d", "UNDROP STREAMLIT d1.s1.st_d"),
             Arrays.asList("SHOW EXTERNAL VOLUMES", "SHOW NOTEBOOKS IN SCHEMA d1.s1", "SHOW STREAMLITS IN SCHEMA d1.s1"));
@@ -425,6 +515,150 @@ public class CatalogObjectPersistenceTest {
         assertSameReadings(checkpointBefore, readings(checkpointSecond, listings, true),
             "after a WAL checkpoint restart");
         checkpointSecond.shutdown();
+    }
+
+    /**
+     * A warehouse, a user and a role are created once: each restart reads back the creation time they were given,
+     * and a role granted to a role or to a user is listed with the time of the grant.
+     */
+    @Test
+    public void warehousesUsersRolesAndRoleGrantsKeepTheirTimes() {
+        assertKeepsEveryCell(Arrays.asList(
+            "CREATE WAREHOUSE wh_kept INITIALLY_SUSPENDED = TRUE",
+            "CREATE USER u_kept",
+            "CREATE ROLE r_holder",
+            "CREATE ROLE r_held",
+            "GRANT ROLE r_held TO ROLE r_holder",
+            "GRANT ROLE r_holder TO USER u_kept"),
+            Arrays.asList("SHOW WAREHOUSES LIKE 'WH_KEPT' ->> SELECT \"name\", \"created_on\" FROM $1",
+                "SHOW USERS LIKE 'U_KEPT'", "SHOW ROLES LIKE 'R_H%'",
+                "SHOW GRANTS TO ROLE r_holder", "SHOW GRANTS OF ROLE r_held", "SHOW GRANTS OF ROLE r_holder",
+                "SHOW GRANTS TO USER u_kept"));
+    }
+
+    /** A role grant carries the time it was made, which a snapshot keeps: it is not the holder's creation time. */
+    @Test
+    public void aRoleGrantsTimeIsItsOwn() {
+        final Path data = dir.resolve("grant-times");
+        final DatabaseEngine first = snapshotEngine(data);
+        first.execute("CREATE ROLE r_holder");
+        first.execute("CREATE ROLE r_held");
+        first.execute("CREATE USER u_kept");
+        first.execute("GRANT ROLE r_held TO ROLE r_holder");
+        first.execute("GRANT ROLE r_held TO USER u_kept");
+        final Instant toRole = first.getCatalog().getRole("R_HOLDER").getRoleGrantTime("R_HELD");
+        final Instant toUser = first.getCatalog().getUser("U_KEPT").getRoleGrantTime("R_HELD");
+        assertNotNull(toRole, "a role granted to a role records when");
+        assertNotNull(toUser, "a role granted to a user records when");
+        first.shutdown();
+
+        final DatabaseEngine second = snapshotEngine(data);
+        assertEquals(toRole, second.getCatalog().getRole("R_HOLDER").getRoleGrantTime("R_HELD"));
+        assertEquals(toUser, second.getCatalog().getUser("U_KEPT").getRoleGrantTime("R_HELD"));
+        second.execute("REVOKE ROLE r_held FROM ROLE r_holder");
+        assertNull(second.getCatalog().getRole("R_HOLDER").getRoleGrantTime("R_HELD"));
+        second.shutdown();
+    }
+
+    /**
+     * A task's id and the name a constraint is given for want of one are drawn once: a replay of the statements
+     * that created them reads both back as they were.
+     */
+    @Test
+    public void taskIdsAndGeneratedConstraintNamesSurviveAReplay() {
+        assertKeepsEveryCell(Arrays.asList(
+            "CREATE DATABASE d1",
+            "CREATE SCHEMA d1.s1",
+            "USE SCHEMA d1.s1",
+            "CREATE TABLE keyed (a INT PRIMARY KEY, b INT UNIQUE)",
+            "CREATE TABLE referring (a INT REFERENCES keyed (a))",
+            "CREATE TASK tk_kept SCHEDULE = '60 MINUTE' AS SELECT 1"),
+            Arrays.asList(
+                "SHOW TASKS IN SCHEMA d1.s1",
+                "SHOW PRIMARY KEYS IN TABLE d1.s1.keyed", "SHOW UNIQUE KEYS IN TABLE d1.s1.keyed",
+                "SHOW IMPORTED KEYS IN TABLE d1.s1.referring"));
+    }
+
+    /**
+     * A run the schedule starts executes below the write-ahead log, and a run a statement starts would be run
+     * again by a replay of that statement: after a restart with no checkpoint asked for, the rows each run wrote
+     * are there once and the run history reads as it did.
+     */
+    @Test
+    public void taskRunsSurviveAWalRestart() {
+        final List<String> listings = Arrays.asList(
+            "SELECT a FROM d1.s1.log ORDER BY a",
+            "SELECT name, state, scheduled_time, query_start_time, completed_time, scheduled_from"
+                + " FROM TABLE(d1.INFORMATION_SCHEMA.TASK_HISTORY()) ORDER BY name, query_start_time");
+        final Path wal = dir.resolve("task-runs").resolve("wal.log");
+        final DatabaseEngine first = walEngine(wal);
+        first.execute("CREATE DATABASE d1");
+        first.execute("CREATE SCHEMA d1.s1");
+        first.execute("USE SCHEMA d1.s1");
+        first.execute("CREATE TABLE log (a INT)");
+        first.execute("CREATE TASK tk_scheduled SCHEDULE = '60 MINUTE' AS INSERT INTO d1.s1.log VALUES (1)");
+        first.execute("CREATE TASK tk_manual SCHEDULE = '60 MINUTE' AS INSERT INTO d1.s1.log VALUES (2)");
+        // The schedule's own way in, without waiting for the clock.
+        first.getTaskScheduler().executeTaskNow(TaskScheduler.schedulerKey("D1", "S1", "TK_SCHEDULED"),
+            first.getCatalog().getDatabase("D1").getSchema("S1").getTask("TK_SCHEDULED"));
+        first.execute("EXECUTE TASK tk_manual");
+        first.execute("INSERT INTO log VALUES (3)");
+        final List<String> before = readings(first, listings, true);
+        assertTrue(before.get(0).endsWith("| 1 | 2 | 3"), before.get(0));
+        first.shutdown();
+
+        final DatabaseEngine second = walEngine(wal);
+        assertSameReadings(before, readings(second, listings, true), "after a WAL restart");
+        second.shutdown();
+    }
+
+    /**
+     * A warehouse keeps when it last changed state across a snapshot restart, as it keeps when it was created:
+     * SHOW WAREHOUSES reads the same resumed_on and updated_on afterwards.
+     */
+    @Test
+    public void aWarehouseKeepsWhenItLastChangedStateAcrossASnapshotRestart() {
+        final Path data = dir.resolve("warehouse-moments");
+        final DatabaseEngine first = snapshotEngine(data);
+        first.execute("CREATE WAREHOUSE wh_moments WITH INITIALLY_SUSPENDED = TRUE");
+        final String before = warehouseMoments(first);
+        first.shutdown();
+        final DatabaseEngine second = snapshotEngine(data);
+        assertEquals(before, warehouseMoments(second), "after a snapshot restart");
+        second.shutdown();
+    }
+
+    /**
+     * A task run that a statement inside an open transaction starts owes its checkpoint to the end of the
+     * transaction: after a restart with no checkpoint asked for, the run's row is there once.
+     */
+    @Test
+    public void aTaskRunInsideATransactionIsNotRunAgainByAWalRestart() {
+        final Path wal = dir.resolve("task-in-transaction").resolve("wal.log");
+        final DatabaseEngine first = walEngine(wal);
+        first.execute("CREATE DATABASE d1");
+        first.execute("CREATE SCHEMA d1.s1");
+        first.execute("USE SCHEMA d1.s1");
+        first.execute("CREATE TABLE log (a INT)");
+        first.execute("CREATE TASK tk_in_txn SCHEDULE = '60 MINUTE' AS INSERT INTO d1.s1.log VALUES (1)");
+        first.execute("BEGIN");
+        first.execute("EXECUTE TASK tk_in_txn");
+        first.execute("COMMIT");
+        assertEquals(1L, ((Number) first.executeQuery("SELECT COUNT(*) FROM d1.s1.log").getRows().get(0)
+            .getValue(0)).longValue());
+        first.shutdown();
+        final DatabaseEngine second = walEngine(wal);
+        assertEquals(1L, ((Number) second.executeQuery("SELECT COUNT(*) FROM d1.s1.log").getRows().get(0)
+            .getValue(0)).longValue(), "after a WAL restart");
+        second.shutdown();
+    }
+
+    /** When a warehouse was created, last resumed and last updated, as SHOW WAREHOUSES lists them. */
+    private static String warehouseMoments(final DatabaseEngine engine) {
+        engine.execute("SHOW WAREHOUSES LIKE 'WH_MOMENTS'");
+        final ResultSet moments = engine.executeQuery("SELECT \"created_on\", \"resumed_on\", \"updated_on\" "
+            + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))");
+        return String.valueOf(moments.getRows().get(0).getValues());
     }
 
     // ------------------------------------------------------------------ the three restarts
@@ -589,7 +823,10 @@ public class CatalogObjectPersistenceTest {
         for (final Row row : rs.getRows()) {
             out.append(" |");
             for (final Integer i : kept) {
-                out.append(' ').append(row.getValue(i));
+                // An external ID is generated for each creation: two engines running the same statements never
+                // share one, so only the cases that keep every cell compare it.
+                out.append(' ').append(everyCell ? String.valueOf(row.getValue(i))
+                    : String.valueOf(row.getValue(i)).replaceAll(GENERATED_ID, "<generated id>"));
             }
         }
         return out.toString();

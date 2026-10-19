@@ -37,19 +37,13 @@ import java.util.regex.Pattern;
  * <p>The second argument may be left out, and the delimiter set is then a single space.
  *
  * <p>The row rules it shares with SPLIT_TO_TABLE: SEQ numbers the INPUT RECORD, so every row of one
- * call carries the same SEQ and it starts at 1, while INDEX is the 1-based position of the token; a
- * NULL string or a NULL delimiter set yields no rows at all.
+ * call carries the same SEQ and it starts at 1 (see {@link InputRecordSequence}), while INDEX is the 1-based
+ * position of the token; a NULL string or a NULL delimiter set yields no rows at all.
  */
 public class StrtokSplitToTable extends TableFunction {
 
     /** The delimiter set a call that leaves the argument out splits on. */
     private static final String DEFAULT_DELIMITERS = " ";
-
-    /**
-     * Snowflake's SEQ is a sequence number for the INPUT RECORD, so one call numbers all its rows
-     * alike.
-     */
-    private static final long INPUT_SEQUENCE = 1L;
 
     public StrtokSplitToTable() {
         super("STRTOK_SPLIT_TO_TABLE");
@@ -95,9 +89,10 @@ public class StrtokSplitToTable extends TableFunction {
                 }
             }
         }
+        final long inputSequence = InputRecordSequence.current();
         for (int i = 0; i < tokens.size(); i++) {
             final List<Object> values = new ArrayList<>();
-            values.add(Long.valueOf(INPUT_SEQUENCE));
+            values.add(Long.valueOf(inputSequence));
             values.add(Long.valueOf(i + 1));
             values.add(tokens.get(i));
             rows.add(new Row(values));
