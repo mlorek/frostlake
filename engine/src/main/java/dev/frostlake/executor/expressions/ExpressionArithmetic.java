@@ -20,6 +20,7 @@ import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.conversion.BooleanWords;
 import dev.frostlake.functions.scalar.datetime.DateShiftAmount;
 import dev.frostlake.functions.scalar.datetime.ZonedTimestampShift;
 import dev.frostlake.values.ApproximateValues;
@@ -42,7 +43,6 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.Locale;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -220,9 +220,11 @@ public final class ExpressionArithmetic {
         // the relationship-loader idiom), a number as zero/non-zero. An unrecognized string is
         // FALSE here (Snowflake raises; the engine stays lenient as elsewhere).
         if (value instanceof String) {
-            final String text = ((String) value).trim().toLowerCase(Locale.ROOT);
-            return text.equals("true") || text.equals("t") || text.equals("yes")
-                || text.equals("y") || text.equals("on") || text.equals("1");
+            return Boolean.TRUE.equals(BooleanWords.read((String) value));
+        }
+        // A FLOAT is true when it is not zero, NaN included: NOT 'nan'::FLOAT is FALSE (live-verified).
+        if (value instanceof Double || value instanceof Float) {
+            return ((Number) value).doubleValue() != 0.0;
         }
         if (value instanceof Number) {
             return new BigDecimal(value.toString()).compareTo(BigDecimal.ZERO) != 0;
@@ -264,16 +266,11 @@ public final class ExpressionArithmetic {
             return VariantBooleans.convert((VariantValue) value);
         }
         if (value instanceof String) {
-            final String text = ((String) value).trim().toLowerCase(Locale.ROOT);
-            if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
-                    || text.equals("on") || text.equals("1")) {
-                return Boolean.TRUE;
+            final Boolean read = BooleanWords.read((String) value);
+            if (read == null) {
+                throw new RuntimeException("Boolean value '" + value + "' is not recognized");
             }
-            if (text.equals("false") || text.equals("f") || text.equals("no") || text.equals("n")
-                    || text.equals("off") || text.equals("0")) {
-                return Boolean.FALSE;
-            }
-            throw new RuntimeException("Boolean value '" + value + "' is not recognized");
+            return read;
         }
         return Boolean.valueOf(isTrue(value));
     }
@@ -1294,12 +1291,16 @@ public final class ExpressionArithmetic {
             leftValue = new BigDecimal(left.toString().trim());
             rightValue = new BigDecimal(right.toString().trim());
         } catch (final NumberFormatException notANumericString) {
-            // Against a FLOAT the text converts to FLOAT, where a hexadecimal number reads too.
+            // Against a FLOAT the text converts to FLOAT, as a cast to FLOAT reads it: a hexadecimal number, a
+            // type suffix and the words inf, -inf and NaN read too - 1.5::FLOAT = '1.5d' is TRUE (live-verified).
             final Object number = text == right ? left : right;
-            Number asFloat = ApproximateValues.isApproximate(number) ? floatText(text) : null;
-            if (asFloat == null && ApproximateValues.isApproximate(number)) {
-                // …as do the words a cast to FLOAT reads: inf, -inf, NaN.
-                asFloat = NonFiniteDoubles.parseForCast(text.toString());
+            Number asFloat = null;
+            if (ApproximateValues.isApproximate(number)) {
+                try {
+                    asFloat = ApproximateValues.written(text);
+                } catch (final RuntimeException spellsNoNumber) {
+                    asFloat = null;
+                }
             }
             if (asFloat != null) {
                 return text == right

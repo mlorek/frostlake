@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.model.ComputePool;
@@ -48,9 +49,12 @@ final class ShowInfraExecutor {
 
 
     private final Catalog catalog;
+    /** Says whether the session sees a stage, which a listing and DESCRIBE show only then. */
+    private final DefinitionOwnership ownership;
 
-    ShowInfraExecutor(final Catalog catalog) {
+    ShowInfraExecutor(final Catalog catalog, final DefinitionOwnership ownership) {
         this.catalog = catalog;
+        this.ownership = ownership;
     }
 
     /**
@@ -117,7 +121,7 @@ final class ShowInfraExecutor {
                 running ? (long) wh.getMinClusterCount() : 0L,
                 0L, 0L,
                 "N",
-                wh.getName().equalsIgnoreCase(currentWarehouse) ? "Y" : "N",
+                wh.getName().equals(currentWarehouse) ? "Y" : "N",
                 wh.getAutoSuspendSeconds() == null ? null : Long.valueOf(wh.getAutoSuspendSeconds().longValue()),
                 String.valueOf(wh.isAutoResume()),
                 // The four cluster-health cells: all of a started warehouse's compute is available, and a
@@ -179,6 +183,11 @@ final class ShowInfraExecutor {
     private void appendStageRows(final String dbName, final Schema schema, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Stage stage : schema.getStages()) {
+            // Only a stage the session sees: its roles own it or hold a privilege on it, or hold MANAGE GRANTS
+            // (documented).
+            if (!ownership.sees("STAGE", schema.qualifiedName(stage.getName()), stage.getOwner())) {
+                continue;
+            }
             final String url = stage.getUrl() != null ? stage.getUrl() : "";
             // An internal stage with server-side encryption alone is INTERNAL NO CSE; a temporary stage says so
             // after its kind; the cloud is named in upper case (live-verified).
@@ -270,7 +279,7 @@ final class ShowInfraExecutor {
      * inserted after application, a real account's 23-column shape.
      */
     public ResultSet describeComputePool(final String poolName) {
-        final ComputePool pool = catalog.getComputePool(poolName);
+        final ComputePool pool = catalog.getComputePoolExact(poolName);
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("state", StringType.VARCHAR),
@@ -386,48 +395,17 @@ final class ShowInfraExecutor {
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("kind", StringType.VARCHAR)
         );
-        final Warehouse wh = catalog.getWarehouse(warehouseName);
+        final Warehouse wh = catalog.getWarehouseExact(warehouseName);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList(
             ShowResultHelpers.createdOn(wh.getCreatedAt()), wh.getName(), "WAREHOUSE")));
         return new ResultSet(columns, rows);
     }
 
-    /**
-     * The CSV file-format property tree a real account describes for a stage, in its order:
-     * property, type, default. DESC STAGE overlays the stage's own declared options on these.
-     */
     /** How DESCRIBE STAGE spells the moment of a directory table's last refresh. */
     private static final DateTimeFormatter LAST_REFRESHED = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS xx");
 
-    private static final String[][] STAGE_FORMAT_PROPERTIES = {
-        {"TYPE", "String", "CSV"},
-        {"RECORD_DELIMITER", "String", "\\n"},
-        {"FIELD_DELIMITER", "String", ","},
-        {"FILE_EXTENSION", "String", ""},
-        {"SKIP_HEADER", "Integer", "0"},
-        {"PARSE_HEADER", "Boolean", "false"},
-        {"DATE_FORMAT", "String", "AUTO"},
-        {"TIME_FORMAT", "String", "AUTO"},
-        {"TIMESTAMP_FORMAT", "String", "AUTO"},
-        {"BINARY_FORMAT", "String", "HEX"},
-        {"ESCAPE", "String", "NONE"},
-        {"ESCAPE_UNENCLOSED_FIELD", "String", "\\\\"},
-        {"TRIM_SPACE", "Boolean", "false"},
-        {"FIELD_OPTIONALLY_ENCLOSED_BY", "String", "NONE"},
-        {"NULL_IF", "List", "[\\\\N]"},
-        {"COMPRESSION", "String", "AUTO"},
-        {"ERROR_ON_COLUMN_COUNT_MISMATCH", "Boolean", "true"},
-        {"VALIDATE_UTF8", "Boolean", "true"},
-        {"SKIP_BLANK_LINES", "Boolean", "false"},
-        {"REPLACE_INVALID_CHARACTERS", "Boolean", "false"},
-        {"EMPTY_FIELD_AS_NULL", "Boolean", "true"},
-        {"SKIP_BYTE_ORDER_MARK", "Boolean", "true"},
-        {"ENCODING", "String", "UTF8"},
-        {"MULTI_LINE", "Boolean", "true"},
-    };
-
-    /** The copy-option rows of DESC STAGE, likewise property, type, default. */
+    /** The copy-option rows of DESC STAGE: property, type, default. */
     private static final String[][] STAGE_COPY_OPTION_PROPERTIES = {
         {"ON_ERROR", "String", "ABORT_STATEMENT"},
         {"SIZE_LIMIT", "Long", ""},
@@ -464,12 +442,11 @@ final class ShowInfraExecutor {
     ResultSet describeTableStage(final Map<String, String> written, final Map<String, String> copyOptions) {
         final List<Row> rows = new ArrayList<>();
         for (final FormatProperty property : FileFormatSurfaces.tree(written.get("TYPE"))) {
-            final String value = written.get(property.name.toUpperCase(Locale.ROOT));
             // A stage's default format is CSV whichever tree is answered, so the TYPE row's default
             // column reads CSV even under a JSON format (live-verified).
             final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;
             rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
-                spelled(value, property.type, property.valueDefault), shownDefault)));
+                FileFormatSurfaces.described(property, written.get(property.name)), shownDefault)));
         }
         for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
@@ -521,8 +498,9 @@ final class ShowInfraExecutor {
             new ResultSetColumn("property_default", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
         if (table) {
-            for (final String[] property : STAGE_FORMAT_PROPERTIES) {
-                rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property[0], property[1], property[2], property[2])));
+            for (final FormatProperty property : FileFormatSurfaces.tree("CSV")) {
+                rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
+                    FileFormatSurfaces.described(property, null), property.shownDefault)));
             }
             for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
                 rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1], property[2], property[2])));
@@ -541,6 +519,10 @@ final class ShowInfraExecutor {
             new ResultSetColumn("property_default", StringType.VARCHAR));
         // Named exactly: a quoted name in another case is another stage, which is not there (live-verified).
         final Stage stage = catalog.getStageExact(stageName);
+        final Schema home = catalog.resolveOwningSchema(stageName);
+        if (!ownership.sees("STAGE", home.qualifiedName(stage.getName()), stage.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", home.qualifiedName(stage.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
         // The tree is the one of the stage's own format TYPE, as a table's stage answers its written format
         // (live-verified): a JSON stage lists STRIP_OUTER_ARRAY and no FIELD_DELIMITER.
@@ -555,12 +537,12 @@ final class ShowInfraExecutor {
         for (final FormatProperty property : formatName != null ? new ArrayList<FormatProperty>()
                 : FileFormatSurfaces.tree(type)) {
             final String written = "TYPE".equals(property.name) ? type
-                : stage.getFileFormatOptions().get(property.name.toUpperCase(Locale.ROOT));
+                : stage.getFileFormatOptions().get(property.name);
             // A stage's default format is CSV whichever tree is answered, so the TYPE row's default column
             // reads CSV even under a JSON format.
             final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;
             rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
-                spelled(written, property.type, property.valueDefault), shownDefault)));
+                FileFormatSurfaces.described(property, written), shownDefault)));
         }
         for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],

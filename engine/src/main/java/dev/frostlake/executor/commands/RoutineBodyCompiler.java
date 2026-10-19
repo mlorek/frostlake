@@ -140,6 +140,9 @@ final class RoutineBodyCompiler {
     private static final Pattern SYNTAX_LINE = Pattern.compile("syntax error line \\d+ at position");
 
     /** The name an unresolved-identifier refusal carries, so a body's own parameter can be told apart. */
+    /** The refusal of a QUALIFY no window function stands beside, which a query body earns only when it is called. */
+    private static final String WINDOWLESS_QUALIFY = "found QUALIFY clause but no window function.";
+
     private static final Pattern INVALID_IDENTIFIER = Pattern.compile("invalid identifier '([^']*)'");
 
     /** Shared, like the UDF invoker's own: javac start-up is what costs, not the compile. */
@@ -768,6 +771,11 @@ final class RoutineBodyCompiler {
         } catch (final OuterJoinOperandException misplacedMarker) {
             throw new RuntimeException("Compilation of SQL UDF failed: " + misplacedMarker.getMessage());
         } catch (final RuntimeException unresolved) {
+            if (String.valueOf(unresolved.getMessage()).endsWith(WINDOWLESS_QUALIFY)) {
+                // The account creates such a function and refuses each call (live-verified); its names were judged
+                // before the QUALIFY was.
+                return;
+            }
             if (SqlUdfBodyCalls.isUnknownFunctionRefusal(unresolved)) {
                 // The body's calls are judged next, where a function the account has built in is not unknown
                 // and a cycle speaks first.
@@ -968,7 +976,8 @@ final class RoutineBodyCompiler {
                 if (query != null) {
                     // A query this grammar stops reading before its end may hold a construct only the account's
                     // grammar has, ORDER BY ALL, and stays FAIL-OPEN; one that runs out of text is refused.
-                    return stop == null || SqlUdfQueryBodyRefusal.runsOut(framed) ? query : null;
+                    return stop == null || SqlUdfQueryBodyRefusal.runsOut(framed)
+                        || SqlUdfQueryBodyRefusal.stopsAtSureFault(framedTokens, stop) ? query : null;
                 }
             }
         } else {

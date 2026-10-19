@@ -382,7 +382,7 @@ public final class AccessControlHandler {
             requireDatabaseRoleAuthority(role);
             holder.grantDatabaseRole(role.getQualifiedName(), grantor);
         } else if (ctx.USER() != null) {
-            final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final User holder = catalog.getUserExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.grantDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
@@ -398,7 +398,7 @@ public final class AccessControlHandler {
                 PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
             holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else if (ctx.USER() != null) {
-            final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final User holder = catalog.getUserExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
@@ -456,10 +456,10 @@ public final class AccessControlHandler {
 
     private ResultSet grantsListing(final FrostlakeParser.AccessControlStatementContext ctx) {
         final AccessControlListings listings = new AccessControlListings(catalog);
-        if (ctx.ON() != null && ctx.qualifiedName() == null) {
-            return listings.grantsOnRole(catalog.getRoleExact(visitor.getText(ctx.identifier())));
+        if (ctx.ON() != null && ctx.referencedName() == null) {
+            return listings.grantsOnRole(catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor)));
         }
-        final DatabaseRole role = databaseRole(catalog, ctx.qualifiedName());
+        final DatabaseRole role = databaseRole(catalog, PrincipalNames.parts(ctx.referencedName(), queryExecutor));
         if (ctx.ON() != null) {
             return listings.grantsOnRole(role);
         }
@@ -474,16 +474,19 @@ public final class AccessControlHandler {
     private ResultSet futureGrants(final FrostlakeParser.AccessControlStatementContext ctx) {
         final AccessControlListings listings = new AccessControlListings(catalog);
         if (ctx.SCHEMA() != null) {
-            return listings.futureGrants("SCHEMA", schemaScopeName(catalog, ctx.qualifiedName()), null);
+            return listings.futureGrants("SCHEMA",
+                schemaScopeName(catalog, PrincipalNames.parts(ctx.referencedName(), queryExecutor)), null);
         }
         if (ctx.IN() != null) {
             return listings.futureGrants("DATABASE",
-                catalog.databaseExact(visitor.getText(ctx.identifier())).getName(), null);
+                catalog.databaseExact(PrincipalNames.of(ctx.principalName(), queryExecutor)).getName(), null);
         }
-        if (ctx.qualifiedName() != null) {
-            return listings.futureGrants(null, null, databaseRole(catalog, ctx.qualifiedName()));
+        if (ctx.referencedName() != null) {
+            return listings.futureGrants(null, null,
+                databaseRole(catalog, PrincipalNames.parts(ctx.referencedName(), queryExecutor)));
         }
-        return listings.futureGrants(null, null, catalog.getRoleExact(visitor.getText(ctx.identifier())));
+        return listings.futureGrants(null, null,
+            catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor)));
     }
 
     /** The canonical name of the schema a scope names, {@code DB.SCHEMA}, which must exist. */

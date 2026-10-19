@@ -526,9 +526,7 @@ public class DropCommandHandler implements CommandHandler {
                 final String qn = dropNameText(ctx);
                 final String[] parts = dropNameParts(ctx);
                 try {
-                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                     rejectWrongKind(schema, parts[parts.length - 1], RelationKind.DYNAMIC_TABLE);
                     checkDrop(SecurableObjectType.DYNAMIC_TABLE, qn);
                     final DynamicTable droppedTable = schema.getDynamicTable(parts[parts.length - 1]);
@@ -672,21 +670,8 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema;
                     final String viewName;
 
-                    if (parts.length == 1) {
-                        schema = ddl.resolveCurrentSchema();
-                        viewName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        viewName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        viewName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid view name: " + qualifiedName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    viewName = parts[parts.length - 1];
 
                     rejectWrongKind(schema, viewName, RelationKind.VIEW);
                     checkDrop(SecurableObjectType.VIEW, qualifiedName);
@@ -711,21 +696,8 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema;
                     final String mvName;
 
-                    if (parts.length == 1) {
-                        schema = ddl.resolveCurrentSchema();
-                        mvName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        mvName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        mvName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    mvName = parts[parts.length - 1];
 
                     rejectWrongKind(schema, mvName, RelationKind.MATERIALIZED_VIEW);
                     checkDrop(SecurableObjectType.MATERIALIZED_VIEW, qualifiedName);
@@ -788,7 +760,7 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = catalog.resolveOwningSchema(pipeName);
                     checkDrop(SecurableObjectType.PIPE, pipeName);
                     queryExecutor.requireOwnership("PIPE", dropNameParts(ctx), null);
-                    schema.dropPipe(QualifiedName.parse(pipeName).last());
+                    schema.dropPipeExact(QualifiedName.parse(pipeName).last());
                     logger.trace("Dropped pipe: {}", pipeName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -825,7 +797,7 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.COMPUTE() != null && ctx.POOL() != null) {
                 final String poolName = dropNameText(ctx);
                 try {
-                    catalog.dropComputePool(poolName);
+                    catalog.dropComputePoolExact(poolName);
                     logger.trace("Dropped compute pool: {}", poolName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -836,7 +808,7 @@ public class DropCommandHandler implements CommandHandler {
                 final String warehouseName = dropNameText(ctx);
 
                 try {
-                    catalog.dropWarehouse(warehouseName);
+                    catalog.dropWarehouseExact(warehouseName);
                     logger.trace("Dropped warehouse: {}", warehouseName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -876,21 +848,8 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema;
                     final String functionName;
 
-                    if (parts.length == 1) {
-                        schema = ddl.resolveCurrentSchema();
-                        functionName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        functionName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        functionName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid function name: " + qualifiedName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    functionName = parts[parts.length - 1];
 
                     // The written signature names one overload, an empty one the overload taking no
                     // arguments: DROP FUNCTION f() over f(INT) and f(DATE) drops nothing (live-verified).
@@ -916,21 +875,8 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema;
                     final String procedureName;
 
-                    if (parts.length == 1) {
-                        schema = ddl.resolveCurrentSchema();
-                        procedureName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        procedureName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        procedureName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid procedure name: " + qualifiedName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    procedureName = parts[parts.length - 1];
 
                     // The written signature names one overload, an empty one the overload taking no
                     // arguments, as a function's does.
@@ -952,8 +898,9 @@ public class DropCommandHandler implements CommandHandler {
                 final String userName = dropNameText(ctx);
 
                 try {
-                    final String held = catalog.hasUser(userName) ? catalog.getUser(userName).getName() : null;
-                    catalog.dropUser(userName);
+                    final String held = catalog.hasUserExact(userName)
+                        ? catalog.getUserExact(userName).getName() : null;
+                    catalog.dropUserExact(userName);
                     if (held != null) {
                         SecurityObjectCommandHandler.forgetUser(catalog, held);
                     }
@@ -997,9 +944,7 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.MASKING() != null && ctx.POLICY() != null && ctx.ROW() == null) {
                 final String[] parts = dropNameParts(ctx);
                 try {
-                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                     checkDrop(SecurableObjectType.MASKING_POLICY, dropNameText(ctx));
                     queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
                     // Named exactly: a quoted name in another case is another policy, which is not there, in
@@ -1019,9 +964,7 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
                 final String[] parts = dropNameParts(ctx);
                 try {
-                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                     checkDrop(SecurableObjectType.ROW_ACCESS_POLICY, dropNameText(ctx));
                     queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
                     // Named exactly, as a masking policy is (live-verified).
@@ -1040,9 +983,7 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.JOIN() != null && ctx.POLICY() != null) {
                 final String[] parts = dropNameParts(ctx);
                 try {
-                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                     final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
                     if (!schema.hasJoinPolicy(policyName)) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
@@ -1059,9 +1000,7 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.AGGREGATION() != null && ctx.POLICY() != null) {
                 final String[] parts = dropNameParts(ctx);
                 try {
-                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                     // Named exactly, as a masking policy is (live-verified).
                     final String policyName = parts[parts.length - 1];
                     if (schema.getAggregationPolicyExact(policyName) == null) {
@@ -1080,9 +1019,7 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.PROJECTION() != null && ctx.POLICY() != null) {
                 final String[] parts = dropNameParts(ctx);
                 try {
-                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                     // Named exactly, as a masking policy is (live-verified).
                     final String policyName = parts[parts.length - 1];
                     if (schema.getProjectionPolicyExact(policyName) == null) {
@@ -1102,9 +1039,7 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.CONTACT() != null) {
                 final String[] parts = dropNameParts(ctx);
                 try {
-                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                     final String contactName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
                     if (!schema.hasContact(contactName)) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
@@ -1142,12 +1077,12 @@ public class DropCommandHandler implements CommandHandler {
     private boolean holdsAccountScoped(final FrostlakeParser.DropStatementContext ctx) {
         final String name = dropNameText(ctx);
         if (ctx.WAREHOUSE() != null) {
-            return catalog.hasWarehouse(name);
+            return catalog.hasWarehouseExact(name);
         }
         if (ctx.POOL() != null) {
-            return catalog.hasComputePool(name);
+            return catalog.hasComputePoolExact(name);
         }
-        return ctx.USER() != null ? catalog.hasUser(name) : catalog.roleExists(name);
+        return ctx.USER() != null ? catalog.hasUserExact(name) : catalog.roleExistsExact(name);
     }
 
     /**

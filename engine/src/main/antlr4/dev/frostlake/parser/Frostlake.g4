@@ -133,6 +133,7 @@ import java.util.List;
         parentheses = 0;
         lastStop = -1;
         inStageReference = false;
+        inStagePath = false;
         super.reset();
     }
 
@@ -150,6 +151,11 @@ import java.util.List;
                 next = pathSlash();
             }
             noteForStageReference(next);
+            if (inStagePath && next instanceof WritableToken && isKeywordWord(next)) {
+                // A path's segment is any word, a reserved one included: LIST @st/select/from/where lists that
+                // path (live-verified).
+                ((WritableToken) next).setType(IDENTIFIER);
+            }
             return next;
         }
         patternSymbols.add(next);
@@ -166,6 +172,26 @@ import java.util.List;
     private int lastLine;
     private int lastEndColumn;
     private boolean inStageReference;
+
+    /** Whether the stage reference being read has reached its path: a '/' was read inside it. */
+    private boolean inStagePath;
+
+    /** Whether the token is a keyword written as a word: letters, digits, '_' and '$', a letter or '_' first. */
+    private static boolean isKeywordWord(final Token token) {
+        final int type = token.getType();
+        final String text = token.getText();
+        if (type == IDENTIFIER || type == QUOTED_IDENTIFIER || text == null || text.isEmpty()
+                || !Character.isLetter(text.charAt(0)) && text.charAt(0) != '_') {
+            return false;
+        }
+        for (int i = 1; i < text.length(); i++) {
+            final char c = text.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_' && c != '$') {
+                return false;
+            }
+        }
+        return true;
+    }
 
     private boolean slashesAt(final int index) {
         return index + 1 < _input.size() && "//".equals(_input.getText(Interval.of(index, index + 1)));
@@ -186,10 +212,12 @@ import java.util.List;
         final int type = token.getType();
         if (type == AT) {
             inStageReference = true;
+            inStagePath = false;
         } else if (inStageReference && (token.getStartIndex() != lastStop + 1 || type == LPAREN || type == RPAREN
                 || type == COMMA || type == SEMI || type == STRING_LITERAL || type == Token.EOF)) {
             inStageReference = false;
         }
+        inStagePath = inStageReference && (inStagePath || type == SLASH);
         lastStop = token.getStopIndex();
         lastLine = token.getLine();
         lastEndColumn = token.getCharPositionInLine() + token.getStopIndex() - token.getStartIndex() + 1;
@@ -1048,6 +1076,34 @@ import java.util.List;
         }
         final int argumentStart = _input.LT(last + 2).getType();
         return argumentStart == LPAREN || argumentStart == SELECT || argumentStart == WITH;
+    }
+
+    /** Whether the statement after an EXPLAIN's first word is one an EXPLAIN takes besides a query and a DML
+     *  statement, by its own first word (see explainedStatement). */
+    private boolean explainsStatement() {
+        switch (_input.LT(1).getType()) {
+            case CREATE:
+            case DROP:
+            case ALTER:
+            case UNDROP:
+            case TRUNCATE:
+            case SHOW:
+            case DESCRIBE:
+            case DESC:
+            case SET:
+            case LIST:
+            case LS:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** Whether a parenthesized star stands as SEARCH's first argument, its tuple: SEARCH((t.*), 'q'). */
+    private boolean searchStarTuple() {
+        final Token name = _input.LT(-2);
+        return _input.LT(1).getType() == LPAREN && _input.LT(-1).getType() == LPAREN && name != null
+            && name.getType() == SEARCH;
     }
 
     /** Whether a function argument here may be a subquery written without parentheses of its own. Only the
@@ -2316,6 +2372,8 @@ privilegeWord
 
 objectType
     : securableKind
+    // A materialized view is granted on as one (live-verified).
+    | MATERIALIZED VIEW
     // Live spells these kinds in words. The one-token spellings parse here only so that GRANT and REVOKE refuse them
     // in live's sentence (Object type or Class 'FILE_FORMAT' does not exist or not authorized.).
     | FILE_FORMAT
@@ -2354,15 +2412,23 @@ securableKind
 
 // What SHOW GRANTS ON names: a kind and its object, or a bare name, which live reads as a table or a view. A kind word
 // live reserves is never a bare name (see bareGrantsNameAllowed), so SHOW GRANTS ON DATABASE alone stays a syntax
-// error at its end.
+// error at its end. An object, bare or after its kind, may be an IDENTIFIER() reference (live-verified).
 showGrantsTarget
-    : securableKind qualifiedName (LPAREN dataTypeList? RPAREN)?
+    : securableKind grantsObjectName (LPAREN dataTypeList? RPAREN)?
     // The account's own grants; a name after ACCOUNT names another account, which is never found.
     | ACCOUNT accountName=qualifiedName
-    | relationGrantsKind qualifiedName
+    | relationGrantsKind grantsObjectName
     // VOLUME alone names an external volume here (live-verified).
     | VOLUME qualifiedName
     | bare=qualifiedName {bareGrantsNameAllowed($bare.ctx)}?
+    | KW_IDENTIFIER_REF LPAREN identifierArgument RPAREN
+    ;
+
+// The object SHOW GRANTS ON names after its kind: its name, or an IDENTIFIER() reference to it, whose content is
+// refused where it stops being one: IDENTIFIER(NULL) at the NULL (live-verified).
+grantsObjectName
+    : wholeObjectName
+    | openedIdentifierReference
     ;
 
 // The relation kinds SHOW GRANTS ON names beside TABLE and VIEW. Each finds the relation of the name, whatever its
@@ -3236,6 +3302,19 @@ viewAction
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
     | DROP ROW ACCESS POLICY qualifiedName
     | DROP ALL ROW ACCESS POLICIES
+    // A view's column takes a masking policy, a projection policy and tags as a table's column does, under ALTER or
+    // MODIFY alike, COLUMN optional before a projection policy; a masking policy's action may be followed by another
+    // after a comma (live-verified).
+    | (ALTER | MODIFY) viewColumnMasking (COMMA viewColumnMasking)*
+    | (ALTER | MODIFY) COLUMN? identifier SET PROJECTION POLICY qualifiedName FORCE?
+    | (ALTER | MODIFY) COLUMN? identifier UNSET PROJECTION POLICY
+    | columnTagAction
+    ;
+
+// A view column's masking policy, set — with the columns a conditional policy reads after USING — or unset.
+viewColumnMasking
+    : COLUMN identifier SET MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)? FORCE?
+    | COLUMN identifier UNSET MASKING POLICY
     ;
 
 // A property a view's SET gives: a name and its value, NULL among them. One written without a value, or with a word
@@ -3598,15 +3677,16 @@ accessControlStatement
     // A database named by a path is read, and names nothing (live-verified).
     | SHOW TERSE? DATABASE ROLES (LIKE likePattern=stringText)? (IN DATABASE? identifier (DOT rolesDatabasePath+=namePart)*)?
         (STARTS WITH startsPrefix=stringText)? (LIMIT INTEGER_LITERAL (FROM fromName=stringText)?)? SEMI?
-    // Every grant listing reads a LIMIT and its count, and none of the other listing modifiers (live-verified).
-    | SHOW GRANTS TO DATABASE ROLE qualifiedName showTail SEMI?
-    | SHOW GRANTS OF DATABASE ROLE qualifiedName showTail SEMI?
-    | SHOW GRANTS ON ROLE identifier showTail SEMI?
-    | SHOW GRANTS ON DATABASE ROLE qualifiedName showTail SEMI?
-    | SHOW FUTURE GRANTS IN SCHEMA qualifiedName showTail SEMI?
-    | SHOW FUTURE GRANTS IN DATABASE identifier showTail SEMI?
-    | SHOW FUTURE GRANTS TO ROLE identifier showTail SEMI?
-    | SHOW FUTURE GRANTS TO DATABASE ROLE qualifiedName SEMI?
+    // Every grant listing reads a LIMIT and its count, and none of the other listing modifiers, and names what it
+    // lists by its name or by an IDENTIFIER() reference to it (live-verified).
+    | SHOW GRANTS TO DATABASE ROLE referencedName showTail SEMI?
+    | SHOW GRANTS OF DATABASE ROLE referencedName showTail SEMI?
+    | SHOW GRANTS ON ROLE principalName showTail SEMI?
+    | SHOW GRANTS ON DATABASE ROLE referencedName showTail SEMI?
+    | SHOW FUTURE GRANTS IN SCHEMA referencedName showTail SEMI?
+    | SHOW FUTURE GRANTS IN DATABASE principalName showTail SEMI?
+    | SHOW FUTURE GRANTS TO ROLE principalName showTail SEMI?
+    | SHOW FUTURE GRANTS TO DATABASE ROLE referencedName SEMI?
     | CREATE ACCOUNT identifier accountProperty+ SEMI?
     | DROP ACCOUNT if_exists? identifier GRACE_PERIOD_IN_DAYS EQ INTEGER_LITERAL SEMI?
     // A qualified name is read so that it is refused in the account's own words.
@@ -4145,9 +4225,21 @@ forUpdateClause
     : FOR UPDATE ({wordAhead("NOWAIT")}? identifier | {wordAhead("WAIT")}? identifier INTEGER_LITERAL)?
     ;
 
-// EXPLAIN [USING { TABULAR | JSON | TEXT }] <query|dml> — returns the structural execution plan as a result set.
+// EXPLAIN [USING { TABULAR | JSON | TEXT }] <statement> — the statement's plan as a result set; nothing it would do is
+// done. A query and a DML statement are planned operator by operator; any other statement an EXPLAIN takes is
+// compiled and planned as a bare Result, a CREATE TABLE … AS SELECT and a materialized view as the
+// CreateTableAsSelect of their query (live-verified; see ExplainedStatements).
 explainStatement
-    : EXPLAIN (USING identifier)? (selectStatement | dmlStatement) SEMI?
+    : EXPLAIN (USING identifier)? (selectStatement | dmlStatement | explainedStatement) SEMI?
+    ;
+
+// The statements an EXPLAIN takes besides a query and a DML statement, by their first word (see explainsStatement): a
+// CREATE, a DROP, an ALTER, an UNDROP, a TRUNCATE, a SHOW, a DESCRIBE, a session variable's SET and a LIST, in the
+// order the statement rule tries them. USE, CALL, COMMENT, UNSET, REMOVE, EXECUTE, VALUES, another EXPLAIN and the
+// transaction statements are syntax errors at their first word (live-verified).
+explainedStatement
+    : {explainsStatement()}? (ddlStatement | listStatement | sessionSetStatement | securityObjectListing
+        | showStatement | showClassStatement | describeStatement | accessControlStatement | containerServicesStatement)
     ;
 
 selectStatement
@@ -4801,8 +4893,8 @@ showStatement
     | SHOW TERSE? ROLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // TERSE is read by every grant listing and changes none of them (live-verified).
     | SHOW TERSE? GRANTS ON showGrantsTarget showTail SEMI?
-    | SHOW TERSE? GRANTS TO (USER | ROLE) identifier showTail SEMI?  // SHOW GRANTS TO USER/ROLE name
-    | SHOW TERSE? GRANTS OF ROLE identifier showTail SEMI?           // who holds this role
+    | SHOW TERSE? GRANTS TO (USER | ROLE) principalName showTail SEMI?  // SHOW GRANTS TO USER/ROLE name
+    | SHOW TERSE? GRANTS OF ROLE principalName showTail SEMI?           // who holds this role
     // Everything granted to the current user. A LIKE is read and narrows nothing, and an IN is read and refused
     // at whatever follows it (live-verified).
     | SHOW TERSE? GRANTS (LIKE stringText)? showGrantsIn? showTail SEMI?
@@ -5634,6 +5726,8 @@ expression
     | INTERVAL STRING_LITERAL intervalLiteralQualifier           # IntervalExpr
     | INTERVAL STRING_LITERAL                                    # IntervalStringExpr
     | dateTimeLiteralType STRING_LITERAL                         # TypedDateTimeLiteralExpr
+    // DECFLOAT '<text>' is the DECFLOAT the text spells (live-verified).
+    | DECFLOAT STRING_LITERAL                                    # DecfloatLiteralExpr
     // A plain word before a string is a typed literal of a type the account does not know, refused by its
     // text while the statement compiles: `val 'x'`. A type keyword (`VARCHAR 'x'`) or a quoted name
     // (`"val" 'x'`) before a string stays a syntax error at the string, as it is live.
@@ -5898,6 +5992,9 @@ functionArg
     | spreadArgument   // ** [a, b] — splices a constant array's elements as arguments
     | booleanExpr
     | (starQualifiedName DOT)? STAR starArgumentModifier?   // star argument beside others, or under OVER
+    // SEARCH's first argument may be its tuple of a star: SEARCH((t.*), 'q') searches every column of t, as
+    // SEARCH(t.*, 'q') does (live-verified).
+    | {searchStarTuple()}? LPAREN (starQualifiedName DOT)? STAR starArgumentModifier? RPAREN
     | {bareSubqueryArgument()}? selectStatement   // ABS(SELECT -1): a subquery as the call's whole argument list
     ;
 
@@ -5905,6 +6002,7 @@ functionArg
 // (live-verified).
 mixedStarArgument
     : (starQualifiedName DOT)? STAR starArgumentModifier?
+    | {searchStarTuple()}? LPAREN (starQualifiedName DOT)? STAR starArgumentModifier? RPAREN
     ;
 
 // The modifiers a star ARGUMENT takes: the column filters only. A select item's star also takes
@@ -7288,6 +7386,7 @@ IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_$]*;
 // Literals
 INTEGER_LITERAL: [0-9]+;
 FLOAT_LITERAL: [0-9]+ DOT [0-9]* ([eE] [+-]? [0-9]+)? | DOT [0-9]+ ([eE] [+-]? [0-9]+)? | [0-9]+ [eE] [+-]? [0-9]+;   // Either side of the point may be empty — 1. is 1 and .5 is 0.5, typed as the full spelling is (1. NUMBER(1,0), .5 NUMBER(2,1)), with or without an exponent (1.e2 is 100, .5e1 is 5) — so 1. AS v is the number under an alias, never a field access on it, and 1.v the same written tighter; a second point after a complete number starts a second number, which no rule takes (1..2, .5.5). The last alternative is the DOT-less exponent (1e0, 1E+3, 1e-3), a number wherever a number is allowed. Without it the lexer split 1e0 into 1 and the identifier e0, which silently read as an ALIAS in a select list and was a syntax error everywhere else. An exponent is folded in before the type is taken, so these are FIXED-point: 1e0 is NUMBER(1,0) and 1e20 NUMBER(21,0).
+MULTI_POINT_NUMBER: [0-9]+ DOT [0-9]+ DOT [0-9]+;   // 1.5.6: one token to the account, and one no rule reads, so SELECT 1.5.6 is refused at the whole of it (live-verified) rather than at the second number it would otherwise hold.
 HEX_NUMBER: '0' [xX] [0-9a-fA-F]+;   // 0x3, 0xFF: one token to the account, and one no rule reads, so SELECT 0x3 is refused at the token where a digit beside a name (0 x3) names a column. Longest-match keeps a plain 0 and a name apart wherever no hexadecimal digit follows the x.
 MALFORMED_EXPONENT: [0-9]+ (DOT [0-9]*)? [eE] [+-]? | DOT [0-9]+ [eE] [+-]? | '0' [xX];   // A digit run that OPENS an exponent and then stops — 1e, 12E, 1.5e, 1.e, .5e, 1e+ — which Snowflake reads as a malformed NUMBER rather than as a number beside an identifier: SELECT 1e FROM t is refused where the spaced SELECT 1 e FROM t names the column E. No parser rule uses this token, so every occurrence is a syntax error; it exists only to stop the lexer splitting the text into an INTEGER_LITERAL and an alias. Longest-match keeps the valid forms intact: FLOAT_LITERAL takes 1e5 and 1.5e5 whole, and in 1e1e it takes 1e1 and leaves e as the alias, exactly as live reads them.
 STRING_LITERAL: '\'' ('\\' . | '\'\'' | ~['\\])* '\'';    // Single-quoted. Backslash is EXCLUDED from ~[..] so it always begins a '\\' . escape (incl. \'); otherwise maximal-munch lets \'' lex as \ + '' and mis-aligns the string boundaries. Decode via SqlStringLiterals.

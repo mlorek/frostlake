@@ -700,6 +700,18 @@ public class TransactionWriteSet {
         }
     }
 
+    /**
+     * The rows this transaction adds to a table's committed ones: its inserts less its deletes.
+     *
+     * @param table the table's fully-qualified name
+     * @return the difference, negative where it deleted more than it inserted
+     */
+    public int rowDelta(final String table) {
+        final List<Row> ins = inserts.get(table);
+        final Set<Long> del = deletes.get(table);
+        return (ins == null ? 0 : ins.size()) - (del == null ? 0 : del.size());
+    }
+
     /** The fully-qualified names of every table this write set holds a buffered insert, update, or delete for. */
     public Set<String> changedTables() {
         final Set<String> out = new LinkedHashSet<>();

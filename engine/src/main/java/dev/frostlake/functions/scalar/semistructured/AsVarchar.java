@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 
@@ -35,7 +36,8 @@ public class AsVarchar extends VariantArgumentFunction {
         // Only a text is one: a number, a BOOLEAN, a date or a UUID held in the VARIANT is NULL here, as
         // every cast of the family answers for another kind (live-verified).
         if (node != null) {
-            return node.isTextual() && !UuidTextNode.holds(node) ? node.asText() : null;
+            return node.isTextual() && !UuidTextNode.holds(node) && !DecfloatTextNode.holds(node)
+                ? node.asText() : null;
         }
         return v instanceof String ? v : null;
     }

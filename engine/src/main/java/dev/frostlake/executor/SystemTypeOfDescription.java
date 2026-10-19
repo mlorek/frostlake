@@ -106,6 +106,10 @@ public final class SystemTypeOfDescription {
             if (numeric.getName().equalsIgnoreCase("FLOAT") || numeric.getName().equalsIgnoreCase("DOUBLE")) {
                 return "DOUBLE";
             }
+            if (NumericType.isDecfloat(numeric)) {
+                // Every DECFLOAT, whatever its value: DECFLOAT(38)[DECFLOAT18] (live-verified).
+                return "DECFLOAT18";
+            }
             return range != null ? SignedStorageWidth.tagOfRange(range, numeric.getScale())
                 : SignedStorageWidth.tagOfPrecision(numeric.getPrecision());
         }

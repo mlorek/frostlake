@@ -30,7 +30,10 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.ValueRange;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -207,27 +210,53 @@ final class RecursiveCteColumns {
     }
 
     /**
-     * A step's row with each value of another family than its column's converted to the column's type: a DATE
-     * column holds the date of a timestamp a term computes, a timestamp column the timestamp of a date, a FLOAT
-     * column the double of a number (live-verified).
+     * A row of the anchor or of a step with each value held to its column's type: one of another family converted
+     * - a DATE column holds the date of a timestamp a term computes, a timestamp column the timestamp of a date, a
+     * FLOAT column the double of a number - and an exact number taken to a fixed-point column's scale, rounded as
+     * a cast rounds it. The next step reads the value so held: over a NUMBER(38,2) column, {@code n * 1.5} from 1.5
+     * answers 1.50, 2.25, 3.38, 5.07, and an anchor's 1 in a NUMBER(38,1) column is 1.0 (live-verified).
      *
-     * @param row     the row a recursive term answered
+     * @param row     the row the anchor or a recursive term answered
      * @param columns the CTE's columns
-     * @return the row, its values converted where their family differs
+     * @return the row, its values held to their columns' types
      */
     static Row settled(final Row row, final List<ResultSetColumn> columns) {
         List<Object> values = null;
         for (int k = 0; k < columns.size() && k < row.getValues().size(); k++) {
             final Object value = row.getValue(k);
             final DataType type = typeOf(columns.get(k));
-            if (value != null && ofAnotherFamily(type, value)) {
+            if (value == null) {
+                continue;
+            }
+            // A DECFLOAT column holds the value exactly: 1.5 stays 1.5 (live-verified).
+            final Object held = NumericType.isDecfloat(type) && value instanceof Number
+                ? Decfloats.of((Number) value, "TO_DECFLOAT")
+                : ofAnotherFamily(type, value)
+                ? ValueCaster.castValue(value, SqlTypeNames.canonical(type), true) : atColumnScale(type, value);
+            if (held != value) {
                 if (values == null) {
                     values = new ArrayList<>(row.getValues());
                 }
-                values.set(k, ValueCaster.castValue(value, SqlTypeNames.canonical(type), true));
+                values.set(k, held);
             }
         }
         return values == null ? row : new Row(values);
+    }
+
+    /**
+     * An exact number at a fixed-point column's scale, rounded half away from zero as a cast rounds it; a whole
+     * number in a column of scale 0, and any other value, as it is.
+     */
+    private static Object atColumnScale(final DataType type, final Object value) {
+        if (!isFixed(type) || !(value instanceof BigDecimal || value instanceof Long || value instanceof Integer)) {
+            return value;
+        }
+        final int scale = ((NumericType) type).getScale();
+        if (!(value instanceof BigDecimal)) {
+            return scale == 0 ? value : BigDecimal.valueOf(((Number) value).longValue()).setScale(scale);
+        }
+        final BigDecimal exact = (BigDecimal) value;
+        return exact.scale() == scale ? value : exact.setScale(scale, RoundingMode.HALF_UP);
     }
 
     private static boolean ofAnotherFamily(final DataType type, final Object value) {
@@ -257,10 +286,13 @@ final class RecursiveCteColumns {
                         || isUntypedNull(kept) || isUntypedNull(computed)) {
                     continue;
                 }
-                final boolean refused = isFixed(kept) && (isFloat(computed) || computed instanceof StringType
-                        || computed instanceof BooleanType)
-                    || kept instanceof StringType && isFixed(computed)
-                    || kept instanceof BooleanType && isFixed(computed);
+                // A NUMBER anchor meets a DECFLOAT term no better than a FLOAT one (live-verified).
+                final boolean refused = isFixed(kept) && (isFloat(computed) || NumericType.isDecfloat(computed)
+                        || computed instanceof StringType || computed instanceof BooleanType)
+                    || NumericType.isDecfloat(kept)
+                        && (computed instanceof StringType || computed instanceof BooleanType)
+                    || kept instanceof StringType && (isFixed(computed) || NumericType.isDecfloat(computed))
+                    || kept instanceof BooleanType && (isFixed(computed) || NumericType.isDecfloat(computed));
                 if (refused) {
                     return anchor.get(k).getName();
                 }
@@ -408,8 +440,9 @@ final class RecursiveCteColumns {
         return column.getStaticType() != null ? column.getStaticType() : column.getDataType();
     }
 
+    /** A fixed-point NUMBER: neither a FLOAT nor a DECFLOAT, whose values keep every digit at no scale. */
     private static boolean isFixed(final DataType type) {
-        return type instanceof NumericType && !NumericType.isApproximate(type);
+        return type instanceof NumericType && !NumericType.isApproximate(type) && !NumericType.isDecfloat(type);
     }
 
     private static boolean isFloat(final DataType type) {

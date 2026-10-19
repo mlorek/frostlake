@@ -20,6 +20,7 @@ import dev.frostlake.executor.AggregateRangeRefusal;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.values.DayTimeInterval;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 
@@ -32,8 +33,11 @@ import java.math.BigDecimal;
  * PARSE_JSON('2') is 3.0, SYSTEM$TYPEOF FLOAT). Every input feeds the double sum in order regardless,
  * so the answer is the same whichever input first decides the tier.
  */
-public class SumAccumulator implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
+public class SumAccumulator implements AggregateFunction.Accumulator, ApproximateAwareAccumulator,
+        DecfloatAwareAccumulator {
     private BigDecimal sum = BigDecimal.ZERO;
+    /** Whether the argument is declared DECFLOAT: the sum is then a DECFLOAT (see Decfloats). */
+    private boolean decfloat;
     /** The running total of day-time interval inputs, or null while none has arrived. */
     private DayTimeInterval intervals;
     private boolean hasValue = false;
@@ -44,6 +48,11 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
     @Override
     public void setApproximateArgument(final boolean declaredApproximate) {
         anyApproximate = anyApproximate || declaredApproximate;
+    }
+
+    @Override
+    public void setDecfloatArgument(final boolean declaredDecfloat) {
+        decfloat = declaredDecfloat;
     }
 
     @Override
@@ -62,7 +71,13 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
             if (AggregateNumerics.isApproximateInput(value)) {
                 anyApproximate = true;
             }
-            approximate.add(NumericAggregateInput.asDouble(value));
+            if (decfloat && value instanceof Number) {
+                // A DECFLOAT sum is exact to 38 significant digits, whatever its magnitude (live-verified).
+                sum = DecfloatAggregates.added(sum, Decfloats.of((Number) value, "SUM"));
+                hasValue = true;
+                return;
+            }
+            approximate.add(NumericAggregateInput.asApproximate(value));
             if (!anyVariant && !anyApproximate) {
                 sum = sum.add(new BigDecimal(value.toString()));
                 requireSumFits(sum);
@@ -96,6 +111,9 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
         if (intervals != null) {
             return intervals;
         }
+        if (decfloat) {
+            return Decfloats.held(sum);
+        }
         return anyVariant || anyApproximate ? Double.valueOf(approximate.correctedValue()) : sum;
     }
 
@@ -116,7 +134,9 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
             intervals = intervals == null ? o.intervals : intervals.plus(o.intervals);
         }
         sum = sum.add(o.sum);
-        requireSumFits(sum);
+        if (!decfloat) {
+            requireSumFits(sum);
+        }
         if (o.approximate.isSeeded()) {
             approximate.add(o.approximate.value());
         }

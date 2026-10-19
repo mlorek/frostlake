@@ -86,7 +86,7 @@ public class Random extends BuiltInFunction {
 
     /**
      * The seed a RANDOM argument gives, rounded half away from zero, and the range it has to fit, which is its
-     * family's own (live-verified):
+     * family's own; the generator UNIFORM, ZIPF and NORMAL draw from is held to the same (live-verified):
      * <ul>
      *   <li>a NUMBER takes the whole signed 64-bit range, and past it is {@code Numeric value '<the rounded
      *       number>' is not recognized};</li>
@@ -99,7 +99,7 @@ public class Random extends BuiltInFunction {
      *       VARIANT text that is no seed is {@code Failed to cast variant value}.</li>
      * </ul>
      */
-    private static long seedOf(final Object seed) {
+    static long seedOf(final Object seed) {
         if (seed == null) {
             throw new RuntimeException(NULL_SEED);
         }

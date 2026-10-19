@@ -65,6 +65,7 @@ public final class SystemFunctionArity {
         declare("SYSTEM$GET_TAG_ON_CURRENT_TABLE", 1, 1);
         declare("SYSTEM$GET_TAG_ON_CURRENT_COLUMN", 1, 1);
         declare("SYSTEM$GET_TASK_GRAPH_CONFIG", 0, 1);
+        declare("SYSTEM$REFERENCE", 2, -1);
     }
 
     private SystemFunctionArity() {

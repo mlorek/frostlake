@@ -152,7 +152,7 @@ public final class AggregateNumerics {
                             doubleSum.add(variantDouble((VariantValue) v));
                         } else if (isApproximateInput(v)) {
                             anyDouble = true;
-                            doubleSum.add(NumericAggregateInput.asDouble(v));
+                            doubleSum.add(NumericAggregateInput.asApproximate(v));
                         } else {
                             final BigDecimal fixed = fixedPointValue(v);
                             if (fixed != null) {
@@ -164,7 +164,7 @@ public final class AggregateNumerics {
                                 doubleSum.add(fixed.doubleValue());
                             } else {
                                 anyDouble = true;
-                                doubleSum.add(toDouble(v));
+                                doubleSum.add(NumericAggregateInput.asApproximate(v));
                             }
                         }
                     }
@@ -221,12 +221,12 @@ public final class AggregateNumerics {
                         count++;
                         if (v instanceof VariantValue || isApproximateInput(v)) {
                             anyDouble = true;
-                            doubleSum.add(NumericAggregateInput.asDouble(v));
+                            doubleSum.add(NumericAggregateInput.asApproximate(v));
                         } else {
                             final BigDecimal fixed = fixedPointValue(v);
                             if (fixed == null) {
                                 anyDouble = true;
-                                doubleSum.add(toDouble(v));
+                                doubleSum.add(NumericAggregateInput.asApproximate(v));
                             } else {
                                 decimalSum = decimalSum.add(fixed);
                                 SumAccumulator.requireSumFits(decimalSum);
@@ -291,7 +291,7 @@ public final class AggregateNumerics {
                     doubleSum.add(variantDouble((VariantValue) v));
                 } else if (isApproximateInput(v)) {
                     anyDouble = true;
-                    doubleSum.add(NumericAggregateInput.asDouble(v));
+                    doubleSum.add(NumericAggregateInput.asApproximate(v));
                 } else {
                     final BigDecimal fixed = fixedPointValue(v);
                     if (fixed != null) {
@@ -305,7 +305,7 @@ public final class AggregateNumerics {
                         doubleSum.add(fixed.doubleValue());
                     } else {
                         anyDouble = true;
-                        doubleSum.add(toDouble(v));
+                        doubleSum.add(NumericAggregateInput.asApproximate(v));
                     }
                 }
                 if (rowWise) {
@@ -471,12 +471,12 @@ public final class AggregateNumerics {
                 count++;
                 if (v instanceof VariantValue || isApproximateInput(v)) {
                     anyDouble = true;
-                    doubleSum.add(NumericAggregateInput.asDouble(v));
+                    doubleSum.add(NumericAggregateInput.asApproximate(v));
                 } else {
                     final BigDecimal fixed = fixedPointValue(v);
                     if (fixed == null) {
                         anyDouble = true;
-                        doubleSum.add(toDouble(v));
+                        doubleSum.add(NumericAggregateInput.asApproximate(v));
                     } else {
                         if (wholePartitionWindow) {
                             // The whole-partition window keeps an intermediate three decimals wider than its
@@ -591,10 +591,10 @@ public final class AggregateNumerics {
      */
     public static double doubleTerm(final Object value) {
         if (value instanceof VariantValue || isApproximateInput(value)) {
-            return NumericAggregateInput.asDouble(value);
+            return NumericAggregateInput.asApproximate(value);
         }
         final BigDecimal fixed = fixedPointValue(value);
-        return fixed != null ? fixed.doubleValue() : NumericAggregateInput.asDouble(value);
+        return fixed != null ? fixed.doubleValue() : NumericAggregateInput.asApproximate(value);
     }
 
     /**

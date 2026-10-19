@@ -18,6 +18,7 @@ package dev.frostlake.functions.window;
 
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
+import dev.frostlake.values.ApproximateValues;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -71,6 +72,11 @@ public final class WindowFunctionHelper {
 
     private static double summedNumber(final Object v) {
         if (v instanceof Number) return ((Number) v).doubleValue();
+        if (v instanceof String) {
+            // A text reads as a cast to FLOAT reads it, a hexadecimal number included: RATIO_TO_REPORT('0x10')
+            // is 1.0 (live-verified).
+            return ApproximateValues.written(v).doubleValue();
+        }
         try {
             return new BigDecimal(v.toString().trim()).doubleValue();
         } catch (final NumberFormatException noNumber) {

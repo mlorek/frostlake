@@ -179,10 +179,10 @@ final class CatalogSnapshotReader {
             // The default warehouse already exists in a fresh catalog, so it is not created a second
             // time — but every setting an ALTER put on it is its own and has to come back, which
             // skipping the whole entry used to throw away.
-            if (!catalog.hasWarehouse(whSnapshot.name)) {
+            if (!catalog.hasWarehouseExact(whSnapshot.name)) {
                 catalog.createWarehouse(whSnapshot.name, WarehouseSize.valueOf(whSnapshot.size));
             }
-            final Warehouse wh = catalog.getWarehouse(whSnapshot.name);
+            final Warehouse wh = catalog.getWarehouseExact(whSnapshot.name);
             wh.setSize(WarehouseSize.valueOf(whSnapshot.size));
             wh.setState(WarehouseState.valueOf(whSnapshot.state));
             wh.setAutoSuspendSeconds(whSnapshot.autoSuspend);
@@ -217,7 +217,7 @@ final class CatalogSnapshotReader {
             } catch (final RuntimeException e) {
                 // User already exists (e.g. default user created during init) — skip creation
             }
-            final User user = catalog.getUser(userSnapshot.name);
+            final User user = catalog.getUserExact(userSnapshot.name);
             user.setComment(userSnapshot.comment);
             // enabled is a nullable Boolean: null (a snapshot predating the field) means the user was never
             // disabled, so leave it enabled; only an explicit value flips it.
@@ -308,7 +308,7 @@ final class CatalogSnapshotReader {
 
         // Grant roles to users
         for (final UserSnapshot userSnapshot : snapshot.users) {
-            final User user = catalog.getUser(userSnapshot.name);
+            final User user = catalog.getUserExact(userSnapshot.name);
             for (final String roleName : userSnapshot.grantedRoles) {
                 try {
                     RestCatalogSnapshots.grantRole(user, roleName, userSnapshot.roleGrantors);
@@ -385,7 +385,7 @@ final class CatalogSnapshotReader {
                                 QualifiedName.parse(((DefaultValueExpression) value).getExpressionText()).parts();
                             if (parts.length == 4 && "NEXTVAL".equals(parts[3])) {
                                 column.setDefaultValue(new SequenceDefault(
-                                    catalog.getDatabase(parts[0]).getSchema(parts[1]).getSequence(parts[2])));
+                                    catalog.databaseExact(parts[0]).schemaExact(parts[1]).getSequenceExact(parts[2])));
                             }
                         } catch (final RuntimeException notASequence) {
                             continue;
@@ -668,6 +668,9 @@ final class CatalogSnapshotReader {
                         stream.setOwner(streamSnapshot.owner);
                     }
                     stream.restoreCreatedTime(streamSnapshot.createdAt);
+                    if (streamSnapshot.offsetSequence != null) {
+                        stream.restoreOffsetSequence(streamSnapshot.offsetSequence.longValue());
+                    }
                     if (streamSnapshot.records != null) {
                         for (final StreamRecordSnapshot recSnapshot : streamSnapshot.records) {
                             stream.addRecord(new StreamRecord(recSnapshot.values,
@@ -1316,6 +1319,10 @@ final class CatalogSnapshotReader {
                 colSnapshot.nullable, null, false, false, false);
             column.setComment(colSnapshot.comment);
             column.setCollation(colSnapshot.collation);
+            column.setMaskingPolicyName(colSnapshot.maskingPolicyName);
+            column.setMaskingPolicyArguments(colSnapshot.maskingPolicyArguments);
+            column.setProjectionPolicyName(colSnapshot.projectionPolicyName);
+            SnapshotTags.restore(column, colSnapshot.tags);
             columns.add(column);
         }
         return columns;

@@ -21,6 +21,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.DateTimeUnitSlot;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.datetime.DateUnitVocabulary;
+import dev.frostlake.functions.scalar.datetime.LastDay;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.Token;
@@ -196,7 +197,10 @@ final class SqlUdfBodyNames {
             if (!SharedFunctionHelpers.isDatePartUnit(word)) {
                 throw SharedFunctionHelpers.invalidDatePart(word, function);
             }
-        } else if (DateUnitVocabulary.intervalUnit(word) == null) {
+        } else if ("LAST_DAY".equals(function) ? LastDay.partOf(word) == null
+                : DateUnitVocabulary.intervalUnit(word) == null) {
+            // LAST_DAY reads four parts only, so LAST_DAY(d, hour) is refused at CREATE as the query refuses it
+            // (live-verified).
             throw SharedFunctionHelpers.notADateTimeComponent(word, function);
         }
     }

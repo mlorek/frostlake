@@ -114,8 +114,8 @@ public class TagReferencesAllColumnsFunction extends TableFunction {
     }
 
     /**
-     * The object's columns: a table's own, and a view's as its query resolved them. A view's column carries no
-     * tag of its own, so it stands here by its name alone.
+     * The object's columns: a table's own, a view's as its query resolved them, which carry the tags ALTER VIEW sets
+     * on them, and a materialized view's, which carry none and stand here by their names alone.
      */
     private static List<Taggable> columnsOf(final Taggable object) {
         final List<Taggable> columns = new ArrayList<Taggable>();
@@ -123,8 +123,14 @@ public class TagReferencesAllColumnsFunction extends TableFunction {
             columns.addAll(((Table) object).getColumns());
             return columns;
         }
-        final List<TableColumn> resolved = object instanceof View ? ((View) object).getResolvedColumns()
-            : object instanceof MaterializedView ? ((MaterializedView) object).getResolvedColumns() : null;
+        if (object instanceof View) {
+            if (((View) object).hasResolvedColumns()) {
+                columns.addAll(((View) object).getResolvedColumns());
+            }
+            return columns;
+        }
+        final List<TableColumn> resolved = object instanceof MaterializedView
+            ? ((MaterializedView) object).getResolvedColumns() : null;
         if (resolved != null) {
             for (final TableColumn column : resolved) {
                 columns.add(new NamedColumn(column.getName()));

@@ -246,6 +246,9 @@ public final class ColumnTypeFamilies {
             if (name.equals("FLOAT") || name.equals("DOUBLE")) {
                 return "FLOAT";
             }
+            if (NumericType.isDecfloat(numeric)) {
+                return "DECFLOAT";
+            }
             return "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
         }
         if (type instanceof UuidType) {

@@ -48,12 +48,12 @@ public class RegexpInstr extends TextArgumentFunction {
         }
         final String subject = SharedFunctionHelpers.textOf(args.get(0));
         final String pattern = SharedFunctionHelpers.textOf(args.get(1));
-        final int position = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
-        final int occurrence = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 1;
-        final int option = args.size() > 4 && args.get(4) != null ? ((Number) args.get(4)).intValue() : 0;
+        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
+        final int occurrence = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
+        final int option = args.size() > 4 && args.get(4) != null ? wholeNumber(args.get(4)) : 0;
         final String parameters = args.size() > 5 && args.get(5) != null
             ? SharedFunctionHelpers.textOf(args.get(5)) : null;
-        final Integer groupNum = args.size() > 6 && args.get(6) != null ? ((Number) args.get(6)).intValue() : null;
+        final Integer groupNum = args.size() > 6 && args.get(6) != null ? Integer.valueOf(wholeNumber(args.get(6))) : null;
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrence(occurrence);
         RegexpHelper.requireReturnOption(option);

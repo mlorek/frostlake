@@ -222,6 +222,18 @@ public class RevokeCountTest extends MeasuredCellsTestSupport {
                 "REVOKE ALL ON VIEW al_s.v1 FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",
+                "GRANT ALL ON MATERIALIZED VIEW al_s.mv1 TO ROLE flq_al_r");
+            engine.execute("SHOW GRANTS ON MATERIALIZED VIEW al_s.mv1");
+            assertAnswer(
+                "APPLYBUDGET,DELETE,DELETE ERROR TABLE,EVOLVE SCHEMA,INSERT,REBUILD,REFERENCES,SELECT,SELECT "
+                + "ERROR TABLE,TRUNCATE,UPDATE",
+                "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM "
+                + "TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
+            assertAnswer(
+                "Statement executed successfully. 11 objects affected.",
+                "REVOKE ALL ON MATERIALIZED VIEW al_s.mv1 FROM ROLE flq_al_r");
+            assertAnswer(
+                "Statement executed successfully.",
                 "GRANT ALL ON SEQUENCE al_s.q1 TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON SEQUENCE al_s.q1");
             assertAnswer(

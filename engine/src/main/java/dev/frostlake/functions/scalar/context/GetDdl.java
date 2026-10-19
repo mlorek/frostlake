@@ -17,8 +17,10 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.executor.DefinitionCompile;
+import dev.frostlake.executor.GrantedObject;
 import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ReturnColumnTypes;
 import dev.frostlake.executor.RoutineReferenceText;
 import dev.frostlake.executor.ShowResultHelpers;
@@ -243,11 +245,13 @@ public class GetDdl extends BuiltInFunction {
                 throw new RuntimeException("Unsupported feature 'EVENT_TABLE'.");
             case "FUNCTION": {
                 final Function function = (Function) routine(written.trim(), false);
+                requireSeen(QueryExecutor.functionGrant(routineOwner(written.trim()), function), written);
                 requireShown(function.isSecure(), function.getOwner());
                 return lookupOnly ? null : functionDdl(function, routineOwner(written.trim()), names);
             }
             case "PROCEDURE": {
                 final Procedure procedure = (Procedure) routine(written.trim(), true);
+                requireSeen(QueryExecutor.procedureGrant(routineOwner(written.trim()), procedure), written);
                 requireShown(procedure.isSecure(), procedure.getOwner());
                 return lookupOnly ? null : procedureDdl(procedure, routineOwner(written.trim()), names);
             }
@@ -265,7 +269,7 @@ public class GetDdl extends BuiltInFunction {
                 return memberDdl(objectType, typeText, written, names);
             case "WAREHOUSE":
                 // A warehouse is looked up before anything else is said about it.
-                if (!catalog.hasWarehouse(SqlIdentifiers.canonicalTextParts(written)[0])) {
+                if (!catalog.hasWarehouseExact(SqlIdentifiers.canonicalTextParts(written)[0])) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse",
                         SqlIdentifiers.canonicalTextParts(written)[0]));
                 }
@@ -377,6 +381,16 @@ public class GetDdl extends BuiltInFunction {
         throw missingRelation(objectType, parts, owner);
     }
 
+    /**
+     * Refuses a routine overload the session does not see as a missing one: its roles neither own it nor hold a
+     * privilege on its signature, nor hold MANAGE GRANTS (documented).
+     */
+    private void requireSeen(final GrantedObject routine, final String written) {
+        if (ownership != null && !ownership.sees(routine.getKind(), routine.getName(), routine.getOwner())) {
+            throw objectDoesNotExist(written);
+        }
+    }
+
     /** Refuses a relation the session does not see as the missing one of the kind asked for. */
     private void requireSeen(final String objectType, final String grantKind, final String[] parts,
                              final Schema owner, final String objectOwner) {
@@ -442,7 +456,7 @@ public class GetDdl extends BuiltInFunction {
             }
             case "TAG": {
                 final Tag tag = find(owner, name, objectType);
-                if (tag == null) {
+                if (tag == null || !sees("TAG", owner, name, tag.getOwner())) {
                     throw missing(parts, owner, "Tag", false);
                 }
                 return ObjectDdl.tag(tag, names.object(owner, name));
@@ -451,21 +465,23 @@ public class GetDdl extends BuiltInFunction {
                 return policyDdl(owner, parts, names);
             case "FILE_FORMAT": {
                 final FileFormat format = owner.getFileFormat(name);
-                if (format == null || !named(format.getName(), name)) {
+                if (format == null || !named(format.getName(), name)
+                        || !sees("FILE_FORMAT", owner, name, format.getOwner())) {
                     throw missing(parts, owner, "File format", false);
                 }
                 return ObjectDdl.fileFormat(format, names.object(owner, name));
             }
             case "ALERT": {
                 final Alert alert = find(owner, name, objectType);
-                if (alert == null) {
+                if (alert == null || !sees("ALERT", owner, name, alert.getOwner())) {
                     throw missing(parts, owner, "Alert", false);
                 }
                 return ObjectDdl.alert(alert, names.object(owner, name));
             }
             case "CONTACT": {
                 final Contact contact = owner.getContact(name);
-                if (contact == null || !named(contact.getName(), name)) {
+                if (contact == null || !named(contact.getName(), name)
+                        || !sees("CONTACT", owner, name, contact.getOwner())) {
                     throw missing(parts, owner, "Contact", true);
                 }
                 return ObjectDdl.contact(contact, names.object(owner, name));
@@ -479,7 +495,7 @@ public class GetDdl extends BuiltInFunction {
                 throw missing(parts, owner, "Streamlit", true);
             default:
                 // A stage is looked up and then refused as a type GET_DDL cannot recreate.
-                if (!owner.hasStageExact(name)) {
+                if (!owner.hasStageExact(name) || !sees("STAGE", owner, name, owner.getStageExact(name).getOwner())) {
                     throw missing(parts, owner, "Stage", true);
                 }
                 throw invalidObjectType(typeText);
@@ -523,27 +539,27 @@ public class GetDdl extends BuiltInFunction {
     private String policyDdl(final Schema owner, final String[] parts, final DdlNames names) {
         final String name = parts[parts.length - 1];
         for (final MaskingPolicy policy : owner.getMaskingPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("MASKING_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.maskingPolicy(policy, names.object(owner, name));
             }
         }
         for (final RowAccessPolicy policy : owner.getRowAccessPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("ROW_ACCESS_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.rowAccessPolicy(policy, names.object(owner, name));
             }
         }
         for (final AggregationPolicy policy : owner.getAggregationPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("AGGREGATION_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.aggregationPolicy(policy, names.object(owner, name));
             }
         }
         for (final ProjectionPolicy policy : owner.getProjectionPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("PROJECTION_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.projectionPolicy(policy, names.object(owner, name));
             }
         }
         for (final JoinPolicy policy : owner.getJoinPolicies()) {
-            if (named(policy.getName(), name)) {
+            if (named(policy.getName(), name) && sees("JOIN_POLICY", owner, name, policy.getOwner())) {
                 return ObjectDdl.joinPolicy(policy, names.object(owner, name));
             }
         }
@@ -976,6 +992,7 @@ public class GetDdl extends BuiltInFunction {
         sb.append("view ").append(name).append("(");
         for (int i = 0; i < columns.size(); i++) {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i)))
+              .append(columnPolicies(view.getResolvedColumns(), columns.get(i)))
               .append(columnComment(view.getResolvedColumns(), columns.get(i)));
         }
         sb.append("\n)");
@@ -989,6 +1006,39 @@ public class GetDdl extends BuiltInFunction {
         }
         sb.append(commentClause(view.getComment())).append(" as ");
         return sb.append(SqlObject.withoutTrailingSemicolon(view.getShownBody())).append(";").toString();
+    }
+
+    /**
+     * The policies ALTER VIEW set on a view's column, as a table's column carries them: {@code  WITH MASKING POLICY
+     * DB.S.MP} (live-verified), a projection policy before it and a conditional policy's USING columns after it;
+     * nothing for a column that carries none.
+     */
+    private static String columnPolicies(final List<TableColumn> resolved, final String column) {
+        if (resolved == null) {
+            return "";
+        }
+        for (final TableColumn candidate : resolved) {
+            if (!candidate.getName().equals(column)) {
+                continue;
+            }
+            final StringBuilder clauses = new StringBuilder();
+            if (candidate.hasProjectionPolicy()) {
+                clauses.append(" WITH PROJECTION POLICY ").append(candidate.getProjectionPolicyName());
+            }
+            if (candidate.hasMaskingPolicy()) {
+                clauses.append(" WITH MASKING POLICY ").append(candidate.getMaskingPolicyName());
+                final List<String> using = candidate.getMaskingPolicyArguments();
+                if (!using.isEmpty()) {
+                    clauses.append(" USING (");
+                    for (int u = 0; u < using.size(); u++) {
+                        clauses.append(u > 0 ? ", " : "").append(SqlIdentifiers.spellCanonicalEscaped(using.get(u)));
+                    }
+                    clauses.append(')');
+                }
+            }
+            return clauses.toString();
+        }
+        return "";
     }
 
     /** {@code  COMMENT 'c'} for a derived column that carries a comment, else nothing. */

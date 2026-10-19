@@ -165,18 +165,19 @@ public final class NumericRangeRefusal {
     }
 
     /**
-     * Whether a value is past what EVERY exact number can hold — its whole part outside the signed 128-bit
-     * carrier, 2^127 - 1 being the last value read (live-verified) — taken at {@code scale} the way
-     * {@link #exceeds} takes it, so a string of decimals that merely rounds away stays readable
-     * ({@code '0.999…9'} with thirty-nine decimals is 1, not an overflow).
+     * Whether a value is past what EVERY exact number can hold at a scale — its digits at that scale, read as one
+     * whole number, outside the signed 128-bit carrier, 2^127 - 1 being the last value read (live-verified): at
+     * scale 0 {@code '1e38'} is held and {@code '1.8e38'} is not, and at scale 2 {@code '1e38'} is not, nor is
+     * {@code '1e37'}. The value is taken at {@code scale} the way {@link #exceeds} takes it, so a string of decimals
+     * that merely rounds away stays readable ({@code '0.999…9'} with thirty-nine decimals is 1, not an overflow).
      *
      * @param value the parsed value
      * @param scale the scale it is being read at
-     * @return whether no NUMBER could hold it
+     * @return whether no NUMBER of that scale could hold it
      */
     public static boolean pastEveryNumber(final BigDecimal value, final int scale) {
         final BigDecimal atScale = value.scale() == scale ? value : value.setScale(scale, RoundingMode.HALF_UP);
-        return atScale.abs().toBigInteger().compareTo(RAW_MAX) > 0;
+        return atScale.unscaledValue().abs().compareTo(RAW_MAX) > 0;
     }
 
     /** The first value no NUMBER holds: ten to the thirty-eighth. */

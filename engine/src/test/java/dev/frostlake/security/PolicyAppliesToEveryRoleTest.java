@@ -37,6 +37,8 @@ public class PolicyAppliesToEveryRoleTest extends BaseDatabaseTest {
     @Override
     protected void setupTest() {
         engine.execute("USE ROLE ACCOUNTADMIN");
+        // SYSADMIN reads the table ACCOUNTADMIN makes through the user's other roles, active as secondary ones.
+        engine.execute("USE SECONDARY ROLES ALL");
         engine.execute("CREATE OR REPLACE TABLE t1 (s VARCHAR, n INT)");
         engine.execute("INSERT INTO t1 VALUES ('abc', 1), ('def', 2)");
     }

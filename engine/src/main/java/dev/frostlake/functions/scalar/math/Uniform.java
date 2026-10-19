@@ -60,6 +60,10 @@ public class Uniform extends NumericArgumentFunction {
                 + ". Reason: a must be smaller than or equal to b");
         }
         if (args.size() >= 3 && args.get(2) == null) return null;
+        if (args.size() >= 3) {
+            // The generator is read as RANDOM reads its seed: a whole number past 64 bits is no number.
+            Random.seedOf(args.get(2));
+        }
         final long entropy = args.size() >= 3
             ? ((Number) args.get(2)).longValue()
             : StatementTokens.nextLong();

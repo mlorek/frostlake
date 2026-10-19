@@ -1765,7 +1765,7 @@ public class ColumnDefinitionParser implements CommandHandler {
     private Sequence sequenceNamed(final String[] parts) {
         try {
             if (parts.length == 4) {
-                return catalog.getDatabase(parts[0]).getSchema(parts[1]).getSequence(parts[2]);
+                return catalog.databaseExact(parts[0]).schemaExact(parts[1]).getSequenceExact(parts[2]);
             }
             if (catalog.getCurrentDatabase() == null) {
                 return null;

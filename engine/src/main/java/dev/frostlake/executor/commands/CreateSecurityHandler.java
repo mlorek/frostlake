@@ -23,6 +23,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.PolicyObjectTagCalls;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NameTakenException;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.JoinPolicy;
@@ -230,9 +231,7 @@ public class CreateSecurityHandler implements CommandHandler {
         final PolicyProperties properties =
             PolicyProperties.read(ddl, ctx.policyCreateProperty(), "MASKING_POLICY", true);
         try {
-            final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             // The name as written: a quoted name keeps its case and is another policy than its upper-case namesake
             // (live-verified).
             final String policyName = parts[parts.length - 1];
@@ -391,9 +390,7 @@ public class CreateSecurityHandler implements CommandHandler {
         final PolicyProperties properties =
             PolicyProperties.read(ddl, ctx.policyCreateProperty(), "ROW_ACCESS_POLICY", ctx.or_alter() == null);
         try {
-            final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             // The name as written, as a masking policy's is (live-verified).
             final String policyName = parts[parts.length - 1];
             if (ctx.or_alter() != null && schema.getRowAccessPolicyExact(policyName) != null) {
@@ -459,9 +456,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 + "' is not JOIN_CONSTRAINT.");
         }
         try {
-            final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
             requirePolicyCreatable(schema, policyName, "JOIN_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_JOIN_POLICY);
@@ -513,9 +508,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 + "' is not AGGREGATION_CONSTRAINT.");
         }
         try {
-            final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             // The name as written, as a masking policy's is (live-verified).
             final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "AGGREGATION_POLICY", parts, orReplace, ifNotExists,
@@ -575,9 +568,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 + "' is not PROJECTION_CONSTRAINT.");
         }
         try {
-            final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             // The name as written, as a masking policy's is (live-verified).
             final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "PROJECTION_POLICY", parts, orReplace, ifNotExists,
@@ -622,9 +613,7 @@ public class CreateSecurityHandler implements CommandHandler {
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
         try {
-            final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
-                : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             final String contactName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
             ddl.checkCreatePrivilege(Privilege.CREATE_CONTACT, schema);
             if (!orReplace && schema.hasContact(contactName)) {
@@ -683,7 +672,8 @@ public class CreateSecurityHandler implements CommandHandler {
         final List<FrostlakeParser.UserPropertyContext> properties = ctx.userProperties() != null
             ? ctx.userProperties().userProperty() : new ArrayList<FrostlakeParser.UserPropertyContext>();
         UserProperties.checkForm(properties);
-        if (ctx.or_replace() == null && catalog.hasUser(userName)) {
+        AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.CREATE_USER);
+        if (ctx.or_replace() == null && catalog.hasUserExact(userName)) {
             if (ifNotExists) {
                 ConditionalDdlOutcome.createSkipped();
                 logger.debug("User already exists (IF NOT EXISTS): {}", userName);
@@ -694,21 +684,21 @@ public class CreateSecurityHandler implements CommandHandler {
         UserProperties.checkNew(properties);
         // A network policy the list names has to exist before the user is made.
         final String networkPolicy = UserNetworkPolicy.named(catalog, properties);
-        if (ctx.or_replace() != null && catalog.hasUser(userName)) {
-            final String held = catalog.getUser(userName).getName();
-            catalog.dropUser(userName);
+        if (ctx.or_replace() != null && catalog.hasUserExact(userName)) {
+            final String held = catalog.getUserExact(userName).getName();
+            catalog.dropUserExact(userName);
             SecurityObjectCommandHandler.forgetUser(catalog, held);
         }
         if (ctx.userProperties() != null) {
             catalog.createUser(userName, null, null);
-            UserProperties.apply(catalog.getUser(userName), properties);
-            UserNetworkPolicy.attach(catalog, catalog.getUser(userName), networkPolicy);
+            UserProperties.apply(catalog.getUserExact(userName), properties);
+            UserNetworkPolicy.attach(catalog, catalog.getUserExact(userName), networkPolicy);
         } else {
             catalog.createUser(userName);
         }
         final String comment = ddl.extractCommentFromList(ctx.commentClause());
         if (comment != null) {
-            final User user = catalog.getUser(userName);
+            final User user = catalog.getUserExact(userName);
             user.setComment(comment);
         }
         logger.trace("Created user: {}", userName);

@@ -133,19 +133,42 @@ public final class PythonRuntime {
     };
 
     /**
+     * Whether this thread's interpreter has run anything since the state it shares between calls was last put back
+     * (see {@link #restoreShared}): only a routine changes that state, so a statement that ran none leaves nothing
+     * to put back, and putting it back costs a pass over the built-in names, the environment and every guarded
+     * module on each statement otherwise.
+     */
+    private static final ThreadLocal<Boolean> RAN = new ThreadLocal<>();
+
+    /**
      * The runtime's own module, made on each interpreter as it is built: {@code enter} empties the interpreter's
      * module namespace for a routine about to run and answers what it held, {@code leave} puts that back, and
      * {@code module} makes a helper module of the runtime's from its source. A namespace keeps only the names the
-     * interpreter itself defines in it, the dunder ones.
+     * interpreter itself defines in it, the dunder ones. {@code restore} puts back what the interpreter shares
+     * between calls as it stood when the runtime was made, or a helper module once it was made: the built-in names
+     * and the environment whole, and the modules the runtime made - a helper module and those it installed on
+     * {@code sys.modules}, which no file holds - under their names there, each member a routine replaced or deleted
+     * put back, and so for the classes they define. A member a routine added to a module is left: the import system
+     * itself adds a package's submodules as members.
      */
     private static final String RUNTIME_SOURCE = """
         import types as _types
+        import builtins as _builtins
+        import os as _os
+        import sys as _sys
         _namespace = None
         _base = None
+        _builtins_base = None
+        _environ_base = None
+        _installed = {}
+        _guarded = []
+        _missing = object()
         def bind(namespace):
-            global _namespace, _base
+            global _namespace, _base, _builtins_base, _environ_base
             _namespace = namespace
             _base = dict((k, v) for k, v in namespace.items() if k.startswith('__') and k.endswith('__'))
+            _builtins_base = dict(_builtins.__dict__)
+            _environ_base = dict(_os.environ)
         def enter():
             saved = dict(_namespace)
             _namespace.clear()
@@ -154,10 +177,53 @@ public final class PythonRuntime {
         def leave(saved):
             _namespace.clear()
             _namespace.update(saved)
+        def _guard(holder):
+            for kept, _ in _guarded:
+                if kept is holder:
+                    return
+            _guarded.append((holder, dict(holder.__dict__)))
+            if isinstance(holder, _types.ModuleType):
+                for value in list(holder.__dict__.values()):
+                    if isinstance(value, type) and str(getattr(value, '__module__', '')).startswith('__frostlake'):
+                        _guard(value)
         def module(name, source):
+            before = set(_sys.modules)
             made = _types.ModuleType(name)
             exec(compile(source, '<' + name + '>', 'exec'), made.__dict__)
+            _guard(made)
+            for key in [k for k in _sys.modules if k not in before]:
+                installed = _sys.modules[key]
+                if isinstance(installed, _types.ModuleType) and getattr(installed, '__spec__', None) is None:
+                    _installed[key] = installed
+                    _guard(installed)
             return made
+        def _put_back_members(current, pristine):
+            for key, value in pristine.items():
+                if current.get(key, _missing) is not value:
+                    current[key] = value
+        def _put_back_class(holder, pristine):
+            for key, value in pristine.items():
+                if holder.__dict__.get(key, _missing) is not value:
+                    setattr(holder, key, value)
+        def restore():
+            current = _builtins.__dict__
+            for key in [k for k in current if k not in _builtins_base]:
+                del current[key]
+            _put_back_members(current, _builtins_base)
+            if dict(_os.environ) != _environ_base:
+                for key in [k for k in _os.environ if k not in _environ_base]:
+                    del _os.environ[key]
+                for key, value in _environ_base.items():
+                    if _os.environ.get(key) != value:
+                        _os.environ[key] = value
+            for key, installed in _installed.items():
+                if _sys.modules.get(key) is not installed:
+                    _sys.modules[key] = installed
+            for holder, pristine in _guarded:
+                if isinstance(holder, type):
+                    _put_back_class(holder, pristine)
+                else:
+                    _put_back_members(holder.__dict__, pristine)
         """;
 
     /** Makes {@link #RUNTIME_SOURCE} a module bound to the namespace it runs in, leaving no name of its own there. */
@@ -266,7 +332,7 @@ public final class PythonRuntime {
         venvDirectory = trimmed;
     }
 
-    /** This thread's Python context, created on first use. */
+    /** This thread's Python context, created on first use; every execution on it passes here (see {@link #RAN}). */
     public static Context context() {
         Context context = CONTEXT.get();
         if (context == null) {
@@ -274,6 +340,7 @@ public final class PythonRuntime {
             RUNTIME.set(installRuntime(context));
             CONTEXT.set(context);
         }
+        RAN.set(Boolean.TRUE);
         return context;
     }
 
@@ -303,6 +370,25 @@ public final class PythonRuntime {
         }
         try {
             RUNTIME.get().invokeMember("leave", frame.getSaved());
+        } catch (final RuntimeException unrestorable) {
+            discardContext();
+        }
+    }
+
+    /**
+     * An outermost statement on this thread has ended: what its routines changed in the state the interpreter shares
+     * between calls - the built-in names, the environment, the runtime's helper modules and the snowpark emulation's
+     * classes - is put back (see {@link #RUNTIME_SOURCE}), so that no routine reaches the next statement's, whichever
+     * engine runs it, through them. A thread with no interpreter, or whose interpreter ran nothing since the state
+     * was last put back, has nothing to put back, and an interpreter that cannot put it back is thrown away.
+     */
+    static void restoreShared() {
+        if (CONTEXT.get() == null || RUNTIME.get() == null || !Boolean.TRUE.equals(RAN.get())) {
+            return;
+        }
+        RAN.set(Boolean.FALSE);
+        try {
+            RUNTIME.get().invokeMember("restore");
         } catch (final RuntimeException unrestorable) {
             discardContext();
         }
@@ -348,6 +434,7 @@ public final class PythonRuntime {
         RUNTIME.remove();
         MODULES.remove();
         SOURCES.remove();
+        RAN.remove();
         if (poisoned == null) {
             return;
         }

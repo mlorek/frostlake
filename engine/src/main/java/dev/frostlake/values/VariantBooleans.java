@@ -16,9 +16,9 @@
 
 package dev.frostlake.values;
 
-import tools.jackson.databind.JsonNode;
+import dev.frostlake.functions.scalar.conversion.BooleanWords;
 
-import java.util.Locale;
+import tools.jackson.databind.JsonNode;
 
 /**
  * A VARIANT converted to BOOLEAN — by {@code ::BOOLEAN}, CAST or TO_BOOLEAN — on the account's terms: it
@@ -47,14 +47,9 @@ public final class VariantBooleans {
             return Boolean.valueOf(node.booleanValue());
         }
         if (node.isTextual()) {
-            final String text = node.asText().trim().toLowerCase(Locale.ROOT);
-            if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
-                    || text.equals("on") || text.equals("1")) {
-                return Boolean.TRUE;
-            }
-            if (text.equals("false") || text.equals("f") || text.equals("no") || text.equals("n")
-                    || text.equals("off") || text.equals("0")) {
-                return Boolean.FALSE;
+            final Boolean read = BooleanWords.read(node.asText());
+            if (read != null) {
+                return read;
             }
         }
         throw new RuntimeException("Failed to cast variant value " + VariantJsonText.clientTextOf(value)

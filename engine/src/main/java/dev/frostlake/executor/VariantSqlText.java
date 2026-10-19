@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.VariantJsonText;
@@ -57,7 +58,7 @@ public final class VariantSqlText {
 
     /** Whether a text of the tree remembers a type its JSON does not carry: a typed scalar or a UUID. */
     static boolean holdsTypedText(final JsonNode node) {
-        if (node instanceof TypedScalarNode || node instanceof UuidTextNode) {
+        if (node instanceof TypedScalarNode || node instanceof UuidTextNode || node instanceof DecfloatTextNode) {
             return true;
         }
         if (node == null || !node.isContainer()) {
@@ -76,7 +77,7 @@ public final class VariantSqlText {
     }
 
     private static void append(final JsonNode node, final StringBuilder out, final boolean whole) {
-        if (node instanceof TypedScalarNode || node instanceof UuidTextNode) {
+        if (node instanceof TypedScalarNode || node instanceof UuidTextNode || node instanceof DecfloatTextNode) {
             // A member is the typed literal itself; the whole value is the VARIANT of it.
             out.append(whole ? "TO_VARIANT(" : "").append(typedLiteral(node)).append(whole ? ")" : "");
             return;
@@ -117,6 +118,9 @@ public final class VariantSqlText {
     private static String typedLiteral(final JsonNode node) {
         if (node instanceof UuidTextNode) {
             return SqlStringLiterals.encode(node.asString()) + "::UUID";
+        }
+        if (node instanceof DecfloatTextNode) {
+            return SqlStringLiterals.encode(node.asString()) + "::DECFLOAT";
         }
         final Object typed = ((TypedScalarNode) node).typedValue();
         if (typed instanceof BinaryValue) {

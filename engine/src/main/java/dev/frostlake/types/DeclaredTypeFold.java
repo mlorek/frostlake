@@ -160,6 +160,10 @@ public final class DeclaredTypeFold {
             return null;
         }
         if (left instanceof NumericType && right instanceof NumericType) {
+            // A DECFLOAT beside any number is a DECFLOAT (live-verified).
+            if (NumericType.isDecfloat(left) || NumericType.isDecfloat(right)) {
+                return NumericType.DECFLOAT;
+            }
             if (NumericType.isApproximate(left)) {
                 return left;
             }
@@ -412,13 +416,18 @@ public final class DeclaredTypeFold {
     }
 
     /**
-     * Snowflake's numeric supertype: the widest INTEGER PART meets the widest SCALE.
+     * Snowflake's numeric supertype: the widest INTEGER PART meets the widest SCALE, and a DECFLOAT on either side
+     * makes a DECFLOAT.
      *
      * @param left  one number
      * @param right the other
      * @return the number that holds both
      */
     public static NumericType numericSupertype(final NumericType left, final NumericType right) {
+        if (NumericType.isDecfloat(left) || NumericType.isDecfloat(right)) {
+            // A DECFLOAT beside any exact number is the DECFLOAT both fold to (live-verified).
+            return NumericType.DECFLOAT;
+        }
         final int integerDigits = Math.max(left.getPrecision() - left.getScale(),
             right.getPrecision() - right.getScale());
         final int scale = Math.max(left.getScale(), right.getScale());
@@ -585,6 +594,21 @@ public final class DeclaredTypeFold {
     }
 
     /**
+     * A DECFLOAT among numbers and numeric texts: the branches fold to a DECFLOAT, IFF(c, d, 1) and COALESCE(d, 1.5)
+     * alike (live-verified); null where no branch is one, or another family stands among them.
+     */
+    private static DataType decfloatFold(final List<DataType> branchTypes) {
+        boolean any = false;
+        for (final DataType type : branchTypes) {
+            if (type != null && !(type instanceof NumericType) && !(type instanceof StringType)) {
+                return null;
+            }
+            any = any || NumericType.isDecfloat(type);
+        }
+        return any ? NumericType.DECFLOAT : null;
+    }
+
+    /**
      * The branch fold, told which branches were written as STRING LITERALS and what each measures as
      * a number. A string literal beside a number contributes exactly what the same number written
      * WITHOUT quotes would — measured on a real account, and the pair is identical either way:
@@ -614,6 +638,10 @@ public final class DeclaredTypeFold {
                                         final List<DataType> literalMeasurements) {
         if (branchTypes.isEmpty()) {
             return null;
+        }
+        final DataType decfloat = decfloatFold(branchTypes);
+        if (decfloat != null) {
+            return decfloat;
         }
         if (literalMeasurements != null) {
             final List<DataType> measured = new ArrayList<>(branchTypes.size());

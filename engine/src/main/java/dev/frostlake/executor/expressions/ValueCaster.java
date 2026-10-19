@@ -25,6 +25,9 @@ import dev.frostlake.functions.scalar.conversion.TimestampFlavourConversion;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DayTimeInterval;
+import dev.frostlake.values.DecfloatRangeException;
+import dev.frostlake.values.DecfloatTextNode;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantBooleans;
@@ -118,6 +121,22 @@ public final class ValueCaster {
                         return hex;
                     }
                     throw numericCastFailure(value, "REAL");
+                }
+
+            case DECFLOAT:
+                // A decimal of 38 significant digits, a FLOAT taken at its exact binary value (see Decfloats).
+                if (value instanceof Number) {
+                    return Decfloats.of((Number) value, "TO_DECFLOAT");
+                }
+                if (variantBooleanNumber(value) != null) {
+                    return Decfloats.of(variantBooleanNumber(value), "TO_DECFLOAT");
+                }
+                try {
+                    return Decfloats.held(toBigDecimalCast(value, "DECFLOAT"));
+                } catch (final DecfloatRangeException outOfRange) {
+                    // A text past DECFLOAT's range spells no number it holds: '1e20000'::DECFLOAT (live-verified).
+                    throw new RuntimeException("Numeric value '" + SharedFunctionHelpers.textOf(value)
+                        + "' is not recognized");
                 }
 
             case DECIMAL:
@@ -419,6 +438,9 @@ public final class ValueCaster {
         if (!(value instanceof VariantValue)) {
             return value;
         }
+        if (DecfloatTextNode.holds(((VariantValue) value).node())) {
+            return decfloatMember((VariantValue) value, baseType);
+        }
         final String jsonStringContent = SemiStructuredCasts.quotedJsonStringText(value);
         if (jsonStringContent != null) {
             return jsonStringContent;
@@ -434,6 +456,25 @@ public final class ValueCaster {
             return TimestampFlavourConversion.castVariant(flavour, (VariantValue) value);
         }
         return value;
+    }
+
+    /**
+     * A DECFLOAT member cast out of its VARIANT: to a DECFLOAT it is the number it holds, to text its text, and a
+     * NUMBER, a FLOAT or a BOOLEAN it does not become — {@code TO_VARIANT(1.5::DECFLOAT)::NUMBER(10,2)} is
+     * {@code Failed to cast variant value "1.5" to FIXED}, {@code ::FLOAT} the same to REAL (live-verified).
+     */
+    private static Object decfloatMember(final VariantValue value, final String baseType) {
+        final CastTargetCategory category = CastTargetCategory.fromTypeName(baseType);
+        if (category == CastTargetCategory.DECFLOAT) {
+            return DecfloatTextNode.valueOf(value.node());
+        }
+        final String family = category == CastTargetCategory.INTEGER || category == CastTargetCategory.DECIMAL
+            ? "FIXED" : category == CastTargetCategory.FLOAT ? "REAL"
+            : category == CastTargetCategory.BOOLEAN ? "BOOLEAN" : null;
+        if (family != null) {
+            throw new RuntimeException("Failed to cast variant value " + value.text() + " to " + family);
+        }
+        return value.node().asString();
     }
 
     /** The timestamp flavour a cast target names, the bare word by the session's mapping, or null. */

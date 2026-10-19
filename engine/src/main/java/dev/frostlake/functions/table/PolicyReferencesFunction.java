@@ -352,10 +352,30 @@ public class PolicyReferencesFunction extends TableFunction {
         attachments.add(row);
     }
 
+    /**
+     * One row per attachment on a view: its columns' masking and projection policies and its row access policy,
+     * ordered by policy name as a table's are.
+     */
     private void appendViewRows(final Schema schema, final View view, final List<Row> rows) {
+        final Map<String, List<Row>> byPolicy = new TreeMap<>();
+        if (view.hasResolvedColumns()) {
+            for (final TableColumn column : view.getResolvedColumns()) {
+                if (column.hasMaskingPolicy()) {
+                    listed(byPolicy, attachment(schema, column.getMaskingPolicyName(), "MASKING_POLICY",
+                        view.getName(), "VIEW", column.getName(), null));
+                }
+                if (column.hasProjectionPolicy()) {
+                    listed(byPolicy, attachment(schema, column.getProjectionPolicyName(), "PROJECTION_POLICY",
+                        view.getName(), "VIEW", column.getName(), null));
+                }
+            }
+        }
         if (view.hasRowAccessPolicy()) {
-            rows.add(attachment(schema, view.getRowAccessPolicyName(), "ROW_ACCESS_POLICY",
+            listed(byPolicy, attachment(schema, view.getRowAccessPolicyName(), "ROW_ACCESS_POLICY",
                 view.getName(), "VIEW", null, view.getRowAccessPolicyColumns()));
+        }
+        for (final List<Row> attachments : byPolicy.values()) {
+            rows.addAll(attachments);
         }
     }
 

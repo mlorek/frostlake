@@ -17,15 +17,9 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.executor.expressions.CollationSpec;
-import dev.frostlake.executor.expressions.ImpliedTextNumber;
 import dev.frostlake.types.DataType;
-import dev.frostlake.values.VariantValue;
-
-import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.util.List;
 
 public abstract class BuiltInFunction {
@@ -63,16 +57,15 @@ public abstract class BuiltInFunction {
     }
 
     /**
-     * The whole number a position, a length or a count argument gives. A text is read as the number it spells, and
-     * refused on the row where it spells none; a fraction goes to the nearest whole number, a half away from zero:
-     * {@code SUBSTR('abcdef', 1.6)} starts at the second character, {@code LEFT('abcdef', '1.6')} is {@code ab} and
-     * {@code SUBSTR('abcdef', -1.5)} the last two characters (live-verified).
+     * The whole number a position, a length or a count argument gives (see {@link WholeNumbers}): a text is read as
+     * the number it spells, and a fraction goes to the nearest whole number, a half away from zero -
+     * {@code SUBSTR('abcdef', 1.6)} starts at the second character (live-verified).
      *
      * @param value the argument's value, a number or a text
      * @return the whole number, held to the range of an int
      */
     protected static int wholeNumber(final Object value) {
-        return wholeNumber(decimalOf(value));
+        return WholeNumbers.wholeNumber(value);
     }
 
     /**
@@ -80,62 +73,17 @@ public abstract class BuiltInFunction {
      * @return the nearest whole number, a half away from zero, held to the range of an int
      */
     protected static int wholeNumber(final BigDecimal value) {
-        final BigInteger rounded = value.setScale(0, RoundingMode.HALF_UP).toBigInteger();
-        if (rounded.bitLength() > Integer.SIZE - 1) {
-            return rounded.signum() < 0 ? Integer.MIN_VALUE : Integer.MAX_VALUE;
-        }
-        return rounded.intValue();
+        return WholeNumbers.wholeNumber(value);
     }
 
     /**
-     * The number a position, a length or a count argument gives, before it is rounded (see {@link #wholeNumber}).
+     * The number a position, a length or a count argument gives, before it is rounded (see {@link WholeNumbers}).
      *
      * @param value the argument's value, a number or a text
      * @return the number
      */
     protected static BigDecimal decimalOf(final Object value) {
-        if (value instanceof CharSequence) {
-            return ImpliedTextNumber.read((CharSequence) value);
-        }
-        if (value instanceof VariantValue) {
-            // A VARIANT gives the number it holds, or the one its text spells; one that spells none is refused as
-            // the VARIANT's cast: "Failed to cast variant value "abc" to FIXED" (live-verified).
-            final JsonNode held = ((VariantValue) value).node();
-            if (held.isNumber()) {
-                return held.decimalValue();
-            }
-            // A BOOLEAN reads as 1 or 0, and an array or an object as nothing at all (live-verified).
-            if (held.isBoolean()) {
-                return held.booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
-            }
-            if (held.isContainer()) {
-                throw new RuntimeException("Failed to cast variant value " + held + " to FIXED");
-            }
-            try {
-                return ImpliedTextNumber.read(held.asText());
-            } catch (final RuntimeException spellsNoNumber) {
-                if (held.isTextual()) {
-                    throw new RuntimeException("Failed to cast variant value " + held + " to FIXED");
-                }
-                throw spellsNoNumber;
-            }
-        }
-        if (value instanceof Boolean) {
-            // A BOOLEAN wrapped as a VARIANT constant arrives as itself: TRUE::VARIANT reads as 1.
-            return ((Boolean) value).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
-        }
-        if (value instanceof BigDecimal) {
-            return (BigDecimal) value;
-        }
-        if (value instanceof BigInteger) {
-            return new BigDecimal((BigInteger) value);
-        }
-        if (value instanceof Double || value instanceof Float) {
-            final double approximate = ((Number) value).doubleValue();
-            return Double.isNaN(approximate) || Double.isInfinite(approximate) ? BigDecimal.ZERO
-                : BigDecimal.valueOf(approximate);
-        }
-        return BigDecimal.valueOf(((Number) value).longValue());
+        return WholeNumbers.decimalOf(value);
     }
 
     /**

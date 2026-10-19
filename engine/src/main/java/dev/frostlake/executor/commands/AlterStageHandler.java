@@ -16,8 +16,8 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.FileFormatClause;
 import dev.frostlake.executor.FileFormatReference;
-import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
@@ -26,6 +26,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StageDirectoryRefresh;
 import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurableObjectType;
@@ -196,33 +197,24 @@ final class AlterStageHandler {
                 stage.getFileFormatOptions().put("FORMAT_NAME", ParseTreeText.getOriginalText(setting.qualifiedName()));
             }
         } else {
+            // Read and judged as every FILE_FORMAT list is (see FileFormatClause), before anything is applied.
+            final FileFormatClause written = FileFormatClause.read(setting.parenOptionList(),
+                new FileFormat("WRITTEN", "CSV"), true);
+            if (written.formatName() != null) {
+                FileFormatReference.require(catalog, SqlIdentifiers.canonicalText(written.formatName()));
+            }
             if (apply) {
                 // A new format replaces the stage's own whole: an option it does not write is back at its
                 // default (live-verified).
                 stage.getFileFormatOptions().clear();
-            }
-            for (final FrostlakeParser.ParenOptionContext option : setting.parenOptionList().parenOption()) {
-                final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
-                if (option.LPAREN() != null) {
-                    if (apply) {
-                        stage.getFileFormatOptions().put(key,
-                            CreateInfrastructureHandler.listedValues(option.stringLiteralList()));
-                    }
-                    continue;
+                if (written.formatName() != null) {
+                    stage.setFileFormat(written.formatName());
+                    stage.getFileFormatOptions().put("FORMAT_NAME", written.formatNameWritten());
+                } else if (written.writtenType() != null) {
+                    stage.setFileFormat(written.writtenType().toUpperCase(Locale.ROOT));
+                    stage.getFileFormatOptions().put("TYPE", written.writtenType());
                 }
-                final String written = option.copyOptionValue() != null
-                    ? ParseTreeText.getOriginalText(option.copyOptionValue()) : "";
-                final String value = option.copyOptionValue() != null && option.copyOptionValue().STRING_LITERAL() != null
-                    ? visitor.extractStringLiteral(option.copyOptionValue().STRING_LITERAL()) : written;
-                if ("TYPE".equals(key)) {
-                    FileFormatSurfaces.requireLegalValue(key, value, written);
-                }
-                if (apply) {
-                    if ("TYPE".equals(key)) {
-                        stage.setFileFormat(value.toUpperCase(Locale.ROOT));
-                    }
-                    stage.getFileFormatOptions().put(key, value);
-                }
+                stage.getFileFormatOptions().putAll(written.format().getOptions());
             }
         }
     }

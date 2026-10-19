@@ -34,6 +34,10 @@ public class MaterializedView extends SqlObject {
     private boolean suspended;
     private String invalidReason;
     private boolean resumedWhileInvalid;
+    /** The table the view reads, bound to the table itself once known — see {@link #getBaseTable}. */
+    private Table baseTable;
+    /** Whether a column of the base table was dropped or renamed under the view — see {@link #isBaseReshaped}. */
+    private boolean baseReshaped;
     private boolean secure = false;
     /** The source table's last data change this view has materialized, or null for none — see {@link #getMaterializedAsOf}. */
     private Instant materializedAsOf;
@@ -89,6 +93,7 @@ public class MaterializedView extends SqlObject {
         copy.suspended = suspended;
         copy.invalidReason = invalidReason;
         copy.resumedWhileInvalid = resumedWhileInvalid;
+        copy.baseReshaped = baseReshaped;
         copy.secure = secure;
         copy.materializedAsOf = materializedAsOf;
         copy.materializedRows = materializedRows;
@@ -207,6 +212,45 @@ public class MaterializedView extends SqlObject {
     /** Records that a RESUME was accepted while the view was invalid. */
     public void setResumedWhileInvalid(final boolean resumedWhileInvalid) {
         this.resumedWhileInvalid = resumedWhileInvalid;
+    }
+
+    /**
+     * The table the view was created over, the table itself rather than its name: a table swapped in under the name,
+     * or created anew there, is another one. Null until bound — a view a snapshot or a clone brought back binds to
+     * the table its name finds when it is first read.
+     *
+     * @return the table, or null
+     */
+    public Table getBaseTable() {
+        return baseTable;
+    }
+
+    /**
+     * Bind the view to the table it reads.
+     *
+     * @param baseTable the table
+     */
+    public void bindBaseTable(final Table baseTable) {
+        this.baseTable = baseTable;
+    }
+
+    /**
+     * Whether a column of the base table was dropped or renamed while the view stood: such a view stays invalid
+     * through a RESUME, where one invalidated by a column's type or nullability alone is valid again.
+     *
+     * @return whether the table lost or renamed a column
+     */
+    public boolean isBaseReshaped() {
+        return baseReshaped;
+    }
+
+    /**
+     * Record whether the base table lost or renamed a column.
+     *
+     * @param baseReshaped whether it did
+     */
+    public void setBaseReshaped(final boolean baseReshaped) {
+        this.baseReshaped = baseReshaped;
     }
 
     /**

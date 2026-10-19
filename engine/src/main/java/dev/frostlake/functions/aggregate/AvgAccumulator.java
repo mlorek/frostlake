@@ -17,7 +17,9 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.values.Decfloats;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -29,10 +31,12 @@ import java.util.List;
  * NULL inputs are ignored; no non-null input yields NULL.
  */
 public class AvgAccumulator
-        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
+        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator, DecfloatAwareAccumulator {
 
     private final List<Object> values = new ArrayList<>();
     private boolean approximateArgument;
+    /** Whether the argument is declared DECFLOAT: the average is then a DECFLOAT (see Decfloats). */
+    private boolean decfloatArgument;
 
     /**
      * The argument's DECLARED type, which the values alone cannot say: a FLOAT column is stored
@@ -47,6 +51,11 @@ public class AvgAccumulator
     }
 
     @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloatArgument = decfloat;
+    }
+
+    @Override
     public void accumulate(final Object value) {
         if (value != null) {
             values.add(value);
@@ -55,6 +64,17 @@ public class AvgAccumulator
 
     @Override
     public Object getResult() {
+        if (decfloatArgument) {
+            // A DECFLOAT average is the exact sum over the count, to 38 significant digits (live-verified).
+            if (values.isEmpty()) {
+                return null;
+            }
+            BigDecimal sum = BigDecimal.ZERO;
+            for (final Object value : values) {
+                sum = sum.add(Decfloats.of((Number) value, "AVG"));
+            }
+            return Decfloats.divide(sum, BigDecimal.valueOf(values.size()));
+        }
         return AggregateNumerics.avg(values, approximateArgument);
     }
 

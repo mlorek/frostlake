@@ -18,7 +18,6 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
 
-import java.util.Locale;
 
 /**
  * Refusing a statement that names a warehouse which is not there.
@@ -46,9 +45,8 @@ public final class WarehouseReference {
      * {@code SQL compilation error:} prefix — a task's warehouse check is not a compilation error live.
      */
     public static void requireForTask(final Catalog catalog, final String warehouse) {
-        if (warehouse != null && !catalog.hasWarehouse(warehouse)) {
-            throw new RuntimeException("Nonexistent warehouse " + warehouse.toUpperCase(Locale.ROOT)
-                + " was specified.");
+        if (warehouse != null && !catalog.hasWarehouseExact(warehouse)) {
+            throw new RuntimeException("Nonexistent warehouse " + warehouse + " was specified.");
         }
     }
 
@@ -59,8 +57,8 @@ public final class WarehouseReference {
      * {@code Warehouse 'NOSUCH_WH' does not exist.}
      */
     public static void require(final Catalog catalog, final String warehouse) {
-        if (warehouse != null && !catalog.hasWarehouse(warehouse)) {
-            throw new RuntimeException("Warehouse '" + warehouse.toUpperCase(Locale.ROOT) + "' does not exist.");
+        if (warehouse != null && !catalog.hasWarehouseExact(warehouse)) {
+            throw new RuntimeException("Warehouse '" + warehouse + "' does not exist.");
         }
     }
 }

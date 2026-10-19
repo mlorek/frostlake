@@ -107,4 +107,13 @@ public interface UdfLanguageRuntime {
      */
     default void compileProcedure(final Procedure procedure) {
     }
+
+    /**
+     * An outermost statement on this thread has ended: what the routines it ran left in state the language shares
+     * between calls on the thread - an interpreter's built-in names, its environment, the modules the runtime itself
+     * provides - is put back as it was, so that nothing one statement's routines changed there reaches the next
+     * statement, whichever engine runs it. The default is a no-op, for a language that shares no such state.
+     */
+    default void statementEnded() {
+    }
 }

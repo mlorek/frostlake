@@ -34,6 +34,7 @@ import dev.frostlake.executor.expressions.SubqueryMemo;
 import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
@@ -685,6 +686,24 @@ public class ExpressionEvaluator {
         return procedural != null && procedural.hasVariable(name) && procedural.getVariable(name) == null;
     }
 
+    /**
+     * The user's function overload a call runs, chosen by its arguments' static types over this evaluator's relation
+     * as the call chooses it, or null when that cannot be told.
+     *
+     * @param call the call
+     * @return the overload, or null
+     */
+    public Function resolvedUserFunction(final FunctionCallExpression call) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        return reusableVisitor.resolvedUserFunction(call);
+    }
+
     public DataType inferStaticType(final Expression expression) {
         if (reusableVisitor == null) {
             reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
@@ -929,6 +948,17 @@ public class ExpressionEvaluator {
      */
     public String plannedText(final Expression expression) {
         return preparedVisitor().strictPlanText(expression);
+    }
+
+    /**
+     * {@link #plannedText} with what the plan folds early printed as its value - see
+     * {@link ExpressionEvaluatorVisitor#strictFoldedPlanText}.
+     *
+     * @param expression the expression
+     * @return the expression as the plan holds it, its early folds as their values
+     */
+    public String foldedPlannedText(final Expression expression) {
+        return preparedVisitor().strictFoldedPlanText(expression);
     }
 
     /**

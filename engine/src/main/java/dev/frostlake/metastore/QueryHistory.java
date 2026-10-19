@@ -54,7 +54,17 @@ public class QueryHistory {
     private long rowsUpdated;
     private long rowsDeleted;
     private String errorMessage;
+    /** The code of the error the statement failed with — QUERY_HISTORY's ERROR_CODE — or null. */
+    private Integer errorCode;
     private StatementKind queryType;
+    /** The kind QUERY_HISTORY lists, in the account's words, or null while unknown — see {@link #getQueryTypeName}. */
+    private String queryTypeName;
+    /** The rows the statement answered: QUERY_HISTORY's ROWS_WRITTEN_TO_RESULT. */
+    private long rowsWrittenToResult;
+    /** The transaction the statement ran in, or 0 — see {@link #getTransactionId}. */
+    private long transactionId;
+    /** The size of the warehouse that ran the statement, or null when none did — see {@link #getWarehouseSize}. */
+    private String warehouseSize;
     private int compilationTimeMs;
     private int queuedTimeMs;
     /** The number of the session that ran the statement — QUERY_HISTORY's SESSION_ID — or null. */
@@ -137,10 +147,17 @@ public class QueryHistory {
         return StatementKind.OTHER;
     }
 
-    public void markSuccess(final LocalDateTime endTime, final long rowsProduced) {
+    /**
+     * Record that the statement completed.
+     *
+     * @param endTime  when it did
+     * @param answered the rows it answered, which it produced too unless {@link #setRowsProduced} says otherwise
+     */
+    public void markSuccess(final LocalDateTime endTime, final long answered) {
         this.endTime = endTime;
         this.status = QueryStatus.SUCCESS;
-        this.rowsProduced = rowsProduced;
+        this.rowsProduced = answered;
+        this.rowsWrittenToResult = answered;
         this.executionTimeMs = Duration.between(startTime, endTime).toMillis();
     }
 
@@ -153,6 +170,78 @@ public class QueryHistory {
         this.status = QueryStatus.FAILED;
         this.errorMessage = errorMessage;
         this.executionTimeMs = Duration.between(startTime, endTime).toMillis();
+    }
+
+    /**
+     * Record that the statement failed, with the code of its error.
+     *
+     * @param endTime      when it did
+     * @param errorMessage the error's sentence
+     * @param errorCode    the error's code
+     */
+    public void markFailed(final LocalDateTime endTime, final String errorMessage, final int errorCode) {
+        markFailed(endTime, errorMessage);
+        this.errorCode = Integer.valueOf(errorCode);
+    }
+
+    /** The code of the error the statement failed with, or null when it did not fail. */
+    public Integer getErrorCode() {
+        return errorCode;
+    }
+
+    /**
+     * The kind QUERY_HISTORY lists the statement under, in the account's own words: CREATE_TABLE,
+     * ALTER_TABLE_ADD_COLUMN, SET, … — UNKNOWN for one the parser could not read.
+     *
+     * @return the kind
+     */
+    public String getQueryTypeName() {
+        return queryTypeName != null ? queryTypeName : "UNKNOWN";
+    }
+
+    /** Record the kind QUERY_HISTORY lists the statement under. */
+    public void setQueryTypeName(final String queryTypeName) {
+        this.queryTypeName = queryTypeName;
+    }
+
+    /** The rows the statement answered: none for one that failed. */
+    public long getRowsWrittenToResult() {
+        return rowsWrittenToResult;
+    }
+
+    /** Record the rows the statement produced, where they are not the rows it answered. */
+    public void setRowsProduced(final long rowsProduced) {
+        this.rowsProduced = rowsProduced;
+    }
+
+    /**
+     * The public id of the transaction the statement ran in: the explicit one it ran inside, or the one a write
+     * under autocommit ran as; 0 for a statement that ran in none.
+     *
+     * @return the id, or 0
+     */
+    public long getTransactionId() {
+        return transactionId;
+    }
+
+    /** Record the transaction the statement ran in. */
+    public void setTransactionId(final long transactionId) {
+        this.transactionId = transactionId;
+    }
+
+    /**
+     * The size of the warehouse that ran the statement, as SHOW WAREHOUSES spells it; null for a statement the
+     * account answers without one — a DDL statement, a SHOW, a query that reads no table.
+     *
+     * @return the size, or null
+     */
+    public String getWarehouseSize() {
+        return warehouseSize;
+    }
+
+    /** Record the size of the warehouse that ran the statement. */
+    public void setWarehouseSize(final String warehouseSize) {
+        this.warehouseSize = warehouseSize;
     }
 
     public void setRowsInserted(final long rowsInserted) {

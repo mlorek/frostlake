@@ -16,13 +16,19 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.commands.ExplainedStatementChecks;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -53,6 +59,9 @@ final class ExplainPlan {
 
     /** The bytes a plan assigns for each partition it scans. */
     private static final long PARTITION_BYTES = 1024;
+
+    /** What a value is written after to be compiled as the one item of a query. */
+    private static final String VALUE_QUERY = "SELECT ";
 
     private static final ThreadLocal<int[]> PLANNING = new ThreadLocal<int[]>() {
         @Override
@@ -104,10 +113,16 @@ final class ExplainPlan {
         // procedure while this compiles (see planning).
         PLANNING.get()[0]++;
         try {
-            compile(executor, ctx);
             final PlanBuilder builder = new PlanBuilder(executor);
-            number(ctx.selectStatement() != null ? builder.query(ctx.selectStatement())
-                : builder.dml(ctx.dmlStatement()), null, 0, new int[1], operators);
+            final PlanNode plan;
+            if (ctx.explainedStatement() != null) {
+                plan = explained(executor, ctx.explainedStatement(), builder);
+            } else {
+                compile(executor, ctx);
+                plan = ctx.selectStatement() != null ? builder.query(ctx.selectStatement())
+                    : builder.dml(ctx.dmlStatement());
+            }
+            number(plan, null, 0, new int[1], operators);
         } finally {
             PLANNING.get()[0]--;
         }
@@ -135,16 +150,155 @@ final class ExplainPlan {
             " Invalid explain plan format '" + word + "'"));
     }
 
-    /** Compile the statement explained, so a name it cannot resolve is refused as the statement refuses it. */
+    /**
+     * Compile the statement explained, so a name it cannot resolve is refused as the statement refuses it. A query
+     * holding a dynamic PIVOT — IN (ANY) or IN (a subquery) — reads its values to know its columns, as the account's
+     * planner does: its rows are read, and a fault only a row raises is no refusal of the plan (live-verified). A
+     * refusal is placed in the EXPLAIN statement.
+     */
     private static void compile(final QueryExecutor executor, final FrostlakeParser.ExplainStatementContext ctx) {
         if (ctx.selectStatement() != null) {
-            executor.resolveRelationShape(ParseTreeText.getOriginalText(ctx.selectStatement()), null);
+            compileStatementQuery(executor, ctx.selectStatement());
             return;
         }
         final FrostlakeParser.ObjectNameContext target = dmlTarget(ctx.dmlStatement());
         if (target != null) {
             executor.getCatalog().resolveTableAsWritten(executor.resolveObjectName(target), "Table");
         }
+    }
+
+    /**
+     * The plan of a statement that is neither a query nor a DML statement, compiled as the account compiles it for its
+     * plan and with nothing it would do done (live-verified). A DDL statement is judged as {@link
+     * ExplainedStatementChecks} judges it and the query it is made from compiled; a session variable's values are
+     * compiled; a SHOW, a DESCRIBE and a LIST, which change nothing, run and their answer is dropped. A CREATE TABLE …
+     * AS SELECT and a materialized view are planned over their query (see {@link PlanBuilder#created}); every other
+     * statement, and a create IF NOT EXISTS of a name that is taken, is a bare Result.
+     */
+    private static PlanNode explained(final QueryExecutor executor,
+                                      final FrostlakeParser.ExplainedStatementContext explained,
+                                      final PlanBuilder builder) {
+        final FrostlakeParser.DdlStatementContext ddl = explained.ddlStatement();
+        if (ddl != null) {
+            if (!ExplainedStatementChecks.compile(executor, ddl)) {
+                return PlanBuilder.bareResult();
+            }
+            final FrostlakeParser.CreateStatementContext create = ddl.createStatement();
+            final FrostlakeParser.SelectStatementContext query = create == null ? null : createdQuery(create);
+            if (query == null) {
+                return PlanBuilder.bareResult();
+            }
+            compileStatementQuery(executor, query);
+            return create.MATERIALIZED() == null && create.VIEW() != null ? PlanBuilder.bareResult()
+                : builder.created(createdName(executor, create), query, create.MATERIALIZED() != null);
+        }
+        if (explained.sessionSetStatement() != null) {
+            for (final FrostlakeParser.BooleanExprContext value : setValues(explained.sessionSetStatement())) {
+                compileValue(executor, value);
+            }
+            return PlanBuilder.bareResult();
+        }
+        if (explained.showStatement() != null || explained.showClassStatement() != null
+                || explained.describeStatement() != null || explained.listStatement() != null) {
+            final Token start = explained.getStart();
+            executor.executeFromUnrecorded(ParseTreeText.getOriginalText(explained),
+                new SourcePosition(start.getLine(), start.getCharPositionInLine()));
+        }
+        return PlanBuilder.bareResult();
+    }
+
+    /** The query a CREATE makes a table, a view or a materialized view from; null for any other CREATE. */
+    private static FrostlakeParser.SelectStatementContext createdQuery(
+            final FrostlakeParser.CreateStatementContext create) {
+        final boolean table = create.TABLE() != null && create.DYNAMIC() == null && create.EVENT() == null
+            && create.TEMPLATE() == null;
+        return table || create.VIEW() != null ? create.selectStatement() : null;
+    }
+
+    /**
+     * The object a CREATE TABLE … AS SELECT or a materialized view makes, named in full as its plan names it: placed
+     * by the session where the statement names no database or schema, and named with the account's locator first
+     * where the statement names its database (live-verified).
+     */
+    private static String createdName(final QueryExecutor executor,
+                                      final FrostlakeParser.CreateStatementContext create) {
+        final Catalog catalog = executor.getCatalog();
+        final String full = SqlIdentifiers.spellAlreadyCanonicalPath(
+            catalog.qualifiedExactName(executor.resolveObjectName(create.objectName())));
+        return executor.resolveObjectNameParts(create.objectName()).length >= 3
+            ? catalog.getAccountLocator() + "." + full : full;
+    }
+
+    /** The values a session variable's SET assigns. */
+    private static List<FrostlakeParser.BooleanExprContext> setValues(
+            final FrostlakeParser.SessionSetStatementContext set) {
+        if (set.booleanExprList() != null) {
+            return set.booleanExprList().booleanExpr();
+        }
+        return Collections.singletonList(set.booleanExpr());
+    }
+
+    /**
+     * Compile a value a statement holds, as an EXPLAIN compiles it: read as the one item of a query, its names
+     * resolved and nothing it reads run, a refusal placed where the value stands in its statement.
+     */
+    private static void compileValue(final QueryExecutor executor, final ParserRuleContext value) {
+        final Token start = value.getStart();
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(start.getLine(), start.getCharPositionInLine() - VALUE_QUERY.length()));
+        try {
+            executor.resolveRelationShape(VALUE_QUERY + ParseTreeText.getOriginalText(value), null);
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /**
+     * Compile the query a statement holds, as an EXPLAIN compiles it — its names are resolved and nothing it reads
+     * runs — a refusal placed where the query stands in its statement: after an EXPLAIN's first word, at the start
+     * of a query refused for its FOR UPDATE.
+     *
+     * @param executor the executor that compiles the query
+     * @param query    the query, as its statement holds it
+     */
+    static void compileQuery(final QueryExecutor executor, final FrostlakeParser.SelectStatementContext query) {
+        PLANNING.get()[0]++;
+        try {
+            compileStatementQuery(executor, query);
+        } finally {
+            PLANNING.get()[0]--;
+        }
+    }
+
+    private static void compileStatementQuery(final QueryExecutor executor,
+                                              final FrostlakeParser.SelectStatementContext query) {
+        final String text = ParseTreeText.getOriginalText(query);
+        final Token start = query.getStart();
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(start.getLine(), start.getCharPositionInLine()));
+        try {
+            if (holdsDynamicPivot(query)) {
+                executor.resolveRelationColumns(text, null);
+            } else {
+                executor.resolveRelationShape(text, null);
+            }
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /** Whether a tree holds a PIVOT whose values are read: IN (ANY) or IN (a subquery). */
+    private static boolean holdsDynamicPivot(final ParseTree node) {
+        if (node instanceof FrostlakeParser.PivotInListContext) {
+            final FrostlakeParser.PivotInListContext values = (FrostlakeParser.PivotInListContext) node;
+            return values.ANY() != null || values.selectStatement() != null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsDynamicPivot(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The table a DML statement writes, or null for a statement this does not read a target from. */

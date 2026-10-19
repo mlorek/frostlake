@@ -29,7 +29,6 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.util.Collection;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 public final class PythonExecutor {
@@ -42,6 +41,14 @@ public final class PythonExecutor {
 
     /** The global an aggregate's argument is bound to for its {@code accumulate} call, numbered from 0. */
     private static final String AGGREGATE_ARGUMENT = "__fl_aggregate_argument";
+
+    /**
+     * The global a scalar function's argument is bound to for its handler's call, numbered from 0: the arguments are
+     * the handler's parameters alone (live-verified), so a parameter named like a built-in - {@code type},
+     * {@code len}, {@code str}, {@code id} - shadows nothing beyond the handler, and a helper of the body that reads
+     * the parameter's name finds no such global.
+     */
+    private static final String FUNCTION_ARGUMENT = "__fl_argument";
 
     public static Object executePythonFunction(final Function function, final List<Object> arguments) {
         if (function.getUdfLanguage() != UdfLanguage.PYTHON) {
@@ -58,15 +65,13 @@ public final class PythonExecutor {
         try {
             frame = PythonRuntime.enterModule();
             for (int i = 0; i < parameters.size(); i++) {
-                // Bind each argument as the Python value its parameter's type maps to (see
-                // PythonRuntime.bindArgument), under both its canonical (upper-cased) name and its lower-cased
-                // form: the generated def uses the canonical name, a lower-case body reference finds the global.
+                // Each argument as the Python value its parameter's type maps to (see PythonRuntime.bindArgument),
+                // under a name of the runtime's own, which the handler's call passes on.
                 final Parameter parameter = parameters.get(i);
-                final String pName = parameter.getName();
-                PythonRuntime.bindArgument(pName, arguments.get(i), parameter.getDataType());
-                final String lower = pName.toLowerCase(Locale.ROOT);
-                if (!lower.equals(pName)) {
-                    PythonRuntime.alias(lower, pName);
+                PythonRuntime.bindArgument(FUNCTION_ARGUMENT + i, arguments.get(i), parameter.getDataType());
+                if (function.getHandler() == null || function.getHandler().isEmpty()) {
+                    // A body with no handler reads its parameters by their names.
+                    PythonRuntime.alias(parameter.getName(), FUNCTION_ARGUMENT + i);
                 }
             }
 
@@ -260,7 +265,7 @@ public final class PythonExecutor {
             if (i > 0) {
                 code.append(", ");
             }
-            code.append(parameters.get(i).getName());
+            code.append(FUNCTION_ARGUMENT).append(i);
         }
     }
 

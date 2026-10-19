@@ -129,7 +129,8 @@ public final class SelectItemAccessors {
      * Refuses a select item that is a ROW — a parenthesized list of two or more values, however many
      * parentheses stand around it — as {@code Unsupported: SELECT list element with multiple columns.}, at the
      * item's alias when it has one and at the row's own parenthesis otherwise (live-verified): 7 for
-     * {@code SELECT (1, 2)}, 8 for {@code SELECT ((1, 2))}, 17 for {@code SELECT (1, 2) AS r}. The first such
+     * {@code SELECT (1, 2)}, 8 for {@code SELECT ((1, 2))}, 17 for {@code SELECT (1, 2) AS r}. A FIRST_VALUE or a
+     * LAST_VALUE over a ROW answers the ROW too, and is refused so at its OVER when it has no alias. The first such
      * item speaks.
      *
      * @param selectList the select list
@@ -144,16 +145,40 @@ public final class SelectItemAccessors {
             }
             final FrostlakeParser.ExprItemContext valued = (FrostlakeParser.ExprItemContext) item;
             final FrostlakeParser.RowExprContext row = rowOf(valued.booleanExpr());
-            if (row == null) {
+            final Token framed = row == null ? framedRowOver(valued.booleanExpr()) : null;
+            if (row == null && framed == null) {
                 continue;
             }
             final Token at = valued.aliasName() != null ? valued.aliasName().getStart()
                 : valued.identifier() != null ? valued.identifier().getStart()
-                    : valued.bareAliasWord() != null ? valued.bareAliasWord().getStart() : row.getStart();
+                    : valued.bareAliasWord() != null ? valued.bareAliasWord().getStart()
+                        : row != null ? row.getStart() : framed;
             final SourcePosition placed = ExpressionSource.place(at.getLine(), at.getCharPositionInLine());
             throw new RuntimeException(SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(),
                 "Unsupported: SELECT list element with multiple columns."));
         }
+    }
+
+    /**
+     * The OVER of a FIRST_VALUE or a LAST_VALUE whose value is a ROW, the item standing as that call alone; null for
+     * any other expression.
+     */
+    private static Token framedRowOver(final ParseTree written) {
+        if (!(written instanceof FrostlakeParser.ValueExprContext)
+                || !(((FrostlakeParser.ValueExprContext) written).expression()
+                    instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext)
+            ((FrostlakeParser.ValueExprContext) written).expression();
+        final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
+        if (call.overClause() == null || call.functionArgList() == null
+                || !("FIRST_VALUE".equals(name) || "LAST_VALUE".equals(name))) {
+            return null;
+        }
+        final FrostlakeParser.FunctionArgContext first = call.functionArgList().functionArg(0);
+        return first.exprTuple() != null || first.booleanExpr() != null && rowOf(first.booleanExpr()) != null
+            ? call.overClause().OVER().getSymbol() : null;
     }
 
     /** The ROW an expression is, behind any parentheses around it; null for any other expression. */

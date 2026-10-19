@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -23,13 +24,42 @@ import java.util.Map;
  */
 public class JsonObjectExpression implements Expression {
     private final Map<String, Expression> properties;
+    /** Every key as written, in order, a key written twice included; null when no key is written twice. */
+    private final List<String> writtenKeys;
+    /** The values of {@link #writtenKeys}, index for index; null alongside it. */
+    private final List<Expression> writtenValues;
 
     public JsonObjectExpression(final Map<String, Expression> properties) {
+        this(properties, null, null);
+    }
+
+    /**
+     * An object constant one of whose keys is written twice: the pairs as written are kept, and the object is
+     * refused once two of them hold a value under one key.
+     *
+     * @param properties    the pairs, the later of a repeated key's
+     * @param writtenKeys   every key as written, in order
+     * @param writtenValues their values, index for index
+     */
+    public JsonObjectExpression(final Map<String, Expression> properties, final List<String> writtenKeys,
+                                final List<Expression> writtenValues) {
         this.properties = properties;
+        this.writtenKeys = writtenKeys;
+        this.writtenValues = writtenValues;
     }
 
     public Map<String, Expression> getProperties() {
         return properties;
+    }
+
+    /** Every key as written when one is written twice, else null. */
+    public List<String> getWrittenKeys() {
+        return writtenKeys;
+    }
+
+    /** The values of {@link #getWrittenKeys}, index for index, else null. */
+    public List<Expression> getWrittenValues() {
+        return writtenValues;
     }
 
     @Override

@@ -60,6 +60,12 @@ public class TaskHistoryFunction extends TableFunction {
         // All args are optional
     }
 
+    /** The listing's columns are fixed, so a query over it is planned with their types before any row is read. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return columns();
+    }
+
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
         final List<ResultSetColumn> columns = columns();
@@ -113,7 +119,7 @@ public class TaskHistoryFunction extends TableFunction {
      * TIMESTAMP_LTZ, the versions, the run id, the attempt and the job id NUMBER(38,0).
      */
     private static List<ResultSetColumn> columns() {
-        return Arrays.asList(
+        return DeclaredColumnTypes.typed(Arrays.asList(
             new ResultSetColumn("QUERY_ID", TaskGraphRuns.TEXT),
             new ResultSetColumn("NAME", TaskGraphRuns.TEXT),
             new ResultSetColumn("DATABASE_NAME", TaskGraphRuns.TEXT),
@@ -143,7 +149,7 @@ public class TaskHistoryFunction extends TableFunction {
             new ResultSetColumn("GRAPH_RUN_GROUP_ID", TaskGraphRuns.TEXT),
             new ResultSetColumn("BACKFILL_INFO", new ObjectType()),
             new ResultSetColumn("SPCS_JOB_ID", TaskGraphRuns.WHOLE_NUMBER),
-            new ResultSetColumn("SCHEDULED_BY_USER", TaskGraphRuns.TEXT));
+            new ResultSetColumn("SCHEDULED_BY_USER", TaskGraphRuns.TEXT)));
     }
 
     /**

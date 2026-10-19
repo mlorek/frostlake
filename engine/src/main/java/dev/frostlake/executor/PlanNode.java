@@ -72,6 +72,17 @@ final class PlanNode {
     }
 
     /**
+     * Puts an expression ahead of this operator's.
+     *
+     * @param expression the expression
+     * @return this operator
+     */
+    PlanNode first(final String expression) {
+        expressions.add(0, expression);
+        return this;
+    }
+
+    /**
      * Makes this operator the scan of a table.
      *
      * @param held the rows the table holds

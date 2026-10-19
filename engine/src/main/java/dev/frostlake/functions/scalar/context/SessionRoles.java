@@ -31,6 +31,8 @@ import java.util.Set;
  * The roles a session acts with: its current role, its secondary roles, every role granted to one of those,
  * directly or through another, and PUBLIC, which every role holds. A role held as a secondary role alone is in
  * the session, and with USE SECONDARY ROLES ALL so is every role granted to the session's user (live-verified).
+ * Inside a stored procedure that runs with owner's rights the roles acting are the owner's and the ones it
+ * inherits, none of the caller's (documented).
  */
 final class SessionRoles {
 
@@ -51,7 +53,9 @@ final class SessionRoles {
         }
         final Deque<String> pending = new ArrayDeque<>();
         pending.add(current(sessionContext));
-        pending.addAll(secondary(catalog, sessionContext));
+        if (sessionContext == null || sessionContext.getExecutableOwner() == null) {
+            pending.addAll(secondary(catalog, sessionContext));
+        }
         pending.add("PUBLIC");
         final Set<String> seen = new LinkedHashSet<>();
         while (!pending.isEmpty()) {
@@ -97,12 +101,12 @@ final class SessionRoles {
     }
 
     /**
-     * The session's current role.
+     * The session's current role, which inside a stored procedure that runs with owner's rights is the owner.
      *
      * @param sessionContext the session, or null for the default role
      * @return the role's name
      */
     static String current(final SessionContext sessionContext) {
-        return sessionContext == null ? "SYSADMIN" : sessionContext.getCurrentRole();
+        return sessionContext == null ? "SYSADMIN" : sessionContext.getCreatingRole();
     }
 }

@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,11 +32,12 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -92,33 +94,35 @@ public class HttpJdbcSurfaceExtrasTest {
     }
 
     @Test
-    public void resultSetScrollableNavigation() throws SQLException {
+    public void resultSetMovesForwardOnly() throws SQLException {
         statement.execute("CREATE TABLE nav_t (i INTEGER)");
         statement.execute("INSERT INTO nav_t VALUES (1), (2), (3)");
         try (final ResultSet rs = statement.executeQuery("SELECT i FROM nav_t ORDER BY i")) {
-            assertTrue(rs.first());
+            // The account's driver moves forward only and refuses every other move, as the in-process driver does.
+            assertEquals(ResultSet.TYPE_FORWARD_ONLY, rs.getType());
+            assertTrue(rs.isBeforeFirst());
+            assertTrue(rs.next());
             assertTrue(rs.isFirst());
             assertEquals(1, rs.getInt(1));
-
-            assertTrue(rs.last());
-            assertTrue(rs.isLast());
-            assertEquals(3, rs.getInt(1));
-
-            assertTrue(rs.absolute(2));
-            assertEquals(2, rs.getInt(1));
-
-            rs.beforeFirst();
-            assertTrue(rs.isBeforeFirst());
-            int count = 0;
+            assertThrows(SQLFeatureNotSupportedException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    rs.last();
+                }
+            });
+            assertThrows(SQLFeatureNotSupportedException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    rs.beforeFirst();
+                }
+            });
+            int count = 1;
             while (rs.next()) {
                 count++;
             }
-            assertEquals(3, count, "beforeFirst must allow re-iterating all rows");
+            assertEquals(3, count);
             assertTrue(rs.isAfterLast());
-
-            rs.afterLast();
-            assertTrue(rs.isAfterLast());
-            assertFalse(rs.absolute(99), "absolute beyond the end reports false");
+            assertEquals(3, rs.getRow(), "the last row's number stays once the rows run out");
         }
     }
 

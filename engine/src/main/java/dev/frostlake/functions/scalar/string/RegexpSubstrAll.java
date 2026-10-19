@@ -53,11 +53,11 @@ public class RegexpSubstrAll extends TextArgumentFunction {
         }
         final String subject = SharedFunctionHelpers.textOf(args.get(0));
         final String pattern = SharedFunctionHelpers.textOf(args.get(1));
-        final int position = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
-        final int occurrence = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 1;
+        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
+        final int occurrence = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
         final String parameters = args.size() > 4 && args.get(4) != null
             ? SharedFunctionHelpers.textOf(args.get(4)) : null;
-        final Integer groupNum = args.size() > 5 && args.get(5) != null ? ((Number) args.get(5)).intValue() : null;
+        final Integer groupNum = args.size() > 5 && args.get(5) != null ? Integer.valueOf(wholeNumber(args.get(5))) : null;
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrence(occurrence);
         RegexpHelper.requireGroup(groupNum);

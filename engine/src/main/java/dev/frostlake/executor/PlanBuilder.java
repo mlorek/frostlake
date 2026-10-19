@@ -16,6 +16,9 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -29,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -57,6 +61,8 @@ import java.util.Set;
  *   <li>A DML statement is a Result naming the counts it answers, over the write, over what it reads: an UPDATE or a
  *       DELETE its target joined with its other tables, a MERGE its source joined with its target by the clauses it
  *       carries, a COPY an ExternalScan of the stage it loads or the Unload of what it reads.</li>
+ *   <li>A CREATE TABLE … AS SELECT and a materialized view are a bare Result over the CreateTableAsSelect of what their
+ *       query reads; any other statement an EXPLAIN takes is a bare Result.</li>
  * </ul>
  *
  * <p>A star over the one table a query reads stands for its columns, named by the relation — {@code PQ1.N, PQ1.M},
@@ -121,6 +127,73 @@ final class PlanBuilder {
             }
         }
         return new PlanNode("Result", NONE, null, items).over(read);
+    }
+
+    /**
+     * A CREATE TABLE … AS SELECT's plan, and a materialized view's: a bare Result over the CreateTableAsSelect that
+     * names the object, over what the query reads, whose own select list is no operator of the plan. A materialized
+     * view's scans read each partition's name first (live-verified).
+     *
+     * @param created      the object, named in full
+     * @param query        the query it is made from
+     * @param materialized whether it is a materialized view
+     * @return the Result
+     */
+    PlanNode created(final String created, final FrostlakeParser.SelectStatementContext query,
+                     final boolean materialized) {
+        final PlanNode write = new PlanNode("CreateTableAsSelect", NONE, null, Arrays.asList(created));
+        final Set<String> named = new HashSet<>();
+        namedColumns(query, named);
+        for (final PlanNode read : query(query).getChildren()) {
+            final List<PlanNode> scans = new ArrayList<>();
+            collectScans(read, scans);
+            for (final PlanNode scan : scans) {
+                readColumns(scan, named);
+                if (materialized) {
+                    scan.first("METADATA$PARTITION_NAME");
+                }
+            }
+            write.over(read);
+        }
+        return bareResult().over(write);
+    }
+
+    /**
+     * Lists the columns a scan reads, where no star has listed them: those of its table the statement names, in the
+     * table's order.
+     */
+    private void readColumns(final PlanNode scan, final Set<String> named) {
+        final Table table = scan.getExpressions().isEmpty() ? scannedTable(scan) : null;
+        if (table == null) {
+            return;
+        }
+        for (final TableColumn column : table.getColumns()) {
+            if (named.contains(column.getName())) {
+                scan.with(SqlIdentifiers.spellCanonical(column.getName()));
+            }
+        }
+    }
+
+    /** The last part of every name a tree reads a value by, its nested queries' included. */
+    private static void namedColumns(final ParseTree node, final Set<String> into) {
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            into.add(parts[parts.length - 1]);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            namedColumns(node.getChild(i), into);
+        }
+    }
+
+    /**
+     * The plan of a statement that reads nothing: a Result with no expressions.
+     *
+     * @return the Result
+     */
+    static PlanNode bareResult() {
+        return new PlanNode("Result", NONE, null, NONE);
     }
 
     /**
@@ -672,8 +745,7 @@ final class PlanBuilder {
         }
         final Set<String> names = plan.getNames();
         if (reference.pivotClause() != null) {
-            final boolean listed = reference.pivotClause().pivotInList().pivotValueList() != null;
-            plan = operator("Aggregate").over(listed ? plan : operator("Pivot").over(plan));
+            plan = pivotPlan(reference.pivotClause(), plan, reference);
         } else if (reference.unpivotClause() != null) {
             plan = operator("Unpivot").over(plan);
         }
@@ -685,6 +757,72 @@ final class PlanBuilder {
         }
         final String alias = aliasOf(reference);
         return plan.named(alias == null ? names : Collections.singleton(alias.toUpperCase(Locale.ROOT)));
+    }
+
+    /**
+     * The operators a PIVOT adds over its source, as the account plans it: a Pivot alone where the source carries a
+     * column the pivot keeps beside the aggregated and the FOR column; otherwise an Aggregate, over a Pivot for
+     * values read as the query runs — IN (ANY) or a subquery (live-verified).
+     */
+    private PlanNode pivotPlan(final FrostlakeParser.PivotClauseContext pivot, final PlanNode source,
+                               final FrostlakeParser.TableReferenceContext reference) {
+        if (keepsColumns(pivot, source, reference)) {
+            return operator("Pivot").over(source);
+        }
+        final boolean listed = pivot.pivotInList().pivotValueList() != null;
+        return operator("Aggregate").over(listed ? source : operator("Pivot").over(source));
+    }
+
+    /** Whether a pivot's source carries a column beside the aggregated and the FOR column; false when unknown. */
+    private boolean keepsColumns(final FrostlakeParser.PivotClauseContext pivot, final PlanNode source,
+                                 final FrostlakeParser.TableReferenceContext reference) {
+        final List<String> columns = sourceColumns(source, reference);
+        final Expression argument;
+        try {
+            argument = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(pivot.aggregateFunction().expression()));
+        } catch (final RuntimeException unreadable) {
+            return false;
+        }
+        if (columns == null || !(argument instanceof ColumnReferenceExpression)) {
+            return false;
+        }
+        final String aggregated = ((ColumnReferenceExpression) argument).getColumnName();
+        final String forColumn = ParseTreeText.getIdentifier(pivot.pivotColumn);
+        for (final String column : columns) {
+            if (!column.equalsIgnoreCase(aggregated) && !column.equalsIgnoreCase(forColumn)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The columns a pivot's source answers: a table's, or a derived table's; null for any other source. */
+    private List<String> sourceColumns(final PlanNode source, final FrostlakeParser.TableReferenceContext reference) {
+        final List<String> names = new ArrayList<>();
+        if (reference.tableSource().selectStatement() != null) {
+            final List<TableColumn> shape;
+            try {
+                shape = executor.resolveRelationShape(
+                    ParseTreeText.getOriginalText(reference.tableSource().selectStatement()), null);
+            } catch (final RuntimeException unresolved) {
+                return null;
+            }
+            if (shape == null) {
+                return null;
+            }
+            for (final TableColumn column : shape) {
+                names.add(column.getName());
+            }
+            return names;
+        }
+        final Table table = "TableScan".equals(source.getOperation()) ? scannedTable(source) : null;
+        if (table == null) {
+            return null;
+        }
+        for (final TableColumn column : table.getColumns()) {
+            names.add(column.getName());
+        }
+        return names;
     }
 
     private static String aliasOf(final FrostlakeParser.TableReferenceContext reference) {
@@ -724,6 +862,14 @@ final class PlanBuilder {
         }
         if (source.tableReference() != null) {
             return listPlan(null, source, new ArrayList<FrostlakeParser.BooleanExprContext>(), named);
+        }
+        final String queried = queriedText(source);
+        if (queried != null) {
+            // A TO_QUERY handed its text as a literal reads as that query, planned where it stands (live-verified).
+            final FrostlakeParser.SelectStatementContext inner = executor.subqueryStatement(queried);
+            return inner == null ? null
+                : queryPlan(inner, new HashMap<String, FrostlakeParser.SelectStatementContext>())
+                    .named(Collections.<String>emptySet());
         }
         if ("GENERATOR".equals(calledName(source))) {
             final Long rows = rowCountOf(source);
@@ -836,6 +982,48 @@ final class PlanBuilder {
             }
         }
         return null;
+    }
+
+    /** The query a TO_QUERY is handed as a string literal, first or by its SQL name, with no bind; null otherwise. */
+    private static String queriedText(final FrostlakeParser.TableSourceContext source) {
+        ParserRuleContext text = null;
+        if (source.tableFunctionExpr() != null) {
+            if (!"TO_QUERY".equals(calledName(source))) {
+                return null;
+            }
+            final FrostlakeParser.TableFunctionExprContext call = source.tableFunctionExpr();
+            text = call.expression().isEmpty() ? null : call.expression(0);
+            for (final FrostlakeParser.NamedArgumentContext argument : call.namedArgument()) {
+                if (!"SQL".equalsIgnoreCase(argument.variableName().getText())) {
+                    return null;
+                }
+                text = argument.expression();
+            }
+        } else if (source.TABLE() != null && source.expression() != null) {
+            // TABLE(TO_QUERY('…')) with its text alone reads as a call within an expression.
+            final FrostlakeParser.FunctionCallExprContext call = onlyCall(source.expression());
+            if (call == null || call.functionName() == null
+                    || !"TO_QUERY".equalsIgnoreCase(call.functionName().getText()) || call.functionArgList() == null
+                    || call.functionArgList().functionArg().size() != 1) {
+                return null;
+            }
+            text = call.functionArgList().functionArg(0).booleanExpr();
+        }
+        if (text == null) {
+            return null;
+        }
+        final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(text));
+        return parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getValue() instanceof String
+            ? (String) ((LiteralExpression) parsed).getValue() : null;
+    }
+
+    /** The call a tree is, through the single children around it; null when it is anything else. */
+    private static FrostlakeParser.FunctionCallExprContext onlyCall(final ParseTree tree) {
+        ParseTree at = tree;
+        while (at != null && !(at instanceof FrostlakeParser.FunctionCallExprContext)) {
+            at = at.getChildCount() == 1 ? at.getChild(0) : null;
+        }
+        return (FrostlakeParser.FunctionCallExprContext) at;
     }
 
     /** The rows a GENERATOR is asked for by a ROWCOUNT written as a number; null otherwise. */

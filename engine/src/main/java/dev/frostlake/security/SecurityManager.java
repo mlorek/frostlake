@@ -24,11 +24,11 @@ import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurableObjectType;
-import dev.frostlake.metastore.model.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -53,53 +53,29 @@ public class SecurityManager {
     }
 
     /**
-     * Check if the current user has permission to perform an operation
+     * Refuse a statement that needs a privilege the session does not hold on an object, deciding as
+     * {@link #holdsPrivilege} decides: one of the roles a privilege is asked of owns the object or was granted the
+     * privilege, and no administrative role stands in for that. The SYSTEM user, the engine's own, is asked nothing.
+     * Spoken in this engine's own words, for the kinds whose refusal is not measured; the measured ones go through
+     * {@code QueryExecutor.requirePrivilege}.
      */
     public void checkPermission(final Privilege requiredPrivilege, final String objectType, final String objectName) {
         if (!sessionContext.isSecurityEnabled()) {
             return; // Security checks disabled
         }
-
         final String currentUser = sessionContext.getCurrentUser();
-
         // SYSTEM user always has all permissions
         if ("SYSTEM".equals(currentUser)) {
             return;
         }
-
-        // Get all roles for the current user (including role hierarchy) — or, inside a view's own query, the view
-        // owner's roles (see runWithOwnerRights).
-        final String rightsOwner = ownerRights.get();
-        final Set<String> effectiveRoles = rightsOwner != null ? rolesUnder(rightsOwner) : getEffectiveRoles();
-
-        // Administrative roles have broad object authority — like the SYSTEM user but at role
-        // granularity. Restriction applies to custom roles, matching Snowflake's built-in admins.
-        if (effectiveRoles.contains("ACCOUNTADMIN") || effectiveRoles.contains("SYSADMIN")) {
-            return;
-        }
-
-        // The object's owner role has full control over the object (ownership confers all privileges).
-        final String ownerRole = catalog.getObjectOwnerRole(objectType, objectName);
-        if (ownerRole != null && (effectiveRoles.contains(catalog.resolveRoleName(ownerRole))
-                || holdsOwningDatabaseRole(effectiveRoles, ownerRole))) {
-            return;
-        }
-
-        // A privilege is recorded under the object's resolved full name (GrantNames), however the statement
-        // spelled it, so the name asked about is resolved the same way.
-        final String recordedName = GrantNames.of(catalog, objectType, objectName);
-
-        // Check if any of the user's roles, or a database role granted to one of them, has the required privilege
-        if (holds(holdersUnder(effectiveRoles), objectType, recordedName, requiredPrivilege)) {
+        if (holdsPrivilege(requiredPrivilege, objectType, objectName,
+                catalog.getObjectOwnerRole(objectType, objectName))) {
             logger.debug("Permission granted: {} on {}:{}", requiredPrivilege, objectType, objectName);
             return;
         }
-
-        // Permission denied
         final String message = String.format(
             "Permission denied: User '%s' with roles %s does not have %s privilege on %s '%s'",
-            currentUser, effectiveRoles, requiredPrivilege, objectType, objectName
-        );
+            currentUser, askedRoles(), requiredPrivilege, objectType, objectName);
         logger.warn(message);
         throw new SecurityException(message);
     }
@@ -198,7 +174,7 @@ public class SecurityManager {
         if (managed != null) {
             return owns(managed.getOwner(), "SCHEMA", QualifiedName.join(managed.getDatabaseName(), managed.getName()));
         }
-        final Set<String> roles = getEffectiveRoles();
+        final Set<String> roles = sessionRights();
         return grantor != null
             && (roles.contains(catalog.resolveRoleName(grantor)) || holdsOwningDatabaseRole(roles, grantor));
     }
@@ -208,13 +184,13 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
             return true;
         }
-        final Set<String> roles = getEffectiveRoles();
+        final Set<String> roles = sessionRights();
         return roles.contains("SYSADMIN") || managesGrants(roles);
     }
 
     /** Whether the session's roles own an object: its recorded owner, or the holder of an OWNERSHIP grant on it. */
     private boolean owns(final String owner, final String objectType, final String objectName) {
-        final Set<String> roles = getEffectiveRoles();
+        final Set<String> roles = sessionRights();
         if (owner != null
                 && (roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner))) {
             return true;
@@ -229,7 +205,7 @@ public class SecurityManager {
             return false;
         }
         final String recorded = GrantNames.of(catalog, objectType, objectName);
-        final List<Role> holders = holdersUnder(getEffectiveRoles());
+        final List<Role> holders = holdersUnder(sessionRights());
         for (final String privilege : privileges) {
             final Privilege named;
             try {
@@ -246,6 +222,54 @@ public class SecurityManager {
             }
         }
         return true;
+    }
+
+    /**
+     * The role a grant passed on through a grant option is recorded in the name of (documented): the session's
+     * primary role where it, or a role beneath it, holds the privilege WITH GRANT OPTION, else the first secondary
+     * role in use, by name, that does. Grants the session decides without an option - the roles that decide every
+     * grant, the object's owner, a managed schema's owner - are recorded in the owner's name, and answer null here.
+     *
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name, as privileges record it or as the statement wrote it
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @param privilege  the privilege passed on
+     * @return the grantor to record, or null for the owner
+     */
+    public String grantOptionGrantor(final String objectType, final String objectName, final String owner,
+                                     final String privilege) {
+        if (decidesGrants() || GrantNames.managedSchema(catalog, objectType, objectName) != null
+                || owns(owner, objectType, objectName)) {
+            return null;
+        }
+        final Privilege named;
+        try {
+            named = Privilege.valueOf(privilege);
+        } catch (final IllegalArgumentException unknown) {
+            return null;
+        }
+        final String recorded = GrantNames.of(catalog, objectType, objectName);
+        final List<String> candidates = new ArrayList<>();
+        final String executableOwner = sessionContext.getExecutableOwner();
+        if (executableOwner != null) {
+            candidates.add(catalog.resolveRoleName(executableOwner));
+        } else {
+            final String primary = sessionContext.getCurrentRole();
+            if (primary != null) {
+                candidates.add(catalog.resolveRoleName(primary));
+            }
+            final List<String> secondary = new ArrayList<>(getEffectiveRoles());
+            Collections.sort(secondary);
+            candidates.addAll(secondary);
+        }
+        for (final String candidate : candidates) {
+            for (final Role holder : holdersUnder(rolesUnder(candidate))) {
+                if (holder.hasGrantOption(objectType, recorded, named)) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -270,7 +294,7 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        final Set<String> roles = getEffectiveRoles();
+        final Set<String> roles = sessionRights();
         return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner);
     }
 
@@ -291,11 +315,12 @@ public class SecurityManager {
     }
 
     /**
-     * Whether the session holds a privilege on an object: one of its roles — the primary role, a role granted to
-     * the user, a role any of those inherits, PUBLIC, or a database role granted to one of them — owns the
+     * Whether the session holds a privilege on an object: one of its roles — the primary role, a secondary role
+     * in use, a role any of those inherits, PUBLIC, or a database role granted to one of them — owns the
      * object or was granted the privilege. No administrative role stands in for that: ACCOUNTADMIN reads, writes
-     * and alters only what it holds (live-verified). Inside a view's own query the view's owner is asked beside
-     * the session, since either's right to a relation lets the view read it. An object with no recorded owner
+     * and alters only what it holds (live-verified). Inside a stored procedure that runs with owner's rights the
+     * owner's roles are asked in the session's place, and inside a view's own query the view's owner is asked
+     * beside them, since either's right to a relation lets the view read it. An object with no recorded owner
      * passes, as does anything while security checks are off.
      *
      * @param privilege  the privilege the statement needs
@@ -409,21 +434,81 @@ public class SecurityManager {
     }
 
     /**
-     * The roles a privilege is asked of: the session's, PUBLIC, and inside a view's query or a stored procedure
-     * that runs with owner's rights the owner's too.
+     * The roles a privilege is asked of: the session's rights (see {@link #sessionRights}), PUBLIC, and inside a
+     * view's query the view owner's too.
      */
     private Set<String> askedRoles() {
-        final Set<String> roles = getEffectiveRoles();
+        final Set<String> roles = sessionRights();
         roles.add("PUBLIC");
         final String rightsOwner = ownerRights.get();
         if (rightsOwner != null) {
             roles.addAll(rolesUnder(rightsOwner));
         }
-        final String executableOwner = sessionContext.getExecutableOwner();
-        if (executableOwner != null) {
-            roles.addAll(rolesUnder(catalog.resolveRoleName(executableOwner)));
-        }
         return roles;
+    }
+
+    /**
+     * The roles the session's rights come from: the session's own (see {@link #getEffectiveRoles}), or inside a
+     * stored procedure that runs with owner's rights the owner's alone, with PUBLIC: such a procedure runs with its
+     * owner's privileges and none of its caller's (documented).
+     */
+    private Set<String> sessionRights() {
+        final String executableOwner = sessionContext.getExecutableOwner();
+        if (executableOwner == null) {
+            return getEffectiveRoles();
+        }
+        final Set<String> roles = rolesUnder(catalog.resolveRoleName(executableOwner));
+        roles.add("PUBLIC");
+        return roles;
+    }
+
+    /**
+     * Whether the session holds a privilege on the account: one of its roles (see {@link #sessionRights}) was granted
+     * it on the account, or is a system role that holds it from the start - ACCOUNTADMIN every privilege on the
+     * account, USERADMIN, and so SECURITYADMIN above it, CREATE USER and CREATE ROLE (documented). The SYSTEM user
+     * holds every one, as does anything while security checks are off.
+     *
+     * @param privilege the privilege the statement needs
+     * @return whether the statement may go on
+     */
+    public boolean holdsAccountPrivilege(final Privilege privilege) {
+        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+            return true;
+        }
+        final Set<String> roles = sessionRights();
+        roles.add("PUBLIC");
+        if (roles.contains("ACCOUNTADMIN")) {
+            return true;
+        }
+        if ((privilege == Privilege.CREATE_USER || privilege == Privilege.CREATE_ROLE) && roles.contains("USERADMIN")) {
+            return true;
+        }
+        return holds(holdersUnder(roles), "ACCOUNT", "ACCOUNT", privilege);
+    }
+
+    /**
+     * Whether the session may alter a user: it is the session's own user, or one of the session's roles owns the user
+     * or holds MODIFY or OWNERSHIP on it (documented). The SYSTEM user may alter every user, as may anything while
+     * security checks are off. A user the session alters itself may change only some of what it has; the caller
+     * judges that.
+     *
+     * @param userName the user's name as the catalog keeps it
+     * @param owner    the role that owns the user, or null when none is recorded
+     * @return whether one of the session's roles may alter the user
+     */
+    public boolean mayModifyUser(final String userName, final String owner) {
+        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+            return true;
+        }
+        final Set<String> roles = sessionRights();
+        roles.add("PUBLIC");
+        if (owner != null
+                && (roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner))) {
+            return true;
+        }
+        final List<Role> holders = holdersUnder(roles);
+        final String recorded = GrantNames.of(catalog, "USER", userName);
+        return holdsExactly(holders, "USER", recorded, Privilege.MODIFY);
     }
 
     /**
@@ -566,18 +651,6 @@ public class SecurityManager {
     }
 
     /**
-     * Check if current user has permission (returns boolean instead of throwing exception)
-     */
-    public boolean hasPermission(final Privilege requiredPrivilege, final String objectType, final String objectName) {
-        try {
-            checkPermission(requiredPrivilege, objectType, objectName);
-            return true;
-        } catch (final SecurityException e) {
-            return false;
-        }
-    }
-
-    /**
      * Enters the rights a view's own query runs with: the view owner's, not the querying role's. Snowflake checks a
      * view's underlying objects against the role that owns the view, so a role granted SELECT on the view reads it
      * without any privilege on the tables beneath. The session itself is untouched: CURRENT_ROLE() still answers
@@ -611,9 +684,13 @@ public class SecurityManager {
 
     /** A role and every role granted to it, however many levels down. */
     private Set<String> rolesUnder(final String roleName) {
+        return closureOf(Collections.singleton(roleName));
+    }
+
+    /** Roles and every role granted to one of them, however many levels down. */
+    private Set<String> closureOf(final Collection<String> starting) {
         final Set<String> roles = new HashSet<>();
-        final List<String> pending = new ArrayList<>();
-        pending.add(roleName);
+        final List<String> pending = new ArrayList<>(starting);
         while (!pending.isEmpty()) {
             final String next = pending.remove(pending.size() - 1);
             if (!roles.add(next)) {
@@ -629,51 +706,21 @@ public class SecurityManager {
     }
 
     /**
-     * Get all effective roles for the current user, including role hierarchy
+     * The roles the session acts with, and every role granted to one of them however many levels down: the primary
+     * role, the secondary roles in use, and PUBLIC. A role the user was granted but the session never activated
+     * authorizes nothing, so with no secondary roles in use the primary role decides alone (documented). Secondary
+     * roles ALL stand for every role granted to the session's user as the statement runs: one granted after
+     * USE SECONDARY ROLES ALL is in use, and one revoked is not (documented).
      */
     private Set<String> getEffectiveRoles() {
-        final Set<String> effectiveRoles = new HashSet<>();
-        final String currentUser = sessionContext.getCurrentUser();
-
-        // Add all active roles from session
-        effectiveRoles.addAll(sessionContext.getActiveRoles());
-
-        // Add roles granted to the user
-        try {
-            final User user = catalog.getUser(currentUser);
-            effectiveRoles.addAll(user.getGrantedRoles());
-        } catch (final RuntimeException e) {
-            logger.debug("User {} not found while getting effective roles", currentUser);
-        }
-
-        // Add roles from role hierarchy (roles granted to roles)
-        final Set<String> rolesToCheck = new HashSet<>(effectiveRoles);
-        final Set<String> checkedRoles = new HashSet<>();
-
-        while (!rolesToCheck.isEmpty()) {
-            final String roleName = rolesToCheck.iterator().next();
-            rolesToCheck.remove(roleName);
-
-            if (checkedRoles.contains(roleName)) {
-                continue; // Already processed
-            }
-            checkedRoles.add(roleName);
-
-            try {
-                final Role role = catalog.getRole(roleName);
-                final Set<String> grantedRoles = role.getGrantedRoles();
-                for (final String grantedRole : grantedRoles) {
-                    if (!checkedRoles.contains(grantedRole)) {
-                        effectiveRoles.add(grantedRole);
-                        rolesToCheck.add(grantedRole);
-                    }
-                }
-            } catch (final RuntimeException e) {
-                logger.debug("Role {} not found while traversing role hierarchy", roleName);
+        final Set<String> activated = new HashSet<>(sessionContext.getActiveRoles());
+        if ("ALL".equals(sessionContext.getSecondaryRolesValue())) {
+            final String executing = sessionContext.getExecutingUser();
+            if (executing != null && catalog.hasUser(executing)) {
+                activated.addAll(catalog.getUser(executing).getGrantedRoles());
             }
         }
-
-        return effectiveRoles;
+        return closureOf(activated);
     }
 
     /**

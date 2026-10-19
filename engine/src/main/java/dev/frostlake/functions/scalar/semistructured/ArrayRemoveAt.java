@@ -34,9 +34,8 @@ public class ArrayRemoveAt extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null || args.get(1) == null) return null;
-        // A text or a VARIANT position is read as the whole number it holds (see wholeNumber).
-        int idx = args.get(1) instanceof Number ? ((Number) args.get(1)).intValue()
-            : wholeNumber(args.get(1));
+        // A position is read as the whole number it gives, a fraction rounded: 0.6 is 1 (see wholeNumber).
+        int idx = wholeNumber(args.get(1));
         if (idx < 0) idx = src.size() + idx;
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = 0; i < src.size(); i++) {

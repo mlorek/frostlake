@@ -275,6 +275,7 @@ public class CreateRoutineHandler implements CommandHandler {
         if (!namesService(ctx)) {
             requireBody(ctx, functionLanguage(ctx), false);
         }
+        rejectDecfloatInHandlerSignature(ctx, functionLanguage(ctx), false, functionName, parameters);
         // A handler body is compiled, and its handler checked against the signature, before the signature's own
         // names are: a Python or Java handler taking the wrong number of arguments is refused for that even when
         // an argument name repeats (live-verified). A TEMPORARY Python or Java function leaves the check to its
@@ -605,6 +606,7 @@ public class CreateRoutineHandler implements CommandHandler {
         final RoutineEnvironment environment = environments.read(ctx.functionOption(), procedureLanguage, true,
             ctx.bodyDefinition() != null, orReplace ? replacedProcedurePath(schema, procedureName, argumentTypes) : null);
         requireBody(ctx, procedureLanguage, true);
+        rejectDecfloatInHandlerSignature(ctx, procedureLanguage, true, procedureName, parameters);
         rejectRepeatedSignatureNames(ctx);
         rejectServiceOptions(ctx);
 
@@ -1019,7 +1021,7 @@ public class CreateRoutineHandler implements CommandHandler {
             return fallback;
         }
         try {
-            return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+            return catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema());
         } catch (final RuntimeException dropped) {
             return fallback;
         }
@@ -1342,6 +1344,43 @@ public class CreateRoutineHandler implements CommandHandler {
         if (!undeclarable.isEmpty()) {
             throw new RuntimeException("Invalid argument name(s): '" + String.join(", ", undeclarable) + "'");
         }
+    }
+
+    /**
+     * Refuse DECFLOAT in the signature of a routine written in Java, Python or Scala — an argument, the result or a
+     * returned column alike — before its handler is compiled:
+     * {@code Snowflake type DECFLOAT[DECFLOAT18](38,0){nullable} is not supported in function DF_PY with handler f},
+     * a procedure named a function too, and a Python procedure
+     * {@code Language PYTHON does not support type 'DECFLOAT(38)' for argument or return type.} (live-verified).
+     * JavaScript refuses it with its other fixed-point types (see requireJavaScriptTypes).
+     */
+    private void rejectDecfloatInHandlerSignature(final FrostlakeParser.CreateStatementContext ctx,
+                                                  final UdfLanguage language, final boolean procedure,
+                                                  final String name, final List<Parameter> parameters) {
+        if (language != UdfLanguage.JAVA && language != UdfLanguage.PYTHON && language != UdfLanguage.SCALA) {
+            return;
+        }
+        boolean decfloat = false;
+        for (final Parameter parameter : parameters) {
+            decfloat = decfloat || NumericType.isDecfloat(parameter.getDataType());
+        }
+        if (ctx.returnType() != null && ctx.returnType().TABLE() != null) {
+            for (final Parameter column : declaredReturnColumns(ctx)) {
+                decfloat = decfloat || NumericType.isDecfloat(column.getDataType());
+            }
+        } else if (ctx.returnType() != null && ctx.returnType().dataTypeName() != null) {
+            decfloat = decfloat || NumericType.isDecfloat(columnParser.parseRoutineDataType(
+                ctx.returnType().dataTypeName(), ctx.returnType().typeParameters()));
+        }
+        if (!decfloat) {
+            return;
+        }
+        if (procedure && language == UdfLanguage.PYTHON) {
+            throw new RuntimeException(
+                "Language PYTHON does not support type 'DECFLOAT(38)' for argument or return type.");
+        }
+        throw new RuntimeException("Snowflake type DECFLOAT[DECFLOAT18](38,0){nullable} is not supported in function "
+            + name + " with handler " + functionHandler(ctx));
     }
 
     /** One type, judged against what the language carries. */

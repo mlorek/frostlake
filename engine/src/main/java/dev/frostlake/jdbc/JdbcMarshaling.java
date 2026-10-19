@@ -147,7 +147,7 @@ public final class JdbcMarshaling {
         if (t.contains("INT")) {
             return Types.INTEGER;
         }
-        if (t.contains("DECIMAL") || t.contains("NUMBER") || t.contains("NUMERIC")) {
+        if (t.contains("DECIMAL") || t.contains("NUMBER") || t.contains("NUMERIC") || t.contains("DECFLOAT")) {
             return Types.DECIMAL;
         }
         if (t.contains("DOUBLE") || t.contains("REAL")) {

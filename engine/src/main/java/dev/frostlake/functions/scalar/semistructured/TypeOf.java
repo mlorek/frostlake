@@ -20,6 +20,7 @@ import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.GeoValue;
 import dev.frostlake.values.TypedVectorNode;
 import dev.frostlake.values.UuidTextNode;
@@ -54,6 +55,7 @@ public class TypeOf extends StructuredArgumentFunction {
             // (live-verified even for PARSE_JSON('{"$":1,"@":"b"}')), so test the shape first.
             if (XmlVariants.isXmlElement(root)) return "XML";
             if (UuidTextNode.holds(root)) return "UUID";
+            if (DecfloatTextNode.holds(root)) return "DECFLOAT";
             if (root.isObject()) return "OBJECT";
             // ★ Asked BEFORE the array test, which it would otherwise answer: a VECTOR member prints
             // as an array but reports its own kind, and live agrees it is not an ARRAY.

@@ -22,13 +22,14 @@ import dev.frostlake.types.DateTimeType;
 import java.time.OffsetDateTime;
 import java.util.List;
 
-/** AS_TIMESTAMP_LTZ(v) — the TIMESTAMP_LTZ a VARIANT holds, else NULL; see {@link AsTimestampNtz}. */
+/** AS_TIMESTAMP_LTZ(v [, scale]) — the TIMESTAMP_LTZ a VARIANT holds, else NULL; see {@link AsTimestampNtz}. */
 public class AsTimestampLtz extends BuiltInFunction {
     public AsTimestampLtz() { super("AS_TIMESTAMP_LTZ", DateTimeType.TIMESTAMP_LTZ); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return args.get(0) instanceof OffsetDateTime ? args.get(0) : null;
+        final int scale = VariantTimestampScale.of("AS_TIMESTAMP_LTZ", args);
+        return args.get(0) instanceof OffsetDateTime ? VariantTimestampScale.cut(args.get(0), scale) : null;
     }
 
     @Override
@@ -39,5 +40,5 @@ public class AsTimestampLtz extends BuiltInFunction {
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

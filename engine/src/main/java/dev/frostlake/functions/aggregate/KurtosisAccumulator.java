@@ -31,7 +31,8 @@ public class KurtosisAccumulator implements AggregateFunction.Accumulator {
 
     @Override
     public void accumulate(final Object v) {
-        if (v != null) values.add(new BigDecimal(v.toString()).doubleValue());
+        // A text reads as a decimal number, and one that spells none is refused (see NumericAggregateInput).
+        if (v != null) values.add(NumericAggregateInput.asDouble(v));
     }
 
     @Override

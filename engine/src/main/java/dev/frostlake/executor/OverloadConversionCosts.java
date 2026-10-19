@@ -66,6 +66,8 @@ public final class OverloadConversionCosts {
         row("FLOAT", new String[] {"FLOAT", "BOOLEAN", "VARIANT", "VARCHAR", "NUMBER"}, new int[] {0, 1, 2, 4, 8});
         row("VARCHAR", new String[] {"VARCHAR", "BOOLEAN", "FLOAT", "DATE", "TIME", "TIMESTAMP", "NUMBER", "VARIANT"},
             new int[] {0, 1, 2, 2, 2, 2, 3, 4});
+        row("DECFLOAT", new String[] {"DECFLOAT", "NUMBER", "FLOAT", "VARCHAR", "VARIANT", "BOOLEAN"},
+            new int[] {0, 1, 2, 3, 4, 5});
         row("UUID", new String[] {"UUID", "VARCHAR", "BOOLEAN", "FLOAT", "NUMBER", "VARIANT"},
             new int[] {0, 1, 2, 3, 4, 5});
         row("BOOLEAN", new String[] {"BOOLEAN", "VARCHAR", "VARIANT", "FLOAT", "NUMBER"},
@@ -100,7 +102,8 @@ public final class OverloadConversionCosts {
      */
     public static int of(final String argument, final String parameter) {
         if (UNTYPED_NULL.equals(argument)) {
-            return 0;
+            // An untyped NULL reaches every parameter but a DECFLOAT one (live-verified).
+            return "DECFLOAT".equals(parameter) ? -1 : 0;
         }
         final Map<String, Integer> row = argument == null ? null : WEIGHTS.get(argument);
         final Integer weight = row == null || parameter == null ? null : row.get(parameter);

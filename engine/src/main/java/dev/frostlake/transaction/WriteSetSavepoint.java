@@ -57,6 +57,8 @@ public final class WriteSetSavepoint {
     /** The streams the transaction's consuming reads had registered when the statement began, or null. */
     private Map<Stream, StreamReadScope> streamReadsBefore;
 
+    private int outcomesBefore = -1;
+
     WriteSetSavepoint(final Map<String, TableLock> lockSnapshot, final long ordinal) {
         this.locksBefore = lockSnapshot;
         this.ordinal = ordinal;
@@ -96,6 +98,25 @@ public final class WriteSetSavepoint {
      */
     Map<Stream, StreamReadScope> streamReadsBefore() {
         return streamReadsBefore;
+    }
+
+    /**
+     * Notes how many outcomes the transaction's statements had registered when the statement began, which a failure
+     * of the statement takes back down to.
+     *
+     * @param count the outcomes registered
+     */
+    void noteOutcomes(final int count) {
+        this.outcomesBefore = count;
+    }
+
+    /**
+     * The outcomes registered when the statement began (see {@link #noteOutcomes}).
+     *
+     * @return their count, or -1 when none was noted
+     */
+    int outcomesBefore() {
+        return outcomesBefore;
     }
 
     /** How many rows and row ids the pre-images hold: what keeping this savepoint costs. */

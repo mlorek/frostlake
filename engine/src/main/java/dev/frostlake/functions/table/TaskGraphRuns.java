@@ -150,7 +150,7 @@ public final class TaskGraphRuns {
             new ResultSetColumn("GRAPH_RUN_GROUP_ID", TEXT),
             new ResultSetColumn("BACKFILL_INFO", new ObjectType()),
             new ResultSetColumn("SCHEDULED_BY_USER", TEXT)));
-        return columns;
+        return DeclaredColumnTypes.typed(columns);
     }
 
     /**

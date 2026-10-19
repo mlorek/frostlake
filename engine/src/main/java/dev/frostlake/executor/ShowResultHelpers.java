@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DefaultValueExpression;
@@ -129,8 +130,29 @@ public final class ShowResultHelpers {
         }
     }
 
+    /**
+     * The session's current schema, for a DESCRIBE or a SHOW scoped to it: refused as a statement with no current
+     * database or schema is refused.
+     */
     static Schema resolveDescribeSchema(final Catalog catalog) {
+        requireCurrentScope(catalog.getCurrentDatabase(), catalog.getCurrentSchema());
         return catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema());
+    }
+
+    /**
+     * Refuses a listing's scope that names no database or no schema, as a statement with no current one is refused:
+     * the database first.
+     *
+     * @param databaseName the scope's database, or null for none
+     * @param schemaName   the scope's schema, or null for none
+     */
+    static void requireCurrentScope(final String databaseName, final String schemaName) {
+        if (databaseName == null) {
+            throw NoCurrentDatabaseRefusal.forStatement();
+        }
+        if (schemaName == null) {
+            throw NoCurrentDatabaseRefusal.schemaForStatement();
+        }
     }
 
     /**

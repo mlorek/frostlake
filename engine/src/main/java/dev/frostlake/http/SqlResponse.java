@@ -48,6 +48,8 @@ public class SqlResponse {
     // 57014, with 604 for a cancel or a query timeout and 630 for the session's STATEMENT_TIMEOUT_IN_SECONDS.
     private String sqlState;
     private Integer errorCode;
+    // Where the session stands once the request has run; absent from an answer that concerns no session's statement.
+    private SessionNamespace namespace;
 
     public SqlResponse() {
         this.resultSets = new ArrayList<>();
@@ -182,6 +184,27 @@ public class SqlResponse {
 
     public void setErrorCode(final Integer errorCode) {
         this.errorCode = errorCode;
+    }
+
+    /** The session's current database, schema and user once the request has run, or null when the answer has none. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public SessionNamespace getNamespace() {
+        return namespace;
+    }
+
+    public void setNamespace(final SessionNamespace namespace) {
+        this.namespace = namespace;
+    }
+
+    /**
+     * Reports where the session stands and as whom: its current database and schema and its user, which a driver's
+     * {@code getCatalog}, {@code getSchema} and {@code getUserName} answer with.
+     *
+     * @param session the session the request ran in
+     * @param user    the session's user, as CURRENT_USER() names it
+     */
+    public void reportNamespace(final SessionContext session, final String user) {
+        this.namespace = new SessionNamespace(session.getCurrentDatabase(), session.getCurrentSchema(), user);
     }
 
     /**

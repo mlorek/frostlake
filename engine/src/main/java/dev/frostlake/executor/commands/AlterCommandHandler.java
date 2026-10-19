@@ -87,6 +87,7 @@ import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskScheduler;
@@ -198,6 +199,8 @@ public class AlterCommandHandler implements CommandHandler {
         // The object altered, when INFORMATION_SCHEMA reports a LAST_DDL for it: stamped once the action has
         // succeeded, so a refused ALTER moves nothing (see SqlObject.markDdl).
         SqlObject altered = null;
+        // The sentence the statement answers in place of the plain status line, or null.
+        String answered = null;
         try {
             if (ctx.ALERT() != null) {
                 final AlertCommandHandler alerts = new AlertCommandHandler(queryExecutor);
@@ -706,7 +709,7 @@ public class AlterCommandHandler implements CommandHandler {
                 } else if (ctx.tableAction() != null && !alterTargetTableExists(tableParts)
                         && viewUnder(tableParts) != null && alterViewAsTable(tableParts, tableName, ctx.tableAction(),
                             ifExists)) {
-                    logger.trace("Renamed view {} through ALTER TABLE", tableName);
+                    logger.trace("Altered view {} through ALTER TABLE", tableName);
                 } else if (ctx.tableAction() != null && ctx.tableAction().ADD() != null
                         && ctx.tableAction().SEARCH() != null && !alterTargetTableExists(tableParts)) {
                     // A search optimization added to a missing table names an object, IF EXISTS or not
@@ -999,7 +1002,7 @@ public class AlterCommandHandler implements CommandHandler {
                             }
                         }
                         final String was = table.renameColumn(oldName, newName);
-                        MaterializedViewValidity.baseTableAltered(catalog, table);
+                        MaterializedViewValidity.baseTableReshaped(catalog, table);
                         final Schema home = StreamSources.holderOf(catalog, table);
                         if (home != null) {
                             ColumnRenames.followInForeignKeys(catalog, home, table, was, newName);
@@ -1071,95 +1074,19 @@ public class AlterCommandHandler implements CommandHandler {
                         logger.trace("Unset aggregation policy on table {}", tableName);
                     } else if ((ctx.tableAction().ALTER() != null || ctx.tableAction().MODIFY() != null)
                             && ctx.tableAction().PROJECTION() != null) {
-                        // {ALTER | MODIFY} [COLUMN] col SET/UNSET PROJECTION POLICY — one per column, and
-                        // FORCE is what lets a different one replace it (live-verified, same rule as masking).
-                        final String colName = visitor.getText(ctx.tableAction().identifier(0));
-                        // The policy a SET names is resolved before the column (live-verified).
-                        final String policyName = ctx.tableAction().UNSET() != null ? null
-                            : requireProjectionPolicy(visitor.getText(ctx.tableAction().qualifiedName()));
-                        requireColumn(table, colName, ctx.tableAction().identifier(0));
-                        final TableColumn col = table.getColumn(colName);
-                        if (policyName == null) {
-                            col.setProjectionPolicyName(null);
-                        } else {
-                            if (col.hasProjectionPolicy()
-                                    && !sameMaskingPolicy(col.getProjectionPolicyName(), policyName)
-                                    && ctx.tableAction().FORCE() == null) {
-                                // Live's wording, missing spaces and all.
-                                throw new RuntimeException("Specified column already attached to another"
-                                    + " 'PROJECTION_POLICY'.A column cannot be attached to multiple"
-                                    + " policies of same kind.please drop the current association in"
-                                    + " order to attach a new policy.");
-                            }
-                            col.setProjectionPolicyName(policyName);
-                        }
-                        logger.trace("Set/unset projection policy on column {}.{}", tableName, colName);
+                        columnProjectionPolicy(table, ctx.tableAction().identifier(0),
+                            ctx.tableAction().UNSET() != null ? null : ctx.tableAction().qualifiedName(),
+                            ctx.tableAction().FORCE() != null);
+                        logger.trace("Set/unset projection policy on column of {}", tableName);
                     } else if ((ctx.tableAction().ALTER() != null || ctx.tableAction().MODIFY() != null)
                             && ctx.tableAction().MASKING() != null) {
-                        // {ALTER | MODIFY} COLUMN col SET/UNSET MASKING POLICY — one action, both
-                        // spellings (live-verified: the MODIFY form runs and refuses identically).
-                        final String colName = visitor.getText(ctx.tableAction().identifier(0));
-                        // Recorded in full, the way live reports an attachment however little of the name the
-                        // statement wrote — and so that re-attaching the SAME policy under a different spelling
-                        // stays the no-op live makes it. The policy a SET names is resolved before the column
-                        // (live-verified).
-                        final String policyName = ctx.tableAction().UNSET() != null ? null
-                            : catalog.qualifiedExactName(
-                                requireMaskingPolicy(visitor.getText(ctx.tableAction().qualifiedName())));
-                        requireColumn(table, colName, ctx.tableAction().identifier(0));
-                        final TableColumn col = table.getColumn(colName);
-                        if (policyName == null) {
-                            // Detaching what is not attached is a no-op, not an error (live-verified) —
-                            // the opposite of the row access policy's DROP.
-                            col.setMaskingPolicyName(null);
-                            col.setMaskingPolicyArguments(null);
-                        } else {
-                            if (col.getMaskingPolicyName() != null
-                                    && !sameMaskingPolicy(col.getMaskingPolicyName(), policyName)
-                                    && ctx.tableAction().FORCE() == null) {
-                                // FORCE replaces the attached policy instead of refusing (live-verified).
-                                // Snowflake: one masking policy per column — UNSET the current one first.
-                                // Re-attaching the SAME policy is a no-op, not an error: live-verified on
-                                // a real account, repeating SET MASKING POLICY mp1 succeeds
-                                // while switching to a different policy fails "Specified column already
-                                // attached to another masking policy...".
-                                throw new RuntimeException("Specified column already attached to another"
-                                    + " masking policy. A column cannot be attached to multiple masking"
-                                    + " policies. Please drop the current association in order to attach a"
-                                    + " new masking policy.");
-                            }
-                            // A column another policy reads is masked only by an exempt policy (MaskedArguments).
-                            MaskedArguments.requireMaskable(table, col, catalog.findMaskingPolicyExact(policyName));
-                            if (ctx.tableAction().identifierList() != null) {
-                                // Conditional policy: a USING argument column that is itself masked is
-                                // rejected, unless its own policy is exempt (live-verified).
-                                for (final FrostlakeParser.IdentifierContext argCtx
-                                        : ctx.tableAction().identifierList().identifier()) {
-                                    final String argName = visitor.getText(argCtx);
-                                    final TableColumn argCol = table.hasColumn(argName) ? table.getColumn(argName) : null;
-                                    if (argCol != null && argCol != col) {
-                                        MaskedArguments.requireReadable(catalog, argCol);
-                                    }
-                                }
-                            }
-                            MaskingPolicyAttachment.requireTypeMatch(
-                                catalog.findMaskingPolicyExact(policyName), col);
-                            col.setMaskingPolicyName(policyName);
-                            // A conditional policy reads its further arguments from the columns USING names, in
-                            // order; a policy attached without USING reads only the column.
-                            final List<String> arguments = new ArrayList<>();
-                            if (ctx.tableAction().identifierList() != null) {
-                                for (final FrostlakeParser.IdentifierContext argCtx
-                                        : ctx.tableAction().identifierList().identifier()) {
-                                    arguments.add(visitor.getText(argCtx));
-                                }
-                            }
-                            col.setMaskingPolicyArguments(arguments);
-                        }
-                        logger.trace("Set/unset masking policy on column {}.{}", tableName, colName);
+                        columnMaskingPolicy(table, ctx.tableAction().identifier(0),
+                            ctx.tableAction().UNSET() != null ? null : ctx.tableAction().qualifiedName(),
+                            ctx.tableAction().identifierList(), ctx.tableAction().FORCE() != null);
+                        logger.trace("Set/unset masking policy on column of {}", tableName);
                     } else if (!ctx.tableAction().alterColumnItem().isEmpty()) {
                         // ALTER/MODIFY [(] [COLUMN] c1 action [, [COLUMN] c2 action]* [)]
-                        applyAlterColumnItems(table, tableName, ctx.tableAction().alterColumnItem());
+                        answered = applyAlterColumnItems(table, tableName, ctx.tableAction().alterColumnItem());
                     } else if (ctx.tableAction().COMMENT() != null) {
                         final String comment = visitor.extractStringLiteral(ctx.tableAction().STRING_LITERAL());
                         table.setComment(comment);
@@ -1575,6 +1502,28 @@ public class AlterCommandHandler implements CommandHandler {
                     applyTagSet(view, ctx.viewAction().tagSet());
                 } else if (ctx.viewAction().tagUnset() != null) {
                     applyTagUnset(view, ctx.viewAction().tagUnset());
+                } else if (!ctx.viewAction().viewColumnMasking().isEmpty()) {
+                    final Table columns = viewColumns(view);
+                    for (final FrostlakeParser.ViewColumnMaskingContext masking
+                            : ctx.viewAction().viewColumnMasking()) {
+                        columnMaskingPolicy(columns, masking.identifier(), masking.qualifiedName(),
+                            masking.identifierList(), masking.FORCE() != null);
+                    }
+                    logger.trace("Set/unset masking policies on columns of view {}", viewName);
+                } else if (ctx.viewAction().PROJECTION() != null) {
+                    columnProjectionPolicy(viewColumns(view), ctx.viewAction().identifier(),
+                        ctx.viewAction().qualifiedName(), ctx.viewAction().FORCE() != null);
+                    logger.trace("Set/unset a projection policy on a column of view {}", viewName);
+                } else if (ctx.viewAction().columnTagAction() != null) {
+                    final FrostlakeParser.ColumnTagActionContext action = ctx.viewAction().columnTagAction();
+                    final Table columns = viewColumns(view);
+                    requireColumn(columns, visitor.getText(action.identifier()), action.identifier());
+                    final TableColumn column = columns.getColumn(visitor.getText(action.identifier()));
+                    if (action.tagSet() != null) {
+                        applyTagSet(column, action.tagSet());
+                    } else {
+                        applyTagUnset(column, action.tagUnset());
+                    }
                 }
 
             } else if (ctx.STREAM() != null) {
@@ -1582,13 +1531,7 @@ public class AlterCommandHandler implements CommandHandler {
                 final String[] streamParts = qualifiedNameParts(ctx.qualifiedName());
                 final String streamName = streamParts[streamParts.length - 1];
                 final Schema schema;
-                if (streamParts.length == 3) {
-                    schema = catalog.getDatabase(streamParts[0]).getSchema(streamParts[1]);
-                } else if (streamParts.length == 2) {
-                    schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(streamParts[0]);
-                } else {
-                    schema = visitor.resolveCurrentSchema();
-                }
+                schema = catalog.requireOwningSchema(QualifiedName.of(streamParts));
                 // A quoted name in another case is another stream, which is not there (live-verified).
                 final Stream stream = schema.getStreamExact(streamName);
                 checkAlter(SecurableObjectType.STREAM, streamQn);
@@ -1611,13 +1554,7 @@ public class AlterCommandHandler implements CommandHandler {
                 final String[] taskParts = qualifiedNameParts(ctx.qualifiedName());
                 final String taskName = taskParts[taskParts.length - 1];
                 final Schema schema;
-                if (taskParts.length == 3) {
-                    schema = catalog.getDatabase(taskParts[0]).getSchema(taskParts[1]);
-                } else if (taskParts.length == 2) {
-                    schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(taskParts[0]);
-                } else {
-                    schema = visitor.resolveCurrentSchema();
-                }
+                schema = catalog.requireOwningSchema(QualifiedName.of(taskParts));
                 // A quoted name in another case is another task, which is not there (live-verified).
                 final Task task = schema.getTaskExact(taskName);
                 checkAlter(SecurableObjectType.TASK, taskQn);
@@ -1721,7 +1658,7 @@ public class AlterCommandHandler implements CommandHandler {
             } else if (ctx.PIPE() != null) {
                 final String pipeName = visitor.getText(ctx.qualifiedName());
                 final Schema schema = catalog.resolveOwningSchema(pipeName);
-                final Pipe pipe = schema.getPipe(QualifiedName.parse(pipeName).last());
+                final Pipe pipe = schema.getPipeExact(QualifiedName.parse(pipeName).last());
                 checkAlter(SecurableObjectType.PIPE, pipeName);
                 final FrostlakeParser.PipeActionContext action = ctx.pipeAction();
                 // Every ALTER is DDL on the pipe but a REFRESH, which queues files rather than changing the pipe.
@@ -1803,10 +1740,10 @@ public class AlterCommandHandler implements CommandHandler {
                 // (live-verified).
                 branchHandlesIfExists = true;
                 final String warehouseName = visitor.getText(ctx.identifier());
-                if (ifExists && !catalog.hasWarehouse(warehouseName)) {
+                if (ifExists && !catalog.hasWarehouseExact(warehouseName)) {
                     logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
                 } else {
-                    final Warehouse warehouse = catalog.getWarehouse(warehouseName);
+                    final Warehouse warehouse = catalog.getWarehouseExact(warehouseName);
                     checkAlter(SecurableObjectType.WAREHOUSE, warehouseName);
 
                     if (ctx.warehouseAction().RENAME() != null) {
@@ -1877,7 +1814,7 @@ public class AlterCommandHandler implements CommandHandler {
 
             } else if (ctx.ROLE() != null) {
                 final String roleName = visitor.getText(ctx.identifier());
-                final Role role = catalog.getRole(roleName);
+                final Role role = catalog.getRoleExact(roleName);
 
                 if (ctx.roleAction().tagSet() != null) {
                     applyTagSet(role, ctx.roleAction().tagSet());
@@ -2022,7 +1959,7 @@ public class AlterCommandHandler implements CommandHandler {
             if (altered != null) {
                 altered.markDdl(catalog.currentUserForDdl());
             }
-            return null;
+            return answered == null ? null : statusLine(answered);
 
         } catch (final Exception e) {
             if (ifExists && !branchHandlesIfExists) {
@@ -2298,8 +2235,9 @@ public class AlterCommandHandler implements CommandHandler {
     }
 
     /**
-     * ALTER TABLE over a view (live-verified). A RENAME TO renames the view, IF EXISTS or not. A clustering key, its
-     * drop, a paused or resumed reclustering, a column's ALTER and an added constraint are {@code cannot use ALTER
+     * ALTER TABLE over a view (live-verified). A RENAME TO renames the view, IF EXISTS or not, and a column's
+     * projection policy is set or unset on the view's column. A clustering key, its drop, a paused or resumed
+     * reclustering, a column's ALTER, a column's masking policy and an added constraint are {@code cannot use ALTER
      * TABLE on a view; use ALTER VIEW instead}, and a RENAME COLUMN names a missing table as written; IF EXISTS
      * forgives these. A SET or UNSET of a parameter is refused as the view's to operate on, and an added or dropped
      * column, a swap, and a SET or UNSET of the comment or the change tracking are refused by the view's kind, IF
@@ -2319,8 +2257,16 @@ public class AlterCommandHandler implements CommandHandler {
                 queryExecutor.resolveWholeObjectNameParts(action.wholeObjectName()));
             return true;
         }
+        if (action.PROJECTION() != null && (action.ALTER() != null || action.MODIFY() != null)) {
+            // A column's projection policy is the view column's, set as ALTER VIEW sets it.
+            checkAlter(SecurableObjectType.VIEW, name);
+            columnProjectionPolicy(viewColumns(viewUnder(viewParts)), action.identifier(0),
+                action.UNSET() != null ? null : action.qualifiedName(), action.FORCE() != null);
+            return true;
+        }
         final boolean asksForAlterView = action.CLUSTER() != null || action.CLUSTERING() != null
-            || action.RECLUSTER() != null || !action.alterColumnItem().isEmpty() || action.tableConstraint() != null;
+            || action.RECLUSTER() != null || !action.alterColumnItem().isEmpty() || action.tableConstraint() != null
+            || action.MASKING() != null && (action.ALTER() != null || action.MODIFY() != null);
         if (asksForAlterView || action.RENAME() != null && action.COLUMN() != null) {
             if (ifExists) {
                 return false;
@@ -2383,15 +2329,30 @@ public class AlterCommandHandler implements CommandHandler {
      * The ALTER/MODIFY column-action list. Every item is validated before ANY is applied, so a list
      * whose second item fails — an unknown column, an illegal type change — leaves the table
      * untouched, exactly as a real account behaves.
+     *
+     * @return the sentence the statement answers: that of the last item that set a NOT NULL a column already had,
+     *         or dropped one it did not have, or null for the plain status line (live-verified)
      */
-    private void applyAlterColumnItems(final Table table, final String tableName,
+    private String applyAlterColumnItems(final Table table, final String tableName,
             final List<FrostlakeParser.AlterColumnItemContext> items) {
         for (final FrostlakeParser.AlterColumnItemContext item : items) {
             validateAlterColumnItem(table, tableName, item);
         }
+        String answered = null;
         for (final FrostlakeParser.AlterColumnItemContext item : items) {
-            applyAlterColumnItem(table, tableName, item);
+            final String note = applyAlterColumnItem(table, tableName, item);
+            if (note != null) {
+                answered = note;
+            }
         }
+        return answered;
+    }
+
+    /** A one-row status answer carrying the statement's own sentence. */
+    private static ResultSet statusLine(final String sentence) {
+        final List<Row> rows = new ArrayList<>();
+        rows.add(new Row(Arrays.<Object>asList(sentence)));
+        return new ResultSet(Arrays.asList(new ResultSetColumn("status", StringType.VARCHAR)), rows);
     }
 
     private void validateAlterColumnItem(final Table table, final String tableName,
@@ -2782,7 +2743,12 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
-    private void applyAlterColumnItem(final Table table, final String tableName,
+    /**
+     * Apply one item of the column-action list.
+     *
+     * @return the sentence a NOT NULL that was already there, or was not there to drop, answers, or null
+     */
+    private String applyAlterColumnItem(final Table table, final String tableName,
             final FrostlakeParser.AlterColumnItemContext item) {
         final String colName = visitor.getText(item.identifier());
         final FrostlakeParser.AlterColumnItemActionContext action = item.alterColumnItemAction();
@@ -2796,10 +2762,16 @@ public class AlterCommandHandler implements CommandHandler {
             MaterializedViewValidity.baseTableAltered(catalog, table);
             logger.trace("Altered column {} type in table {}", colName, tableName);
         } else if (action.NULL() != null) {
-            // SET NOT NULL / DROP NOT NULL
-            table.getColumn(colName).setNullable(action.DROP() != null);
+            // SET NOT NULL / DROP NOT NULL. One that changes nothing still runs, and says so; the views over the
+            // table are invalidated all the same (live-verified).
+            final TableColumn column = table.getColumn(colName);
+            final boolean dropping = action.DROP() != null;
+            final String note = column.isNullable() == dropping ? "Not null constraint "
+                + (dropping ? "does not exist" : "already exists") + " for column '" + column.getName() + "'" : null;
+            column.setNullable(dropping);
             MaterializedViewValidity.baseTableAltered(catalog, table);
             logger.trace("Set nullability on column {}.{}", tableName, colName);
+            return note;
         } else if (action.DEFAULT() != null) {
             // SET DEFAULT routes through the same default-expression parser CREATE TABLE uses: raw
             // getText() stored the literal WITH its quotes, so an insert that omitted the column got
@@ -2814,6 +2786,7 @@ public class AlterCommandHandler implements CommandHandler {
                 ? null : visitor.extractStringLiteral(action.STRING_LITERAL()));
             logger.trace("Set/unset comment on column {}.{}", tableName, colName);
         }
+        return null;
     }
 
     /** The transient cap, which turns the modifier into a rule rather than a metadata word. */
@@ -3149,10 +3122,11 @@ public class AlterCommandHandler implements CommandHandler {
             LeveledParameterSettings.requireKind(settings, "NUMBER", queryExecutor);
             LeveledParameterSettings.requireKind(settings, "STRING", queryExecutor);
             LeveledParameterSettings.requireKind(settings, "BOOLEAN", queryExecutor);
-            // The list is judged before a named account is looked for.
+            // The list is judged before a named account is looked for, and before the privilege is asked.
             if (!isThisAccount(named, ifExists)) {
                 return;
             }
+            AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.MODIFY);
             LeveledParameterSettings.requireTaken(settings, catalog);
             LeveledParameterSettings.set(catalog.getAccountParameters(), settings);
             return;
@@ -3166,6 +3140,7 @@ public class AlterCommandHandler implements CommandHandler {
         if (!isThisAccount(named, ifExists)) {
             return;
         }
+        AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.MODIFY);
         LeveledParameterSettings.unset(catalog.getAccountParameters(), settings);
     }
 
@@ -3212,7 +3187,7 @@ public class AlterCommandHandler implements CommandHandler {
             UserProperties.checkUnset(action.userUnsetProperty());
         } else if (action.tagSet() != null || action.tagUnset() != null) {
             if (!ifExists) {
-                catalog.getUser(userName);
+                catalog.getUserExact(userName);
             }
             if (action.tagSet() != null) {
                 for (final FrostlakeParser.TagAssignContext assign : action.tagSet().tagAssign()) {
@@ -3224,11 +3199,14 @@ public class AlterCommandHandler implements CommandHandler {
                 }
             }
         }
-        if (ifExists && !catalog.hasUser(userName)) {
+        if (ifExists && !catalog.hasUserExact(userName)) {
             logger.debug("ALTER USER IF EXISTS: user {} not found", userName);
             return;
         }
-        final User user = catalog.getUser(userName);
+        final User user = catalog.getUserExact(userName);
+        if (action.tagSet() == null && action.tagUnset() == null) {
+            AccountPrivileges.requireOnUser(queryExecutor, user, action);
+        }
         if (parameters != null) {
             parameters.requireTaken(catalog);
         }
@@ -3238,7 +3216,7 @@ public class AlterCommandHandler implements CommandHandler {
             applyTagUnset(user, action.tagUnset());
         } else if (action.RENAME() != null) {
             final String newName = visitor.getText(action.identifier());
-            if (catalog.hasUser(newName)) {
+            if (catalog.hasUserExact(newName)) {
                 throw new RuntimeException(SqlCompilationError.of("Object '" + newName + "' already exists."));
             }
             final String heldName = user.getName();
@@ -3671,6 +3649,97 @@ public class AlterCommandHandler implements CommandHandler {
      * statement can say where the name was. Table's own throw stays as the guard for the callers that
      * hold none — snapshot restore among them.
      */
+    /**
+     * {ALTER | MODIFY} [COLUMN] col SET / UNSET PROJECTION POLICY over a table's or a view's column: one policy per
+     * column, FORCE letting a different one replace it, the policy a SET names resolved before the column, and an UNSET
+     * of none a no-op (live-verified).
+     *
+     * @param target the relation, a view's resolved columns standing for a view
+     * @param column the column, as written
+     * @param policy the policy a SET names, or null for an UNSET
+     * @param force  whether FORCE is written
+     */
+    private void columnProjectionPolicy(final Table target, final FrostlakeParser.IdentifierContext column,
+                                        final FrostlakeParser.QualifiedNameContext policy, final boolean force) {
+        final String colName = visitor.getText(column);
+        final String policyName = policy == null ? null : requireProjectionPolicy(visitor.getText(policy));
+        requireColumn(target, colName, column);
+        final TableColumn col = target.getColumn(colName);
+        if (policyName == null) {
+            col.setProjectionPolicyName(null);
+            return;
+        }
+        if (col.hasProjectionPolicy() && !sameMaskingPolicy(col.getProjectionPolicyName(), policyName) && !force) {
+            // Live's wording, missing spaces and all.
+            throw new RuntimeException("Specified column already attached to another"
+                + " 'PROJECTION_POLICY'.A column cannot be attached to multiple"
+                + " policies of same kind.please drop the current association in"
+                + " order to attach a new policy.");
+        }
+        col.setProjectionPolicyName(policyName);
+    }
+
+    /**
+     * {ALTER | MODIFY} COLUMN col SET / UNSET MASKING POLICY over a table's or a view's column, both spellings alike:
+     * the policy is recorded in full, re-attaching it is a no-op and another needs FORCE, the policy a SET names is
+     * resolved before the column, the column's type must be the policy's, a USING list names the columns a conditional
+     * policy reads, and an UNSET of none is a no-op (live-verified).
+     *
+     * @param target the relation, a view's resolved columns standing for a view
+     * @param column the column, as written
+     * @param policy the policy a SET names, or null for an UNSET
+     * @param using  the USING list, or null
+     * @param force  whether FORCE is written
+     */
+    private void columnMaskingPolicy(final Table target, final FrostlakeParser.IdentifierContext column,
+                                     final FrostlakeParser.QualifiedNameContext policy,
+                                     final FrostlakeParser.IdentifierListContext using, final boolean force) {
+        final String colName = visitor.getText(column);
+        // Recorded in full, the way live reports an attachment however little of the name the statement wrote — and
+        // so that re-attaching the SAME policy under a different spelling stays the no-op live makes it.
+        final String policyName = policy == null ? null
+            : catalog.qualifiedExactName(requireMaskingPolicy(visitor.getText(policy)));
+        requireColumn(target, colName, column);
+        final TableColumn col = target.getColumn(colName);
+        if (policyName == null) {
+            // Detaching what is not attached is a no-op, not an error — the opposite of the row access policy's DROP.
+            col.setMaskingPolicyName(null);
+            col.setMaskingPolicyArguments(null);
+            return;
+        }
+        if (col.getMaskingPolicyName() != null && !sameMaskingPolicy(col.getMaskingPolicyName(), policyName)
+                && !force) {
+            throw new RuntimeException("Specified column already attached to another"
+                + " masking policy. A column cannot be attached to multiple masking"
+                + " policies. Please drop the current association in order to attach a"
+                + " new masking policy.");
+        }
+        // A column another policy reads is masked only by an exempt policy (MaskedArguments).
+        MaskedArguments.requireMaskable(target, col, catalog.findMaskingPolicyExact(policyName));
+        final List<String> arguments = new ArrayList<>();
+        if (using != null) {
+            // A USING argument column that is itself masked is refused unless its own policy is exempt.
+            for (final FrostlakeParser.IdentifierContext argCtx : using.identifier()) {
+                final String argName = visitor.getText(argCtx);
+                final TableColumn argCol = target.hasColumn(argName) ? target.getColumn(argName) : null;
+                if (argCol != null && argCol != col) {
+                    MaskedArguments.requireReadable(catalog, argCol);
+                }
+                arguments.add(argName);
+            }
+        }
+        MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicyExact(policyName), col);
+        col.setMaskingPolicyName(policyName);
+        // A conditional policy reads its further arguments from the columns USING names, in order.
+        col.setMaskingPolicyArguments(arguments);
+    }
+
+    /** A view's columns as a relation whose columns are the view's own, so a policy set on one stays with the view. */
+    private static Table viewColumns(final View view) {
+        return new Table(view.getName(), view.hasResolvedColumns() ? view.getResolvedColumns()
+            : new ArrayList<TableColumn>(), false);
+    }
+
     private void requireColumn(final Table table, final String colName,
                                final FrostlakeParser.IdentifierContext where) {
         try {
@@ -3852,7 +3921,7 @@ public class AlterCommandHandler implements CommandHandler {
             logger.trace("Dropped column {} from table {}", colName, tableName);
         }
         if (!dropping.isEmpty()) {
-            MaterializedViewValidity.baseTableAltered(catalog, table);
+            MaterializedViewValidity.baseTableReshaped(catalog, table);
         }
     }
 

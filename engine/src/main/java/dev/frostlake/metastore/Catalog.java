@@ -461,7 +461,7 @@ public class Catalog {
      */
     public void beginSessionScope(final String database, final String schema, final String warehouse) {
         sessionScope.set(new String[] {storedDatabaseName(database), storedSchemaName(database, schema),
-            warehouse == null ? null : warehouse.toUpperCase(Locale.ROOT)});
+            warehouse == null ? null : NameKeys.keyFor(warehouses, warehouse)});
     }
 
     /**
@@ -926,56 +926,105 @@ public class Catalog {
         }
     }
 
-    // Warehouse Management
+    // Warehouses, compute pools and users are held, as roles are, under their names exactly as stored (see
+    // NameKeys): an unquoted name upper-cased and a quoted one verbatim, so "wh" and WH are two warehouses. A
+    // statement reaches one by its exact name (the *Exact methods); the engine's own Java callers, which spell a
+    // name in any case, go through NameKeys.keyFor.
+
+    /**
+     * Creates a warehouse under the canonical name a statement resolved.
+     *
+     * @param name the warehouse's canonical name
+     * @param size its size
+     */
     public void createWarehouse(final String name, final WarehouseSize size) {
-        if (warehouses.containsKey(name.toUpperCase(Locale.ROOT))) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + name.toUpperCase(Locale.ROOT) + "' already exists."));
+        if (warehouses.containsKey(name)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + name + "' already exists."));
         }
         final Warehouse warehouse = new Warehouse(name, size);
         warehouse.setOwner(currentRoleForOwner());
-        warehouses.put(name.toUpperCase(Locale.ROOT), warehouse);
+        warehouses.put(name, warehouse);
     }
 
+    /** Drops the warehouse answering to that name (see {@link NameKeys#keyFor}). */
     public void dropWarehouse(final String name) {
-        final String upperName = name.toUpperCase(Locale.ROOT);
-        if (!warehouses.containsKey(upperName)) {
+        dropWarehouseExact(NameKeys.keyFor(warehouses, name));
+    }
+
+    /**
+     * Drops the warehouse of exactly that canonical name, the one a statement names.
+     *
+     * @param name the warehouse's canonical name
+     */
+    public void dropWarehouseExact(final String name) {
+        if (!warehouses.containsKey(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
         }
-        if ("COMPUTE_WH".equals(upperName)) {
+        if ("COMPUTE_WH".equals(name)) {
             throw new RuntimeException("Cannot drop default warehouse");
         }
-        warehouses.remove(upperName);
-        forgetCurrentWarehouse(upperName);
+        warehouses.remove(name);
+        forgetCurrentWarehouse(name);
     }
 
     // Compute pools (account-level, like warehouses)
 
     /** A real account phrases the duplicate as a generic object clash, not a pool-specific one. */
     public void createComputePool(final ComputePool pool) {
-        if (computePools.containsKey(pool.getName().toUpperCase(Locale.ROOT))) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + pool.getName().toUpperCase(Locale.ROOT) + "' already exists."));
+        if (computePools.containsKey(pool.getName())) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + pool.getName() + "' already exists."));
         }
         pool.setOwner(currentRoleForOwner());
-        computePools.put(pool.getName().toUpperCase(Locale.ROOT), pool);
+        computePools.put(pool.getName(), pool);
     }
 
+    /** Whether a compute pool answers to that name (see {@link NameKeys#keyFor}). */
     public boolean hasComputePool(final String name) {
-        return computePools.containsKey(name.toUpperCase(Locale.ROOT));
+        return name != null && computePools.containsKey(NameKeys.keyFor(computePools, name));
     }
 
+    /**
+     * Whether the compute pool of exactly that canonical name exists.
+     *
+     * @param name the pool's canonical name
+     * @return whether it exists
+     */
+    public boolean hasComputePoolExact(final String name) {
+        return name != null && computePools.containsKey(name);
+    }
+
+    /** The compute pool answering to that name (see {@link NameKeys#keyFor}). */
     public ComputePool getComputePool(final String name) {
-        final ComputePool pool = computePools.get(name.toUpperCase(Locale.ROOT));
+        return getComputePoolExact(NameKeys.keyFor(computePools, name));
+    }
+
+    /**
+     * The compute pool of exactly that canonical name, the one a statement names.
+     *
+     * @param name the pool's canonical name
+     * @return the pool
+     */
+    public ComputePool getComputePoolExact(final String name) {
+        final ComputePool pool = computePools.get(name);
         if (pool == null) {
-            throw new RuntimeException(
-                SqlCompilationError.doesNotExist("Compute pool", name.toUpperCase(Locale.ROOT)));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Compute pool", name));
         }
         return pool;
     }
 
+    /** Drops the compute pool answering to that name (see {@link NameKeys#keyFor}). */
     public void dropComputePool(final String name) {
-        getComputePool(name);
-        computePools.remove(name.toUpperCase(Locale.ROOT));
+        dropComputePoolExact(NameKeys.keyFor(computePools, name));
+    }
+
+    /**
+     * Drops the compute pool of exactly that canonical name.
+     *
+     * @param name the pool's canonical name
+     */
+    public void dropComputePoolExact(final String name) {
+        getComputePoolExact(name);
+        computePools.remove(name);
     }
 
     /** Every pool, sorted by name — the order SHOW COMPUTE POOLS lists them in. */
@@ -990,14 +1039,35 @@ public class Catalog {
         return pools;
     }
 
-    /** Whether that warehouse exists, without the throw — for the statements that must VALIDATE a
-     *  warehouse they only reference. */
+    /** Whether a warehouse answers to that name (see {@link NameKeys#keyFor}), without the throw. */
     public boolean hasWarehouse(final String name) {
-        return name != null && warehouses.containsKey(name.toUpperCase(Locale.ROOT));
+        return name != null && warehouses.containsKey(NameKeys.keyFor(warehouses, name));
     }
 
+    /**
+     * Whether the warehouse of exactly that canonical name exists — for the statements that VALIDATE a warehouse
+     * they only reference.
+     *
+     * @param name the warehouse's canonical name
+     * @return whether it exists
+     */
+    public boolean hasWarehouseExact(final String name) {
+        return name != null && warehouses.containsKey(name);
+    }
+
+    /** The warehouse answering to that name (see {@link NameKeys#keyFor}). */
     public Warehouse getWarehouse(final String name) {
-        final Warehouse wh = warehouses.get(name.toUpperCase(Locale.ROOT));
+        return getWarehouseExact(NameKeys.keyFor(warehouses, name));
+    }
+
+    /**
+     * The warehouse of exactly that canonical name, the one a statement names.
+     *
+     * @param name the warehouse's canonical name
+     * @return the warehouse
+     */
+    public Warehouse getWarehouseExact(final String name) {
+        final Warehouse wh = warehouses.get(name);
         if (wh == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
         }
@@ -1008,9 +1078,11 @@ public class Catalog {
         return new ArrayList<>(warehouses.values());
     }
 
+    /** Makes the warehouse answering to that name the session's current one; a statement passes its exact name. */
     public void useWarehouse(final String name) {
-        getWarehouse(name); // Validates existence
-        setCurrentWarehouseName(name.toUpperCase(Locale.ROOT));
+        final String key = NameKeys.keyFor(warehouses, name);
+        getWarehouseExact(key);
+        setCurrentWarehouseName(key);
     }
 
     /**
@@ -1030,10 +1102,10 @@ public class Catalog {
      */
     public String sessionStartWarehouse() {
         final String userName = sessionContext == null ? null : sessionContext.getCurrentUser();
-        final User user = userName == null ? null : users.get(userName.toUpperCase(Locale.ROOT));
-        final String wanted = user == null ? null : user.getDefaultWarehouse();
-        if (wanted != null && warehouses.containsKey(wanted.toUpperCase(Locale.ROOT))) {
-            return wanted.toUpperCase(Locale.ROOT);
+        final User user = userName == null ? null : users.get(NameKeys.keyFor(users, userName));
+        final String wanted = user == null ? null : NameKeys.keyFor(warehouses, user.getDefaultWarehouse());
+        if (wanted != null && warehouses.containsKey(wanted)) {
+            return wanted;
         }
         return getCurrentWarehouse();
     }
@@ -1058,26 +1130,17 @@ public class Catalog {
         }
     }
 
-    /** The session that held the warehouse as its current one holds none now. */
+    /** The session that held the warehouse, of exactly that name, as its current one holds none now. */
     private void forgetCurrentWarehouse(final String name) {
-        if (name.equalsIgnoreCase(currentWarehouseName())) {
+        if (name.equals(currentWarehouseName())) {
             setCurrentWarehouseName(null);
         }
     }
 
     // Stage Management — stages now live in Schema
+    /** The schema an object's name belongs to, resolved as {@link #requireOwningSchema} resolves it: exactly. */
     private Schema resolveSchemaForObject(final String qualifiedName) {
-        final String[] parts = QualifiedName.parse(qualifiedName).parts();
-        // A fully qualified name carries its own database and does not consult the session's — naming
-        // db.schema.object while another database is current is exactly what qualifying it fully is for.
-        if (parts.length == 3) return getDatabase(parts[0]).getSchema(parts[1]);
-        final String dbName = getCurrentDatabase();
-        if (dbName == null) throw NoCurrentDatabaseRefusal.forStatement();
-        final Database db = getDatabase(dbName);
-        if (parts.length == 2) return db.getSchema(parts[0]);
-        final String scName = getCurrentSchema();
-        if (scName == null) throw NoCurrentDatabaseRefusal.forStatement();
-        return db.getSchema(scName);
+        return schemaOwning(QualifiedName.parse(qualifiedName));
     }
 
     private String objectName(final String qualifiedName) {
@@ -1193,7 +1256,7 @@ public class Catalog {
         }
         requireAssigned(roleName);
         if (sessionContext != null) {
-            sessionContext.setCurrentRole(roleName);
+            sessionContext.useRole(roleName);
         }
     }
 
@@ -1213,7 +1276,7 @@ public class Catalog {
         // The engine's own session runs as SYSTEM on behalf of the user CURRENT_USER() names.
         final String securityUser = sessionContext.getCurrentUser();
         final String executing = "SYSTEM".equals(securityUser) ? sessionContext.getDisplayUser() : securityUser;
-        final User user = executing == null ? null : users.get(executing.toUpperCase(Locale.ROOT));
+        final User user = executing == null ? null : users.get(NameKeys.keyFor(users, executing));
         if (user == null) {
             return;
         }
@@ -1273,14 +1336,9 @@ public class Catalog {
             }
         } else {
             // ALL is every role granted to the session's USER, not every role of the account: a role nobody
-            // was granted stays out of reach (live-verified).
+            // was granted stays out of reach (live-verified). Which roles those are is worked out as each statement
+            // runs, so a role granted later is in use and one revoked is not (documented).
             sessionContext.setSecondaryRoles("ALL");
-            final User user = users.get(String.valueOf(sessionContext.getCurrentUser()).toUpperCase(Locale.ROOT));
-            if (user != null) {
-                for (final String granted : user.getGrantedRoles()) {
-                    sessionContext.addActiveRole(granted);
-                }
-            }
         }
     }
 
@@ -1550,14 +1608,15 @@ public class Catalog {
         resolveSchemaForObject(name).dropFileFormatExact(objectName(name));
     }
 
+    /** The pipe a statement names, exactly: a quoted name in another case is another pipe (live-verified). */
     public Pipe getPipe(final String name) {
-        return resolveSchemaForObject(name).getPipe(objectName(name));
+        return resolveSchemaForObject(name).getPipeExact(objectName(name));
     }
 
     public List<Stage> getAllStages() {
         try {
             if (getCurrentDatabase() == null || getCurrentSchema() == null) return new ArrayList<>();
-            return getDatabase(getCurrentDatabase()).getSchema(getCurrentSchema()).getStages();
+            return databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema()).getStages();
         } catch (final Exception e) { return new ArrayList<>(); }
     }
 
@@ -1633,7 +1692,7 @@ public class Catalog {
     public List<Tag> getAllTags() {
         try {
             if (getCurrentDatabase() == null || getCurrentSchema() == null) return new ArrayList<>();
-            return getDatabase(getCurrentDatabase()).getSchema(getCurrentSchema()).getTags();
+            return databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema()).getTags();
         } catch (final Exception e) { return new ArrayList<>(); }
     }
 
@@ -1982,34 +2041,55 @@ public class Catalog {
         // SHOW GRANTS TO ROLE ORGADMIN lists no roles).
     }
 
+    /**
+     * Creates a user under the canonical name a statement resolved.
+     *
+     * @param name the user's canonical name
+     */
     public void createUser(final String name) {
-        if (users.containsKey(name.toUpperCase(Locale.ROOT))) {
+        if (users.containsKey(name)) {
             throw new RuntimeException("User already exists: " + name);
         }
         final User user = new User(name);
         user.setOwner(currentRoleForOwner());
         // Automatically grant PUBLIC role to all users
         user.grantRole("PUBLIC");
-        users.put(name.toUpperCase(Locale.ROOT), user);
+        users.put(name, user);
     }
 
+    /**
+     * Creates a user under the canonical name a statement resolved, with a password and a default role.
+     *
+     * @param name        the user's canonical name
+     * @param password    the password, or null
+     * @param defaultRole the default role, or null
+     */
     public void createUser(final String name, final String password, final String defaultRole) {
-        if (users.containsKey(name.toUpperCase(Locale.ROOT))) {
+        if (users.containsKey(name)) {
             throw new RuntimeException("User already exists: " + name);
         }
         final User user = new User(name, password, defaultRole);
         user.setOwner(currentRoleForOwner());
         // Automatically grant PUBLIC role to all users
         user.grantRole("PUBLIC");
-        users.put(name.toUpperCase(Locale.ROOT), user);
+        users.put(name, user);
     }
 
+    /** Drops the user answering to that name (see {@link NameKeys#keyFor}). */
     public void dropUser(final String name) {
-        final String upperName = name.toUpperCase(Locale.ROOT);
-        if (!users.containsKey(upperName)) {
+        dropUserExact(NameKeys.keyFor(users, name));
+    }
+
+    /**
+     * Drops the user of exactly that canonical name, the one a statement names.
+     *
+     * @param name the user's canonical name
+     */
+    public void dropUserExact(final String name) {
+        if (!users.containsKey(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
-        users.remove(upperName);
+        users.remove(name);
     }
 
     private final SecurityObjectStore securityObjects = new SecurityObjectStore();
@@ -2022,13 +2102,34 @@ public class Catalog {
         return securityObjects;
     }
 
-    /** Whether a user of this name exists, for callers that must not throw on a miss. */
+    /** Whether a user answers to that name (see {@link NameKeys#keyFor}), for callers that must not throw. */
     public boolean hasUser(final String name) {
-        return name != null && users.containsKey(name.toUpperCase(Locale.ROOT));
+        return name != null && users.containsKey(NameKeys.keyFor(users, name));
     }
 
+    /**
+     * Whether the user of exactly that canonical name exists.
+     *
+     * @param name the user's canonical name
+     * @return whether it exists
+     */
+    public boolean hasUserExact(final String name) {
+        return name != null && users.containsKey(name);
+    }
+
+    /** The user answering to that name (see {@link NameKeys#keyFor}). */
     public User getUser(final String name) {
-        final User user = users.get(name.toUpperCase(Locale.ROOT));
+        return getUserExact(NameKeys.keyFor(users, name));
+    }
+
+    /**
+     * The user of exactly that canonical name, the one a statement names.
+     *
+     * @param name the user's canonical name
+     * @return the user
+     */
+    public User getUserExact(final String name) {
+        final User user = users.get(name);
         if (user == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
@@ -2377,6 +2478,8 @@ public class Catalog {
         final String bareA = a.getName();
         final String bareB = b.getName();
         StreamSources.bindAll(this);
+        // A materialized view stays with the table it reads, which its name no longer finds (live-verified).
+        MaterializedViewValidity.bindAll(this);
         final ForeignKeyParents parents = ForeignKeyParents.bind(this);
         final String fullA = schemaA.qualifiedName(bareA);
         final String fullB = schemaB.qualifiedName(bareB);
@@ -2487,51 +2590,62 @@ public class Catalog {
         GrantNames.renamed(this, "VIEW", was, target.qualifiedName(view.getName()));
     }
 
+    /**
+     * Renames the user of exactly that canonical name, as ALTER USER … RENAME TO names both.
+     *
+     * @param oldName the user's canonical name
+     * @param newName its new canonical name
+     */
     public void renameUser(final String oldName, final String newName) {
-        final User user = getUser(oldName);
-        if (users.containsKey(newName.toUpperCase(Locale.ROOT))) {
+        final User user = getUserExact(oldName);
+        if (users.containsKey(newName)) {
             throw new RuntimeException("User already exists: " + newName);
         }
-        users.remove(oldName.toUpperCase(Locale.ROOT));
+        users.remove(oldName);
         user.rename(newName);
-        users.put(newName.toUpperCase(Locale.ROOT), user);
+        users.put(newName, user);
     }
 
+    /**
+     * Renames a role, held under its exact name, as ALTER ROLE … RENAME TO names both.
+     *
+     * @param oldName the role's name
+     * @param newName its new canonical name
+     */
     public void renameRole(final String oldName, final String newName) {
         final Role role = getRole(oldName);
-        if (roles.containsKey(newName.toUpperCase(Locale.ROOT))) {
+        if (roles.containsKey(newName)) {
             throw new RuntimeException("Role already exists: " + newName);
         }
         final String heldAs = role.getName();
-        roles.remove(oldName.toUpperCase(Locale.ROOT));
+        roles.remove(heldAs);
         role.rename(newName);
-        roles.put(newName.toUpperCase(Locale.ROOT), role);
+        roles.put(newName, role);
         // The role goes on owning its objects under its new name.
         RoleOwnership.handOver(this, heldAs, role.getName());
     }
 
+    /**
+     * Renames the warehouse of exactly that canonical name, as ALTER WAREHOUSE … RENAME TO names both.
+     *
+     * @param oldName the warehouse's canonical name
+     * @param newName its new canonical name
+     */
     public void renameWarehouse(final String oldName, final String newName) {
-        final Warehouse warehouse = getWarehouse(oldName);
-        if (warehouses.containsKey(newName.toUpperCase(Locale.ROOT))) {
+        final Warehouse warehouse = getWarehouseExact(oldName);
+        if (warehouses.containsKey(newName)) {
             throw new RuntimeException("Warehouse already exists: " + newName);
         }
         final String grantedBefore = warehouse.getName();
-        warehouses.remove(oldName.toUpperCase(Locale.ROOT));
+        warehouses.remove(oldName);
         warehouse.rename(newName);
-        warehouses.put(newName.toUpperCase(Locale.ROOT), warehouse);
+        warehouses.put(newName, warehouse);
         // A renamed warehouse is not followed: the session that had it as current has none (live-verified).
         forgetCurrentWarehouse(oldName);
         GrantNames.renamed(this, "WAREHOUSE", grantedBefore, warehouse.getName());
     }
 
     private Schema resolveSchemaForTable(final String qualifiedName) {
-        final String[] parts = QualifiedName.parse(qualifiedName).parts();
-        if (parts.length == 1) {
-            return getDatabase(getCurrentDatabase()).getSchema(getCurrentSchema());
-        } else if (parts.length == 2) {
-            return getDatabase(getCurrentDatabase()).getSchema(parts[0]);
-        } else {
-            return getDatabase(parts[0]).getSchema(parts[1]);
-        }
+        return schemaOwning(QualifiedName.parse(qualifiedName));
     }
 }

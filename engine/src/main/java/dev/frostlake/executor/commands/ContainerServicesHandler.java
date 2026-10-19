@@ -421,7 +421,7 @@ public final class ContainerServicesHandler {
 
     private String requireComputePool(final FrostlakeParser.IdentifierContext pool) {
         final String name = SqlIdentifiers.canonical(pool);
-        if (!catalog.hasComputePool(name)) {
+        if (!catalog.hasComputePoolExact(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Compute pool", name));
         }
         return name;

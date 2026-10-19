@@ -24,6 +24,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -121,8 +123,13 @@ public class ShowTablesHistoryTest {
         engine.execute("CREATE TABLE v (n INT)");
         assertEquals(List.of("V:dropped", "V:dropped", "V:live"), listed("SHOW TABLES HISTORY LIKE 'V'"));
         assertEquals(List.of("1", "2", "0"), column("SHOW TABLES HISTORY LIKE 'V'", "rows"));
-        final List<String> createdOn = column("SHOW TABLES HISTORY LIKE 'V'", "created_on");
-        assertTrue(createdOn.get(0).compareTo(createdOn.get(1)) <= 0 && createdOn.get(1).compareTo(createdOn.get(2)) <= 0,
+        // Compared as moments, not as text: a whole second prints without its ".000" and sorts after ".001".
+        final List<Instant> createdOn = new ArrayList<>();
+        final ResultSet history = engine.executeQuery("SHOW TABLES HISTORY LIKE 'V'");
+        while (history.next()) {
+            createdOn.add(Instant.from((TemporalAccessor) history.getValue("created_on")));
+        }
+        assertTrue(!createdOn.get(0).isAfter(createdOn.get(1)) && !createdOn.get(1).isAfter(createdOn.get(2)),
             "created_on ascending: " + createdOn);
     }
 

@@ -317,6 +317,15 @@ public class ConcurrentDatabaseEngine {
     }
 
     /**
+     * The user a session's statements run as, as CURRENT_USER() names it: the engine's own, which no session changes.
+     *
+     * @return the user's name
+     */
+    public String currentUser() {
+        return engine.getSecurityManager().getSessionContext().getDisplayUser();
+    }
+
+    /**
      * Capture current engine state back to session
      */
     private void captureSessionContext(final SessionContext session) {

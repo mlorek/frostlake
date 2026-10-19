@@ -138,6 +138,17 @@ public class SessionContext {
         this.currentUser = currentUser != null ? currentUser.toUpperCase(Locale.ROOT) : null;
     }
 
+    /**
+     * The user the session's statements run for, whose granted roles are the ones USE ROLE may activate and the ones
+     * secondary roles ALL stand for: the session's user, or for the engine's own session, which runs as SYSTEM, the
+     * user CURRENT_USER() names.
+     *
+     * @return the user's name, upper-cased
+     */
+    public String getExecutingUser() {
+        return "SYSTEM".equals(currentUser) ? getDisplayUser() : currentUser;
+    }
+
     /** Display name returned by CURRENT_USER() — may differ from the internal security user. */
     public String getDisplayUser() {
         return displayUser != null ? displayUser : currentUser;
@@ -152,7 +163,8 @@ public class SessionContext {
     }
 
     /**
-     * Makes a role the session's primary one.
+     * Makes a role the session's primary one, adding it to the roles the session acts with and taking none away: the
+     * embedded API's switch, which activates any role. USE ROLE goes through {@link #useRole}.
      *
      * @param currentRole the role's own name, as the catalog keeps it: a quoted name as written
      */
@@ -162,6 +174,35 @@ public class SessionContext {
         if (currentRole != null) {
             roles.activeRoles().add(currentRole);
         }
+    }
+
+    /**
+     * Makes a role the session's primary one, as USE ROLE does: the primary role it replaces stops acting for the
+     * session, unless USE SECONDARY ROLES named it, which keeps it as a secondary role.
+     *
+     * @param role the role's own name, as the catalog keeps it: a quoted name as written
+     */
+    public void useRole(final String role) {
+        final SessionRoles roles = ownedRoles();
+        final String former = roles.getCurrentRole();
+        if (former != null && !former.equals(role) && !"PUBLIC".equals(former)
+                && !namesSecondaryRole(roles.getSecondaryRolesValue(), former)) {
+            roles.activeRoles().remove(former);
+        }
+        setCurrentRole(role);
+    }
+
+    /** Whether what USE SECONDARY ROLES asked for names a role: the roles named, joined by commas. */
+    private static boolean namesSecondaryRole(final String asked, final String role) {
+        if (asked == null || asked.isEmpty() || "ALL".equals(asked)) {
+            return false;
+        }
+        for (final String named : asked.split(",")) {
+            if (named.equals(role)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public Set<String> getActiveRoles() {

@@ -33,7 +33,6 @@ import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.metastore.model.Privilege;
-import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -46,10 +45,14 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.GeometryType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StatementResultWidths;
+import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
+import dev.frostlake.values.DecfloatTextNode;
+import dev.frostlake.values.Decfloats;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -117,7 +120,6 @@ final class InsertExecutor {
                     executor.requireSelectIn(ctx.selectStatement(), sourceCteNames);
                 }
                 executor.requirePrivilege(Privilege.INSERT, "TABLE", tableName);
-                executor.getSecurityManager().checkPermission(Privilege.INSERT, SecurableObjectType.TABLE, tableName);
             }
 
             // OVERWRITE replaces the table's contents, but the truncate must happen only AFTER the source
@@ -141,6 +143,8 @@ final class InsertExecutor {
 
             // Parse values - either from VALUES clause or SELECT statement
             final List<List<Object>> valuesList = new ArrayList<>();
+            // The columns a query writes with a declared width that fits theirs, which no value is measured for.
+            boolean[] fitByDeclaredWidth = null;
 
             if (ctx.valueTupleList() != null) {
                 if (ctx.insertColumnList() != null) {
@@ -249,8 +253,10 @@ final class InsertExecutor {
                     requireColumnList(table, ctx.insertColumnList(), selectResult.getColumns().size());
                 }
                 rejectMismatchedSelectColumnTypes(table, columnNames, selectResult.getColumns());
+                fitByDeclaredWidth = fitByDeclaredWidth(table, columnNames, selectResult.getColumns());
+                final boolean[] decfloatMembers = decfloatIntoVariant(table, columnNames, selectResult.getColumns());
                 for (final Row row : selectResult.getRows()) {
-                    valuesList.add(row.getValues());
+                    valuesList.add(asDecfloatMembers(row.getValues(), decfloatMembers));
                 }
             }
 
@@ -293,7 +299,8 @@ final class InsertExecutor {
             for (final List<Object> values : valuesList) {
                 final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values,
                     filledByDefault);
-                executor.enforceColumnConstraintsForDml(table, row, boundToColumnSlot, tableName, filledByDefault);
+                executor.enforceColumnConstraintsForDml(table, row, boundToColumnSlot, tableName, filledByDefault,
+                    fitByDeclaredWidth);
                 storeInsertedRow(table, fullyQualifiedName, row, guard);
                 rowsInserted++;
             }
@@ -323,6 +330,63 @@ final class InsertExecutor {
      * {@code incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]}. A column with NO audited
      * static type is left alone — the channel never guesses.
      */
+    /**
+     * Which source columns are DECFLOATs written into a VARIANT column, which holds each as the DECFLOAT member it is:
+     * {@code TYPEOF(v)} over such a row is DECFLOAT (live-verified). A runtime DECFLOAT is a decimal like a NUMBER's,
+     * so the source column's type decides.
+     */
+    private static boolean[] decfloatIntoVariant(final Table table, final List<String> columnNames,
+                                                 final List<ResultSetColumn> sourceColumns) {
+        final boolean[] marked = new boolean[sourceColumns.size()];
+        for (int i = 0; i < sourceColumns.size(); i++) {
+            final TableColumn target = columnNames != null
+                ? (i < columnNames.size() ? table.getColumn(columnNames.get(i)) : null)
+                : (i < table.getColumns().size() ? table.getColumns().get(i) : null);
+            marked[i] = target != null && target.getDataType() instanceof VariantType
+                && NumericType.isDecfloat(sourceColumns.get(i).getDataType());
+        }
+        return marked;
+    }
+
+    /** A source row with each marked DECFLOAT as the VARIANT holding it (see decfloatIntoVariant). */
+    private static List<Object> asDecfloatMembers(final List<Object> values, final boolean[] marked) {
+        List<Object> out = values;
+        for (int i = 0; i < marked.length && i < values.size(); i++) {
+            if (marked[i] && values.get(i) instanceof Number && !(values.get(i) instanceof Double)) {
+                if (out == values) {
+                    out = new ArrayList<>(values);
+                }
+                out.set(i, DecfloatTextNode.variantOf(Decfloats.of((Number) values.get(i), "TO_DECFLOAT")));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The text columns a query writes from a column whose declared width fits theirs: the write is judged by that
+     * width and not by the value, so the six characters a table function declared VARCHAR(3) answers are written into
+     * a VARCHAR(3) column (live-verified). One flag per column of the table; null when no column is so written.
+     */
+    private static boolean[] fitByDeclaredWidth(final Table table, final List<String> columnNames,
+                                                final List<ResultSetColumn> sourceColumns) {
+        boolean[] fit = null;
+        final int pairs = columnNames != null
+            ? Math.min(columnNames.size(), sourceColumns.size())
+            : Math.min(table.getColumns().size(), sourceColumns.size());
+        for (int i = 0; i < pairs; i++) {
+            final TableColumn target = columnNames != null
+                ? table.getColumn(columnNames.get(i)) : table.getColumns().get(i);
+            final DataType source = sourceColumns.get(i).getStaticType();
+            if (target != null && target.getDataType() instanceof StringType && source instanceof StringType
+                    && !((StringType) source).isUnsized()
+                    && ((StringType) source).getMaxLength() <= ((StringType) target.getDataType()).getMaxLength()) {
+                fit = fit != null ? fit : new boolean[table.getColumns().size()];
+                fit[table.getColumns().indexOf(target)] = true;
+            }
+        }
+        return fit;
+    }
+
     private void rejectMismatchedSelectColumnTypes(final Table table, final List<String> columnNames,
                                                    final List<ResultSetColumn> sourceColumns) {
         final int pairs = columnNames != null
@@ -750,6 +814,30 @@ final class InsertExecutor {
         storeInsertedRow(table, fullyQualifiedName, row, guard);
     }
 
+    /**
+     * Write rows a load already shaped and checked, as INSERT writes its rows: buffered in the statement's
+     * transaction, begun here when none is, or written at once and logged where the transaction is applied as it
+     * goes. One guard refuses a key the rows repeat.
+     *
+     * @param table              the table loaded
+     * @param fullyQualifiedName its storage name
+     * @param rows               the rows, in load order
+     */
+    void storeLoadedRows(final Table table, final String fullyQualifiedName, final List<Row> rows) {
+        if (!executor.getTransactionManager().hasActiveTransaction()) {
+            executor.getTransactionManager().beginTransaction();
+        }
+        DeferredInsertGuard guard = null;
+        if (executor.isDeferredApply()) {
+            guard = new DeferredInsertGuard(table, executor.getStorageEngine().getTableStorage(fullyQualifiedName),
+                executor.getTransactionManager().getCurrentTransaction().getWriteSet(), fullyQualifiedName,
+                executor.getStorageEngine().isEnforcePrimaryKey(), executor.getStorageEngine().isEnforceUniqueKey());
+        }
+        for (final Row row : rows) {
+            storeInsertedRow(table, fullyQualifiedName, row, guard);
+        }
+    }
+
     /** Write a row whose constraints have been enforced: buffered in the transaction's write set, or at once. */
     private void storeInsertedRow(final Table table, final String fullyQualifiedName, final Row row,
                                   final DeferredInsertGuard guard) {
@@ -892,9 +980,7 @@ final class InsertExecutor {
                     final String tableName = executor.getQualifiedName(into.qualifiedName());
                     final Table target = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
-                    if (executor.getSecurityManager() != null) {
-                        executor.getSecurityManager().checkPermission(Privilege.INSERT, SecurableObjectType.TABLE, tableName);
-                    }
+                    executor.requirePrivilege(Privilege.INSERT, "TABLE", tableName);
                     List<String> columnNames = null;
                     if (into.columnListOptional() != null) {
                         columnNames = new ArrayList<>();

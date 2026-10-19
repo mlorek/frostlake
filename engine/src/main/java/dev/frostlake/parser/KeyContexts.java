@@ -19,6 +19,7 @@ package dev.frostlake.parser;
 import org.antlr.v4.runtime.ParserRuleContext;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -79,13 +80,34 @@ public final class KeyContexts {
     }
 
     /**
-     * The members of a ROLLUP's or a CUBE's list, in order.
+     * The members of a ROLLUP's or a CUBE's list, in order, a member that is a ROW read as its values.
      *
      * @param list the list
-     * @return each member's key
+     * @return each member's keys
      */
     public static List<ParserRuleContext> members(final FrostlakeParser.GroupByColumnListContext list) {
-        return keys(list.booleanExpr());
+        final List<ParserRuleContext> keys = new ArrayList<>();
+        for (final List<ParserRuleContext> unit : units(list)) {
+            keys.addAll(unit);
+        }
+        return keys;
+    }
+
+    /**
+     * The units a ROLLUP or a CUBE combines, in order: each member's key, and a member that is a ROW its values
+     * together, one composite unit — {@code ROLLUP ((a, b))} groups by a and b and then by nothing (live-verified).
+     *
+     * @param list the list
+     * @return each unit's keys
+     */
+    public static List<List<ParserRuleContext>> units(final FrostlakeParser.GroupByColumnListContext list) {
+        final List<List<ParserRuleContext>> units = new ArrayList<>();
+        for (final FrostlakeParser.BooleanExprContext member : list.booleanExpr()) {
+            final List<FrostlakeParser.ExpressionContext> values = RowListItems.valuesOf(member);
+            units.add(values == null ? Collections.singletonList(key(member))
+                : new ArrayList<ParserRuleContext>(values));
+        }
+        return units;
     }
 
     /**

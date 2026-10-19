@@ -20,7 +20,13 @@ import dev.frostlake.functions.AggregateFunction;
 
 /** Accumulator for {@link StdDevPop}. */
 public class StdDevPopAccumulator
-        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
+        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator, DecfloatAwareAccumulator {
+
+    /** The values of a DECFLOAT argument, whose statistic is a DECFLOAT of 38 digits (see DecfloatMoments). */
+    private final DecfloatMoments decfloatMoments = new DecfloatMoments();
+
+    private boolean decfloat;
+
     private final WelfordMoments moments = new WelfordMoments();
     private final SquaredSumMoments floatMoments = new SquaredSumMoments();
     private int maxScale;
@@ -39,8 +45,18 @@ public class StdDevPopAccumulator
         this.approximate = this.approximate || approximate;
     }
 
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
+
     @Override
     public void accumulate(final Object v) {
+        if (decfloat) {
+            decfloatMoments.add(v);
+            return;
+        }
         if (v == null) return;
         final double number = NumericAggregateInput.asDouble(v);
         moments.add(number);
@@ -51,6 +67,9 @@ public class StdDevPopAccumulator
 
     @Override
     public Object getResult() {
+        if (decfloat) {
+            return decfloatMoments.heldDeviation(false);
+        }
         if (moments.count() == 0) return null;
         // A FLOAT input is read through the account's sums, an exact one through the running mean.
         final double variance = approximate ? floatMoments.populationVariance() : moments.populationVariance();
@@ -60,6 +79,7 @@ public class StdDevPopAccumulator
 
     @Override
     public void reset() {
+        decfloatMoments.reset();
         moments.reset();
         floatMoments.reset();
         maxScale = 0;
@@ -69,6 +89,7 @@ public class StdDevPopAccumulator
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
         final StdDevPopAccumulator o = (StdDevPopAccumulator) other;
+        decfloatMoments.merge(o.decfloatMoments);
         moments.merge(o.moments);
         floatMoments.merge(o.floatMoments);
         maxScale = Math.max(maxScale, o.maxScale);

@@ -43,8 +43,9 @@ import java.util.Set;
  *       run.</li>
  * </ul>
  *
- * <p>WHERE and a select item read a column of the relation first, so a relation that carries the name answers it
- * there.
+ * <p>WHERE, GROUP BY, HAVING, QUALIFY and a select item read a column of the relation first, so a relation that
+ * carries the name answers it there: {@code SELECT id, COUNT(*) AS id … GROUP BY id HAVING id > 5} groups and filters
+ * by the column.
  *
  * <p>A position ({@code ORDER BY 2}) and {@code GROUP BY ALL} name no column and pass.
  */
@@ -106,10 +107,10 @@ final class AmbiguousOutputNames {
         }
         refuseReferences(select.whereClause(), unanswered);
         if (select.groupByClause() != null && select.groupByClause().ALL() == null) {
-            refuseReferences(select.groupByClause(), ambiguous);
+            refuseReferences(select.groupByClause(), unanswered);
         }
-        refuseReferences(select.havingClause(), ambiguous);
-        refuseReferences(select.qualifyClause(), ambiguous);
+        refuseReferences(select.havingClause(), unanswered);
+        refuseReferences(select.qualifyClause(), unanswered);
         if (statement != null) {
             refuseReferences(statement.orderByClause(), repeated);
         }

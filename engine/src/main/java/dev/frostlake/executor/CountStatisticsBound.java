@@ -94,6 +94,16 @@ final class CountStatisticsBound {
         this.sourceRows = sourceRows;
     }
 
+    /** The relation the clause reads. */
+    Table table() {
+        return table;
+    }
+
+    /** The clause's relations by alias. */
+    Map<String, Table> aliases() {
+        return aliasToTable;
+    }
+
     /** Whether the clause reads past its table's statistics bound. */
     boolean isUnbounded() {
         if (unbounded == null) {

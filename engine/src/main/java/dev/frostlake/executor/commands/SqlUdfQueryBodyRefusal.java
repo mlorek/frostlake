@@ -56,8 +56,9 @@ import java.util.Locale;
  * </ul>
  * A body the account reads with a bare select-list alias this grammar lacks — {@code SELECT CASE … END CASE} —
  * stays fail-open, since the account creates and calls it. So does a query this grammar stops reading on a token
- * before the query's end, which the caller leaves alone: the account's grammar reads more than this one, and
- * creates {@code SELECT MAX(n) FROM t ORDER BY ALL}.
+ * before the query's end, which the caller leaves alone — the account's grammar reads more than this one, and
+ * creates {@code SELECT MAX(n) FROM t ORDER BY ALL} — unless the stop is a fault every grammar has (see
+ * {@link #stopsAtSureFault}).
  */
 final class SqlUdfQueryBodyRefusal {
 
@@ -85,6 +86,40 @@ final class SqlUdfQueryBodyRefusal {
     };
 
     private SqlUdfQueryBodyRefusal() {
+    }
+
+    /**
+     * Whether the framed body's parse stopped on a fault every grammar has: a word right after a name that is already
+     * an alias or a relation's — {@code SELECT a a a FROM t}, {@code SELECT a b c}, {@code FROM t x y},
+     * {@code FROM t t2 t3} — or a text after TOP, {@code SELECT TOP 'x' a FROM t}. The account refuses such a body
+     * at its first word as it refuses one that runs out (live-verified).
+     *
+     * @param tokens  the framed body's spoken tokens
+     * @param stopped the token the parse stopped on, or null
+     * @return whether the stop is such a fault
+     */
+    static boolean stopsAtSureFault(final List<Token> tokens, final Token stopped) {
+        if (stopped == null) {
+            return false;
+        }
+        Token before = null;
+        for (final Token token : tokens) {
+            if (token.getStartIndex() >= stopped.getStartIndex()) {
+                break;
+            }
+            before = token;
+        }
+        if (before == null) {
+            return false;
+        }
+        final boolean wordAfterName = isName(stopped) && isName(before);
+        final boolean textAfterTop = stopped.getType() == FrostlakeLexer.STRING_LITERAL
+            && before.getType() == FrostlakeLexer.TOP;
+        return wordAfterName || textAfterTop;
+    }
+
+    private static boolean isName(final Token token) {
+        return token.getType() == FrostlakeLexer.IDENTIFIER || token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER;
     }
 
     /**

@@ -74,7 +74,7 @@ public final class InferSchemaStages implements StagedFileSchemas {
             files.add(new InferenceFile(path, staged.metadataFileName(path), staged.relative(path),
                 storedFolder + staged.relative(path)));
         }
-        final SchemaScanOptions options = new SchemaScanOptions(format.getType(), format.getOptions(),
+        final SchemaScanOptions options = new SchemaScanOptions(format,
             "ICEBERG".equalsIgnoreCase(String.valueOf(arguments.get("KIND"))),
             Boolean.TRUE.equals(arguments.get("IGNORE_CASE")), count(arguments.get("MAX_RECORDS_PER_FILE")));
         return SchemaInference.infer(files, options);

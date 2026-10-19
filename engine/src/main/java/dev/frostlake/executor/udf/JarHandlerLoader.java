@@ -17,6 +17,7 @@
 package dev.frostlake.executor.udf;
 
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stage;
 
@@ -331,7 +332,8 @@ public final class JarHandlerLoader {
 
         final Stage stage;
         try {
-            stage = catalog.getStage(stageName);
+            // The entry names the stage as an identifier does: quoted parts kept, the rest folded.
+            stage = catalog.getStage(SqlIdentifiers.canonicalText(stageName));
         } catch (final RuntimeException e) {
             logger.warn("IMPORTS stage lookup failed for '{}' ({}) — treating the reference as a local path",
                 stageName, e.getMessage());

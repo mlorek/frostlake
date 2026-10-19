@@ -17,8 +17,8 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.FileFormatClause;
 import dev.frostlake.executor.FileFormatReference;
-import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
@@ -45,7 +45,6 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
-import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
@@ -59,7 +58,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -355,14 +353,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
             return;
         }
         final String written = String.join(".", parts);
-        final Schema container = ddl.resolveSchemaFromQualifiedName(written);
-        Table targetTable;
-        try {
-            targetTable = container.getTable(parts.get(parts.size() - 1));
-        } catch (final RuntimeException e) {
-            targetTable = null;
-        }
-        if (targetTable == null) {
+        final Schema container = ddl.resolveSchemaFromQualifiedName(QualifiedName.join(parts.toArray(new String[0])));
+        // Named exactly: a quoted name in another case is another table, which is not there.
+        if (container.tableExact(parts.get(parts.size() - 1)) == null) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Table '" + written + "' does not exist"));
         }
@@ -375,9 +368,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
         if (target == null) {
             return parts;
         }
-        parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(target.nameStartPart())));
+        parts.add(ParseTreeText.namePartText(target.nameStartPart()));
         for (final FrostlakeParser.NamePartContext part : target.namePart()) {
-            parts.add(SqlIdentifiers.canonicalText(ParseTreeText.namePartText(part)));
+            parts.add(ParseTreeText.namePartText(part));
         }
         return parts;
     }
@@ -434,7 +427,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         if (parts.isEmpty()) {
             return null;
         }
-        return ddl.resolveSchemaFromQualifiedName(String.join(".", parts)).getStage(parts.get(parts.size() - 1));
+        return ddl.resolveSchemaFromQualifiedName(QualifiedName.join(parts.toArray(new String[0])))
+            .getStageExact(parts.get(parts.size() - 1));
     }
 
     /**
@@ -583,7 +577,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             throw new RuntimeException(
                 "Invalid compute pool name: '" + poolName + "'. Name must be uppercase.");
         }
-        if (ifNotExists && catalog.hasComputePool(poolName)) {
+        if (ifNotExists && catalog.hasComputePoolExact(poolName)) {
             logger.debug("Compute pool already exists (IF NOT EXISTS): {}", poolName);
             return null;
         }
@@ -703,7 +697,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     public Object handleCreateWarehouse(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String warehouseName = getText(ctx.identifier(0));
         if (ctx.or_replace() != null) {
-            try { catalog.dropWarehouse(warehouseName); } catch (final RuntimeException ignored) {}
+            try { catalog.dropWarehouseExact(warehouseName); } catch (final RuntimeException ignored) {}
         }
         try {
             WarehouseSize size = WarehouseSize.X_SMALL;
@@ -713,14 +707,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             catalog.createWarehouse(warehouseName, size);
 
-            final Warehouse warehouse = catalog.getWarehouse(warehouseName);
+            final Warehouse warehouse = catalog.getWarehouseExact(warehouseName);
             if (ctx.warehouseProperties() != null) {
                 try {
                     ddl.applyWarehouseProperties(warehouse, ctx.warehouseProperties());
                     applyWarehouseTypeDefaults(warehouse, ctx.warehouseProperties());
                 } catch (final RuntimeException refused) {
                     // A refused property leaves no warehouse behind.
-                    catalog.dropWarehouse(warehouseName);
+                    catalog.dropWarehouseExact(warehouseName);
                     throw refused;
                 }
             }
@@ -754,26 +748,6 @@ public class CreateInfrastructureHandler implements CommandHandler {
     /** Whether a word names a stage property a CREATE STAGE or an ALTER STAGE … SET takes by a plain name. */
     static boolean isStageOption(final String name) {
         return STAGE_OPTION_NAMES.contains(name);
-    }
-
-    /** The load-format types a real account accepts for FILE_FORMAT TYPE, live-refused otherwise. */
-    private static void requireKnownFormatType(final String type, final String written) {
-        FileFormatSurfaces.requireLegalValue("TYPE", type, written);
-    }
-
-    /** One parenthesized option's value AS WRITTEN, quotes and all, or null when it is not there. */
-    private String parenOptionText(final FrostlakeParser.ParenOptionListContext list, final String key) {
-        for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
-            if (key.equals(option.optionKey().getText().toUpperCase(Locale.ROOT)) && option.copyOptionValue() != null) {
-                return option.copyOptionValue().getText();
-            }
-        }
-        return null;
-    }
-
-    /** An option's value AS WRITTEN, for a refusal that echoes what the statement said. */
-    private String optionText(final FrostlakeParser.CopyOptionValueContext v) {
-        return v == null ? null : v.getText();
     }
 
     /** Collect a parenthesized option list's key=value pairs (values unquoted, keys upper). */
@@ -921,12 +895,21 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             // The listing keeps the name as the statement wrote it.
                             formatOptions.put("FORMAT_NAME", ddl.getOriginalText(option.qualifiedName()));
                         } else if (option.parenOptionList() != null) {
-                            FileFormatReference.require(catalog,
-                                SqlIdentifiers.canonicalText(formatNameFromOptions(option.parenOptionList())));
-                            fileFormat = formatFromOptions(option.parenOptionList(), fileFormat);
-                            collectParenOptions(option.parenOptionList(), formatOptions);
-                            requireKnownFormatType(formatOptions.get("TYPE"),
-                                parenOptionText(option.parenOptionList(), "TYPE"));
+                            // Read and judged as every FILE_FORMAT list is (see FileFormatClause): the format
+                            // FORMAT_NAME names wins, else TYPE as written, and the options are kept as a named
+                            // format keeps its own.
+                            final FileFormatClause written = FileFormatClause.read(option.parenOptionList(),
+                                new FileFormat("WRITTEN", "CSV"), true);
+                            if (written.formatName() != null) {
+                                FileFormatReference.require(catalog,
+                                    SqlIdentifiers.canonicalText(written.formatName()));
+                                fileFormat = written.formatName();
+                                formatOptions.put("FORMAT_NAME", written.formatNameWritten());
+                            } else if (written.writtenType() != null) {
+                                fileFormat = written.writtenType();
+                                formatOptions.put("TYPE", written.writtenType());
+                            }
+                            formatOptions.putAll(written.format().getOptions());
                         }
                     } else if (option.ENCRYPTION() != null) {
                         encryption = option.booleanValue() != null && option.booleanValue().TRUE() != null;
@@ -1161,7 +1144,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
             fileFormat.setOwner(TemporaryObjectStatements.isTemporary(ctx) ? catalog.currentRoleForOwner()
                 : FutureGrants.ownerOfNew(catalog, "FILE_FORMAT", catalog.requireOwningSchema(
                     QualifiedName.of(nameParts)), simpleName));
-            applyFileFormatOptions(fileFormat, ctx.copyFormatOption());
+            final FileFormatClause written = FileFormatClause.read(ctx.copyFormatOption(), fileFormat, true, false);
+            if (written.comment() != null) {
+                fileFormat.setComment(written.comment());
+            }
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 fileFormat.setComment(comment);
@@ -1225,144 +1211,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
             GrantNames.renamed(catalog, "FILE_FORMAT", grantedBefore,
                 catalog.resolveOwningSchema(newName).qualifiedName(newSimple));
         } else {
-            applyFileFormatOptions(fileFormat, action.copyFormatOption(), false);
+            // An ALTER may not change the type; its COMMENT is the format's.
+            final FileFormatClause written = FileFormatClause.read(action.copyFormatOption(), fileFormat, false, false);
+            if (written.comment() != null) {
+                fileFormat.setComment(written.comment());
+            }
         }
         // Every ALTER is DDL on the file format, a rename included: its LAST_ALTERED moves.
         fileFormat.markDdl();
         return null;
-    }
-
-    private void applyFileFormatOptions(final FileFormat fileFormat, final List<FrostlakeParser.CopyFormatOptionContext> options) {
-        applyFileFormatOptions(fileFormat, options, true);
-    }
-
-    /**
-     * A file-format parameter may be given ONCE — live calls the repeat a conflict rather than a
-     * duplicate property, in its own message shape (live-verified on TYPE and SKIP_HEADER). The
-     * parameter's name is its first token, read off the parse tree.
-     */
-    static void rejectDuplicateFormatOptions(final List<FrostlakeParser.CopyFormatOptionContext> options) {
-        final Set<String> seen = new HashSet<>();
-        for (final FrostlakeParser.CopyFormatOptionContext opt : options) {
-            final String name = opt.getStart().getText().toUpperCase(Locale.ROOT);
-            if (!seen.add(name)) {
-                throw new RuntimeException(SqlCompilationError.conflictingFileFormatParameter(name));
-            }
-        }
-    }
-
-    /**
-     * Apply and VALIDATE the options against the account's measured surface: an unknown name is
-     * an invalid parameter, a bad TYPE/COMPRESSION/negative-SKIP_HEADER value refuses with the
-     * invalid-value shape, an option outside the effective type's tree refuses {@code Option X is
-     * not valid for file format type Y.}, and ALTER may not change the type at all.
-     */
-    private void applyFileFormatOptions(final FileFormat fileFormat,
-                                        final List<FrostlakeParser.CopyFormatOptionContext> options,
-                                        final boolean typeChangeable) {
-        rejectDuplicateFormatOptions(options);
-        for (final FrostlakeParser.CopyFormatOptionContext opt : options) {
-            if (opt.TYPE() != null) {
-                final String newType = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("TYPE", newType, optionText(opt.copyOptionValue()));
-                if (!typeChangeable && !newType.equalsIgnoreCase(fileFormat.getType())) {
-                    throw new RuntimeException(SqlCompilationError.of(
-                        "File format type cannot be changed."));
-                }
-                fileFormat.setType(newType.toUpperCase(Locale.ROOT));
-            } else if (opt.FIELD_DELIMITER() != null) {
-                final String field_delimiterValue = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("FIELD_DELIMITER", field_delimiterValue, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("FIELD_DELIMITER", field_delimiterValue);
-            } else if (opt.SKIP_HEADER() != null) {
-                final String headerCount = (opt.MINUS() != null ? "-" : "")
-                    + opt.INTEGER_LITERAL().getText();
-                FileFormatSurfaces.requireLegalValue("SKIP_HEADER", headerCount);
-                fileFormat.setOption("SKIP_HEADER", headerCount);
-            } else if (opt.DATE_FORMAT() != null) {
-                fileFormat.setOption("DATE_FORMAT", fileFormatOptValue(opt.copyOptionValue()));
-            } else if (opt.COMPRESSION() != null) {
-                final String codec = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("COMPRESSION", codec, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("COMPRESSION", codec);
-            } else if (opt.RECORD_DELIMITER() != null) {
-                final String record_delimiterValue = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("RECORD_DELIMITER", record_delimiterValue, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("RECORD_DELIMITER", record_delimiterValue);
-            } else if (opt.ESCAPE() != null) {
-                final String escapeValue = fileFormatOptValue(opt.copyOptionValue());
-                FileFormatSurfaces.requireLegalValue("ESCAPE", escapeValue, optionText(opt.copyOptionValue()));
-                fileFormat.setOption("ESCAPE", escapeValue);
-            } else if (opt.identifier() != null && opt.copyOptionValue() != null) {
-                final String optionName = getText(opt.identifier());
-                if ("COMMENT".equalsIgnoreCase(optionName)) {
-                    // COMMENT describes the format object itself; it is not one of its format options.
-                    fileFormat.setComment(fileFormatOptValue(opt.copyOptionValue()));
-                } else {
-                    if (!FileFormatSurfaces.isKnownOption(optionName)) {
-                        throw ParameterRegistry.invalidSessionParameter(optionName.toUpperCase(Locale.ROOT));
-                    }
-                    final String value = fileFormatOptValue(opt.copyOptionValue());
-                    FileFormatSurfaces.requireLegalValue(optionName, value, optionText(opt.copyOptionValue()));
-                    fileFormat.setOption(optionName.toUpperCase(Locale.ROOT), value);
-                }
-            } else if (opt.identifier() != null && opt.LPAREN() != null) {
-                // A string-list option such as NULL_IF = ('\\N', '') — NULL_IF keeps each value whole (see
-                // FileFormat.getNullIfValues); any other list is stored comma-joined so the named format
-                // round-trips without a parse error (COPY applies NULL_IF from its inline form).
-                final List<String> values = new ArrayList<>();
-                if (opt.stringLiteralList() != null) {
-                    for (final TerminalNode node : opt.stringLiteralList().STRING_LITERAL()) {
-                        values.add(ddl.extractStringLiteral(node));
-                    }
-                }
-                final String optionName = getText(opt.identifier()).toUpperCase(Locale.ROOT);
-                if ("NULL_IF".equals(optionName)) {
-                    fileFormat.setNullIfValues(values);
-                } else {
-                    fileFormat.setOption(optionName, String.join(",", values));
-                }
-            }
-        }
-        // Cross-type membership fires against the EFFECTIVE type, wherever TYPE sat in the list.
-        for (final String key : fileFormat.getOptions().keySet()) {
-            if (!"TYPE".equalsIgnoreCase(key)
-                    && !FileFormatSurfaces.isOptionValidFor(fileFormat.getType(), key)) {
-                throw new RuntimeException(SqlCompilationError.of("Option " + key.toUpperCase(Locale.ROOT)
-                    + " is not valid for file format type " + fileFormat.getType().toUpperCase(Locale.ROOT) + "."));
-            }
-        }
-    }
-
-    private String fileFormatOptValue(final FrostlakeParser.CopyOptionValueContext v) {
-        if (v == null) {
-            return null;
-        }
-        return v.STRING_LITERAL() != null ? ddl.extractStringLiteral(v.STRING_LITERAL()) : v.getText();
-    }
-
-
-    /** The format a parenthesized FILE_FORMAT group names: FORMAT_NAME wins, else TYPE, else the default. */
-    private String formatFromOptions(final FrostlakeParser.ParenOptionListContext options, final String fallback) {
-        String result = fallback;
-        for (final FrostlakeParser.ParenOptionContext option : options.parenOption()) {
-            final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
-            if (!"FORMAT_NAME".equals(key) && !"TYPE".equals(key)) {
-                continue;
-            }
-            String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : null;
-            if (value == null) {
-                continue;
-            }
-            if (value.startsWith("'") && value.endsWith("'") && value.length() >= 2) {
-                value = value.substring(1, value.length() - 1);
-            }
-            result = value;
-            if ("FORMAT_NAME".equals(key)) {
-                return result;
-            }
-        }
-        return result;
     }
 
     /**
@@ -1389,22 +1246,4 @@ public class CreateInfrastructureHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("invalid URL: " + url));
         }
     }
-
-
-    /** The FORMAT_NAME a FILE_FORMAT group names, or null where it declares a TYPE instead. */
-    private String formatNameFromOptions(final FrostlakeParser.ParenOptionListContext options) {
-        for (final FrostlakeParser.ParenOptionContext option : options.parenOption()) {
-            if (!"FORMAT_NAME".equals(option.optionKey().getText().toUpperCase(Locale.ROOT))) {
-                continue;
-            }
-            final String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : null;
-            if (value == null) {
-                return null;
-            }
-            return value.startsWith("'") && value.endsWith("'") && value.length() >= 2
-                ? value.substring(1, value.length() - 1) : value;
-        }
-        return null;
-    }
-
 }

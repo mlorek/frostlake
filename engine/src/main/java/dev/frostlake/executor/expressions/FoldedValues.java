@@ -57,6 +57,11 @@ public final class FoldedValues {
         if (value == null || declared == null) {
             return value;
         }
+        if (NumericType.isDecfloat(declared)) {
+            // A DECFLOAT fold hands back the chosen branch as a DECFLOAT: 38 significant digits, its point where
+            // the value puts it, a FLOAT at its exact binary value (see Decfloats).
+            return ValueCaster.castValue(value, "DECFLOAT");
+        }
         if (declared instanceof NumericType) {
             if (NumericType.isApproximate(declared)) {
                 return value instanceof Number

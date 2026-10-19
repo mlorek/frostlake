@@ -52,7 +52,7 @@ public class CurrentAvailableRoles extends BuiltInFunction {
         }
         roles.addAll(sessionContext.getActiveRoles());
         try {
-            final User user = catalog.getUser(sessionContext.getCurrentUser());
+            final User user = catalog.getUser(sessionContext.getExecutingUser());
             roles.addAll(user.getGrantedRoles());
         } catch (final RuntimeException noSuchUser) {
             // A session user without a catalog entry still has its active roles.

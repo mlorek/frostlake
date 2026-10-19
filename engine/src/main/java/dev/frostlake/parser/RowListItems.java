@@ -134,7 +134,7 @@ final class RowListItems {
     }
 
     /** The values of the row an expression is, a row among them read as its own values; null for no row. */
-    private static List<FrostlakeParser.ExpressionContext> valuesOf(final ParseTree written) {
+    static List<FrostlakeParser.ExpressionContext> valuesOf(final ParseTree written) {
         final FrostlakeParser.RowExprContext row = rowBehind(written);
         if (row == null) {
             return null;

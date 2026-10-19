@@ -33,7 +33,8 @@ import dev.frostlake.transaction.TransactionManager;
  * 2086 / 22000; a statement refused because the session's transaction was aborted 624 / 57014 and the COMMIT of
  * such a transaction 670 / 57014; a statement that would end another scope's transaction 90239 / 25000 and a
  * block or a procedure that left its own open 90232 / 25000; a body ended past the depth bodies run to 90235 /
- * 42601; an expression a VALUES clause does not take 2014 / 22000 and a text that is no JSON 100069 / 22P02; an
+ * 42601; an expression a VALUES clause does not take 2014 / 22000, an INSERT whose values do not match its columns
+ * 2020 / 21S01, a result asked of a statement that failed 711 / 02000 and a text that is no JSON 100069 / 22P02; an
  * OPEN of an open cursor 92215 / P0000 and a CLOSE of one that is not open 92201 / P0000; a RESULTSET read before
  * anything was given to it 92212 / P0000. A refusal of no known family reads 100351 / P0000. A hybrid table's
  * primary key already held is 200001 / 22000 and a foreign key it breaks 200009 / 22000 (documented).
@@ -151,6 +152,12 @@ final class HandlerErrorCode {
         }
         if (message.contains("Invalid expression [") && message.contains("] in VALUES clause")) {
             return new HandlerErrorCode(2014, "22000");
+        }
+        if (message.contains("Insert value list does not match column list")) {
+            return new HandlerErrorCode(2020, "21S01");
+        }
+        if (message.contains(" has no result because it failed")) {
+            return new HandlerErrorCode(711, "02000");
         }
         if (message.contains("Error parsing JSON: ")) {
             return new HandlerErrorCode(100069, "22P02");

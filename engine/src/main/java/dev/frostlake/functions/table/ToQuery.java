@@ -63,11 +63,20 @@ public class ToQuery extends TableFunction {
         return run(sqlText, binds);
     }
 
+    /**
+     * The text, and any further positional argument read and left unused: {@code TO_QUERY('SELECT 1 AS x',
+     * 'extra')} answers 1, where each must be a string as the text must (live-verified).
+     */
     @Override
     public ResultSet execute(final List<Object> positionalArgs) {
-        if (positionalArgs.size() != 1) {
+        if (positionalArgs.isEmpty()) {
             throw new RuntimeException(
                 "TO_QUERY requires a SQL text argument (binds are passed as named arguments)");
+        }
+        for (final Object argument : positionalArgs) {
+            if (!(argument instanceof String)) {
+                throw new RuntimeException(NOT_A_STRING);
+            }
         }
         return run(positionalArgs.get(0), new HashMap<>());
     }

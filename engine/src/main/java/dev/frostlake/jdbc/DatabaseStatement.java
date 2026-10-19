@@ -388,6 +388,21 @@ public class DatabaseStatement implements Statement {
         return currentResultSet;
     }
 
+    /**
+     * The grid behind the current result whichever way the driver reports it, as a result set of its own: the rows
+     * of a query, and the count grid or status line of a statement the driver reports as an update count. Null past
+     * the end.
+     *
+     * @return the current result's grid, or null
+     * @throws SQLException when the statement is closed
+     */
+    public ResultSet getResultGrid() throws SQLException {
+        checkClosed();
+        final int position = walk.position();
+        return position < pendingResultData.size()
+            ? new DatabaseResultSet(this, pendingResultData.get(position)) : null;
+    }
+
     /** The current result's update count: -1 when it answers rows, and once the walk has passed the end. */
     @Override
     public int getUpdateCount() throws SQLException {

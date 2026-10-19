@@ -16,6 +16,8 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.http.SessionNamespace;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -223,10 +225,34 @@ public class DatabaseConnection implements Connection {
         this.catalog = catalog;
     }
 
+    /**
+     * The URL this connection answers with: {@code jdbc:frostlake://host:port}, and the database it opened in.
+     *
+     * @return the URL
+     */
+    String jdbcUrl() {
+        final String server = httpClient.baseUrl();
+        final int scheme = server.indexOf("://");
+        return "jdbc:frostlake://" + (scheme >= 0 ? server.substring(scheme + 3) : server)
+            + (database != null ? "/" + database : "");
+    }
+
+    /**
+     * The user the session runs as, as the server reports it.
+     *
+     * @return the user's name, or null when the server reports none
+     */
+    String userName() {
+        final SessionNamespace reported = httpClient.namespace();
+        return reported != null ? reported.getUser() : null;
+    }
+
+    /** The session's current database as the server last reported it, else as this connection's USEs set it. */
     @Override
     public String getCatalog() throws SQLException {
         checkClosed();
-        return catalog;
+        final SessionNamespace reported = httpClient.namespace();
+        return reported != null ? reported.getDatabase() : catalog;
     }
 
     /** Called by DatabaseStatement to keep catalog in sync after USE DATABASE. */
@@ -428,10 +454,12 @@ public class DatabaseConnection implements Connection {
         }
     }
 
+    /** The session's current schema as the server last reported it, else as this connection's USEs set it. */
     @Override
     public String getSchema() throws SQLException {
         checkClosed();
-        return schema;
+        final SessionNamespace reported = httpClient.namespace();
+        return reported != null ? reported.getSchema() : schema;
     }
 
     @Override

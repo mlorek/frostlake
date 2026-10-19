@@ -75,7 +75,7 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // The casts of a VARIANT that take nothing else refuse the bare word NULL as they refuse any type that
         // is none: AS_INTEGER(NULL) is "invalid type [NULL] for parameter 'AS_INTEGER(variantValue...)'"
         // (measured, for AS_DECIMAL / AS_NUMBER and the three AS_TIMESTAMP casts alike).
-        "AS_DECIMAL", "AS_INTEGER", "AS_TIMESTAMP_LTZ", "AS_TIMESTAMP_NTZ", "AS_TIMESTAMP_TZ",
+        "AS_DECIMAL", "AS_NUMBER", "AS_INTEGER", "AS_TIMESTAMP_LTZ", "AS_TIMESTAMP_NTZ", "AS_TIMESTAMP_TZ",
         // NORMAL's mean and deviation must be there: "Invalid parameter value: NULL. Reason: mean must not be
         // NULL" (measured). Only a NULL generator answers NULL.
         "NORMAL",

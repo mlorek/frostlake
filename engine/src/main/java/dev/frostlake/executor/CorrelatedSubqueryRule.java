@@ -4225,6 +4225,9 @@ public final class CorrelatedSubqueryRule {
         if (condition instanceof FrostlakeParser.ParenExprContext) {
             return predicateSupported(((FrostlakeParser.ParenExprContext) condition).booleanExpr(), clause, scopes);
         }
+        if (condition instanceof FrostlakeParser.RowComparisonExprContext) {
+            return rowComparisonSupported((FrostlakeParser.RowComparisonExprContext) condition, scopes);
+        }
         final List<FrostlakeParser.ExpressionContext> operands = comparedOperands(condition);
         if (operands == null || !allOneSided(operands, scopes)) {
             return false;
@@ -4234,6 +4237,44 @@ public final class CorrelatedSubqueryRule {
         try {
             return !readsDirectly(condition, CorrelationSide.OUTER, scopes)
                 || varyingOuterComparisonSupported(condition, operands, clause, scopes);
+        } finally {
+            varyingOnly = before;
+        }
+    }
+
+    /**
+     * Whether a comparison of two rows is answered: it reads as its pairs, each a comparison held to the rules a
+     * comparison is — every operand on one side, the outer row read on one side of a pair at most —
+     * {@code (u.a, u.b) = (t.a, t.b)} and {@code (u.a, t.b) = (t.a, u.b)} are answered, for every operator, and
+     * {@code (u.a, u.b) = (t.a + u.a, t.b)} is refused (live-verified). Rows of different widths are refused where
+     * the comparison is typed.
+     */
+    private boolean rowComparisonSupported(final FrostlakeParser.RowComparisonExprContext comparison,
+                                           final List<CorrelationScope> scopes) {
+        final List<FrostlakeParser.ExpressionContext> left = comparison.left.expression();
+        final List<FrostlakeParser.ExpressionContext> right = comparison.right.expression();
+        if (left.size() != right.size()) {
+            return true;
+        }
+        for (int i = 0; i < left.size(); i++) {
+            final List<FrostlakeParser.ExpressionContext> pair = new ArrayList<>();
+            pair.add(left.get(i));
+            pair.add(right.get(i));
+            if (!allOneSided(pair, scopes)) {
+                return false;
+            }
+        }
+        // As for a comparison, only the outer names the statistics show varying count against a pair.
+        final boolean before = varyingOnly;
+        varyingOnly = true;
+        try {
+            for (int i = 0; i < left.size(); i++) {
+                if (readsDirectly(left.get(i), CorrelationSide.OUTER, scopes)
+                        && readsDirectly(right.get(i), CorrelationSide.OUTER, scopes)) {
+                    return false;
+                }
+            }
+            return true;
         } finally {
             varyingOnly = before;
         }

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.FloatOriginNode;
 import dev.frostlake.values.TypedScalarNode;
@@ -227,12 +228,14 @@ public final class ArrayFunctionHelper {
      * never equals it (ARRAY_DISTINCT keeps both, ARRAYS_OVERLAP finds no overlap — live-verified).
      */
     public static String elementKey(final JsonNode element) {
-        return UuidTextNode.anywhereIn(element) ? "U:" + VariantOrder.comparisonKey(element) : element.toString();
+        return UuidTextNode.anywhereIn(element) || DecfloatTextNode.anywhereIn(element)
+            ? "U:" + VariantOrder.comparisonKey(element) : element.toString();
     }
 
     public static boolean nodesEqual(final JsonNode a, final JsonNode b) {
         // A UUID prints as the string of its text and never equals it, which only the variant key tells.
-        if (UuidTextNode.anywhereIn(a) || UuidTextNode.anywhereIn(b)) {
+        if (UuidTextNode.anywhereIn(a) || UuidTextNode.anywhereIn(b)
+                || DecfloatTextNode.anywhereIn(a) || DecfloatTextNode.anywhereIn(b)) {
             return VariantOrder.comparisonKey(a).equals(VariantOrder.comparisonKey(b));
         }
         if (a.equals(b)) {
@@ -293,6 +296,8 @@ public final class ArrayFunctionHelper {
         if (typed != null) return typed;
         // A UUID has no value of its own beyond its text, so it stays the VARIANT that remembers it.
         if (UuidTextNode.holds(node)) return VariantValue.ofNode(node);
+        // So does a DECFLOAT: TYPEOF(ARRAY_CONSTRUCT(CAST(1.5 AS DECFLOAT))[0]) is DECFLOAT (live-verified).
+        if (DecfloatTextNode.holds(node)) return VariantValue.ofNode(node);
         if (node.isTextual()) return node.asText();
         if (node.isBoolean()) return node.asBoolean();
         if (node.isLong() || node.isInt()) return node.asLong();

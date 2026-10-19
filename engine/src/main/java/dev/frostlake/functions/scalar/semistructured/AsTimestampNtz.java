@@ -23,17 +23,18 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * AS_TIMESTAMP_NTZ(v) — the TIMESTAMP_NTZ a VARIANT holds, and NULL when it holds anything else, a
+ * AS_TIMESTAMP_NTZ(v [, scale]) — the TIMESTAMP_NTZ a VARIANT holds, and NULL when it holds anything else, a
  * timestamp of another flavour included. The three timestamp casts each take their own flavour only, and
- * each declares it. The argument must be a VARIANT ({@link BuiltInFunction#takesVariantOnly},
- * live-verified).
+ * each declares it, at the scale written ({@link VariantTimestampScale}). The argument must be a VARIANT
+ * ({@link BuiltInFunction#takesVariantOnly}, live-verified).
  */
 public class AsTimestampNtz extends BuiltInFunction {
     public AsTimestampNtz() { super("AS_TIMESTAMP_NTZ", DateTimeType.TIMESTAMP_NTZ); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return args.get(0) instanceof LocalDateTime ? args.get(0) : null;
+        final int scale = VariantTimestampScale.of("AS_TIMESTAMP_NTZ", args);
+        return args.get(0) instanceof LocalDateTime ? VariantTimestampScale.cut(args.get(0), scale) : null;
     }
 
     @Override
@@ -44,5 +45,5 @@ public class AsTimestampNtz extends BuiltInFunction {
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

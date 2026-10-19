@@ -828,6 +828,8 @@ final class ValueRangeInferencer {
             case "TO_NUMBER":
             case "TO_NUMERIC":
             case "TO_DECIMAL":
+            case "AS_NUMBER":
+            case "AS_DECIMAL":
                 return args.isEmpty() ? null : convertedRange(call, args);
             case "TRY_TO_NUMBER":
             case "TRY_TO_NUMERIC":

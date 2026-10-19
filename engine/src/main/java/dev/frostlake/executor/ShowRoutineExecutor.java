@@ -76,6 +76,19 @@ final class ShowRoutineExecutor {
         this.ownership = ownership;
     }
 
+    /**
+     * Whether a listing carries an object of a schema, and DESCRIBE answers it: only when the session sees it - its
+     * roles own the object or hold a privilege on it, or hold MANAGE GRANTS, which sees every object (documented).
+     */
+    private boolean seen(final String objectType, final Schema schema, final String name, final String owner) {
+        return ownership.sees(objectType, schema.qualifiedName(name), owner);
+    }
+
+    /** {@link #seen} for a routine overload, whose privileges are its signature's own. */
+    private boolean seen(final GrantedObject routine) {
+        return ownership.sees(routine.getKind(), routine.getName(), routine.getOwner());
+    }
+
     public ResultSet showProcedures(final String schemaName, final boolean userOnly) {
         final List<ResultSetColumn> columns = procedureColumns();
         final List<Row> rows = new ArrayList<>();
@@ -188,6 +201,9 @@ final class ShowRoutineExecutor {
             }
         });
         for (final Procedure proc : procedures) {
+            if (!seen(QueryExecutor.procedureGrant(schema, proc))) {
+                continue;
+            }
             // A table procedure prints its columns, bare type names and all, and is flagged as a table function is.
             final String sig = proc.getName() + listedArgumentsText(proc.getParameters())
                 + " RETURN " + (proc.returnsTable() ? "TABLE " + routineSignature(proc.getReturnColumns())
@@ -400,6 +416,9 @@ final class ShowRoutineExecutor {
             }
         });
         for (final Function func : functions) {
+            if (!seen(QueryExecutor.functionGrant(schema, func))) {
+                continue;
+            }
             final String sig = func.getName() + listedArgumentsText(func.getParameters())
                 + " RETURN " + (func.isTableFunction() ? "TABLE " + routineSignature(func.getReturnColumns())
                     : listedType(func.getReturnType()));
@@ -615,6 +634,9 @@ final class ShowRoutineExecutor {
     private void appendTagRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Tag tag : schema.getTags()) {
+            if (!seen("TAG", schema, tag.getName(), tag.getOwner())) {
+                continue;
+            }
             final String av = allowedValuesText(tag);
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(tag.getCreatedTime()),
@@ -665,6 +687,9 @@ final class ShowRoutineExecutor {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", QualifiedName.join(parts)));
         }
         final Function fn = owner.getFunctionByWrittenSignature(parts[parts.length - 1], argumentTypes);
+        if (!seen(QueryExecutor.functionGrant(owner, fn))) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", owner.qualifiedName(fn.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", describedSignature(fn.getParameters()))));
         // A RETURNS type written NOT NULL says so here, and in no DDL (live-verified).
@@ -709,6 +734,10 @@ final class ShowRoutineExecutor {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", QualifiedName.join(parts)));
         }
         final Procedure proc = owner.getProcedureByWrittenSignature(parts[parts.length - 1], argumentTypes);
+        if (!seen(QueryExecutor.procedureGrant(owner, proc))) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure",
+                owner.qualifiedName(proc.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", describedSignature(proc.getParameters()))));
         rows.add(new Row(Arrays.asList("returns", proc.returnsTable()
@@ -742,7 +771,7 @@ final class ShowRoutineExecutor {
         final Schema home = describedSchema(name);
         // Named exactly: a quoted name in another case is another policy, which is not there (live-verified).
         final MaskingPolicy policy = home.getMaskingPolicyExact(lastSegment(name));
-        if (policy == null) {
+        if (policy == null || !seen("MASKING_POLICY", home, policy.getName(), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", fullPath(home, name)));
         }
         // The return type reads as declared, in the account's own spelling: a DOUBLE reads FLOAT, an INT
@@ -757,7 +786,7 @@ final class ShowRoutineExecutor {
     public ResultSet describeRowAccessPolicy(final String name) {
         final Schema home = describedSchema(name);
         final RowAccessPolicy policy = home.getRowAccessPolicyExact(lastSegment(name));
-        if (policy == null) {
+        if (policy == null || !seen("ROW_ACCESS_POLICY", home, policy.getName(), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", fullPath(home, name)));
         }
         return policyDescribeResult(policy.getName(), describedSignature(policy.getParameters()),
@@ -802,7 +831,7 @@ final class ShowRoutineExecutor {
         final Schema home = describedSchema(name);
         // Named exactly, as a policy is (live-verified).
         final FileFormat ff = home.getFileFormatExact(lastSegment(name));
-        if (ff == null) {
+        if (ff == null || !seen("FILE_FORMAT", home, ff.getName(), ff.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("File format", fullPath(home, name)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
@@ -811,14 +840,9 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("property_value", StringType.VARCHAR),
             new ResultSetColumn("property_default", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
-        for (final FormatProperty property
-                : FileFormatSurfaces.tree(ff.getType())) {
-            String value = ff.getOptions().get(property.name);
-            if (value == null) {
-                value = "TYPE".equals(property.name) ? ff.getType() : property.valueDefault;
-            } else if ("NULL_IF".equals(property.name)) {
-                value = "[" + String.join(", ", ff.getNullIfValues()) + "]";
-            }
+        for (final FormatProperty property : FileFormatSurfaces.tree(ff.getType())) {
+            final String value = "TYPE".equals(property.name) ? ff.getType()
+                : FileFormatSurfaces.described(property, ff.getOptions().get(property.name));
             // A format's default TYPE is CSV whatever its own is, as a stage's is.
             rows.add(new Row(Arrays.asList(property.name, property.type, value,
                 "TYPE".equals(property.name) ? "CSV" : property.shownDefault)));
@@ -861,6 +885,9 @@ final class ShowRoutineExecutor {
     private void appendFileFormatRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final FileFormat ff : schema.getFileFormats()) {
+            if (!seen("FILE_FORMAT", schema, ff.getName(), ff.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(ff.getCreatedTime()),
                 ff.getName(),
@@ -904,38 +931,10 @@ final class ShowRoutineExecutor {
             }
             first = false;
             json.append('"').append(property.name).append("\":");
-            String value = format.getOptions().get(property.name);
-            if (value == null) {
-                value = "TYPE".equals(property.name) ? format.getType() : property.valueDefault;
-            }
-            if ("Integer".equals(property.type) || "Long".equals(property.type)
-                    || "Boolean".equals(property.type)) {
-                json.append(value.isEmpty() ? "null" : value);
-            } else if ("List".equals(property.type)) {
-                json.append(nullIfJsonArray(format.getNullIfValues(), property.valueDefault));
-            } else if ("FILE_EXTENSION".equals(property.name)
-                    && format.getOptions().get(property.name) == null) {
-                json.append("null");
-            } else {
-                json.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
-            }
+            json.append("TYPE".equals(property.name) ? "\"" + format.getType() + "\""
+                : FileFormatSurfaces.json(property, format.getOptions().get(property.name)));
         }
         return json.append('}').toString();
-    }
-
-    /** NULL_IF as a JSON string array: the format's own values, or the type's default when it sets none. */
-    private static String nullIfJsonArray(final List<String> values, final String valueDefault) {
-        if (values == null) {
-            return "[]".equals(valueDefault) ? "[]" : "[\"\\\\N\"]";
-        }
-        final StringBuilder array = new StringBuilder("[");
-        for (int i = 0; i < values.size(); i++) {
-            if (i > 0) {
-                array.append(',');
-            }
-            array.append('"').append(values.get(i).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
-        }
-        return array.append(']').toString();
     }
 
     public ResultSet showMaskingPolicies(final String schemaName) {
@@ -972,6 +971,9 @@ final class ShowRoutineExecutor {
     private void appendMaskingPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final MaskingPolicy mp : schema.getMaskingPolicies()) {
+            if (!seen("MASKING_POLICY", schema, mp.getName(), mp.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(mp.getCreatedTime()),
                 mp.getName(),
@@ -1019,6 +1021,9 @@ final class ShowRoutineExecutor {
     private void appendRowAccessPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final RowAccessPolicy rap : schema.getRowAccessPolicies()) {
+            if (!seen("ROW_ACCESS_POLICY", schema, rap.getName(), rap.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(rap.getCreatedTime()),
                 rap.getName(),
@@ -1101,6 +1106,9 @@ final class ShowRoutineExecutor {
 
     private void appendJoinPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final JoinPolicy policy : schema.getJoinPolicies()) {
+            if (!seen("JOIN_POLICY", schema, policy.getName(), policy.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(policy.getCreatedTime()),
                 policy.getName(),
@@ -1117,7 +1125,8 @@ final class ShowRoutineExecutor {
     /** DESCRIBE JOIN POLICY — name, empty signature, return type and body. */
     public ResultSet describeJoinPolicy(final String policyName) {
         final JoinPolicy policy = catalog.findJoinPolicy(policyName);
-        if (policy == null) {
+        if (policy == null
+                || !ownership.sees("JOIN_POLICY", catalog.qualifiedObjectName(policyName), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
                 catalog.qualifiedObjectName(policyName)));
         }
@@ -1168,6 +1177,9 @@ final class ShowRoutineExecutor {
 
     private void appendAggregationPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final AggregationPolicy policy : schema.getAggregationPolicies()) {
+            if (!seen("AGGREGATION_POLICY", schema, policy.getName(), policy.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(policy.getCreatedTime()),
                 policy.getName(),
@@ -1184,7 +1196,8 @@ final class ShowRoutineExecutor {
     /** DESCRIBE AGGREGATION POLICY — name, empty signature, return type and body. */
     public ResultSet describeAggregationPolicy(final String policyName) {
         final AggregationPolicy policy = catalog.findAggregationPolicyExact(policyName);
-        if (policy == null) {
+        if (policy == null
+                || !ownership.sees("AGGREGATION_POLICY", catalog.qualifiedExactName(policyName), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
                 catalog.qualifiedExactName(policyName)));
         }
@@ -1235,6 +1248,9 @@ final class ShowRoutineExecutor {
 
     private void appendProjectionPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final ProjectionPolicy policy : schema.getProjectionPolicies()) {
+            if (!seen("PROJECTION_POLICY", schema, policy.getName(), policy.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(policy.getCreatedTime()),
                 policy.getName(),
@@ -1265,7 +1281,8 @@ final class ShowRoutineExecutor {
     /** DESCRIBE PROJECTION POLICY — one row: the name, its empty signature, return type and body. */
     public ResultSet describeProjectionPolicy(final String policyName) {
         final ProjectionPolicy policy = catalog.findProjectionPolicyExact(policyName);
-        if (policy == null) {
+        if (policy == null
+                || !ownership.sees("PROJECTION_POLICY", catalog.qualifiedExactName(policyName), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
                 catalog.qualifiedExactName(policyName)));
         }
@@ -1313,6 +1330,9 @@ final class ShowRoutineExecutor {
     private void appendContactRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Contact contact : schema.getContacts()) {
+            if (!seen("CONTACT", schema, contact.getName(), contact.getOwner())) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(contact.getCreatedTime()),
                 contact.getName(),

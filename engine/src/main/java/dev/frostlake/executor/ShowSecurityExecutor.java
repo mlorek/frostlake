@@ -213,7 +213,7 @@ final class ShowSecurityExecutor {
      * {@code null}, not as a SQL NULL — measured, and the same habit SHOW TASKS has.
      */
     public ResultSet describeUser(final String name) {
-        final User user = catalog.getUser(name);
+        final User user = catalog.getUserExact(name);
         final Instant now = StatementClock.instant();
         final boolean person = !UserStatusText.hidesPersonalDetails(user.getUserType());
         final boolean password = !UserStatusText.hidesPassword(user.getUserType());
@@ -527,7 +527,7 @@ final class ShowSecurityExecutor {
         }
         final List<Row> rows = new ArrayList<>();
         if (toUser) {
-            final User user = catalog.getUser(targetName);
+            final User user = catalog.getUserExact(targetName);
             for (final String roleName : user.getGrantedRoles()) {
                 // Live Snowflake never surfaces PUBLIC membership here — re-probed on a real account
                 //: a fresh user shows zero grants, and after an EXPLICIT
@@ -561,7 +561,8 @@ final class ShowSecurityExecutor {
                 final String objectName = entry.getKey().substring(split + 1);
                 for (final Privilege privilege : entry.getValue()) {
                     rows.add(new Row(Arrays.<Object>asList(
-                        ShowResultHelpers.createdOn(user.getCreatedTime()),
+                        roleGrantedOn(user.getPrivilegeGrantTime(objectType, objectName, privilege),
+                            user.getCreatedTime()),
                         privilege.displayName(), objectType, objectName, null,
                         "USER", user.getName(), String.valueOf(user.hasGrantOption(objectType, objectName, privilege)),
                         user.getPrivilegeGrantor(objectType, objectName, privilege))));

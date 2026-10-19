@@ -228,6 +228,10 @@ public final class DeclarationTypes {
         if (type instanceof StringType) {
             return new StringType("VARCHAR", StringResultWidths.UNBOUNDED);
         }
+        if (NumericType.isDecfloat(type)) {
+            // A DECFLOAT stays one: a LET whose value divides a DECFLOAT declares a DECFLOAT (live-verified).
+            return type;
+        }
         if (type instanceof NumericType) {
             return NumericType.isApproximate(type) || ((NumericType) type).getScale() > 0
                 ? NumericType.FLOAT : WHOLE_NUMBER;
@@ -237,7 +241,7 @@ public final class DeclarationTypes {
 
     /** A bare name's type as it passes to the declaration: its own, a number with a scale a FLOAT. */
     private static DataType handedOn(final DataType type) {
-        if (type instanceof NumericType
+        if (type instanceof NumericType && !NumericType.isDecfloat(type)
                 && (NumericType.isApproximate(type) || ((NumericType) type).getScale() > 0)) {
             return NumericType.FLOAT;
         }

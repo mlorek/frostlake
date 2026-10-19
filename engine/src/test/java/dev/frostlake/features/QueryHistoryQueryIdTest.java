@@ -133,7 +133,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         final ResultSet history = engine.executeQuery("""
             SELECT query_id, query_type
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
-            WHERE query_type IN ('CREATE', 'INSERT')
+            WHERE query_type IN ('CREATE_TABLE', 'INSERT')
             ORDER BY query_type ASC
             """);
 

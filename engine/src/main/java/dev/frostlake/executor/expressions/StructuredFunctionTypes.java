@@ -95,12 +95,7 @@ final class StructuredFunctionTypes {
     }
 
     private static DataType concatenated(final DataType first, final DataType second) {
-        if (!(first instanceof StructuredArrayType) || !(second instanceof StructuredArrayType)) {
-            return null;
-        }
-        final DataType common = ((StructuredArrayType) first).getElementType()
-            .getCommonType(((StructuredArrayType) second).getElementType());
-        return common != null ? new StructuredArrayType(common) : null;
+        return StructuredConcatenation.unified(first, second);
     }
 
     private static DataType deleted(final StructuredObjectType object, final List<Expression> args) {

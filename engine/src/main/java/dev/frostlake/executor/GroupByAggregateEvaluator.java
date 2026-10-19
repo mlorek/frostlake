@@ -35,6 +35,7 @@ import dev.frostlake.executor.operators.PipelineStage;
 import dev.frostlake.executor.operators.RowExpressionEvaluator;
 import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.executor.operators.WhereAliasValues;
+import dev.frostlake.executor.udf.UserAggregateFunction;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.MultiArgumentAccumulator;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
@@ -44,6 +45,8 @@ import dev.frostlake.functions.aggregate.CoercedNumericArgumentAccumulator;
 import dev.frostlake.functions.aggregate.ConstantArgumentsAccumulator;
 import dev.frostlake.functions.aggregate.CorrAccumulator;
 import dev.frostlake.functions.aggregate.CovarAccumulator;
+import dev.frostlake.functions.aggregate.DecfloatAggregates;
+import dev.frostlake.functions.aggregate.DecfloatAwareAccumulator;
 import dev.frostlake.functions.aggregate.DeclaredArgumentAccumulator;
 import dev.frostlake.functions.aggregate.ListAggAccumulator;
 import dev.frostlake.functions.aggregate.MaxByMinByAccumulator;
@@ -66,6 +69,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -73,6 +77,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * GROUP BY and aggregate-evaluation query stage extracted from {@link QueryExecutor}: plain GROUP BY
@@ -87,6 +92,20 @@ import java.util.Set;
 final class GroupByAggregateEvaluator {
 
     private final QueryExecutor executor;
+
+    /**
+     * The function each call of a user aggregate runs, held to the overload its arguments' static types chose,
+     * settled once per call node over the relation it was typed against (see {@link #staticRelations}).
+     */
+    private final Map<FrostlakeParser.FunctionCallExprContext, UserAggregateFunction> staticOverloads =
+        Collections.synchronizedMap(new WeakHashMap<FrostlakeParser.FunctionCallExprContext, UserAggregateFunction>());
+
+    /**
+     * The relation each call of {@link #staticOverloads} was typed against: a cached statement's call node read over
+     * a table replaced since, or calling an aggregate replaced since, is typed again.
+     */
+    private final Map<FrostlakeParser.FunctionCallExprContext, Table> staticRelations =
+        Collections.synchronizedMap(new WeakHashMap<FrostlakeParser.FunctionCallExprContext, Table>());
 
     GroupByAggregateEvaluator(final QueryExecutor executor) {
         this.executor = executor;
@@ -596,9 +615,9 @@ final class GroupByAggregateEvaluator {
         for (final FrostlakeParser.GroupByElementContext elem : ctx.groupByElement()) {
             final List<List<String>> elemSets;
             if (elem.ROLLUP() != null) {
-                elemSets = expandRollup(extractGroupByColumnList(elem.groupByColumnList()));
+                elemSets = flattened(expandRollup(extractGroupByUnits(elem.groupByColumnList())));
             } else if (elem.CUBE() != null) {
-                elemSets = expandCube(extractGroupByColumnList(elem.groupByColumnList()));
+                elemSets = flattened(expandCube(extractGroupByUnits(elem.groupByColumnList())));
             } else if (elem.GROUPING() != null) {
                 elemSets = expandGroupingSets(elem.groupingSetList());
             } else if (KeyContexts.of(elem) != null) {
@@ -619,19 +638,37 @@ final class GroupByAggregateEvaluator {
         return result;
     }
 
-    private List<String> extractGroupByColumnList(final FrostlakeParser.GroupByColumnListContext ctx) {
-        final List<String> cols = new ArrayList<>();
+    /** The units of a ROLLUP's or a CUBE's list, each its keys' texts: a ROW member's values make one unit. */
+    private List<List<String>> extractGroupByUnits(final FrostlakeParser.GroupByColumnListContext ctx) {
+        final List<List<String>> units = new ArrayList<>();
         if (ctx != null) {
-            for (final ParserRuleContext member : KeyContexts.members(ctx)) {
-                cols.add(ParseTreeText.getOriginalText(member));
+            for (final List<ParserRuleContext> unit : KeyContexts.units(ctx)) {
+                final List<String> keys = new ArrayList<>();
+                for (final ParserRuleContext member : unit) {
+                    keys.add(ParseTreeText.getOriginalText(member));
+                }
+                units.add(keys);
             }
         }
-        return cols;
+        return units;
+    }
+
+    /** Each grouping set of units as the keys its units hold, in order. */
+    private static List<List<String>> flattened(final List<List<List<String>>> sets) {
+        final List<List<String>> keys = new ArrayList<>();
+        for (final List<List<String>> set : sets) {
+            final List<String> flat = new ArrayList<>();
+            for (final List<String> unit : set) {
+                flat.addAll(unit);
+            }
+            keys.add(flat);
+        }
+        return keys;
     }
 
     /** ROLLUP(a,b,c) → [(a,b,c), (a,b), (a), ()] */
-    private List<List<String>> expandRollup(final List<String> cols) {
-        final List<List<String>> sets = new ArrayList<>();
+    private static <T> List<List<T>> expandRollup(final List<T> cols) {
+        final List<List<T>> sets = new ArrayList<>();
         for (int i = cols.size(); i >= 0; i--) {
             sets.add(new ArrayList<>(cols.subList(0, i)));
         }
@@ -639,11 +676,11 @@ final class GroupByAggregateEvaluator {
     }
 
     /** CUBE(a,b,c) → all 2^n subsets */
-    private List<List<String>> expandCube(final List<String> cols) {
+    private static <T> List<List<T>> expandCube(final List<T> cols) {
         final int n = cols.size();
-        final List<List<String>> sets = new ArrayList<>();
+        final List<List<T>> sets = new ArrayList<>();
         for (int mask = (1 << n) - 1; mask >= 0; mask--) {
-            final List<String> subset = new ArrayList<>();
+            final List<T> subset = new ArrayList<>();
             for (int i = 0; i < n; i++) {
                 if ((mask >> i & 1) == 1) subset.add(cols.get(i));
             }
@@ -817,6 +854,13 @@ final class GroupByAggregateEvaluator {
                                 : withColumnsNulled(groupRows.subList(0, 1), maskedColumns).get(0));
                     }
                     final FrostlakeParser.SelectItemContext item = itemByIndex.get(index);
+                    if (!maskedColumns.isEmpty() && readsAnAggregate(item) && SelectItemAccessors.isExprItem(item)) {
+                        // A super-group row: the item's aggregates read the group's rows as stored, and what it
+                        // reads outside them reads the dimensions the row rolled up as NULL (live-verified).
+                        return evaluateGroupItemAround(item, groupRows,
+                            withColumnsNulled(groupRows.subList(0, 1), maskedColumns).get(0), table, aliasToTable,
+                            allTables, lateralAliases);
+                    }
                     final List<Row> read = maskedColumns.isEmpty() || readsAnAggregate(item) ? groupRows
                         : withColumnsNulled(groupRows, maskedColumns);
                     if (SelectItemAccessors.isObjectStarItem(item)) {
@@ -1045,15 +1089,17 @@ final class GroupByAggregateEvaluator {
                 .namedArgumentList().namedArgument().size();
             return (1L << named) - 1;
         }
-        final List<FrostlakeParser.BooleanExprContext> args =
+        final List<FrostlakeParser.FunctionArgContext> args =
             groupingCall instanceof FrostlakeParser.FunctionCallExprContext
                 && ((FrostlakeParser.FunctionCallExprContext) groupingCall).functionArgList() != null
-            ? ParseTreeText.functionBooleanArgs(((FrostlakeParser.FunctionCallExprContext) groupingCall).functionArgList())
-            : List.of();
+            ? ((FrostlakeParser.FunctionCallExprContext) groupingCall).functionArgList().functionArg()
+            : List.<FrostlakeParser.FunctionArgContext>of();
         long mask = 0L;
         for (int a = 0; a < args.size(); a++) {
-            final int bit = groupsBy(activeKeys, ExpressionEvaluator.parse(ParseTreeText.getOriginalText(args.get(a))))
-                ? 0 : 1;
+            // A ROW is never a key: its bit is 1 whatever the grouping set holds (live-verified).
+            final FrostlakeParser.BooleanExprContext arg = args.get(a).booleanExpr();
+            final int bit = arg != null
+                && groupsBy(activeKeys, ExpressionEvaluator.parse(ParseTreeText.getOriginalText(arg))) ? 0 : 1;
             mask |= ((long) bit) << (args.size() - 1 - a);
         }
         return mask;
@@ -1401,9 +1447,56 @@ final class GroupByAggregateEvaluator {
      * @param itemCell       whether the value fills an item's cell, which then keeps its row fault (see heldValue)
      * @return the expression's value for the group
      */
+    /**
+     * A super-group row's item that reads an aggregate: a bare aggregate call over the group's rows as usual, and an
+     * item that computes around its aggregates - {@code SUM(v) + LENGTH(r)}, {@code MAX(r) || r},
+     * {@code IFF(r IS NULL, SUM(v), 0)} - its aggregates over the group's rows and the rest over {@code
+     * representative}, the group's first row with the dimensions the row rolled up nulled (live-verified).
+     */
+    private Object evaluateGroupItemAround(final FrostlakeParser.SelectItemContext item, final List<Row> groupRows,
+                                           final Row representative, final Table table,
+                                           final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                           final Map<String, Object> lateralAliases) {
+        final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
+        if (valueExpr instanceof FrostlakeParser.FunctionCallStarExprContext
+                || valueExpr instanceof FrostlakeParser.FunctionCallExprContext
+                    && isAggregateCall((FrostlakeParser.FunctionCallExprContext) valueExpr)
+                || valueExpr != null && executor.hasWindowFunctionInExpression(valueExpr)) {
+            return evaluateGroupItem(item, groupRows, table, aliasToTable, allTables, lateralAliases);
+        }
+        if (valueExpr != null && executor.hasAggregateFunctionInExpression(valueExpr)) {
+            return evaluateAroundAggregates(valueExpr, groupRows, table, aliasToTable, allTables, lateralAliases, true,
+                representative);
+        }
+        if (valueExpr == null && item instanceof FrostlakeParser.ExprItemContext) {
+            return evaluateAroundAggregates(((FrostlakeParser.ExprItemContext) item).booleanExpr(), groupRows, table,
+                aliasToTable, allTables, lateralAliases, true, representative);
+        }
+        return evaluateGroupItem(item, groupRows, table, aliasToTable, allTables, lateralAliases);
+    }
+
+    /** Whether a call is itself an aggregate - SUM(v) - and not a scalar function around one - IFF(c, SUM(v), 0). */
+    private boolean isAggregateCall(final FrostlakeParser.FunctionCallExprContext call) {
+        return executor.getFunctionRegistry().hasAggregateFunction(aggregateName(call.functionName().getText()))
+            && executor.callChoosesAggregate(call);
+    }
+
     private Object evaluateAroundAggregates(final ParserRuleContext expr, final List<Row> groupRows, final Table table,
                                             final Map<String, Table> aliasToTable, final List<Table> allTables,
                                             final Map<String, Object> lateralAliases, final boolean itemCell) {
+        return evaluateAroundAggregates(expr, groupRows, table, aliasToTable, allTables, lateralAliases, itemCell,
+            null);
+    }
+
+    /**
+     * {@link #evaluateAroundAggregates(ParserRuleContext, List, Table, Map, List, Map, boolean)}, the part of the
+     * expression outside its aggregates read over {@code representative} where one is given, else over the group's
+     * first row.
+     */
+    private Object evaluateAroundAggregates(final ParserRuleContext expr, final List<Row> groupRows, final Table table,
+                                            final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                            final Map<String, Object> lateralAliases, final boolean itemCell,
+                                            final Row representative) {
         final List<FrostlakeParser.ExpressionContext> aggCalls = new ArrayList<>();
         collectAggregateCalls(expr, aggCalls);
         final Map<String, Object> aggregateValues = new HashMap<>();
@@ -1425,7 +1518,8 @@ final class GroupByAggregateEvaluator {
         // earlier item's alias is a plain per-group scalar here and may be referenced — the shape
         // `SUM(…) AS n, IFF(n > 0, ARRAY_UNIQUE_AGG(a), ARRAY_UNIQUE_AGG(b))`. Table columns still win.
         ev.setOuterLateralContext(lateralAliases);
-        final Row groupRow = groupRows.isEmpty() ? new Row(new ArrayList<>()) : groupRows.get(0);
+        final Row groupRow = representative != null ? representative
+            : groupRows.isEmpty() ? new Row(new ArrayList<>()) : groupRows.get(0);
         return itemCell ? heldValue(ev, ParseTreeText.getOriginalText(expr), groupRow)
             : ev.evaluate(ParseTreeText.getOriginalText(expr), groupRow);
     }
@@ -1558,7 +1652,7 @@ final class GroupByAggregateEvaluator {
                     return idx >= 0 && !(distinct && isCollatedColumn(table, args.get(0)))
                         ? new AggregatePlan(AggregateKind.COUNT, idx, distinct) : null;
                 case "SUM": case "AVG":
-                    return idx >= 0
+                    return idx >= 0 && !NumericType.isDecfloat(table.getColumns().get(idx).getDataType())
                         ? new AggregatePlan("SUM".equals(funcName) ? AggregateKind.SUM : AggregateKind.AVG, idx, distinct)
                         : null;
                 case "MIN":
@@ -1948,6 +2042,9 @@ final class GroupByAggregateEvaluator {
                     }
                     // SUM over no non-null rows is NULL in Snowflake, not zero (AggregateNumerics returns null),
                     // and SUM(DISTINCT) reads a FLOAT sum as the running sum (AggregateNumerics.runningSum).
+                    if (NumericType.isDecfloat(declaredTypeOf(arg0, table, aliasToTable, allTables))) {
+                        return DecfloatAggregates.sum(values);
+                    }
                     final boolean variantArgument = isStaticallyVariantArgument(arg0, table, aliasToTable, allTables);
                     return distinct ? AggregateNumerics.runningSum(values, variantArgument)
                         : AggregateNumerics.sum(values, variantArgument);
@@ -1966,6 +2063,9 @@ final class GroupByAggregateEvaluator {
                     // does — there is no exact scale to widen — and a FLOAT-declared value cannot always
                     // say so itself, since one computed exactly still arrives in an exact carrier.
                     // AVG(DISTINCT x) averages three decimals past its argument's scale, truncated (live-verified).
+                    if (NumericType.isDecfloat(declaredTypeOf(arg0, table, aliasToTable, allTables))) {
+                        return DecfloatAggregates.avg(values);
+                    }
                     final boolean keepsDouble = isStaticallyVariantArgument(arg0, table, aliasToTable, allTables)
                         || isApproximateExpression(arg0, table, aliasToTable, allTables);
                     return distinct ? AggregateNumerics.nonCumulativeWindowAvg(values, keepsDouble)
@@ -2018,7 +2118,8 @@ final class GroupByAggregateEvaluator {
                             || IntervalCasts.isIntervalType(keyType));
                 }
                 default:
-                    if (executor.getFunctionRegistry().hasAggregateFunction(funcName)) {
+                    if (executor.getFunctionRegistry().hasAggregateFunction(funcName)
+                            && executor.callChoosesAggregate(funcCtx)) {
                         return evaluateGenericAggregate(funcCtx, funcName, args, aggregateInputRows, table, aliasToTable, allTables);
                     }
                     break;
@@ -2101,8 +2202,8 @@ final class GroupByAggregateEvaluator {
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext fc = (FrostlakeParser.FunctionCallExprContext) node;
-            if (fc.overClause() == null
-                    && executor.getFunctionRegistry().hasAggregateFunction(fc.functionName().getText().toUpperCase(Locale.ROOT))) {
+            if (fc.overClause() == null && executor.getFunctionRegistry().hasAggregateFunction(
+                    fc.functionName().getText().toUpperCase(Locale.ROOT)) && executor.callChoosesAggregate(fc)) {
                 out.add(fc);
                 return;
             }
@@ -2186,7 +2287,8 @@ final class GroupByAggregateEvaluator {
     /**
      * Whether a call reads a bare name a relation of the subquery's own FROM clause carries: the innermost scope
      * that has a name binds it, so {@code (SELECT MAX(v) FROM u)} is the subquery's own aggregate over u's v, whatever
-     * column the grouped query has of that name (live-verified).
+     * column the grouped query has of that name — and so it is over a view, a common table expression or a derived
+     * table that carries v (live-verified).
      */
     private boolean readsInnerColumn(final ParseTree call, final FrostlakeParser.SelectStatementContext subquery) {
         final List<FrostlakeParser.TableSourceContext> sources = new ArrayList<>();
@@ -2196,20 +2298,14 @@ final class GroupByAggregateEvaluator {
         }
         final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
         collectNames(call, names);
+        final SourceColumnNames carried = new SourceColumnNames(executor);
         for (final FrostlakeParser.QualifiedNameExprContext name : names) {
             final String[] parts = ParseTreeText.qualifiedNameParts(name.qualifiedName());
             if (parts.length != 1) {
                 continue;
             }
             for (final FrostlakeParser.TableSourceContext source : sources) {
-                final Table inner;
-                try {
-                    inner = executor.getCatalog().resolveTable(
-                        ParseTreeText.getQualifiedName(source.tableQualifiedName()));
-                } catch (final RuntimeException notATable) {
-                    continue;
-                }
-                if (inner != null && inner.hasColumn(parts[0])) {
+                if (carried.carries(source, parts[0])) {
                     return true;
                 }
             }
@@ -2217,14 +2313,15 @@ final class GroupByAggregateEvaluator {
         return false;
     }
 
-    /** The named relations a query's own FROM clause reads, the queries nested in it left out. */
+    /** The relations a query's own FROM clause reads, named or derived, the queries nested in them left out. */
     private static void collectOwnTableSources(final ParseTree node, final ParseTree query,
                                                final List<FrostlakeParser.TableSourceContext> into) {
         if (node != query && node instanceof FrostlakeParser.SelectStatementContext) {
             return;
         }
         if (node instanceof FrostlakeParser.TableSourceContext
-                && ((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null) {
+                && (((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null
+                    || ((FrostlakeParser.TableSourceContext) node).selectStatement() != null)) {
             into.add((FrostlakeParser.TableSourceContext) node);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -2382,7 +2479,20 @@ final class GroupByAggregateEvaluator {
     private Object evaluateGenericAggregate(final FrostlakeParser.FunctionCallExprContext funcCtx, final String funcName,
                                             final List<String> args, final List<Row> groupRows, final Table table,
                                             final Map<String, Table> aliasToTable, final List<Table> allTables) {
-        return evaluateGenericAggregate(funcName, funcCtx.DISTINCT() != null,
+        final AggregateFunction found = executor.getFunctionRegistry().getAggregateFunction(funcName);
+        AggregateFunction resolved = found;
+        if (found instanceof UserAggregateFunction) {
+            // The overload the call's static types choose, settled once for the call and run by every group.
+            final UserAggregateFunction user = (UserAggregateFunction) found;
+            UserAggregateFunction pinned = staticOverloads.get(funcCtx);
+            if (pinned == null || staticRelations.get(funcCtx) != table || !user.holdsEvery(pinned)) {
+                pinned = executor.staticOverload(user, funcCtx, table, aliasToTable);
+                staticOverloads.put(funcCtx, pinned);
+                staticRelations.put(funcCtx, table);
+            }
+            resolved = pinned;
+        }
+        return evaluateGenericAggregate(resolved, funcName, funcCtx.DISTINCT() != null,
             AggregateFunctions.withinGroupOrderBy(funcCtx), args, groupRows, table, aliasToTable, allTables);
     }
 
@@ -2406,13 +2516,22 @@ final class GroupByAggregateEvaluator {
                                             final FrostlakeParser.OrderByClauseContext withinGroupOrder,
                                             final List<String> args, final List<Row> groupRows, final Table table,
                                             final Map<String, Table> aliasToTable, final List<Table> allTables) {
-        final AggregateFunction aggFunc = executor.getFunctionRegistry().getAggregateFunction(funcName);
+        return evaluateGenericAggregate(executor.getFunctionRegistry().getAggregateFunction(funcName), funcName,
+            distinct, withinGroupOrder, args, groupRows, table, aliasToTable, allTables);
+    }
+
+    /** The same aggregate, the function that runs it already found (see the call-node form above). */
+    private Object evaluateGenericAggregate(final AggregateFunction aggFunc, final String funcName,
+                                            final boolean distinct,
+                                            final FrostlakeParser.OrderByClauseContext withinGroupOrder,
+                                            final List<String> args, final List<Row> groupRows, final Table table,
+                                            final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final FrostlakeParser.OrderByClauseContext withinGroup = withinGroupOrder;
         final List<Row> aggRows = withinGroup != null
             ? executor.sortRowsForWindow(groupRows, withinGroup, table) : groupRows;
         final AggregateFunction.Accumulator acc = aggFunc.createAccumulator();
         if (acc instanceof ApproximateAwareAccumulator || acc instanceof CoercedNumericArgumentAccumulator
-                || acc instanceof DeclaredArgumentAccumulator) {
+                || acc instanceof DeclaredArgumentAccumulator || acc instanceof DecfloatAwareAccumulator) {
             // The aggregated expression's DECLARED type, which its values cannot give: a FLOAT column
             // stores exactly, so a 1.5 from a FLOAT and one from a NUMBER(2,1) are the same object, and
             // a '2' from a VARCHAR converts as a 2 from a NUMBER would, though live orders and rounds it.
@@ -2423,6 +2542,12 @@ final class GroupByAggregateEvaluator {
             if (acc instanceof ApproximateAwareAccumulator) {
                 ((ApproximateAwareAccumulator) acc).setApproximateArgument(
                     declared instanceof NumericType && NumericType.isApproximate(declared));
+            }
+            if (acc instanceof DecfloatAwareAccumulator) {
+                // OBJECT_AGG aggregates its second argument, the value; every other its first.
+                final DataType aggregatedType = "OBJECT_AGG".equals(funcName) && args.size() > 1
+                    ? declaredTypeOf(args.get(1), table, aliasToTable, allTables) : declared;
+                ((DecfloatAwareAccumulator) acc).setDecfloatArgument(NumericType.isDecfloat(aggregatedType));
             }
             if (acc instanceof CoercedNumericArgumentAccumulator) {
                 ((CoercedNumericArgumentAccumulator) acc).setCoercedNumericArgument(

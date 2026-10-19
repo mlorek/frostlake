@@ -19,7 +19,9 @@ package dev.frostlake.functions.table;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,6 +42,12 @@ public class CurrentTaskGraphsFunction extends TableFunction {
     @Override
     public void validateArgs(final Map<String, Object> namedArgs) {
         // Validated in execute.
+    }
+
+    /** The listing's columns are fixed, so a query over it is planned with their types before any row is read. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return TaskGraphRuns.columns(false);
     }
 
     @Override

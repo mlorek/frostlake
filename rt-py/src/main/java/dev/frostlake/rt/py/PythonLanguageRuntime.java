@@ -43,6 +43,11 @@ public final class PythonLanguageRuntime implements UdfLanguageRuntime {
     }
 
     @Override
+    public void statementEnded() {
+        PythonRuntime.restoreShared();
+    }
+
+    @Override
     public Object executeFunction(final Function function, final List<Object> arguments,
                                   final Catalog catalog, final S3PathResolver s3PathResolver) {
         return PythonExecutor.executePythonFunction(function, arguments);

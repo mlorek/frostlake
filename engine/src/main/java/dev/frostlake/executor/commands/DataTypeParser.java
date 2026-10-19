@@ -187,11 +187,10 @@ public final class DataTypeParser {
             }
             return NumericType.NUMBER;
         }
-        // DECFLOAT (decimal floating point) is approximated by DOUBLE — the engine has no
-        // arbitrary-exponent decimal representation.
+        // DECFLOAT, a decimal of 38 significant digits whose point floats (see values.Decfloats).
         if (ctx.DECFLOAT() != null) {
             DeclaredWidthRules.checkDecfloatPrecision(typeParams);
-            return NumericType.DOUBLE;
+            return NumericType.DECFLOAT;
         }
         if (ctx.FLOAT() != null || ctx.FLOAT4() != null || ctx.FLOAT8() != null || ctx.REAL() != null) return NumericType.FLOAT;
         if (ctx.DOUBLE() != null) return NumericType.FLOAT;   // DOUBLE and DOUBLE PRECISION are FLOAT

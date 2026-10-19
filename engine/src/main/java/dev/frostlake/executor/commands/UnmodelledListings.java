@@ -228,7 +228,7 @@ final class UnmodelledListings {
             if (user.length > 1) {
                 throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
             }
-            catalog.getUser(user[0]);
+            catalog.getUserExact(user[0]);
             return;
         }
         if (scope.INTEGRATION() == null) {

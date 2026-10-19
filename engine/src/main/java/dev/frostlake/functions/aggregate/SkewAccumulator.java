@@ -17,7 +17,6 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,7 +26,8 @@ public class SkewAccumulator implements AggregateFunction.Accumulator {
 
     @Override
     public void accumulate(final Object v) {
-        if (v != null) values.add(new BigDecimal(v.toString()).doubleValue());
+        // A text reads as a cast to FLOAT reads it, a hexadecimal number included (see NumericAggregateInput).
+        if (v != null) values.add(NumericAggregateInput.asApproximate(v));
     }
 
     @Override

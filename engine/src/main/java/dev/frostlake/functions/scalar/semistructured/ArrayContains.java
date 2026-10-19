@@ -21,6 +21,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -48,6 +49,7 @@ public class ArrayContains extends BuiltInFunction {
             if (ArrayFunctionHelper.nodesEqual(el, target)) return true;
             // Also compare as string for text values
             if (value != null && el.isTextual() && UuidTextNode.holds(el) == UuidTextNode.holds(target)
+                    && !DecfloatTextNode.holds(el) && !DecfloatTextNode.holds(target)
                     && el.asText().equals(value.toString())) return true;
         }
         return value == null ? null : Boolean.FALSE;

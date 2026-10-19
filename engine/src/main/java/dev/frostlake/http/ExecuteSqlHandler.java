@@ -151,6 +151,8 @@ final class ExecuteSqlHandler implements HttpHandler {
             // What the session now keeps itself alive by, so the driver starts or stops its heartbeat when an ALTER
             // SESSION changed CLIENT_SESSION_KEEP_ALIVE.
             response.reportKeepAlive(session);
+            // Where the session stands now — a USE, a CREATE SCHEMA or a procedure may have moved it.
+            response.reportNamespace(session, engine.currentUser());
             if (response.isSuccess()) {
                 // An ALTER SESSION SET/UNSET MULTI_STATEMENT_COUNT that ran moves this session's gate, so
                 // the next request declaring no count of its own is judged by what the client asked for.

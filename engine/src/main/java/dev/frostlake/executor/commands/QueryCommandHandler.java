@@ -17,7 +17,6 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.CommonTableExpressions;
-import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
@@ -80,8 +79,9 @@ public class QueryCommandHandler implements CommandHandler {
             return new RuntimeException(
                 "A 'FOR UPDATE' clause is not compatible with 'not selecting from a table'.");
         }
-        // The query is compiled as an EXPLAIN compiles it: its names are resolved and nothing is run.
-        queryExecutor.execute("EXPLAIN " + ParseTreeText.getOriginalText(query));
+        // The query is compiled as an EXPLAIN compiles it: its names are resolved, nothing is run and no statement
+        // of the engine's own is recorded beside the refused one.
+        queryExecutor.compileQueryOnly(query);
         return new RuntimeException("Unsupported feature 'FOR UPDATE clause'.");
     }
 

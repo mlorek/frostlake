@@ -42,9 +42,8 @@ public class ArrayInsert extends BuiltInFunction {
         if (src == null) return null;
         if (args.get(1) == null) return null;
         final int n = src.size();
-        // A text or a VARIANT position is read as the whole number it holds (see wholeNumber).
-        final int pos = args.get(1) instanceof Number ? ((Number) args.get(1)).intValue()
-            : wholeNumber(args.get(1));
+        // A position is read as the whole number it gives, a fraction rounded: 0.6 is 1 (see wholeNumber).
+        final int pos = wholeNumber(args.get(1));
         // Live: ARRAY_INSERT([1], 4, 9) is [1,undefined,undefined,undefined,9] — both the
         // inserted SQL NULL and the padding are VARIANT `undefined`, whose TYPEOF is SQL NULL.
         final JsonNode element = ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, args.get(2));

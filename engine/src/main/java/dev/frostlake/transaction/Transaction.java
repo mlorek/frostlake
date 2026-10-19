@@ -53,6 +53,9 @@ public class Transaction {
     private final List<Instant> walInstants = new ArrayList<>();
     /** What each buffered statement ran under — one per entry of walStatements, same order. */
     private final List<WalStatementContext> walContexts = new ArrayList<>();
+
+    /** What the transaction's statements left for its end, in the order they registered it. */
+    private final List<TransactionOutcome> outcomes = new ArrayList<>();
     // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
     // this txn's then-buffered changes) so commit advances past exactly that. Latest read governs.
     private final Map<Stream, StreamReadScope> streamsToConsume = new LinkedHashMap<>();
@@ -234,7 +237,18 @@ public class Transaction {
     public WriteSetSavepoint beginStatementSavepoint() {
         final WriteSetSavepoint savepoint = writeSet.beginStatementSavepoint();
         savepoint.noteStreamReads(new LinkedHashMap<>(streamsToConsume));
+        savepoint.noteOutcomes(outcomes.size());
         return savepoint;
+    }
+
+    /**
+     * Leaves work for the transaction's end: run when it commits, its writes applied, or undone when it rolls back
+     * or the statement that registered it fails inside it.
+     *
+     * @param outcome the work
+     */
+    public void onOutcome(final TransactionOutcome outcome) {
+        outcomes.add(outcome);
     }
 
     /**
@@ -246,9 +260,21 @@ public class Transaction {
      * @param savepoint what {@link #beginStatementSavepoint} returned for the statement
      */
     public void rollbackToSavepoint(final WriteSetSavepoint savepoint) {
-        if (writeSet.rollbackToSavepoint(savepoint) && savepoint.streamReadsBefore() != null) {
-            streamsToConsume.clear();
-            streamsToConsume.putAll(savepoint.streamReadsBefore());
+        if (writeSet.rollbackToSavepoint(savepoint)) {
+            if (savepoint.streamReadsBefore() != null) {
+                streamsToConsume.clear();
+                streamsToConsume.putAll(savepoint.streamReadsBefore());
+            }
+            if (savepoint.outcomesBefore() >= 0) {
+                undoOutcomesFrom(savepoint.outcomesBefore());
+            }
+        }
+    }
+
+    /** Undoes the outcomes registered from an index on, the latest first. */
+    private void undoOutcomesFrom(final int first) {
+        for (int i = outcomes.size() - 1; i >= first; i--) {
+            outcomes.remove(i).rolledBack();
         }
     }
 
@@ -428,6 +454,11 @@ public class Transaction {
             entry.getKey().consumeSeen(entry.getValue().getCommittedCut(), entry.getValue().getSeenTransient());
         }
         streamsToConsume.clear();
+        final List<TransactionOutcome> ended = new ArrayList<>(outcomes);
+        outcomes.clear();
+        for (final TransactionOutcome outcome : ended) {
+            outcome.committed();
+        }
         logs.clear();
         writeSet.clear();
         savepoints.clear();
@@ -444,6 +475,7 @@ public class Transaction {
         // Deferred-apply path: nothing was written to storage, so discarding the write set IS the
         // rollback (the clear below). Streams read by this txn's DML are NOT consumed on rollback.
         streamsToConsume.clear();
+        undoOutcomesFrom(0);
         logs.clear();
         writeSet.clear();
         savepoints.clear();

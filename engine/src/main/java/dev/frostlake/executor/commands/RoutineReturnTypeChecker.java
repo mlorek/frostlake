@@ -421,6 +421,9 @@ final class RoutineReturnTypeChecker {
         if (family == ReturnTypeFamily.REAL) {
             return "FLOAT";
         }
+        if (family == ReturnTypeFamily.DECFLOAT) {
+            return "DECFLOAT(38)";
+        }
         if (type instanceof NumericType) {
             final NumericType numeric = (NumericType) type;
             return "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";

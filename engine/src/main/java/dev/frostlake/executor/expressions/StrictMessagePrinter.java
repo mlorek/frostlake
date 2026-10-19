@@ -43,8 +43,10 @@ import dev.frostlake.types.VectorType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -99,6 +101,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     private boolean foldingConstants;
     /** Whether DATE_PART and EXTRACT print as EXTRACT(part from …) — see {@link #extractingParts()}. */
     private boolean extractingParts;
+    /** The functions whose answer a column default's echo converts, by name — see {@link #echoingDefault}. */
+    private Map<String, DataType> convertedCalls;
+    /** The calls being printed bare inside their conversion. */
+    private final Set<FunctionCallExpression> convertingCalls = Collections.newSetFromMap(
+        new IdentityHashMap<FunctionCallExpression, Boolean>());
 
     /** A division's scale grows by this much over the dividend's, to a cap of {@link #DIVISION_SCALE_CAP}. */
     private static final int DIVISION_EXTRA_SCALE = 6;
@@ -126,6 +133,37 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     StrictMessagePrinter tellingDefault() {
         this.tellingDefault = true;
         return this;
+    }
+
+    /**
+     * Prints as the refusal of a column default echoes it, on top of the plan's spelling: a conversion to FLOAT is
+     * TO_DOUBLE, {@code (TO_DOUBLE(0.5))}, and the call of each function named here is the conversion of its answer
+     * to the number it declares, {@code TO_NUMBER(FBLK())} and as an operand {@code (TO_NUMBER(FBLK())) + 1}
+     * (live-verified).
+     *
+     * @param converted the functions whose answer is converted, by upper-cased name, with the type each declares
+     * @return this printer
+     */
+    StrictMessagePrinter echoingDefault(final Map<String, DataType> converted) {
+        this.convertedCalls = converted;
+        return this;
+    }
+
+    /** Whether conversions to FLOAT print as TO_DOUBLE: an invalid-type sentence and a column default's echo. */
+    private boolean doublesAsConversions() {
+        return conversionShaped() || convertedCalls != null;
+    }
+
+    /** The type a column default's echo converts a call's answer to, or null for a call it prints as it is. */
+    private DataType convertedCallType(final Expression expression) {
+        if (convertedCalls == null || !(expression instanceof FunctionCallExpression)) {
+            return null;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expression;
+        if (call.getNameExpression() != null || call.getFunctionName() == null || convertingCalls.contains(call)) {
+            return null;
+        }
+        return convertedCalls.get(call.getFunctionName().toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -730,7 +768,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      */
     private String operand(final Expression expression) {
         if (expression instanceof BindVariableExpression
-                && blockExpressionConversion((BindVariableExpression) expression) != null) {
+                && blockExpressionConversion((BindVariableExpression) expression) != null
+                || convertedCallType(expression) != null) {
             return "(" + expression.accept(this) + ")";
         }
         if (tellingDefault && expression instanceof BinaryOperationExpression
@@ -950,7 +989,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     }
 
     private String asFloat(final Expression expression) {
-        return conversionShaped()
+        return doublesAsConversions()
             ? "(TO_DOUBLE(" + expression.accept(this) + "))"
             : "(CAST(" + expression.accept(this) + " AS FLOAT))";
     }
@@ -1218,7 +1257,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (!floated) {
             return operand.accept(this);
         }
-        return conversionShaped() ? "TO_DOUBLE(" + operand.accept(this) + ")"
+        return doublesAsConversions() ? "TO_DOUBLE(" + operand.accept(this) + ")"
             : "CAST(" + operand.accept(this) + " AS FLOAT)";
     }
 
@@ -1767,6 +1806,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         final Expression source = expr.getExpression();
         final DataType targetType = argumentType(expr);
+        if (convertedCalls != null && targetType instanceof NumericType && NumericType.isApproximate(targetType)
+                && !expr.isTryMode()) {
+            // A column default's echo spells a cast to FLOAT as the conversion: (TO_DOUBLE(0.5)) (live-verified).
+            return "TO_DOUBLE(" + source.accept(this) + ")";
+        }
         final String target = typeText(expr);
         final String targetText = tellingDefault && targetType instanceof StringType && expr.getTargetType() != null
             && expr.getTargetType().indexOf('(') < 0 ? "VARCHAR" : target != null ? target : expr.getTargetType();
@@ -1789,6 +1833,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             }
             if (sourceType instanceof StringType && targetType instanceof StringType) {
                 return "TEXT_TO_TEXT(" + source.accept(this) + ")";
+            }
+            if (NumericType.isDecfloat(targetType)) {
+                // A cast to DECFLOAT is the conversion it names: TO_DATE(TO_DECFLOAT(1.5)) (live-verified).
+                return "TO_DECFLOAT(" + source.accept(this) + ")";
             }
             if (isExactNumber(sourceType) && isExactNumber(targetType)) {
                 return fixedToFixed(source.accept(this), targetText);
@@ -2114,6 +2162,18 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         if (mode == StrictPrintMode.WRITTEN) {
             return super.visitFunctionCall(expr);
+        }
+        final DataType converted = convertedCallType(expr);
+        if (converted instanceof NumericType) {
+            convertingCalls.add(expr);
+            try {
+                final NumericType number = (NumericType) converted;
+                final String call = visitFunctionCall(expr);
+                return number.getPrecision() == WIDEST_NUMBER && number.getScale() == 0 ? "TO_NUMBER(" + call + ")"
+                    : "TO_NUMBER(" + call + ", " + number.getPrecision() + ", " + number.getScale() + ")";
+            } finally {
+                convertingCalls.remove(expr);
+            }
         }
         if (foldingConstants && expr.getNameExpression() == null && SystemConstantArguments.foldsEarly(expr, context)) {
             final String folded = foldedValue(expr);

@@ -1570,12 +1570,13 @@ public class ShowCommandHandler implements CommandHandler {
         if (ctx.ON() != null) {
             // SHOW GRANTS ON [kind] name
             final FrostlakeParser.ShowGrantsTargetContext target = ctx.showGrantsTarget();
-            final String[] parts = ParseTreeText.qualifiedNameParts(target.qualifiedName());
             if (target.ACCOUNT() != null) {
                 // A name after ACCOUNT names another account, which is looked up and never found.
                 throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
             }
-            if (target.securableKind() == null && target.qualifiedName().getStart() == target.qualifiedName().getStop()
+            final String[] parts = grantsTargetParts(target);
+            final String written = QualifiedName.join(parts);
+            if (target.qualifiedName() != null && target.qualifiedName().getStart() == target.qualifiedName().getStop()
                     && target.qualifiedName().getStart().getType() == FrostlakeLexer.ACCOUNT) {
                 // The word alone is the account itself, never a table of that name (live-verified).
                 return showExecutor.showGrantsOnAccount();
@@ -1588,14 +1589,14 @@ public class ShowCommandHandler implements CommandHandler {
                 final String kind = target.relationGrantsKind() == null ? null
                     : SecurableKinds.joined(target.relationGrantsKind());
                 final GrantedObject relation = queryExecutor.shownRelation(parts, kind);
-                return asEventTable(showExecutor.showGrantsOnObject(relation.getKind(),
-                    getText(target.qualifiedName()), relation), parts, relation);
+                return asEventTable(showExecutor.showGrantsOnObject(relation.getKind(), written, relation), parts,
+                    relation);
             }
             if (("TABLE".equals(objectType) || "VIEW".equals(objectType)) && target.LPAREN() == null) {
                 // TABLE and VIEW find a materialized view or a dynamic table too, listed under its own kind.
                 final GrantedObject other = queryExecutor.materializedOrDynamic(parts);
                 if (other != null) {
-                    return showExecutor.showGrantsOnObject(other.getKind(), getText(target.qualifiedName()), other);
+                    return showExecutor.showGrantsOnObject(other.getKind(), written, other);
                 }
             }
             GrantRevokeHandler.requireArgumentTypes(objectType, parts, target.LPAREN() != null);
@@ -1613,23 +1614,33 @@ public class ShowCommandHandler implements CommandHandler {
                 queryExecutor.routineGrantNames(objectType, parts, writtenTypes);
             }
             final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity, writtenTypes);
-            return asEventTable(showExecutor.showGrantsOnObject(objectType, getText(target.qualifiedName()), granted),
-                parts, granted);
+            return asEventTable(showExecutor.showGrantsOnObject(objectType, written, granted), parts, granted);
         } else if (ctx.TO() != null) {
             // SHOW GRANTS TO USER/ROLE identifier
             final String targetType = ctx.USER() != null ? "USER" : "ROLE";
-            final String targetName = getText(ctx.identifier());
+            final String targetName = PrincipalNames.of(ctx.principalName(), queryExecutor);
             return showExecutor.showGrantsTo(targetType, targetName);
         }
-        if (ctx.OF() != null && ctx.ROLE() != null && ctx.identifier() != null) {
+        if (ctx.OF() != null && ctx.ROLE() != null && ctx.principalName() != null) {
             // SHOW GRANTS OF ROLE identifier
-            return showExecutor.showGrantsOfRole(getText(ctx.identifier()));
+            return showExecutor.showGrantsOfRole(PrincipalNames.of(ctx.principalName(), queryExecutor));
         }
         if (ctx.ON() == null && ctx.TO() == null && ctx.OF() == null) {
             // Bare SHOW GRANTS: what the current user holds.
             return showExecutor.showGrantsForCurrentUser();
         }
         throw new RuntimeException("Invalid SHOW GRANTS syntax");
+    }
+
+    /** The canonical parts of what SHOW GRANTS ON names, an IDENTIFIER() reference resolved. */
+    private String[] grantsTargetParts(final FrostlakeParser.ShowGrantsTargetContext target) {
+        if (target.grantsObjectName() != null && target.grantsObjectName().wholeObjectName() != null) {
+            return queryExecutor.resolveWholeObjectNameParts(target.grantsObjectName().wholeObjectName());
+        }
+        if (target.identifierArgument() != null) {
+            return queryExecutor.resolveIdentifierArgument(target.identifierArgument());
+        }
+        return ParseTreeText.qualifiedNameParts(target.qualifiedName());
     }
 
     /** An event table's grant rows, which live lists as EVENT_TABLE whichever word named it (live-verified). */

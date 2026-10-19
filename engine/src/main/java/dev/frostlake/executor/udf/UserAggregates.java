@@ -17,6 +17,7 @@
 package dev.frostlake.executor.udf;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RoutineOverloads;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.UserAggregateLookup;
 import dev.frostlake.metastore.Catalog;
@@ -25,6 +26,7 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Schema;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -76,23 +78,35 @@ public final class UserAggregates implements UserAggregateLookup {
         }
     }
 
-    private Schema schemaOf(final String[] parts) {
-        if (parts.length == 3) {
-            return catalog.databaseExact(parts[0]).schemaExact(parts[1]);
+    @Override
+    public boolean namesScalarBesideAggregate(final String name) {
+        if (!catalog.holdsAggregateFunctionNames()) {
+            return false;
         }
-        final String database = catalog.getCurrentDatabase();
-        if (database == null) {
-            return null;
-        }
-        if (parts.length == 2) {
-            return catalog.getDatabase(database).schemaExact(parts[0]);
-        }
-        for (final Schema schema : queryExecutor.searchPathSchemas()) {
-            if (!schema.getFunctionOverloads(parts[0]).isEmpty()) {
-                return schema;
+        try {
+            final String[] parts = QualifiedName.parse(name).parts();
+            final String simple = parts[parts.length - 1];
+            if (!catalog.mayNameAggregateFunction(simple)) {
+                return false;
             }
+            final Schema schema = schemaOf(parts);
+            if (schema == null) {
+                return false;
+            }
+            boolean aggregate = false;
+            boolean scalar = false;
+            for (final Function overload : schema.getFunctionOverloads(simple)) {
+                aggregate |= overload.isAggregate();
+                scalar |= !overload.isAggregate() && !overload.isTableFunction();
+            }
+            return aggregate && scalar;
+        } catch (final RuntimeException unresolvable) {
+            return false;
         }
-        final String schema = catalog.getCurrentSchema();
-        return schema == null ? null : catalog.getDatabase(database).getSchema(schema);
+    }
+
+    /** The schema a function name resolves against (see {@link RoutineOverloads#schemaOf}), or null. */
+    private Schema schemaOf(final String[] parts) {
+        return RoutineOverloads.schemaOf(queryExecutor, Arrays.asList(parts));
     }
 }

@@ -521,7 +521,7 @@ public class SystemViews {
         // leaves both NULL, and every non-numeric type leaves both NULL too.
         Integer numPrec = null;
         Integer numScale = null;
-        if (dataType instanceof NumericType && !"FLOAT".equals(canonical)) {
+        if (dataType instanceof NumericType && !"FLOAT".equals(canonical) && !"DECFLOAT".equals(canonical)) {
             numPrec = Integer.valueOf(((NumericType) dataType).getPrecision());
             numScale = Integer.valueOf(((NumericType) dataType).getScale());
         }

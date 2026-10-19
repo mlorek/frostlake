@@ -49,8 +49,9 @@ public class XmlGet extends BuiltInFunction {
         }
         final int instance;
         if (args.size() > 2) {
-            if (!(args.get(2) instanceof Number)) return null;
-            instance = ((Number) args.get(2)).intValue();
+            // An instance is read as the whole number it gives, a text's included and a fraction rounded:
+            // '1' and 0.6 are the second instance (live-verified).
+            instance = wholeNumber(args.get(2));
         } else {
             instance = 0;
         }

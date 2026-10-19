@@ -1018,13 +1018,13 @@ public final class SecurityObjectCommandHandler {
         final String target;
         if (ctx.USER() != null) {
             final String user = SqlIdentifiers.canonical(ctx.identifier(0));
-            if (!catalog.hasUser(user)) {
+            if (!catalog.hasUserExact(user)) {
                 if (ctx.if_exists() != null) {
                     return null;
                 }
                 throw new RuntimeException(SqlCompilationError.doesNotExist("User", user));
             }
-            target = "USER|" + catalog.getUser(user).getName();
+            target = "USER|" + catalog.getUserExact(user).getName();
         } else {
             target = ACCOUNT;
         }
@@ -1517,7 +1517,7 @@ public final class SecurityObjectCommandHandler {
         final String setOn;
         if (ctx.USER() != null) {
             final String user = SqlIdentifiers.canonical(ctx.identifier());
-            target = "USER|" + catalog.getUser(user).getName();
+            target = "USER|" + catalog.getUserExact(user).getName();
             setOn = "USER";
         } else {
             target = ACCOUNT;

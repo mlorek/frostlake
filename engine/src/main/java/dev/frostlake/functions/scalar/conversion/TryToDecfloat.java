@@ -45,7 +45,7 @@ public class TryToDecfloat extends BuiltInFunction {
     private static final ToDecfloat BASE = new ToDecfloat();
 
     public TryToDecfloat() {
-        super("TRY_TO_DECFLOAT", NumericType.DOUBLE);
+        super("TRY_TO_DECFLOAT", NumericType.DECFLOAT);
     }
 
     @Override

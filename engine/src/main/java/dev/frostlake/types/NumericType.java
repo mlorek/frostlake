@@ -88,6 +88,16 @@ public class NumericType extends DataType {
     }
 
     /**
+     * Whether a type is DECFLOAT, the exact decimal float of 38 significant digits.
+     *
+     * @param type the type, or null
+     * @return true for DECFLOAT
+     */
+    public static boolean isDecfloat(final DataType type) {
+        return type instanceof NumericType && "DECFLOAT".equalsIgnoreCase(type.getName());
+    }
+
+    /**
      * Whether a type NAME is one of the approximate spellings — for a caller that has the name and not
      * the type, such as a driver reading column metadata off the wire.
      *
@@ -114,5 +124,10 @@ public class NumericType extends DataType {
     public static NumericType NUMBER = new NumericType("NUMBER", 38, 0);
     public static NumericType DECIMAL = new NumericType("DECIMAL", 38, 0);
     public static NumericType FLOAT = new NumericType("FLOAT", 38, 9);
+    /**
+     * DECFLOAT, a decimal of 38 significant digits whose point floats: its values are BigDecimals held by
+     * {@code values.Decfloats}, and its nominal scale is no scale a value is held to.
+     */
+    public static final NumericType DECFLOAT = new NumericType("DECFLOAT", 38, 0);
     public static NumericType DOUBLE = new NumericType("DOUBLE", 38, 9);
 }

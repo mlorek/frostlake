@@ -68,6 +68,9 @@ final class SecurableKinds {
      * @return the kind, spelled as grants record it
      */
     static String of(final FrostlakeParser.ObjectTypeContext type) {
+        if (type.MATERIALIZED() != null) {
+            return "MATERIALIZED_VIEW";
+        }
         if (type.securableKind() == null) {
             throw new RuntimeException(SqlCompilationError.inline("Object type or Class '"
                 + type.getText().toUpperCase(Locale.ROOT) + "' does not exist or not authorized."));

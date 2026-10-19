@@ -216,7 +216,7 @@ final class ShowRelationalExecutor {
             schema = catalog.databaseExact(parts[0]).schemaExact(parts[1]);
             actualViewName = parts[2];
         }
-        return schema.getView(actualViewName);
+        return schema.getViewExact(actualViewName);
     }
 
     public ResultSet showDatabases() {
@@ -874,6 +874,8 @@ final class ShowRelationalExecutor {
                 }
                 // The times and the lag describe the data the view materialized, not the view itself.
                 final Object refreshedOn = MaterializedViewRefresh.refreshedOn(mv);
+                // The source is where the table the view is bound to stands now (live-verified for a swap).
+                final String[] listedSource = MaterializedViewValidity.listedSource(catalog, mv);
                 rows.add(new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(mv.getCreatedTime()),
                     mv.getName(),
@@ -883,9 +885,9 @@ final class ShowRelationalExecutor {
                     // The rows it materialized; no size is told.
                     mv.getMaterializedRows(),
                     0L,
-                    ShowResultHelpers.text(mv.getSourceDatabase()),
-                    ShowResultHelpers.text(mv.getSourceSchema()),
-                    ShowResultHelpers.text(mv.getSourceTable()),
+                    ShowResultHelpers.text(listedSource[0]),
+                    ShowResultHelpers.text(listedSource[1]),
+                    ShowResultHelpers.text(listedSource[2]),
                     refreshedOn,
                     refreshedOn,
                     ShowResultHelpers.text(mv.getOwner()),
@@ -1539,7 +1541,8 @@ final class ShowRelationalExecutor {
                     col.getCollation() != null && !col.getCollation().isEmpty()
                         ? derivedType + " COLLATE '" + col.getCollation() + "'" : derivedType,
                     "COLUMN", col.isNullable() ? "Y" : "N", null, "N", "N", null, null,
-                    col.getComment(), null, null, null)));
+                    // The masking policy ALTER VIEW set on a view's column, as a table's column shows its own.
+                    col.getComment(), col.getMaskingPolicyName(), null, null)));
             }
         } else if (declaredNames != null) {
             for (final String colName : declaredNames) {

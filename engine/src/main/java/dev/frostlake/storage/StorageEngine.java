@@ -112,11 +112,31 @@ public class StorageEngine {
     public void setTimeTravelEnabled(final boolean enabled) { this.timeTravelEnabled = enabled; }
     public boolean isTimeTravelEnabled() { return timeTravelEnabled; }
 
+    /** The tables written since {@link #takeWrittenRows} last asked, whatever the time-travel snapshots took. */
+    private final Set<TableStorage> writtenTables = ConcurrentHashMap.newKeySet();
+
     /** Record that a table was mutated by the current statement; it is snapshotted at statement end. */
     void markDirty(final TableStorage table) {
         if (timeTravelEnabled) {
             dirtyTables.add(table);
         }
+        writtenTables.add(table);
+    }
+
+    /**
+     * The rows the tables written since the last call hold now, summed — what a statement that wrote them produced,
+     * a table being rewritten whole (see the query history's ROWS_PRODUCED) — and start the record again. A write a
+     * transaction buffers reaches no table until it commits.
+     *
+     * @return the rows
+     */
+    public long takeWrittenRows() {
+        long total = 0;
+        for (final TableStorage table : writtenTables) {
+            total += table.getRowCount();
+        }
+        writtenTables.clear();
+        return total;
     }
 
     /** Take one time-travel snapshot of every table mutated since the last call, then reset. */

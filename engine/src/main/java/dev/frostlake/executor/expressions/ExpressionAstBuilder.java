@@ -34,6 +34,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VectorType;
+import dev.frostlake.values.Decfloats;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -49,6 +50,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Builds {@link Expression} AST nodes directly from the ANTLR parse tree.
@@ -1338,6 +1340,29 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         return literal;
     }
 
+    /**
+     * A typed DECFLOAT literal: {@code DECFLOAT '1.5'} is the DECFLOAT its text spells, read as a cast of the text
+     * reads it — surrounding blanks, a sign, a bare point and an exponent alike. A text that spells no number is
+     * refused while the statement compiles, the literal quoted as written:
+     * {@code Can not convert parameter ''abc'' of type [VARCHAR] into expected type [DECFLOAT]} (live-verified).
+     */
+    @Override
+    public Expression visitDecfloatLiteralExpr(final FrostlakeParser.DecfloatLiteralExprContext ctx) {
+        final String written = ctx.STRING_LITERAL().getText();
+        final String value = unquoteString(written);
+        if (!DECFLOAT_LITERAL_TEXT.matcher(value).matches() || !Decfloats.holds(value)) {
+            throw new RuntimeException(SqlCompilationError.of("Can not convert parameter '" + written
+                + "' of type [VARCHAR] into expected type [DECFLOAT]"));
+        }
+        final CastExpression literal = new CastExpression(new LiteralExpression(value, LiteralType.STRING), "DECFLOAT");
+        literal.markTypedLiteral();
+        return literal;
+    }
+
+    /** The texts a DECFLOAT literal reads: a decimal number, with a sign, a point and an exponent each optional. */
+    private static final Pattern DECFLOAT_LITERAL_TEXT =
+        Pattern.compile("\\s*[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?\\s*");
+
     // ------------------------------------------------------------------
     // Subqueries, access paths, JSON, interval, function calls, system funcs
     // ------------------------------------------------------------------
@@ -1448,11 +1473,20 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     @Override
     public Expression visitJsonObjectExpr(final FrostlakeParser.JsonObjectExprContext ctx) {
         final Map<String, Expression> props = new LinkedHashMap<>();
+        final List<String> keys = new ArrayList<>();
+        final List<Expression> values = new ArrayList<>();
+        boolean repeated = false;
         for (final FrostlakeParser.JsonObjectEntryContext entry : ctx.jsonObjectLiteral().jsonObjectEntry()) {
             final FrostlakeParser.JsonKeyValuePairContext pair = entry.jsonKeyValuePair();
-            props.put(unquoteString(pair.STRING_LITERAL().getText()), visit(pair.expression()));
+            final String key = unquoteString(pair.STRING_LITERAL().getText());
+            final Expression value = visit(pair.expression());
+            repeated |= props.containsKey(key);
+            props.put(key, value);
+            keys.add(key);
+            values.add(value);
         }
-        return new JsonObjectExpression(props);
+        // A key written twice is OBJECT_CONSTRUCT's: refused once both pairs hold a value (live-verified).
+        return repeated ? new JsonObjectExpression(props, keys, values) : new JsonObjectExpression(props);
     }
 
     @Override
@@ -2157,7 +2191,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         call.setStarExcludes(excludes);
         if (qualifier != null) {
             final String[] parts = ParseTreeText.qualifiedNameParts(qualifier);
-            call.setStarQualifier(parts[parts.length - 1].toUpperCase(Locale.ROOT));
+            call.setStarQualifier(parts[parts.length - 1]);
         }
         return call;
     }

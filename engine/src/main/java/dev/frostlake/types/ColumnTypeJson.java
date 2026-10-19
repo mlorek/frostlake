@@ -135,6 +135,9 @@ public final class ColumnTypeJson {
             final NumericType numeric = (NumericType) type;
             out.append(",\"precision\":").append(numeric.getPrecision())
                .append(",\"scale\":").append(numeric.getScale());
+        } else if ("DECFLOAT".equals(name)) {
+            // Its precision and no scale (live-verified): {"type":"DECFLOAT","precision":38,"nullable":true}.
+            out.append(",\"precision\":").append(((NumericType) type).getPrecision());
         } else if (type instanceof StringType && !(type instanceof UuidType)) {
             // A UUID is no string here: live's descriptor is {"type":"UUID","nullable":true}.
             final long length = Math.min(((StringType) type).getMaxLength(), widestString);

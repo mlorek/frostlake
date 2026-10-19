@@ -574,6 +574,15 @@ public class DirectConnection implements Connection, AbortableSession {
         return sessionSchema;
     }
 
+    /**
+     * The user this connection's statements run as, as CURRENT_USER() names it.
+     *
+     * @return the user's name
+     */
+    String userName() {
+        return engine.getSecurityManager().getSessionContext().getDisplayUser();
+    }
+
     @Override
     public void abort(final Executor executor) throws SQLException {
         close();

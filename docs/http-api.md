@@ -42,6 +42,14 @@ Response:
 
 Decide success from the body's `success`: a SQL error is an answer, not a transport failure.
 
+Every answer to a request that ran in a session — a failed statement's included — carries `namespace`, where the
+session stands once the request has run and as whom: `{"database": "TEST_DB", "schema": "PUBLIC", "user": "…"}`,
+each name as the catalog holds it, the database or schema null when the session has none, and the user as
+`CURRENT_USER()` names it. A `USE`, a `CREATE SCHEMA` or a procedure may have moved the session; the account reports
+where its session stands with every statement, and a driver's `getCatalog`, `getSchema` and `getUserName` answer
+with it. A session created with `POST /api/sessions` reports it too. An answer that concerns no session's statement
+leaves it out.
+
 A failed statement's answer carries `sqlState` and `errorCode` where the account's are known, and leaves them out
 otherwise. Today that is a canceled statement: `57014` with `604` for a cancel or a query timeout, and with `630`
 for the session's `STATEMENT_TIMEOUT_IN_SECONDS` (`Statement reached its statement or warehouse timeout of 1
@@ -142,7 +150,10 @@ result as rows, as it used to.
 
 Cells cross as JSON values: numbers as numbers, BOOLEAN as a JSON boolean, VARIANT / OBJECT / ARRAY as their
 JSON text, BINARY as upper-case hex text, VECTOR as its text (`[1.000000,2.000000,3.000000]`, an INT
-vector `[1,2,3]`), and temporal values as text:
+vector `[1,2,3]`), a DECFLOAT as a JSON **string** of its text (`"1.5"`,
+`"3.3333333333333333333333333333333333333e-1"`, `"1.23e7002"` — every one of its 38 digits kept for a client whose
+JSON numbers are doubles, read back as a decimal the way Snowflake's drivers read the type; its column sends
+`precision` 38 and `scale` 0), and temporal values as text:
 
 | type | wire text |
 |---|---|

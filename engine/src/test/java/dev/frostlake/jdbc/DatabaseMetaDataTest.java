@@ -252,12 +252,12 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetSQLKeywords() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
+        // The account's driver's list, which both drivers answer.
         final DatabaseMetaData metaData = connection.getMetaData();
         final String keywords = metaData.getSQLKeywords();
         assertTrue(keywords.contains("VARIANT"));
-        assertTrue(keywords.contains("ARRAY"));
-        assertTrue(keywords.contains("FLATTEN"));
+        assertTrue(keywords.contains("QUALIFY"));
+        assertTrue(keywords.contains("ILIKE"));
     }
 
     @Test
@@ -308,9 +308,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetMaxColumnNameLength() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
         final DatabaseMetaData metaData = connection.getMetaData();
-        assertEquals(256, metaData.getMaxColumnNameLength());
+        assertEquals(255, metaData.getMaxColumnNameLength());
     }
 
     @Test
@@ -328,10 +327,10 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testNullSorting() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
+        // NULLs sort high, as the account's ORDER BY sorts them and its driver says.
         final DatabaseMetaData metaData = connection.getMetaData();
-        assertFalse(metaData.nullsAreSortedHigh());
-        assertTrue(metaData.nullsAreSortedLow());
+        assertTrue(metaData.nullsAreSortedHigh());
+        assertFalse(metaData.nullsAreSortedLow());
         assertFalse(metaData.nullsAreSortedAtStart());
         assertFalse(metaData.nullsAreSortedAtEnd());
     }
@@ -363,9 +362,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testSupportsGetGeneratedKeys() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
         final DatabaseMetaData metaData = connection.getMetaData();
-        assertTrue(metaData.supportsGetGeneratedKeys());
+        assertFalse(metaData.supportsGetGeneratedKeys());
     }
 
     @Test

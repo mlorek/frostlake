@@ -31,6 +31,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -99,8 +100,50 @@ public final class UserAggregateFunction extends AggregateFunction {
     }
 
     /**
-     * The values that choose a group's overload: in each argument's place, the first value a row gives that is not
-     * NULL, or NULL where every row gives NULL.
+     * This aggregate held to one of its overloads: the one a call's arguments' static types chose, which every group
+     * of the call runs - an all-NULL group too (live-verified).
+     *
+     * @param overload the overload, one of this aggregate's
+     * @return the aggregate running that overload alone
+     */
+    public UserAggregateFunction pinnedTo(final Function overload) {
+        return new UserAggregateFunction(Collections.singletonList(overload), catalog, s3Resolver, procedural);
+    }
+
+    /**
+     * Whether a function is one of this aggregate's overloads.
+     *
+     * @param function the function
+     * @return whether a call of this aggregate may run it
+     */
+    public boolean holds(final Function function) {
+        for (final Function overload : overloads) {
+            if (overload == function) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether every overload of another aggregate is one of this one's: an aggregate pinned earlier still names
+     * functions the catalog holds.
+     *
+     * @param other the other aggregate
+     * @return whether each of its overloads is one of this aggregate's
+     */
+    public boolean holdsEvery(final UserAggregateFunction other) {
+        for (final Function overload : other.overloads) {
+            if (!holds(overload)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The values that choose a group's overload where the call's arguments could not be typed: in each argument's
+     * place, the first value a row gives that is not NULL, or NULL where every row gives NULL.
      */
     private static List<Object> decidingValues(final List<List<Object>> rows) {
         final List<Object> values = new ArrayList<>(rows.get(0));

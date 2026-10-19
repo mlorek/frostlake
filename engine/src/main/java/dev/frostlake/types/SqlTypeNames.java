@@ -262,6 +262,9 @@ public final class SqlTypeNames {
             if (isFixedPoint(name)) {
                 return "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
             }
+            if ("DECFLOAT".equals(name)) {
+                return "DECFLOAT(38)";
+            }
             // FLOAT is the whole approximate family: DOUBLE, REAL and FLOAT4/8 all report FLOAT.
             return "FLOAT";
         }

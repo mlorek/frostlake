@@ -91,9 +91,9 @@ public final class SqlFunctionArgument {
         Schema schema = null;
         try {
             if (parts.length == 3) {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                schema = catalog.databaseExact(parts[0]).schemaExact(parts[1]);
             } else if (parts.length == 2) {
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
+                schema = catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(parts[0]);
             } else {
                 for (final Schema searched : executor.searchPathSchemas()) {
                     if (!searched.getFunctionOverloads(simple).isEmpty()) {

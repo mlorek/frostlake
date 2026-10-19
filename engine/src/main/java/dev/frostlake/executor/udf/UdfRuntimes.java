@@ -48,6 +48,16 @@ public final class UdfRuntimes {
     }
 
     /**
+     * Tells every discovered runtime that an outermost statement on this thread has ended (see
+     * {@link UdfLanguageRuntime#statementEnded}).
+     */
+    public static void statementEnded() {
+        for (final UdfLanguageRuntime runtime : RUNTIMES.values()) {
+            runtime.statementEnded();
+        }
+    }
+
+    /**
      * The runtime for {@code language}, or null when no module provides it. Unlike {@link #require},
      * this is for callers that carry on without one — a CREATE-time body check can only judge a body
      * whose language is installed, and accepts it otherwise.

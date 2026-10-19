@@ -55,4 +55,7 @@ public class StreamSnapshot implements Serializable {
     public Map<String, String> tags;
     // When the object was created. Null on snapshots written before it was saved, which restore it as new.
     public LocalDateTime createdAt;
+    // Where the stream's offset falls in the order table snapshots are taken in, which a join view's stream reads
+    // its tables' rows at. Null on snapshots written before it was saved, which restore the offset as now.
+    public Long offsetSequence;
 }

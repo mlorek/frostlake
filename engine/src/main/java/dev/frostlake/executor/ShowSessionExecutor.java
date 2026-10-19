@@ -219,7 +219,7 @@ final class ShowSessionExecutor {
      * @param likePattern the LIKE pattern, or null for every row
      */
     public ResultSet showParametersInUser(final String userName, final String likePattern) {
-        final User listed = catalog.getUser(userName);
+        final User listed = catalog.getUserExact(userName);
         final String user = listed.getName();
         final Map<String, SessionParameterRow> known = new HashMap<>();
         for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
@@ -379,7 +379,7 @@ final class ShowSessionExecutor {
      * WAREHOUSE where the warehouse set the parameter itself and empty where it inherits.
      */
     public ResultSet showParametersInWarehouse(final String warehouseName, final String likePattern) {
-        final Warehouse warehouse = catalog.getWarehouse(warehouseName);
+        final Warehouse warehouse = catalog.getWarehouseExact(warehouseName);
         if (warehouse == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", warehouseName));
         }

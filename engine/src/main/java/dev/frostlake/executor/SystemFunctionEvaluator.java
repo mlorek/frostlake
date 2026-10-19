@@ -25,7 +25,6 @@ import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.StorageEngine;
-import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
 import dev.frostlake.task.TaskOnlyFunctions;
 import dev.frostlake.task.TaskScheduler;
@@ -130,21 +129,8 @@ public class SystemFunctionEvaluator {
                 return cancelQuery(args.isEmpty() ? null : args.get(0));
             case "SYSTEM$CANCEL_ALL_QUERIES":
                 return "Query cancelled.";
-            case "SYSTEM$STREAM_BACKLOG": {
-                if (!args.isEmpty() && args.get(0) != null) {
-                    final String name = args.get(0).toString().replaceAll("^'|'$", "").toUpperCase(Locale.ROOT);
-                    final String dbN = catalog.getCurrentDatabase();
-                    final String scN = catalog.getCurrentSchema();
-                    if (dbN != null && scN != null) {
-                        try {
-                            final TableStorage ts =
-                                storageEngine.getTableStorage(dbN + "." + scN + "." + name);
-                            return ts != null ? (long) ts.getRowCount() : 0L;
-                        } catch (final Exception ignored) {}
-                    }
-                }
-                return 0L;
-            }
+            case "SYSTEM$REFERENCE":
+                return ObjectReferenceTokens.create(catalog, args);
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP":
                 return ChangeTimes.streamTableTimestamp(catalog, storageEngine, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
@@ -192,7 +178,8 @@ public class SystemFunctionEvaluator {
                 if (catalog != null && !pipeName.isEmpty()) {
                     final Pipe pipe;
                     try {
-                        pipe = catalog.getPipe(pipeName);
+                        // The argument names the pipe as an identifier does: quoted parts kept, the rest folded.
+                        pipe = catalog.getPipe(SqlIdentifiers.canonicalText(pipeName));
                     } catch (final RuntimeException missing) {
                         // A pipe that is not there is named as the argument writes it, with no privilege
                         // sentence (live-verified).

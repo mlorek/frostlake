@@ -16,8 +16,8 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.executor.copy.CsvFormatOptions;
 import dev.frostlake.executor.copy.CsvRecordReader;
+import dev.frostlake.executor.copy.FileFormatOptions;
 import dev.frostlake.executor.copy.JsonNullStripping;
 import dev.frostlake.executor.copy.JsonStageReader;
 import dev.frostlake.executor.copy.StageFileReader;
@@ -62,7 +62,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -92,13 +91,12 @@ final class StageQueryExecutor {
     /** {@code FROM @stage[/path] [(params)]} as a virtual table of staged-file fields. */
     TableData queryStage(final String location,
                          final FrostlakeParser.StageQueryParamsContext params, final String alias) {
-        String fileFormat = "CSV";
-        int skipHeader = 0;
-        // The CSV options reach the stage-query path at their defaults, a named format's in their place: an
-        // unenclosed empty field reads as SQL NULL (EMPTY_FIELD_AS_NULL), so does the text \N (NULL_IF), and a
-        // backslash takes the delimiter or itself literally (ESCAPE_UNENCLOSED_FIELD). Live-verified, each with
-        // a control beside it — the same file read through a format that turns the option off.
-        final CsvFormatOptions csvOptions = new CsvFormatOptions();
+        // The options reach the stage-query path at their defaults, a named format's in their place: an unenclosed
+        // empty field reads as SQL NULL (EMPTY_FIELD_AS_NULL), so does the text \N (NULL_IF), a backslash takes
+        // the delimiter or itself literally (ESCAPE_UNENCLOSED_FIELD), TRIM_SPACE trims an unenclosed field, and a
+        // blank line is a record of NULLs unless SKIP_BLANK_LINES passes it over. Live-verified, each with a control
+        // beside it — the same file read through a format that turns the option off.
+        final FileFormatOptions options = new FileFormatOptions();
 
         final StageQueryArguments arguments = StageQueryArguments.read(executor, params);
         FileFormat named = arguments.format();
@@ -111,29 +109,12 @@ final class StageQueryExecutor {
             named = InferSchemaArguments.resolveFileFormat(executor.getCatalog(), kept.get("FORMAT_NAME"));
         }
         if (named != null) {
-            fileFormat = named.getType();
-            csvOptions.takeAll(named.getOptions());
-            csvOptions.takeNullIf(named.getNullIfValues());
-            if (named.getOption("SKIP_HEADER") != null) {
-                skipHeader = Integer.parseInt(named.getOption("SKIP_HEADER"));
-            }
-        }
-        if (kept.get("TYPE") != null) {
-            fileFormat = kept.get("TYPE").toUpperCase(Locale.ROOT);
+            options.takeFormat(named);
         }
         // A JSON format's STRIP_OUTER_ARRAY and STRIP_NULL_VALUES read the file as a load reads it (live-verified).
-        final boolean stripOuterArray = "TRUE".equalsIgnoreCase(jsonOption(named, kept, "STRIP_OUTER_ARRAY"));
-        final boolean stripNullValues = "TRUE".equalsIgnoreCase(jsonOption(named, kept, "STRIP_NULL_VALUES"));
-        final boolean replaceInvalid = "TRUE".equalsIgnoreCase(jsonOption(named, kept, "REPLACE_INVALID_CHARACTERS"));
-        csvOptions.takeAll(kept);
-        csvOptions.takeListedNullIf(kept.get("NULL_IF"));
-        if (kept.get("SKIP_HEADER") != null) {
-            skipHeader = Integer.parseInt(kept.get("SKIP_HEADER"));
-        }
+        options.takeAll(kept);
+        final String fileFormat = options.getType();
         final String pattern = arguments.pattern();
-
-        final Character enclosure = csvOptions.getEnclosure();
-        final boolean emptyFieldAsNull = csvOptions.isEmptyFieldAsNull();
 
         // The path selects files by prefix, at any depth, and PATTERN matches the file's stored path —
         // the reading COPY gives both (live-verified).
@@ -162,8 +143,7 @@ final class StageQueryExecutor {
                 ownerColumns.add(column.getName());
             }
         }
-        final boolean widthChecked = owner != null && !"FALSE".equalsIgnoreCase(
-            formatOption(named, kept, "ERROR_ON_COLUMN_COUNT_MISMATCH"));
+        final boolean widthChecked = owner != null && options.checksColumnCount();
         RuntimeException refusedRecord = null;
         for (final Path file : files) {
             if (refusedRecord != null) {
@@ -175,11 +155,11 @@ final class StageQueryExecutor {
                 if (recordReader != null) {
                     // A JSON file's refusal of a byte that is no UTF-8 names it under its stage's storage path.
                     final List<JsonNode> records = recordReader instanceof JsonStageReader
-                        ? ((JsonStageReader) recordReader).readRecords(file, stripOuterArray, replaceInvalid,
-                            storedName(staged, relativeName))
+                        ? ((JsonStageReader) recordReader).readRecords(file, options.stripsOuterArray(),
+                            options.replacesInvalidCharacters(), storedName(staged, relativeName))
                         : recordReader.readRecords(file);
                     for (final JsonNode record : records) {
-                        if (stripNullValues) {
+                        if (options.stripsNullValues()) {
                             JsonNullStripping.strip(record);
                         }
                         fieldRows.add(new ArrayList<>(Arrays.asList((Object) record.toString())));
@@ -194,12 +174,9 @@ final class StageQueryExecutor {
                     // The file is read in its format's ENCODING, and a byte that set cannot read refuses its field
                     // unless REPLACE_INVALID_CHARACTERS reads it as U+FFFD (live-verified).
                     final CsvRecordReader reader = new CsvRecordReader(
-                        new StringReader(StagedFileIo.readMarked(file, csvCharset(csvOptions.getEncoding()))),
-                        relativeName, noneAsNull(csvOptions.getFieldDelimiter()),
-                        noneAsNull(csvOptions.getRecordDelimiter()), enclosure, csvOptions.getEscape(),
-                        csvOptions.getEscapeUnenclosed())
-                        .settlingUnreadable(csvOptions.replacesInvalidCharacters());
-                    reader.skipLines(skipHeader);
+                        new StringReader(StagedFileIo.readMarked(file, csvCharset(options.getEncoding()))),
+                        relativeName, options, true).settlingUnreadable(options.replacesInvalidCharacters());
+                    reader.skipLines(options.getSkipHeader());
                     final List<Boolean> enclosed = new ArrayList<>();
                     long fileRow = 0;
                     List<String> fields = reader.next(-1, ++fileRow, enclosed);
@@ -210,14 +187,9 @@ final class StageQueryExecutor {
                             break;
                         }
                         width = Math.max(width, fields.size());
+                        // TRIM_SPACE, NULL_IF and EMPTY_FIELD_AS_NULL settle the fields as a load's are settled.
+                        options.settle(fields, enclosed);
                         final List<Object> values = new ArrayList<Object>(fields);
-                        for (int f = 0; f < values.size(); f++) {
-                            final boolean enclosedBlank = f < enclosed.size() && enclosed.get(f).booleanValue();
-                            if (csvOptions.getNullIf().contains(values.get(f))
-                                    || emptyFieldAsNull && "".equals(values.get(f)) && !enclosedBlank) {
-                                values.set(f, null);
-                            }
-                        }
                         // A field its file's encoding could not read holds its refusal until a query reads it.
                         for (final Map.Entry<Integer, RuntimeException> fault : reader.unreadableFaults().entrySet()) {
                             values.set(fault.getKey().intValue() - 1, new DeferredFault(fault.getValue()));
@@ -292,14 +264,6 @@ final class StageQueryExecutor {
             }, alias, null);
         }
         return new TableData(virtualTable, rows, alias);
-    }
-
-    /** A CSV format option, the query's or the stage's own taking over a named format's; null when none says. */
-    private static String formatOption(final FileFormat named, final Map<String, String> kept, final String option) {
-        if (kept.get(option) != null) {
-            return kept.get(option);
-        }
-        return named == null ? null : named.getOption(option);
     }
 
     /**
@@ -420,11 +384,6 @@ final class StageQueryExecutor {
         return column;
     }
 
-    /** A delimiter as the reader takes it: null for NONE, which an empty text stands for too. */
-    private static String noneAsNull(final String delimiter) {
-        return delimiter == null || delimiter.isEmpty() ? null : delimiter;
-    }
-
     /** The character set a CSV format's ENCODING names, UTF-8 when it names none. */
     private static Charset csvCharset(final String encoding) {
         final Charset charset = encoding == null ? null : StagedFileIo.charsetFor(encoding);
@@ -446,13 +405,5 @@ final class StageQueryExecutor {
             throw new RuntimeException("Stage query: cannot resolve stage location " + location);
         }
         return staged;
-    }
-
-    /** A file format option a staged-file query reads: the query's own options' value, else its named format's. */
-    private static String jsonOption(final FileFormat named, final Map<String, String> kept, final String option) {
-        if (kept.get(option) != null) {
-            return kept.get(option);
-        }
-        return named == null ? null : named.getOption(option);
     }
 }

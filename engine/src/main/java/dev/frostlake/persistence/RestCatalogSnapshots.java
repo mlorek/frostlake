@@ -202,7 +202,7 @@ final class RestCatalogSnapshots {
         }
         if (snapshot.computePools != null) {
             for (final ComputePoolSnapshot saved : snapshot.computePools) {
-                if (catalog.hasComputePool(saved.name)) {
+                if (catalog.hasComputePoolExact(saved.name)) {
                     continue;
                 }
                 final ComputePool pool = new ComputePool(saved.name, orNow(saved.createdOn));
@@ -686,6 +686,7 @@ final class RestCatalogSnapshots {
                 final Privilege granted = Privilege.valueOf(privilege.privilege);
                 privilege.grantor = user.getPrivilegeGrantor(privilege.objectType, privilege.objectName, granted);
                 privilege.grantOption = user.hasGrantOption(privilege.objectType, privilege.objectName, granted);
+                privilege.grantedOn = user.getPrivilegeGrantTime(privilege.objectType, privilege.objectName, granted);
             }
         }
         saved.roleGrantors = new HashMap<>();
@@ -735,6 +736,9 @@ final class RestCatalogSnapshots {
         }
         if (privilege.column == null && Boolean.TRUE.equals(privilege.grantOption)) {
             user.setGrantOption(privilege.objectType, privilege.objectName, granted, true);
+        }
+        if (privilege.column == null && privilege.grantedOn != null) {
+            user.setPrivilegeGrantTime(privilege.objectType, privilege.objectName, granted, privilege.grantedOn);
         }
     }
 
@@ -967,6 +971,7 @@ final class RestCatalogSnapshots {
         saved.suspended = view.isSuspended();
         saved.invalidReason = view.getInvalidReason();
         saved.resumedWhileInvalid = view.isResumedWhileInvalid();
+        saved.baseReshaped = view.isBaseReshaped();
         saved.secure = view.isSecure();
         saved.sourceDatabase = view.getSourceDatabase();
         saved.sourceSchema = view.getSourceSchema();
@@ -995,6 +1000,7 @@ final class RestCatalogSnapshots {
         view.setSuspended(saved.suspended);
         view.setInvalidReason(saved.invalidReason);
         view.setResumedWhileInvalid(saved.resumedWhileInvalid);
+        view.setBaseReshaped(saved.baseReshaped);
         view.setSecure(saved.secure);
         if (saved.sourceTable != null) {
             view.setSource(saved.sourceDatabase, saved.sourceSchema, saved.sourceTable);

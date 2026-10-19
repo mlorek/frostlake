@@ -24,9 +24,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The bookkeeping a role and a user share for the privileges they hold on objects: privileges keyed
- * {@code KIND:NAME}, and grantors, grant times and grant options keyed {@code KIND:NAME:PRIVILEGE}. A user records
- * no grant times or grant options, and passes null for them.
+ * The bookkeeping of the privileges a grantee holds on objects (see {@link GrantLedger}): privileges keyed
+ * {@code KIND:NAME}, and grantors, grant times and grant options keyed {@code KIND:NAME:PRIVILEGE}.
  */
 final class GrantKeys {
 

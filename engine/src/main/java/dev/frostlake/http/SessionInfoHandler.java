@@ -104,6 +104,7 @@ final class SessionInfoHandler implements HttpHandler {
         session.setReadOnly(Boolean.TRUE.equals(request.getReadOnly()));
         final SqlResponse created = new SqlResponse(true, session.getSessionId());
         created.setNewSession(true);
+        created.reportNamespace(session, engine.currentUser());
         HttpResponses.send(exchange, 200, MAPPER.writeValueAsString(created));
     }
 

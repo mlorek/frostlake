@@ -69,6 +69,8 @@ public class Zipf extends NumericArgumentFunction {
         if (args.get(2) == null) {
             return null;
         }
+        // The generator is read as RANDOM reads its seed: a whole number past 64 bits is no number.
+        Random.seedOf(args.get(2));
         final long n = elements.min(BigDecimal.valueOf(Long.MAX_VALUE)).longValue();
         final long[] state = {((Number) args.get(2)).longValue()};
         if (n == 1) {

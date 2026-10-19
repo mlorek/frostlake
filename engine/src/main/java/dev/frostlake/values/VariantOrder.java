@@ -71,7 +71,11 @@ public final class VariantOrder {
             case BOOLEAN:
                 return Boolean.compare(left.booleanValue(), right.booleanValue());
             case NUMBER:
-                return compareNumbers(left, right);
+                // A DECFLOAT ranks among the numbers by its value and never equals a NUMBER of the same value
+                // (live-verified: TO_VARIANT(CAST(1.5 AS DECFLOAT)) = TO_VARIANT(1.5) is FALSE), so the tie is broken.
+                final int byValue = compareNumbers(left, right);
+                return byValue != 0 ? byValue
+                    : Boolean.compare(DecfloatTextNode.holds(left), DecfloatTextNode.holds(right));
             case STRING:
                 // A UUID never equals the string of its text, so the tie between the two is broken.
                 final int byText = left.asText().compareTo(right.asText());
@@ -106,7 +110,9 @@ public final class VariantOrder {
                 key.append(node.booleanValue() ? "true" : "false");
                 return;
             case NUMBER:
-                if (isFinite(node)) {
+                if (DecfloatTextNode.holds(node)) {
+                    key.append('D').append(DecfloatTextNode.valueOf(node).toPlainString());
+                } else if (isFinite(node)) {
                     key.append('N').append(node.decimalValue().stripTrailingZeros().toPlainString());
                 } else {
                     key.append('N').append(node.doubleValue());
@@ -153,7 +159,7 @@ public final class VariantOrder {
         if (node.isBoolean()) {
             return BOOLEAN;
         }
-        if (node.isNumber()) {
+        if (node.isNumber() || DecfloatTextNode.holds(node)) {
             return NUMBER;
         }
         if (node.isObject()) {
@@ -166,16 +172,24 @@ public final class VariantOrder {
     }
 
     private static boolean isFinite(final JsonNode node) {
-        return !(node.isDouble() || node.isFloat()) || Double.isFinite(node.doubleValue());
+        return DecfloatTextNode.holds(node) || !(node.isDouble() || node.isFloat())
+            || Double.isFinite(node.doubleValue());
+    }
+
+    /** A numeric member's value: a DECFLOAT's own, any other number's as its node reads it. */
+    private static BigDecimal decimalOf(final JsonNode node) {
+        return DecfloatTextNode.holds(node) ? DecfloatTextNode.valueOf(node) : node.decimalValue();
+    }
+
+    private static double doubleOf(final JsonNode node) {
+        return DecfloatTextNode.holds(node) ? DecfloatTextNode.valueOf(node).doubleValue() : node.doubleValue();
     }
 
     private static int compareNumbers(final JsonNode left, final JsonNode right) {
         if (isFinite(left) && isFinite(right)) {
-            final BigDecimal leftValue = left.decimalValue();
-            final BigDecimal rightValue = right.decimalValue();
-            return leftValue.compareTo(rightValue);
+            return decimalOf(left).compareTo(decimalOf(right));
         }
-        return Double.compare(left.doubleValue(), right.doubleValue());
+        return Double.compare(doubleOf(left), doubleOf(right));
     }
 
     private static int compareArrays(final JsonNode left, final JsonNode right) {

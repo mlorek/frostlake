@@ -1056,7 +1056,7 @@ public class FunctionRegistry {
         register(new IsDatabaseRoleInSession(catalog, sessionContext));
         // Snowflake-name aliases over existing implementations.
         functions.put("AS_CHAR", new AsVarchar());
-        functions.put("AS_NUMBER", new AsDecimal());
+        functions.put("AS_NUMBER", new AsDecimal("AS_NUMBER"));
         functions.put("AS_REAL", new AsDouble());
         functions.put("AS_TIMESTAMP_LTZ", new AsTimestampLtz());
         functions.put("AS_TIMESTAMP_TZ", new AsTimestampTz());
@@ -1242,6 +1242,20 @@ public class FunctionRegistry {
             return builtIn;
         }
         return users.find(upper);
+    }
+
+    /**
+     * Whether a call of this name may call a scalar function or an aggregate one, its arguments' types deciding: a
+     * user's name that holds scalar overloads beside aggregate ones. A built-in's name never does.
+     *
+     * @param name the name as the call writes it
+     * @return whether the call's arguments decide whether it aggregates
+     */
+    public boolean namesScalarBesideAggregate(final String name) {
+        final String upper = name.toUpperCase(Locale.ROOT);
+        final UserAggregateLookup users = userAggregates;
+        return users != null && !aggregateFunctions.containsKey(upper) && !functions.containsKey(upper)
+            && !tableFunctions.containsKey(upper) && users.namesScalarBesideAggregate(upper);
     }
 
     /**

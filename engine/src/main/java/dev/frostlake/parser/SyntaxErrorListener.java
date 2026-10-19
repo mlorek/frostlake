@@ -691,11 +691,16 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 messageLine = shown[0];
                 messagePosition = shown[1];
                 final String after = characterAfter(reported);
-                // A hexadecimal prefix the input ends on is told twice, as a number that stops and as an end
-                // nothing may stand at (live-verified: SELECT 0x).
+                // A malformed number the input ends on straight after SELECT is told twice, as a number that stops and
+                // as an end nothing may stand at; so is a hexadecimal prefix wherever it ends the input (live-verified:
+                // SELECT 0x, SELECT 1e, where LIMIT 1e is told once).
+                final Token before = recognizer instanceof Parser
+                    ? previousSpoken(((Parser) recognizer).getInputStream(), reported.getTokenIndex()) : null;
+                final boolean toldTwice = "<EOF>".equals(after) && (opensHexadecimal(reported)
+                    || before != null && before.getType() == FrostlakeLexer.SELECT);
                 messageText = "parse error line " + messageLine + " at position " + messagePosition
                     + " near '" + after + "'."
-                    + (opensHexadecimal(reported) && "<EOF>".equals(after) ? "\nsyntax error line " + messageLine
+                    + (toldTwice ? "\nsyntax error line " + messageLine
                         + " at position " + messagePosition + " unexpected '<EOF>'." : "");
             } else {
                 final int[] shown = LeadingCommentOffset.rebase(

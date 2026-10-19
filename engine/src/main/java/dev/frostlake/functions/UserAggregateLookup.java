@@ -30,4 +30,13 @@ public interface UserAggregateLookup {
      * @return the aggregate, or null
      */
     AggregateFunction find(final String name);
+
+    /**
+     * Whether the name finds scalar overloads beside its aggregate ones, so a call's arguments decide which kind it
+     * calls (see {@link FunctionRegistry#namesScalarBesideAggregate}).
+     *
+     * @param name the name as the call writes it, upper-cased, with or without its schema and database
+     * @return whether it finds both kinds
+     */
+    boolean namesScalarBesideAggregate(final String name);
 }

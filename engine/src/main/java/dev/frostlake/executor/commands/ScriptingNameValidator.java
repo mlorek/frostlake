@@ -21,6 +21,7 @@ import dev.frostlake.executor.CallNamedShape;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QuotedBindName;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.DateTimeUnitSlot;
 import dev.frostlake.executor.procedural.ForStatement;
 import dev.frostlake.functions.SystemFunctionNames;
@@ -389,6 +390,14 @@ final class ScriptingNameValidator {
         if (node instanceof FrostlakeParser.ReturnStatementContext) {
             final FrostlakeParser.ReturnStatementContext ret = (FrostlakeParser.ReturnStatementContext) node;
             rejectReturnKind(ret, returnKind);
+            if (ret.TABLE() == null && ret.booleanExpr() instanceof FrostlakeParser.ValueExprContext
+                    && isRow(((FrostlakeParser.ValueExprContext) ret.booleanExpr()).expression())) {
+                // A ROW is no value a block returns (live-verified).
+                final Token at = ret.booleanExpr().getStart();
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    " Unsupported: return multiple columns row. Consider returning a table (from a RESULTSET) or an"
+                        + " ARRAY."));
+            }
             if (ret.TABLE() != null && ret.expression() instanceof FrostlakeParser.QualifiedNameExprContext) {
                 // RETURN TABLE(rs) names a RESULTSET, and live reports a missing one at the RETURN.
                 final FrostlakeParser.QualifiedNameContext named =
@@ -1274,10 +1283,13 @@ final class ScriptingNameValidator {
             invalidIdentifier(written, false)));
     }
 
+    /**
+     * The refusal of a name nothing declares: a bare name upper-cased, a quoted one with its quotes only where it
+     * needs them ({@code "ABC"} is {@code 'ABC'}, {@code "abc"} stays {@code '"abc"'}), a {@code :bind} as typed
+     * (live-verified).
+     */
     private static String invalidIdentifier(final String written, final boolean asWritten) {
-        final String shown = asWritten || isQuoted(written)
-            ? written
-            : written.toUpperCase(Locale.ROOT);
+        final String shown = asWritten ? written : SqlIdentifiers.spellAsWritten(written);
         return "invalid identifier '" + shown + "'";
     }
 
@@ -1436,7 +1448,7 @@ final class ScriptingNameValidator {
      * An untyped declaration whose initialiser gives it no type is refused while the block compiles —
      * " variable 'A' cannot have its type inferred from initializer", at the LET or at a DECLARE item's
      * name, ahead of anything later in the body. A bare name that resolves to nothing (a context word
-     * written without its parentheses is one), a bare NULL, a
+     * written without its parentheses is one), a bare NULL, a ROW, a
      * cursor record's field and an initialiser that reads a bind (see {@link #readsABindUntyped}) are such
      * initialisers; an unknown name inside a larger expression is the ordinary invalid identifier instead,
      * and a bind no variable declares is refused ahead of all of them (live-verified).
@@ -1454,7 +1466,8 @@ final class ScriptingNameValidator {
         if (name != null && initialiser != null && (readsABindUntyped(initialiser)
                 || holdsARelationSubquery(initialiser)
                 || initialiser instanceof FrostlakeParser.ValueExprContext
-                    && untypable(((FrostlakeParser.ValueExprContext) initialiser).expression(), scope, records))) {
+                    && (isRow(((FrostlakeParser.ValueExprContext) initialiser).expression())
+                        || untypable(((FrostlakeParser.ValueExprContext) initialiser).expression(), scope, records)))) {
             throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                 " variable '" + canonical(text(name)) + "' cannot have its type inferred from initializer"));
         }
@@ -1502,6 +1515,17 @@ final class ScriptingNameValidator {
         for (int i = 0; i < node.getChildCount(); i++) {
             compileFromlessSubqueries(node.getChild(i), compiler);
         }
+    }
+
+    /** Whether an expression is a ROW, a parenthesized list of values, behind any parentheses around it. */
+    private static boolean isRow(final FrostlakeParser.ExpressionContext written) {
+        FrostlakeParser.ExpressionContext value = written;
+        while (value instanceof FrostlakeParser.ParenExprContext && ((FrostlakeParser.ParenExprContext) value)
+                .booleanExpr() instanceof FrostlakeParser.ValueExprContext) {
+            value = ((FrostlakeParser.ValueExprContext) ((FrostlakeParser.ParenExprContext) value).booleanExpr())
+                .expression();
+        }
+        return value instanceof FrostlakeParser.RowExprContext;
     }
 
     private static boolean untypable(final FrostlakeParser.ExpressionContext initialiser,

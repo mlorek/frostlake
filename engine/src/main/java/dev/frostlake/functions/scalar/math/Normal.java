@@ -35,8 +35,9 @@ import java.util.Random;
  * recognized" otherwise), and are judged left to right before the generator is read: a NULL mean is
  * "Invalid parameter value: NULL. Reason: mean must not be NULL", a NULL deviation the same sentence for
  * {@code stddev}, a negative one "Invalid parameter value: -1. Reason: stddev must not be negative". A
- * NULL generator beside them answers NULL. A BOOLEAN in any argument, and a date as the generator, are
- * refused by the argument types (live-verified).
+ * NULL generator beside them answers NULL, and the generator is held to RANDOM's seed rule: a whole number past
+ * 64 bits is "Numeric value '1000000000000000000000000000000' is not recognized". A BOOLEAN in any argument, and
+ * a date as the generator, are refused by the argument types (live-verified).
  */
 public class Normal extends BuiltInFunction {
     private static final int GENERATOR = 2;
@@ -63,6 +64,8 @@ public class Normal extends BuiltInFunction {
         if (args.get(GENERATOR) == null) {
             return null;
         }
+        // The generator is read as RANDOM reads its seed: a whole number past 64 bits is no number.
+        dev.frostlake.functions.scalar.math.Random.seedOf(args.get(GENERATOR));
         final double drawnFrom = number(args.get(GENERATOR));
         final long seed = drawnFrom == Math.rint(drawnFrom) && !Double.isInfinite(drawnFrom)
             ? (long) drawnFrom : Double.doubleToLongBits(drawnFrom);

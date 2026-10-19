@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.table;
 
+import dev.frostlake.BuildInfo;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.QueryHistory;
@@ -31,6 +32,10 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -43,8 +48,10 @@ import java.util.TreeMap;
  * The INFORMATION_SCHEMA.QUERY_HISTORY() TABLE FUNCTION — Snowflake exposes query history ONLY this
  * way ({@code SELECT … FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT => n))}; the bare
  * object form is "does not exist", live-verified). The column set mirrors Snowflake's (62 columns,
- * captured live); the engine populates the subset its tracker records and leaves the rest NULL.
- * Most recent queries first; RESULT_LIMIT defaults to 100 like Snowflake.
+ * captured live); the engine populates what its tracker records (see StatementHistoryCells), answers the cells the
+ * account answers alike for every statement — no data transferred, no external function called, version 2 and 1 of
+ * the two hashes — and leaves the rest NULL. Most recent queries first; RESULT_LIMIT defaults to 100 like
+ * Snowflake.
  */
 public class QueryHistoryFunction extends TableFunction {
 
@@ -178,12 +185,9 @@ public class QueryHistoryFunction extends TableFunction {
     private static List<ResultSetColumn> columns() {
         final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
         for (final String name : COLUMN_NAMES) {
-            final DataType type = columnType(name);
-            // The time columns declare their type too, so SYSTEM$TYPEOF and the type rules read TIMESTAMP_LTZ(3).
-            columns.add(type == ShowResultHelpers.CREATED_ON ? new ResultSetColumn(name, type, null, type)
-                : new ResultSetColumn(name, type));
+            columns.add(new ResultSetColumn(name, columnType(name)));
         }
-        return columns;
+        return DeclaredColumnTypes.typed(columns);
     }
 
     /**
@@ -286,6 +290,23 @@ public class QueryHistoryFunction extends TableFunction {
         }
     }
 
+    /** A statement text's hash: the hex MD5 of the text as written. */
+    private static String textHash(final String text) {
+        if (text == null) {
+            return null;
+        }
+        try {
+            final byte[] digest = MessageDigest.getInstance("MD5").digest(text.getBytes(StandardCharsets.UTF_8));
+            final StringBuilder hex = new StringBuilder();
+            for (final byte b : digest) {
+                hex.append(String.format("%02x", b & 0xff));
+            }
+            return hex.toString();
+        } catch (final NoSuchAlgorithmException unavailable) {
+            return null;
+        }
+    }
+
     /**
      * One cell of a statement's row. A statement still running has not ended: its END_TIME is the start of the
      * epoch, its elapsed time the distance back to it from the statement's start, and it has produced no row
@@ -297,8 +318,37 @@ public class QueryHistoryFunction extends TableFunction {
             case "QUERY_TEXT": return q.getQueryText();
             case "DATABASE_NAME": return q.getDatabase();
             case "SCHEMA_NAME": return q.getSchema();
-            case "QUERY_TYPE": return q.getQueryType();
+            case "QUERY_TYPE": return q.getQueryTypeName();
             case "SESSION_ID": return q.getSessionId();
+            case "AUTHN_EVENT_ID": return q.getSessionId();
+            case "ERROR_CODE": return q.getErrorCode() == null ? null : Long.valueOf(q.getErrorCode().longValue());
+            case "WAREHOUSE_SIZE": return q.getWarehouseSize();
+            case "CLUSTER_NUMBER": return q.getWarehouseSize() != null ? Long.valueOf(1L) : null;
+            case "IS_CLIENT_GENERATED_STATEMENT": return Boolean.FALSE;
+            case "QUERY_HASH":
+            case "QUERY_PARAMETERIZED_HASH":
+                return textHash(q.getQueryText());
+            case "QUERY_HASH_VERSION": return Long.valueOf(2L);
+            case "QUERY_PARAMETERIZED_HASH_VERSION": return Long.valueOf(1L);
+            case "TRANSACTION_ID": return Long.valueOf(q.getTransactionId());
+            case "OUTBOUND_DATA_TRANSFER_BYTES":
+            case "INBOUND_DATA_TRANSFER_BYTES":
+            case "LIST_EXTERNAL_FILE_TIME":
+            case "EXTERNAL_FUNCTION_TOTAL_INVOCATIONS":
+            case "EXTERNAL_FUNCTION_TOTAL_SENT_ROWS":
+            case "EXTERNAL_FUNCTION_TOTAL_RECEIVED_ROWS":
+            case "EXTERNAL_FUNCTION_TOTAL_SENT_BYTES":
+            case "EXTERNAL_FUNCTION_TOTAL_RECEIVED_BYTES":
+            case "QUERY_ACCELERATION_BYTES_SCANNED":
+            case "QUERY_RETRY_TIME":
+            case "FAULT_HANDLING_TIME":
+            case "BYTES_WRITTEN_TO_RESULT":
+                // Nothing travels between regions, no external function or query acceleration is reached and no
+                // statement is retried; no size is told for a result.
+                return Long.valueOf(0L);
+            case "CREDITS_USED_CLOUD_SERVICES": return BigDecimal.ZERO.setScale(CREDITS.getScale());
+            case "RELEASE_VERSION": return BuildInfo.version();
+            case "ROWS_WRITTEN_TO_RESULT": return Long.valueOf(q.getRowsWrittenToResult());
             case "USER_NAME": return q.getUser();
             case "ROLE_NAME": return q.getRole();
             case "WAREHOUSE_NAME": return q.getWarehouse();

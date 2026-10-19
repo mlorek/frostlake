@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.conversion.BooleanWords;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.ArrayType;
@@ -36,6 +37,7 @@ import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ApproximateValues;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
 
@@ -378,6 +380,12 @@ public final class SetOperations {
             return value instanceof VariantValue
                 ? ValueCaster.castValue(value, target instanceof ArrayType ? "ARRAY" : "OBJECT") : value;
         }
+        if (NumericType.isDecfloat(target)) {
+            // Every branch's value becomes a DECFLOAT exactly, a FLOAT at its binary value and a text by its digits;
+            // DECFLOAT's nominal scale of 0 rounds nothing.
+            return value instanceof Number ? Decfloats.of((Number) value, "TO_DECFLOAT")
+                : ValueCaster.castValue(value, "DECFLOAT");
+        }
         if (target instanceof NumericType) {
             final NumericType numeric = (NumericType) target;
             if ("FLOAT".equalsIgnoreCase(numeric.getName()) || "DOUBLE".equalsIgnoreCase(numeric.getName())) {
@@ -400,13 +408,7 @@ public final class SetOperations {
                 return value;
             }
             if (value instanceof CharSequence) {
-                final BigDecimal parsed;
-                try {
-                    parsed = new BigDecimal(value.toString().trim());
-                } catch (final NumberFormatException notANumber) {
-                    throw new RuntimeException("Numeric value '" + value + "' is not recognized");
-                }
-                return parsed.setScale(numeric.getScale(), RoundingMode.HALF_UP);
+                return fixedText(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
             }
             if (value instanceof Double || value instanceof Float) {
                 return value;
@@ -520,30 +522,49 @@ public final class SetOperations {
     }
 
     private static Object toBooleanBranchValue(final String text) {
-        final String lower = text.trim().toLowerCase(Locale.ROOT);
-        if (lower.equals("true") || lower.equals("t") || lower.equals("yes") || lower.equals("y")
-                || lower.equals("on") || lower.equals("1")) {
-            return Boolean.TRUE;
+        final Boolean read = BooleanWords.read(text);
+        if (read == null) {
+            throw new RuntimeException("Boolean value '" + text + "' is not recognized");
         }
-        if (lower.equals("false") || lower.equals("f") || lower.equals("no") || lower.equals("n")
-                || lower.equals("off") || lower.equals("0")) {
-            return Boolean.FALSE;
-        }
-        throw new RuntimeException("Boolean value '" + text + "' is not recognized");
+        return read;
     }
 
-    /** A string beside a FLOAT: a hexadecimal number as the double it spells (see HexDoubleText), else as beside a NUMBER. */
+    /** A string beside a FLOAT: a hexadecimal number as the double it spells (see HexDoubleText), else its number. */
     private static Object toApproximateBranchValue(final String text) {
         final Double hex = HexDoubleText.withoutExponent(text.trim(), true);
-        return hex != null ? hex : toNumericBranchValue(text);
-    }
-
-    private static Object toNumericBranchValue(final String text) {
+        if (hex != null) {
+            return hex;
+        }
         try {
             return new BigDecimal(text.trim());
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
         }
+    }
+
+    private static Object toNumericBranchValue(final String text) {
+        return fixedText(text);
+    }
+
+    /**
+     * A string read as a NUMBER beside one, refused as a comparison refuses it (live-verified): not recognized as no
+     * number, or past the 128-bit carrier, and out of range from 10^38, which no NUMBER holds - so no NUMBER column
+     * a set operation or GREATEST and LEAST answer holds a 39-digit value (see
+     * {@link NumericRangeRefusal#fixedTextRefusal}).
+     */
+    private static BigDecimal fixedText(final String text) {
+        final String trimmed = text.trim();
+        final BigDecimal parsed;
+        try {
+            parsed = new BigDecimal(trimmed);
+        } catch (final NumberFormatException notANumber) {
+            throw new RuntimeException("Numeric value '" + text + "' is not recognized");
+        }
+        final String refusal = NumericRangeRefusal.fixedTextRefusal(trimmed, parsed);
+        if (refusal != null) {
+            throw new RuntimeException(refusal);
+        }
+        return parsed;
     }
 
     private static Object toTimestampBranchValue(final String text) {
@@ -1011,14 +1032,10 @@ public final class SetOperations {
                 return value;
             case BOOLEAN:
                 if (value instanceof CharSequence) {
-                    final String text = value.toString().trim().toLowerCase(Locale.ROOT);
-                    if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
-                            || text.equals("on") || text.equals("1")) {
-                        return Boolean.TRUE;
-                    }
-                    if (text.equals("false") || text.equals("f") || text.equals("no") || text.equals("n")
-                            || text.equals("off") || text.equals("0")) {
-                        return Boolean.FALSE;
+                    // A boolean's spelling converts; any other text is left as it is (see BooleanWords).
+                    final Boolean read = BooleanWords.read(value.toString());
+                    if (read != null) {
+                        return read;
                     }
                 }
                 return value;

@@ -459,6 +459,7 @@ final class CatalogSnapshotWriter {
             streamSnapshot.comment = stream.getComment();
             streamSnapshot.owner = stream.getOwner();
             streamSnapshot.createdAt = stream.getCreatedAt();
+            streamSnapshot.offsetSequence = stream.getOffsetSequence();
             for (final StreamRecord rec : stream.getUnconsumedRecords()) {
                 streamSnapshot.records.add(recordSnapshot(rec));
             }
@@ -861,6 +862,11 @@ final class CatalogSnapshotWriter {
             colSnapshot.comment = col.getComment();
             // And the collation it read from its source, which DESCRIBE and SHOW COLUMNS report.
             colSnapshot.collation = col.getCollation();
+            // And the policies and tags an ALTER VIEW set on the column.
+            colSnapshot.maskingPolicyName = col.getMaskingPolicyName();
+            colSnapshot.maskingPolicyArguments = col.getMaskingPolicyArguments();
+            colSnapshot.projectionPolicyName = col.getProjectionPolicyName();
+            colSnapshot.tags = SnapshotTags.of(col);
             snapshots.add(colSnapshot);
         }
         return snapshots;

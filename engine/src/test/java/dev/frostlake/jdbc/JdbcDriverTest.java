@@ -26,6 +26,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.sql.Types;
@@ -40,7 +41,6 @@ import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -322,25 +322,30 @@ public class JdbcDriverTest {
 
                 final ResultSet rs = stmt.executeQuery("SELECT * FROM numbers ORDER BY value");
 
-                // Forward navigation
+                // Forward navigation only, as the account's driver moves: every other move is refused.
                 assertTrue(rs.next());
                 assertEquals(1, rs.getInt(1));
                 assertTrue(rs.next());
                 assertEquals(2, rs.getInt(1));
-
-                // Absolute positioning
-                assertTrue(rs.absolute(5));
-                assertEquals(5, rs.getInt(1));
-
-                assertTrue(rs.absolute(1));
-                assertEquals(1, rs.getInt(1));
-
-                // First and last
-                assertTrue(rs.last());
-                assertEquals(5, rs.getInt(1));
-
-                assertTrue(rs.first());
-                assertEquals(1, rs.getInt(1));
+                assertEquals(ResultSet.TYPE_FORWARD_ONLY, rs.getType());
+                assertThrows(SQLFeatureNotSupportedException.class, new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        rs.absolute(5);
+                    }
+                });
+                assertThrows(SQLFeatureNotSupportedException.class, new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        rs.first();
+                    }
+                });
+                assertEquals(2, rs.getInt(1), "a refused move leaves the cursor where it was");
+                int remaining = 0;
+                while (rs.next()) {
+                    remaining++;
+                }
+                assertEquals(3, remaining);
             }
         }
     }
@@ -429,9 +434,12 @@ public class JdbcDriverTest {
 
     @Test
     public void testConnectionProperties() throws Exception {
+        try (Connection setup = DriverManager.getConnection(JDBC_URL); Statement stmt = setup.createStatement()) {
+            stmt.execute("CREATE DATABASE IF NOT EXISTS test_db");
+        }
         try (Connection conn = DriverManager.getConnection(JDBC_URL + "/test_db")) {
             assertNotNull(conn);
-            // Database should be set from URL
+            // The session opens in the database the URL names, and getCatalog says where it stands.
             assertEquals("TEST_DB", conn.getCatalog());
         }
     }
@@ -493,8 +501,12 @@ public class JdbcDriverTest {
             assertFalse(conn.isClosed());
             assertTrue(conn.isValid(5));
 
-            // Catalog should be null initially
-            assertNull(conn.getCatalog());
+            // A fresh connection stands where its session starts, as CURRENT_DATABASE() says.
+            try (Statement stmt = conn.createStatement(); ResultSet current = stmt.executeQuery(
+                    "SELECT CURRENT_DATABASE()")) {
+                assertTrue(current.next());
+                assertEquals(current.getString(1), conn.getCatalog());
+            }
 
             try (Statement stmt = conn.createStatement()) {
                 // Should be able to create and use database

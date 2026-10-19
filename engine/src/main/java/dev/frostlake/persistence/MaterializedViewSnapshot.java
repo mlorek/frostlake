@@ -55,6 +55,9 @@ public class MaterializedViewSnapshot implements Serializable {
     /** Whether a RESUME was accepted while the view was invalid. */
     public boolean resumedWhileInvalid;
 
+    /** Whether the base table lost or renamed a column under the view. */
+    public boolean baseReshaped;
+
     /** Whether the view is secure. */
     public boolean secure;
 

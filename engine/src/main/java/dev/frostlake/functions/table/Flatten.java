@@ -26,6 +26,7 @@ import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.UuidTextNode;
@@ -311,7 +312,7 @@ public class Flatten extends TableFunction {
             return typed;
         }
         // A UUID member stays the VARIANT that remembers its type (see UuidTextNode).
-        if (UuidTextNode.holds(node)) {
+        if (UuidTextNode.holds(node) || DecfloatTextNode.holds(node)) {
             return VariantValue.ofNode(node);
         }
         if (node.isTextual()) {

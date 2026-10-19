@@ -837,44 +837,12 @@ public class TaskScheduler {
      */
     public void executeTaskManually(final String qualifiedTaskName, final boolean retryLast,
                                     final String retryGraphRunGroup, final String usingConfig) {
-        // Parse qualified name to extract database, schema and task name
-        final String[] parts = QualifiedName.parse(qualifiedTaskName).parts();
-        final String databaseName;
-        final String schemaName;
-        final String taskName;
-
-        if (parts.length == 1) {
-            // Just task name, use current schema
-            databaseName = catalog.getCurrentDatabase();
-            schemaName = catalog.getCurrentSchema();
-            taskName = parts[0];
-        } else if (parts.length == 2) {
-            // schema.task, in the current database
-            databaseName = catalog.getCurrentDatabase();
-            schemaName = parts[0];
-            taskName = parts[1];
-        } else {
-            // database.schema.task — the database part is honoured, so a task in another database
-            // runs from wherever the session is (live-verified)
-            databaseName = parts[0];
-            schemaName = parts[1];
-            taskName = parts[2];
-        }
-
-        final Database db = databaseName == null ? null : catalog.getDatabase(databaseName);
-        if (db == null) {
-            throw new RuntimeException("No current database selected");
-        }
-
-        final Schema schema = db.getSchema(schemaName);
-        if (schema == null) {
-            throw new RuntimeException("Schema not found: " + schemaName);
-        }
-
-        final Task task = schema.getTask(taskName);
-        if (task == null) {
-            throw new RuntimeException("Task not found: " + qualifiedTaskName);
-        }
+        // The task's schema as every object's is resolved (see Catalog.requireOwningSchema): a fully qualified
+        // name's database is honoured, so a task in another database runs from wherever the session is
+        // (live-verified), and the task is named exactly - a quoted name in another case is another task.
+        final Schema schema = catalog.requireOwningSchema(QualifiedName.parse(qualifiedTaskName));
+        final Database db = catalog.databaseExact(schema.getDatabaseName());
+        final Task task = schema.getTaskExact(QualifiedName.parse(qualifiedTaskName).last());
 
         // ★ ONLY A ROOT RUNS ON DEMAND. A task with an AFTER list is refused whether it is resumed or
         // suspended — its graph runs from the root, which cascades to the resumed children. The

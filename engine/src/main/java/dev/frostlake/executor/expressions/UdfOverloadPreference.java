@@ -146,7 +146,7 @@ final class UdfOverloadPreference {
             return "VARCHAR";
         }
         if (type instanceof NumericType) {
-            return NumericType.isApproximate(type) ? "FLOAT" : "NUMBER";
+            return NumericType.isApproximate(type) ? "FLOAT" : NumericType.isDecfloat(type) ? "DECFLOAT" : "NUMBER";
         }
         if (type instanceof DateTimeType) {
             final String name = type.getName() == null ? "" : type.getName().toUpperCase(Locale.ROOT);

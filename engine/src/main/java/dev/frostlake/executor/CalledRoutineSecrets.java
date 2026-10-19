@@ -16,14 +16,11 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
-import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -80,42 +77,13 @@ public final class CalledRoutineSecrets {
     }
 
     /**
-     * The user-defined functions a written name reaches: every overload of the name in the schema it is qualified
-     * with, or in the first schema of the search path that holds one. A name a built-in answers to reaches none.
+     * The user-defined function overloads a call's name reaches (see {@link RoutineOverloads#functions}).
      *
      * @param executor the executor resolving the name
      * @param parts    the name's parts, canonical
      * @return the overloads, none when the name is no user-defined function's
      */
     public static List<Function> overloads(final QueryExecutor executor, final List<String> parts) {
-        final Catalog catalog = executor.getCatalog();
-        final String name = parts.get(parts.size() - 1);
-        final String upper = name.toUpperCase(Locale.ROOT);
-        if (parts.size() == 1 && (executor.getFunctionRegistry().hasFunction(upper)
-                || executor.getFunctionRegistry().hasAggregateFunction(upper))) {
-            return new ArrayList<Function>();
-        }
-        try {
-            if (parts.size() == 3) {
-                return catalog.databaseExact(parts.get(0)).schemaExact(parts.get(1)).getFunctionOverloads(name);
-            }
-            final String database = catalog.getCurrentDatabase();
-            if (database == null || parts.size() > 3) {
-                return new ArrayList<Function>();
-            }
-            if (parts.size() == 2) {
-                return catalog.getDatabase(database).schemaExact(parts.get(0)).getFunctionOverloads(name);
-            }
-            for (final Schema onPath : executor.searchPathSchemas()) {
-                if (!onPath.getFunctionOverloads(name).isEmpty()) {
-                    return onPath.getFunctionOverloads(name);
-                }
-            }
-            final String schema = catalog.getCurrentSchema();
-            return schema == null ? new ArrayList<Function>()
-                : catalog.getDatabase(database).getSchema(schema).getFunctionOverloads(name);
-        } catch (final RuntimeException noSuchSchema) {
-            return new ArrayList<Function>();
-        }
+        return RoutineOverloads.functions(executor, parts);
     }
 }

@@ -197,7 +197,8 @@ public final class AlertCommandHandler {
 
     private static String warehouseName(final FrostlakeParser.WarehouseClauseContext clause) {
         if (clause.STRING_LITERAL() != null) {
-            return SqlStringLiterals.decode(clause.STRING_LITERAL().getText());
+            // The text names the warehouse as an identifier reference does.
+            return SqlIdentifiers.canonicalText(SqlStringLiterals.decode(clause.STRING_LITERAL().getText()));
         }
         if (clause.identifier() != null) {
             return SqlIdentifiers.canonical(clause.identifier());

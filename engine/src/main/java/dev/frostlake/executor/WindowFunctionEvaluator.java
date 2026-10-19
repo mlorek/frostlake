@@ -48,6 +48,8 @@ import dev.frostlake.functions.aggregate.CoercedNumericArgumentAccumulator;
 import dev.frostlake.functions.aggregate.ConstantArgumentsAccumulator;
 import dev.frostlake.functions.aggregate.CorrAccumulator;
 import dev.frostlake.functions.aggregate.CovarAccumulator;
+import dev.frostlake.functions.aggregate.DecfloatAggregates;
+import dev.frostlake.functions.aggregate.DecfloatAwareAccumulator;
 import dev.frostlake.functions.aggregate.DeclaredArgumentAccumulator;
 import dev.frostlake.functions.aggregate.ExactFrameSums;
 import dev.frostlake.functions.aggregate.ListAggAccumulator;
@@ -56,6 +58,7 @@ import dev.frostlake.functions.aggregate.ObjectAggAccumulator;
 import dev.frostlake.functions.aggregate.PercentileContAccumulator;
 import dev.frostlake.functions.aggregate.PercentileDiscAccumulator;
 import dev.frostlake.functions.aggregate.RegrAccumulator;
+import dev.frostlake.functions.scalar.conversion.BooleanWords;
 import dev.frostlake.functions.window.FloatFrameSums;
 import dev.frostlake.functions.window.FrameExtremes;
 import dev.frostlake.functions.window.WholePartitionAggregates;
@@ -73,7 +76,9 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VariantBooleans;
 import dev.frostlake.values.VariantJsonNulls;
+import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -869,7 +874,8 @@ final class WindowFunctionEvaluator {
             // above); one without is a candidate aggregate.
             if (funcCtx.overClause() == null
                     && executor.getFunctionRegistry().hasAggregateFunction(
-                        aggregateLookupKey(funcCtx.functionName().getText()))) {
+                        aggregateLookupKey(funcCtx.functionName().getText()))
+                    && executor.callChoosesAggregate(funcCtx)) {
                 return true;
             }
         }
@@ -902,7 +908,7 @@ final class WindowFunctionEvaluator {
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) node;
             if (funcCtx.overClause() == null && executor.getFunctionRegistry().hasAggregateFunction(
-                    aggregateLookupKey(funcCtx.functionName().getText()))) {
+                    aggregateLookupKey(funcCtx.functionName().getText())) && executor.callChoosesAggregate(funcCtx)) {
                 return true;
             }
         }
@@ -1521,9 +1527,17 @@ final class WindowFunctionEvaluator {
             case "ROW_NUMBER":
                 return computeRowNumber(sortedPartition, position, currentRowIndex, overClause, table);
             case "RANK":
-                return computeRank(sortedPartition, currentRowIndex, overClause, allRows, table);
-            case "DENSE_RANK":
-                return computeDenseRank(sortedPartition, currentRowIndex, overClause, allRows, table);
+            case "DENSE_RANK": {
+                final Long framed = framedRanking(overClause) && position >= 0
+                    ? framedRank(sortedPartition, position, overClause, table, "DENSE_RANK".equals(functionName))
+                    : null;
+                if (framed != null) {
+                    return framed;
+                }
+                return "RANK".equals(functionName)
+                    ? computeRank(sortedPartition, currentRowIndex, overClause, allRows, table)
+                    : computeDenseRank(sortedPartition, currentRowIndex, overClause, allRows, table);
+            }
             case "LAG":
                 return computeLag(funcCtx, sortedPartition, position, allRows.get(currentRowIndex), table);
             case "LEAD":
@@ -1700,13 +1714,23 @@ final class WindowFunctionEvaluator {
         return ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0));
     }
 
-    /** Snowflake truthiness of a CONDITIONAL_TRUE_EVENT argument: TRUE, or a non-zero number. */
+    /**
+     * A CONDITIONAL_TRUE_EVENT argument's truth, as TO_BOOLEAN reads it (live-verified): a non-zero number, a
+     * boolean's spelling in any case and spacing - ' on ' and 'yes' are TRUE - a VARIANT as its cast to BOOLEAN,
+     * and any other text refused, "Boolean value 'abc' is not recognized"; NULL counts as FALSE.
+     */
     private static boolean isTruthy(final Object value) {
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
         if (value instanceof Number) return ((Number) value).doubleValue() != 0.0;
-        final String text = value.toString().trim();
-        return text.equalsIgnoreCase("true") || text.equals("1");
+        if (value instanceof VariantValue) {
+            return Boolean.TRUE.equals(VariantBooleans.convert((VariantValue) value));
+        }
+        final Boolean read = BooleanWords.read(value.toString());
+        if (read == null) {
+            throw new RuntimeException("Boolean value '" + value + "' is not recognized");
+        }
+        return read.booleanValue();
     }
 
     /**
@@ -2416,6 +2440,42 @@ final class WindowFunctionEvaluator {
     private void readOrderKeys(final List<Row> partition, final FrostlakeParser.OverClauseContext overClause,
                                final Table table) {
         orderMapsFor(partition, overClause, table);
+    }
+
+    /** Whether a ranking function stands beside a ROWS frame, which it ranks within (see framedRank). */
+    private static boolean framedRanking(final FrostlakeParser.OverClauseContext over) {
+        return over.windowFrame() != null && !WindowFrameShape.isRange(over.windowFrame());
+    }
+
+    /**
+     * RANK or DENSE_RANK beside a ROWS frame: one plus the frame's rows that sort before the current row, DENSE_RANK
+     * counting the distinct keys among them (live-verified).
+     *
+     * @param partition the sorted partition
+     * @param position  the current row's place in it
+     * @param over      the window
+     * @param table     the relation the keys read
+     * @param dense     whether the function is DENSE_RANK
+     * @return the rank, or null where the frame does not hold the current row, which the partition's rank answers
+     */
+    private Long framedRank(final List<Row> partition, final int position,
+                            final FrostlakeParser.OverClauseContext over, final Table table, final boolean dense) {
+        final int[] frame = frameBounds(over, partition, position, table);
+        if (position < frame[0] || position > frame[1]) {
+            return null;
+        }
+        final WindowPartitionOrder order = orderMapsFor(partition, over, table);
+        // The partition is sorted, so the rows sorting before the current one are those before its first peer.
+        final int firstPeer = order.firstPeer(position);
+        long before = 0;
+        int group = -1;
+        for (int i = frame[0]; i <= frame[1] && i < firstPeer; i++) {
+            if (!dense || order.firstPeer(i) != group) {
+                before++;
+                group = order.firstPeer(i);
+            }
+        }
+        return Long.valueOf(before + 1);
     }
 
     private Long computeRank(final List<Row> partitionRows, final int currentRowIndex,
@@ -3142,7 +3202,9 @@ final class WindowFunctionEvaluator {
         final String colExpr = !windowArgs(funcCtx).isEmpty()
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
         final Object[] vector = frameArgVector(partition, colExpr, table, VECTOR_MODE_ORDER_KEY);
-        if (colExpr != null && funcCtx.DISTINCT() == null) {
+        final boolean decfloat = ("SUM".equals(functionName) || "AVG".equals(functionName))
+            && NumericType.isDecfloat(declaredArgumentType(colExpr, table));
+        if (colExpr != null && funcCtx.DISTINCT() == null && !decfloat) {
             final Object summarized = frameFromSummary(functionName, funcCtx, partition, from, to, table, colExpr,
                 vector);
             if (summarized != NOT_SUMMARIZED) {
@@ -3172,6 +3234,18 @@ final class WindowFunctionEvaluator {
             values.add(colExpr == null ? null
                 : VariantJsonNulls.asAggregateInput(functionName, vector != null ? vector[at]
                     : extractColumnValue(partition.get(at), colExpr, table)));
+        }
+        if (decfloat) {
+            // A DECFLOAT frame adds in DECFLOAT's terms, its DISTINCT values once (see DecfloatAggregates).
+            final List<Object> taken = new ArrayList<>();
+            final Set<Object> seen = new HashSet<>();
+            for (final Object v : values) {
+                if (v != null
+                        && (funcCtx.DISTINCT() == null || seen.add(ValueComparisons.normalizeValueForDistinct(v)))) {
+                    taken.add(v);
+                }
+            }
+            return "SUM".equals(functionName) ? DecfloatAggregates.sum(taken) : DecfloatAggregates.avg(taken);
         }
         if (funcCtx.DISTINCT() != null && ("SUM".equals(functionName) || "AVG".equals(functionName))) {
             // DISTINCT reads each value of the frame once, as the grouped forms do: AVG(DISTINCT v) OVER () over
@@ -3702,6 +3776,10 @@ final class WindowFunctionEvaluator {
         }
         if (acc instanceof DeclaredArgumentAccumulator) {
             ((DeclaredArgumentAccumulator) acc).setDeclaredArgumentType(declaredArgumentType(argExpr, table));
+        }
+        if (acc instanceof DecfloatAwareAccumulator) {
+            ((DecfloatAwareAccumulator) acc).setDecfloatArgument(
+                NumericType.isDecfloat(declaredArgumentType(argExpr, table)));
         }
         if (acc instanceof ConstantArgumentsAccumulator) {
             ((ConstantArgumentsAccumulator) acc).setConstantArgumentTexts(tupleArgumentTexts(funcCtx, args, table));

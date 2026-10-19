@@ -38,7 +38,6 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
-import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
 import dev.frostlake.task.TaskOnlyFunctions;
 import dev.frostlake.task.TaskScheduler;
@@ -477,7 +476,7 @@ public class VisitorExpressionBuilder {
             // :varname — procedural variable binding, treat as variable reference
             final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).variableName());
             if (visitor.getProceduralExecutor() != null) {
-                final Object v = visitor.getProceduralExecutor().readVariable(varName);
+                final Object v = visitor.getProceduralExecutor().readExpressionValue(varName);
                 if (v != null) return v;
             }
             return null;
@@ -494,7 +493,7 @@ public class VisitorExpressionBuilder {
             // This might be a variable reference
             final String varName = ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().getText();
             if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
-                final Object varValue = visitor.getProceduralExecutor().readVariable(varName);
+                final Object varValue = visitor.getProceduralExecutor().readExpressionValue(varName);
                 if (varValue != null) {
                     return varValue;
                 }
@@ -744,25 +743,6 @@ public class VisitorExpressionBuilder {
                 return TaskGraphConfig.readInTask(args);
 
             // ── Stream ─────────────────────────────────────────────────────────
-            case "SYSTEM$STREAM_BACKLOG": {
-                if (!args.isEmpty()) {
-                    final String streamName = args.get(0) != null
-                        ? SqlIdentifiers.canonicalText(args.get(0).toString().replaceAll("^'|'$", "").trim()) : "";
-                    try {
-                        final Catalog cat = queryExecutor.getCatalog();
-                        final String dbN = cat.getCurrentDatabase();
-                        final String scN = cat.getCurrentSchema();
-                        if (dbN != null && scN != null) {
-                            final String fq = dbN + "." + scN + "." + streamName;
-                            final TableStorage ts =
-                                queryExecutor.getStorageEngine().getTableStorage(fq);
-                            return ts != null ? (long) ts.getRowCount() : 0L;
-                        }
-                    } catch (final Exception ignored) {}
-                }
-                return 0L;
-            }
-
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP": {
                 return ChangeTimes.streamTableTimestamp(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
                     args.isEmpty() ? null : args.get(0));
@@ -828,7 +808,7 @@ public class VisitorExpressionBuilder {
                 return UUID.randomUUID().toString();
 
             case "SYSTEM$REFERENCE":
-                return args.isEmpty() ? null : args.get(0);
+                return ObjectReferenceTokens.create(queryExecutor.getCatalog(), args);
 
             // ── Wait ───────────────────────────────────────────────────────────
             case "SYSTEM$WAIT":

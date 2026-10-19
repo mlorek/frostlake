@@ -51,6 +51,17 @@ public final class ClientValueText {
      * @param declared the column's declared type, which is what tells the numeric families apart
      * @return its client text, or null for a null value
      */
+    /**
+     * The object a client reads for a DECFLOAT: the BigDecimal of its text, as the account's driver builds it —
+     * 1e40 is {@code 1.0000000000000000303786028427003666891E+40} and 1E-10 {@code 1E-10} (live-verified).
+     *
+     * @param value the DECFLOAT, not null
+     * @return the decimal
+     */
+    public static BigDecimal decfloatObject(final Number value) {
+        return new BigDecimal(Decfloats.text(Decfloats.of(value, "TO_DECFLOAT")));
+    }
+
     public static String render(final Object value, final DataType declared) {
         if (value instanceof Boolean) {
             // Only a BOOLEAN column prints the driver's upper-case spelling; a boolean inside a
@@ -60,6 +71,10 @@ public final class ClientValueText {
         }
         if (value instanceof Number && NumericType.isApproximate(declared)) {
             return SharedFunctionHelpers.floatText(((Number) value).doubleValue());
+        }
+        if (value instanceof Number && NumericType.isDecfloat(declared)) {
+            // A DECFLOAT reads as its own text, scientific past 38 digits (live-verified through the driver).
+            return Decfloats.text(Decfloats.of((Number) value, "TO_DECFLOAT"));
         }
         // A semi-structured column hands back JSON text, as the account's driver does: a string in a
         // VARIANT keeps its quotes ("abc" for TO_VARIANT('abc')), whether it arrives whole or unwrapped by

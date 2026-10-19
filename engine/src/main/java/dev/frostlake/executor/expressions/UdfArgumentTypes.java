@@ -54,6 +54,7 @@ import java.util.Set;
  *   ARRAY                everything but a VARIANT and an ARRAY
  *   OBJECT               everything but a VARIANT and an OBJECT
  *   BINARY, GEOGRAPHY, VECTOR   everything but their own type, a VARIANT included
+ *   DECFLOAT             everything but a DECFLOAT, an untyped NULL included
  * </pre>
  *
  * A TIME into a TIMESTAMP parameter has its own sentence, "incompatible types: [TIME(9)] and
@@ -63,8 +64,8 @@ final class UdfArgumentTypes {
 
     private static final String[] TEMPORAL = {"DATE", "TIME", "NTZ", "LTZ", "TZ"};
 
-    private static final String[] EVERY_FAMILY = {"TEXT", "FIXED", "FLOAT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ",
-        "TZ", "VARIANT", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR"};
+    private static final String[] EVERY_FAMILY = {"TEXT", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "DATE", "TIME",
+        "NTZ", "LTZ", "TZ", "VARIANT", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR"};
 
     /** A parameter family to the argument families it refuses. */
     private static final Map<String, Set<String>> REFUSED = new HashMap<String, Set<String>>();
@@ -77,12 +78,18 @@ final class UdfArgumentTypes {
         }
         refuse("BOOLEAN", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR");
         refuse("BOOLEAN", TEMPORAL);
-        refuse("DATE", "FIXED", "FLOAT", "BOOLEAN", "TIME", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR");
+        refuse("DATE", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "TIME", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY",
+            "VECTOR");
         for (final String stamp : new String[] {"NTZ", "LTZ"}) {
-            refuse(stamp, "FIXED", "FLOAT", "BOOLEAN", "TZ", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR");
+            refuse(stamp, "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "TZ", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY",
+                "VECTOR");
         }
-        refuse("TZ", "FIXED", "FLOAT", "BOOLEAN", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR");
-        refuse("TIME", "FIXED", "FLOAT", "BOOLEAN", "DATE", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR");
+        refuse("TZ", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY", "VECTOR");
+        refuse("TIME", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "DATE", "ARRAY", "OBJECT", "BINARY", "GEOGRAPHY",
+            "VECTOR");
+        // A DECFLOAT parameter takes a DECFLOAT and nothing else, a NUMBER, a FLOAT and a text included
+        // (live-verified).
+        refuseAllBut("DECFLOAT", "DECFLOAT");
         refuse("VARIANT", "TEXT", "BINARY", "GEOGRAPHY");
         refuse("VARIANT", TEMPORAL);
         refuseAllBut("ARRAY", "VARIANT", "ARRAY");
@@ -164,6 +171,9 @@ final class UdfArgumentTypes {
         }
         if (type instanceof StringType) {
             return "TEXT";
+        }
+        if (NumericType.isDecfloat(type)) {
+            return "DECFLOAT";
         }
         if (type instanceof NumericType) {
             return NumericType.isApproximate(type) ? "FLOAT" : "FIXED";

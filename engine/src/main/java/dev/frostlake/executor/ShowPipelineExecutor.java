@@ -139,7 +139,7 @@ final class ShowPipelineExecutor {
             ? databaseNameOverride
             : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
         final Schema home = catalog.databaseExact(dbName).schemaExact(scName);
         for (final Stream stream : home.getStreams()) {
@@ -181,7 +181,7 @@ final class ShowPipelineExecutor {
             ? databaseNameOverride
             : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
         final Schema home = catalog.databaseExact(dbName).schemaExact(scName);
         for (final Task task : home.getTasks()) {
@@ -342,7 +342,7 @@ final class ShowPipelineExecutor {
     public ResultSet showPipes(final String schemaName, final String like) {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
         appendPipeRows(dbName, catalog.databaseExact(dbName).schemaExact(scName), like, rows);
         return new ResultSet(pipeColumns(), rows);
@@ -499,7 +499,7 @@ final class ShowPipelineExecutor {
     public ResultSet showSequences(final String schemaName) {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
         appendSequenceRows(dbName, catalog.databaseExact(dbName).schemaExact(scName), rows);
         return new ResultSet(sequenceColumns(), rows);
@@ -617,7 +617,8 @@ final class ShowPipelineExecutor {
         appendPipeRows(written.database().getName(), schema, null, rows);
         final List<Row> matching = new ArrayList<>();
         for (final Row row : rows) {
-            if (pipeName.equalsIgnoreCase(String.valueOf(row.getValue(1)))) {
+            // Named exactly: a quoted name in another case is another pipe, which is not there (live-verified).
+            if (pipeName.equals(String.valueOf(row.getValue(1)))) {
                 matching.add(row);
             }
         }
@@ -681,15 +682,8 @@ final class ShowPipelineExecutor {
     }
 
     private Schema resolveShowSchema(final String schemaName) {
-        if (schemaName != null) {
-            return catalog.resolveSchema(schemaName);
-        }
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        if (dbName == null || scName == null) {
-            throw new RuntimeException("No database or schema selected");
-        }
-        return catalog.databaseExact(dbName).schemaExact(scName);
+        return schemaName != null ? catalog.resolveSchema(schemaName)
+            : ShowResultHelpers.resolveDescribeSchema(catalog);
     }
 
     /** SHOW CORTEX SEARCH SERVICES IN ACCOUNT: every database's services, in database order. */
@@ -800,7 +794,7 @@ final class ShowPipelineExecutor {
     public ResultSet showDynamicTables(final String schemaName) {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        ShowResultHelpers.requireCurrentScope(dbName, scName);
         final List<Row> rows = new ArrayList<>();
         appendDynamicTableRows(dbName, ShowResultHelpers.scopeSchemaReportedGenerically(catalog, dbName, scName), rows);
         return new ResultSet(dynamicTableColumns(), rows);

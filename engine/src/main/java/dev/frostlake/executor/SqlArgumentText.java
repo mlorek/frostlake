@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BinaryWidthSpelling;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
@@ -29,10 +30,17 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * An argument of a SQL function as the text its body reads where it names the parameter.
@@ -54,6 +62,14 @@ import java.math.BigInteger;
 public final class SqlArgumentText {
 
     private static final int MAX_PRECISION = 38;
+
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSSSSS");
+
+    private static final DateTimeFormatter NTZ = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS");
+
+    private static final DateTimeFormatter ZONED = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS xxx");
+
+    private static final String ZONED_FORMAT = "YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM";
 
     private SqlArgumentText() {
     }
@@ -94,13 +110,31 @@ public final class SqlArgumentText {
      * @return SQL text that answers the parameter's value
      */
     public static String forTableParameter(final Object value, final DataType declared) {
+        return forTableParameter(value, declared, null);
+    }
+
+    /**
+     * {@link #forTableParameter(Object, DataType)}, a BINARY argument keeping the width its own type declares:
+     * {@code X'AB'} is a BINARY(1) to the body, where {@code TO_BINARY('AB', 'HEX')} is a BINARY of none
+     * (live-verified).
+     *
+     * @param value    the argument
+     * @param declared the parameter's declared type
+     * @param written  the argument's own static type, or null where it is not known
+     * @return SQL text that answers the parameter's value
+     */
+    public static String forTableParameter(final Object value, final DataType declared, final DataType written) {
+        final String binary = sizedBinary(value, written);
+        if (binary != null) {
+            return binary;
+        }
         if (value != null && declared != null && declared.getCategory() == TypeCategory.SEMI_STRUCTURED
                 && !(value instanceof VariantValue) && !(value instanceof String)) {
             return "TO_VARIANT(" + ofValue(value) + ")";
         }
-        if (declared instanceof DateTimeType && SharedFunctionHelpers.temporalSqlLiteral(value) != null) {
+        if (declared instanceof DateTimeType && temporal(value) != null) {
             // The argument's digits are the parameter's, or it would not have been taken.
-            return SharedFunctionHelpers.temporalSqlLiteral(value) + "::" + SqlTypeNames.canonical(declared);
+            return temporal(value) + "::" + SqlTypeNames.canonical(declared);
         }
         return ofValue(value);
     }
@@ -114,8 +148,41 @@ public final class SqlArgumentText {
      * @return SQL text that answers the parameter's value
      */
     public static String forParameter(final Object value, final DataType declared, final boolean converted) {
+        return forParameter(value, declared, converted, null);
+    }
+
+    /**
+     * {@link #forParameter(Object, DataType, boolean)}, an exact number taking its parameter's type from the
+     * argument's own declared type rather than from the digits it holds: {@code 7::NUMBER(10,0)} into a NUMBER is a
+     * NUMBER(10,0), and a NUMBER(10,0) column into a NUMBER(10,2) a NUMBER(12,2) (live-verified); a BINARY keeps
+     * the width its type declares.
+     *
+     * @param value     the argument, converted to the parameter's family already
+     * @param declared  the parameter's declared type
+     * @param converted whether the value is one the call converted, and not the caller's own
+     * @param written   the argument's own static type, or null where it is not known
+     * @return SQL text that answers the parameter's value
+     */
+    public static String forParameter(final Object value, final DataType declared, final boolean converted,
+                                      final DataType written) {
         if (declared == null) {
             return ofValue(value);
+        }
+        if (!converted && declared instanceof BinaryType) {
+            final String binary = sizedBinary(value, written);
+            if (binary != null) {
+                return binary;
+            }
+        }
+        if (!converted && value instanceof Number && !NonFiniteDoubles.isNonFinite((Number) value)
+                && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                && !NumericType.isDecfloat(declared) && written instanceof NumericType
+                && !NumericType.isApproximate(written) && !NumericType.isDecfloat(written)
+                && ((NumericType) written).getPrecision() > 0) {
+            final String typed = typedNumber((Number) value, (NumericType) declared, (NumericType) written);
+            if (typed != null) {
+                return typed;
+            }
         }
         if (value == null) {
             final String typed = nullTypeOf(declared);
@@ -129,6 +196,11 @@ public final class SqlArgumentText {
             return value instanceof String ? "PARSE_JSON(" + SqlStringLiterals.encode((String) value) + ")"
                 : "TO_VARIANT(" + ofValue(value) + ")";
         }
+        if (NumericType.isDecfloat(declared) && value instanceof Number) {
+            // A DECFLOAT parameter is read as the DECFLOAT it holds, every digit kept: x + 1 over a DECFLOAT third is
+            // 1.3333333333333333333333333333333333333 (live-verified).
+            return SqlStringLiterals.encode(Decfloats.text(Decfloats.of((Number) value, "TO_DECFLOAT"))) + "::DECFLOAT";
+        }
         if (declared instanceof NumericType && value instanceof Number
                 && !NonFiniteDoubles.isNonFinite((Number) value)) {
             final NumericType numeric = (NumericType) declared;
@@ -138,7 +210,7 @@ public final class SqlArgumentText {
             return exactNumber((Number) value, numeric, converted);
         }
         if (declared instanceof DateTimeType) {
-            final String temporal = SharedFunctionHelpers.temporalSqlLiteral(value);
+            final String temporal = temporal(value);
             if (temporal != null) {
                 // The declared precision is the parameter's: a TIMESTAMP_NTZ(3) reads three digits.
                 return temporal + "::" + SqlTypeNames.canonical(declared);
@@ -150,6 +222,34 @@ public final class SqlArgumentText {
             return SqlStringLiterals.encode((String) value) + "::VARCHAR";
         }
         return ofValue(value);
+    }
+
+    /**
+     * A temporal argument as SQL text no session input format reads otherwise: its conversion with the format
+     * spelled out, so a parameter keeps its value under {@code DATE_INPUT_FORMAT = 'DD/MM/YYYY'} (live-verified); a
+     * year a four-digit format cannot spell keeps the plain literal.
+     */
+    private static String temporal(final Object value) {
+        if (value instanceof LocalDate && fourDigitYear(((LocalDate) value).getYear())) {
+            return "TO_DATE('" + value + "', 'YYYY-MM-DD')";
+        }
+        if (value instanceof LocalTime) {
+            return "TO_TIME('" + TIME.format((LocalTime) value) + "', 'HH24:MI:SS.FF9')";
+        }
+        if (value instanceof LocalDateTime && fourDigitYear(((LocalDateTime) value).getYear())) {
+            return "TO_TIMESTAMP_NTZ('" + NTZ.format((LocalDateTime) value) + "', 'YYYY-MM-DD HH24:MI:SS.FF9')";
+        }
+        if (value instanceof OffsetDateTime && fourDigitYear(((OffsetDateTime) value).getYear())) {
+            return "TO_TIMESTAMP_LTZ('" + ZONED.format((OffsetDateTime) value) + "', '" + ZONED_FORMAT + "')";
+        }
+        if (value instanceof ZonedDateTime && fourDigitYear(((ZonedDateTime) value).getYear())) {
+            return "TO_TIMESTAMP_TZ('" + ZONED.format((ZonedDateTime) value) + "', '" + ZONED_FORMAT + "')";
+        }
+        return SharedFunctionHelpers.temporalSqlLiteral(value);
+    }
+
+    private static boolean fourDigitYear(final int year) {
+        return year >= 0 && year <= 9999;
     }
 
     /** The type a NULL argument is a NULL of, or null where the bare word is all there is to say. */
@@ -189,6 +289,43 @@ public final class SqlArgumentText {
             Math.max(0, exact.precision() - exact.scale()));
         final int precision = Math.min(MAX_PRECISION, wholeDigits + declared.getScale());
         return signed(exact.toPlainString()) + "::NUMBER(" + precision + "," + declared.getScale() + ")";
+    }
+
+    /**
+     * An exact argument under an exact parameter, typed by the argument's declared type: that type where its scale is
+     * the parameter's or larger, else the parameter's scale over the wider of the two whole parts; null for a value
+     * holding more digits than its type declares, which its digits type instead.
+     */
+    private static String typedNumber(final Number value, final NumericType declared, final NumericType written) {
+        if (value instanceof Double || value instanceof Float) {
+            return null;
+        }
+        final BigDecimal exact = value instanceof BigDecimal ? (BigDecimal) value
+            : value instanceof BigInteger ? new BigDecimal((BigInteger) value) : BigDecimal.valueOf(value.longValue());
+        final int scale = Math.max(written.getScale(), declared.getScale());
+        if (exact.scale() > scale) {
+            return null;
+        }
+        final int ownScale = Math.max(exact.scale(), 0);
+        final int ownPrecision = Math.max(1, exact.precision() - exact.scale() + ownScale);
+        if (written.getScale() >= declared.getScale() && written.getScale() == ownScale
+                && written.getPrecision() == ownPrecision) {
+            // A type the digits give themselves, a literal's: the number as it is (see exactNumber).
+            return null;
+        }
+        final int precision = written.getScale() >= declared.getScale() ? written.getPrecision()
+            : Math.min(MAX_PRECISION, Math.max(declared.getPrecision() - declared.getScale(),
+                written.getPrecision() - written.getScale()) + declared.getScale());
+        return signed(exact.setScale(scale).toPlainString()) + "::NUMBER(" + precision + "," + scale + ")";
+    }
+
+    /** A BINARY argument as a literal of the width its own type declares; null where it declares none. */
+    private static String sizedBinary(final Object value, final DataType written) {
+        if (!(value instanceof BinaryValue) || !(written instanceof BinaryType)
+                || ((BinaryType) written).getWidthSpelling() != BinaryWidthSpelling.DECLARED) {
+            return null;
+        }
+        return "X'" + ((BinaryValue) value).toHex() + "'::BINARY(" + ((BinaryType) written).getMaxLength() + ")";
     }
 
     private static String number(final Number value) {

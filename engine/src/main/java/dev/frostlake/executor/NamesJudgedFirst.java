@@ -246,6 +246,6 @@ final class NamesJudgedFirst {
 
     private static Schema currentSchema(final Catalog catalog) {
         return catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null ? null
-            : catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+            : catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema());
     }
 }

@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RoutineOverloads;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.CaretOperator;
@@ -26,7 +27,6 @@ import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.SnowflakeBuiltinNames;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.UdfLanguage;
@@ -36,6 +36,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -357,28 +358,19 @@ final class ScriptingUdfBodyValidator {
     }
 
     /**
-     * The schema a call resolves against, exactly as the evaluator resolves one: a qualified name against
-     * the schema it names, a bare one against the current schema. Null when nothing resolves — an
-     * unresolvable database/schema is "unknown", not "invalid", so the checks above fail open.
+     * The schema a call resolves against, exactly as the evaluator resolves one (see
+     * {@link RoutineOverloads#schemaOf}). Null when nothing resolves — an unresolvable database or schema is
+     * "unknown", not "invalid", so the checks above fail open.
      */
     private Schema resolveSchema(final FrostlakeParser.FunctionNameContext name) {
-        if (catalog == null || catalog.getCurrentDatabase() == null) {
+        if (catalog == null) {
             return null;
         }
-        final int parts = name.identifier().size();
-        final String databaseName = parts == 3
-            ? SqlIdentifiers.canonical(name.identifier().get(0)) : catalog.getCurrentDatabase();
-        final String schemaName = parts >= 2
-            ? SqlIdentifiers.canonical(name.identifier().get(parts - 2)) : catalog.getCurrentSchema();
-        if (schemaName == null) {
-            return null;
+        final List<String> parts = new ArrayList<>();
+        for (final FrostlakeParser.IdentifierContext part : name.identifier()) {
+            parts.add(SqlIdentifiers.canonical(part));
         }
-        try {
-            final Database database = catalog.getDatabase(databaseName);
-            return database.getSchema(schemaName);
-        } catch (final RuntimeException noSuchContainer) {
-            return null;
-        }
+        return RoutineOverloads.schemaOf(queryExecutor, parts);
     }
 
     /** The enclosing expression of a function name, so the message quotes the call and not just the name. */

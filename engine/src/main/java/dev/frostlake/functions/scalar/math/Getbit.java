@@ -36,7 +36,8 @@ public class Getbit extends NumericArgumentFunction {
         if (args.get(0) == null || args.get(1) == null) return null;
         // The bits of all 128, as the shifts that set them keep them (live-verified).
         final BigInteger value = BitwiseOperand.wide(args.get(0));
-        final int position = ((Number) args.get(1)).intValue();
+        // A bit's place is read as the whole number it gives, a fraction rounded (live-verified).
+        final int position = wholeNumber(args.get(1));
         if (position < 0) {
             throw new RuntimeException("GETBIT bit_position must be non-negative: " + position);
         }

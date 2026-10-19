@@ -266,6 +266,37 @@ final class TypeInferencer {
         return key instanceof LiteralExpression ? ((LiteralExpression) key).getValue() : null;
     }
 
+    /**
+     * The refusal a text, a VARIANT or a bare NULL beside an interval earns at the operator, the quoted interval spelled
+     * INTERVAL: {@code '2024-01-02' + INTERVAL '1 day'} is "Invalid argument types for function '+': (VARCHAR(10),
+     * INTERVAL)" and {@code NULL + INTERVAL '1 day'} "(NULL, INTERVAL)", where a DATE or a timestamp moves by it
+     * (live-verified). Null for any other pair.
+     */
+    private String untemporalBesideInterval(final BinaryOperationExpression binary, final DataType leftType,
+                                            final DataType rightType) {
+        final boolean leftInterval = isQuotedInterval(binary.getLeft()) || IntervalArithmeticTypes.isInterval(leftType);
+        final boolean rightInterval = isQuotedInterval(binary.getRight())
+            || IntervalArithmeticTypes.isInterval(rightType);
+        if (leftInterval == rightInterval) {
+            return null;
+        }
+        final Expression other = leftInterval ? binary.getRight() : binary.getLeft();
+        final DataType otherType = leftInterval ? rightType : leftType;
+        final String spelled;
+        if (otherType == null && isNullLiteral(other)) {
+            spelled = "NULL";
+        } else if (otherType instanceof StringType || otherType instanceof VariantType) {
+            spelled = SqlTypeNames.canonical(otherType);
+        } else {
+            return null;
+        }
+        final String interval = leftInterval
+            ? (isQuotedInterval(binary.getLeft()) ? "INTERVAL" : SqlTypeNames.canonical(leftType))
+            : (isQuotedInterval(binary.getRight()) ? "INTERVAL" : SqlTypeNames.canonical(rightType));
+        return "Invalid argument types for function '" + operatorSymbol(binary.getOperator()) + "': ("
+            + (leftInterval ? interval + ", " + spelled : spelled + ", " + interval) + ")";
+    }
+
     /** Whether an operand is the quoted-string interval form, {@code INTERVAL '1 day'}, which has no type. */
     private static boolean isQuotedInterval(final Expression operand) {
         return operand instanceof IntervalExpression && ((IntervalExpression) operand).getLiteral() == null;
@@ -461,6 +492,18 @@ final class TypeInferencer {
             }
             if (rightNullText) {
                 rightType = null;
+            }
+            if (isNumericOperator(binary.getOperator())) {
+                final String beside = untemporalBesideInterval(binary, leftType, rightType);
+                if (beside != null) {
+                    throw new RuntimeException(positioned(beside, binary));
+                }
+            }
+            if (isNumericOperator(binary.getOperator())
+                    && (NumericType.isDecfloat(leftType) || NumericType.isDecfloat(rightType))) {
+                // A DECFLOAT operand makes the operation a DECFLOAT, beside a NUMBER, a FLOAT or a numeric text
+                // alike (live-verified).
+                return NumericType.DECFLOAT;
             }
             if (isNumericOperator(binary.getOperator())) {
                 // A text or a VARIANT operand is judged FIRST, on the types as declared: a text beside
@@ -726,6 +769,10 @@ final class TypeInferencer {
             if (signed != null) {
                 return signed;
             }
+            if (DECFLOAT_MATH.contains(funcName) && anyDecfloatArgument(call.getArguments())) {
+                // SQRT, CBRT, LN, LOG, EXP, POWER and SQUARE over a DECFLOAT are DECFLOATs (live-verified).
+                return NumericType.DECFLOAT;
+            }
             final DataType bucketed = widthBucketResultType(funcName, call.getArguments());
             if (bucketed != null) {
                 return bucketed;
@@ -809,6 +856,21 @@ final class TypeInferencer {
                     return new NumericType("NUMBER", 2, 0);
                 }
                 return declaredNumericConversionType(call.getArguments());
+            }
+            // AS_DECIMAL and AS_NUMBER declare the (precision, scale) written after the VARIANT, NUMBER(38,0) for
+            // none: AS_NUMBER(v, 3, 1) is NUMBER(3,1) (live-verified).
+            if (declared instanceof NumericType && VARIANT_NUMBER_CASTS.contains(funcName)) {
+                return declaredNumericConversionType(call.getArguments());
+            }
+            // The timestamp casts of a VARIANT declare the scale written after it: AS_TIMESTAMP_NTZ(v, 0) is
+            // TIMESTAMP_NTZ(0) (live-verified).
+            if (declared instanceof DateTimeType && VARIANT_TIMESTAMP_CASTS.contains(funcName)
+                    && call.getArguments().size() == 2) {
+                final Integer scale = intLiteral(call.getArguments().get(1));
+                if (scale != null && scale.intValue() >= 0 && scale.intValue() <= 9) {
+                    return new DateTimeType(declared.getName(), scale.intValue(),
+                        ((DateTimeType) declared).hasTimeZone());
+                }
             }
             // GET_ABSOLUTE_PATH declares its stage's location and its path together, the other stage functions a
             // bare VARCHAR (see StageFunctionArguments).
@@ -1084,6 +1146,13 @@ final class TypeInferencer {
 
     private static final Set<String> NUMERIC_CONVERSIONS = Set.of(
         "TO_NUMBER", "TO_DECIMAL", "TO_NUMERIC", "TRY_TO_NUMBER", "TRY_TO_DECIMAL", "TRY_TO_NUMERIC");
+
+    /** The casts of a VARIANT to a fixed-point number, which take a precision and a scale after it. */
+    private static final Set<String> VARIANT_NUMBER_CASTS = Set.of("AS_DECIMAL", "AS_NUMBER");
+
+    /** The casts of a VARIANT to a timestamp, which take a scale after it. */
+    private static final Set<String> VARIANT_TIMESTAMP_CASTS = Set.of(
+        "AS_TIMESTAMP_NTZ", "AS_TIMESTAMP_LTZ", "AS_TIMESTAMP_TZ");
 
     /**
      * The NUMBER a numeric conversion declares: the trailing integer literals after the source (and
@@ -2330,6 +2399,10 @@ final class TypeInferencer {
         final BinaryOperator operator = remainder ? BinaryOperator.MODULO : BinaryOperator.DIVIDE;
         DataType leftType = infer(args.get(0));
         DataType rightType = infer(args.get(1));
+        if (NumericType.isDecfloat(leftType) || NumericType.isDecfloat(rightType)) {
+            // MOD, DIV0 and DIV0NULL over a DECFLOAT are DECFLOATs, as the operators are (live-verified).
+            return NumericType.DECFLOAT;
+        }
         final boolean leftNullText = isNullTextBesideNumber(args.get(0), rightType);
         final boolean rightNullText = isNullTextBesideNumber(args.get(1), leftType);
         if (leftNullText) {
@@ -2440,6 +2513,10 @@ final class TypeInferencer {
             return absolute ? new NumericType("NUMBER", 2, 0) : new NumericType("NUMBER", 18, 0);
         }
         DataType input = infer(args.get(0));
+        if (NumericType.isDecfloat(input)) {
+            // Each of the family over a DECFLOAT is a DECFLOAT (live-verified).
+            return NumericType.DECFLOAT;
+        }
         if (!(input instanceof NumericType)) {
             if (!(input instanceof StringType) && !(input instanceof VariantType)) {
                 return null;
@@ -2509,11 +2586,29 @@ final class TypeInferencer {
      * <p>A VARCHAR or a VARIANT argument is FLOAT as well, which is not the reading of "approximate"
      * one would guess: neither is approximate, but neither carries a width live can widen from either.
      */
+    /** The math functions a DECFLOAT argument makes DECFLOATs, computed to 38 digits (see DecfloatMath). */
+    static final Set<String> DECFLOAT_MATH = new HashSet<String>(Arrays.asList(
+        "SQRT", "CBRT", "LN", "LOG", "EXP", "POWER", "POW", "SQUARE"));
+
+    /** Whether any argument is a DECFLOAT. */
+    private boolean anyDecfloatArgument(final List<Expression> args) {
+        for (final Expression arg : args) {
+            if (NumericType.isDecfloat(infer(arg))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private DataType signResultType(final String funcName, final List<Expression> args) {
         if (!funcName.equals("SIGN") || args.isEmpty()) {
             return null;
         }
         final DataType input = infer(args.get(0));
+        if (NumericType.isDecfloat(input)) {
+            // A DECFLOAT's sign is a DECFLOAT (live-verified).
+            return NumericType.DECFLOAT;
+        }
         if (input instanceof StringType || input instanceof VariantType
                 || NumericType.isApproximate(input)) {
             return NumericType.FLOAT;
@@ -2825,6 +2920,11 @@ final class TypeInferencer {
             // The three boolean aggregates declare BOOLEAN whatever they are given, as live does.
             return BooleanType.BOOLEAN;
         }
+        if (isStandardDeviation(funcName) && !call.getArguments().isEmpty()
+                && NumericType.isDecfloat(infer(call.getArguments().get(0)))) {
+            // The deviation of a DECFLOAT is a DECFLOAT of 38 digits (live-verified).
+            return NumericType.DECFLOAT;
+        }
         if (isStandardDeviation(funcName) || PAIR_STATISTICS.contains(funcName) || funcName.equals("SKEW")) {
             // The deviation, the skewness and the statistics of pairs answer FLOAT whatever they read.
             return new NumericType("FLOAT", 38, 9);
@@ -2881,7 +2981,7 @@ final class TypeInferencer {
             }
             final NumericType orderedNumeric = (NumericType) orderedType;
             // Approximate by family: a DOUBLE-named value (a ::DOUBLE cast, SQRT, TO_DOUBLE) is a FLOAT.
-            if (!continuous || NumericType.isApproximate(orderedNumeric)) {
+            if (!continuous || NumericType.isApproximate(orderedNumeric) || NumericType.isDecfloat(orderedNumeric)) {
                 return orderedNumeric;
             }
             return interpolatedWidth(orderedNumeric.getPrecision(), orderedNumeric.getScale());
@@ -2926,7 +3026,8 @@ final class TypeInferencer {
      * @return the declared type
      */
     private static DataType threeDecimalAverage(final NumericType numeric) {
-        if (NumericType.isApproximate(numeric)) {
+        if (NumericType.isApproximate(numeric) || NumericType.isDecfloat(numeric)) {
+            // An AVG over a DECFLOAT is a DECFLOAT, however it is framed (live-verified).
             return numeric;
         }
         final int declaredPrecision = Math.min(38, numeric.getPrecision() + 15);
@@ -2983,8 +3084,9 @@ final class TypeInferencer {
         }
         final NumericType numeric = (NumericType) argument;
         // Approximate by family, not by name: SQRT, TO_DOUBLE and a ::DOUBLE cast type their result through
-        // the DOUBLE name, and SUM/AVG over any FLOAT is a FLOAT.
-        if (NumericType.isApproximate(numeric)) {
+        // the DOUBLE name, and SUM/AVG over any FLOAT is a FLOAT. Over a DECFLOAT each of them is a DECFLOAT
+        // (live-verified for SUM and AVG).
+        if (NumericType.isApproximate(numeric) || NumericType.isDecfloat(numeric)) {
             return numeric;
         }
         final int precision = numeric.getPrecision();
@@ -3490,7 +3592,7 @@ final class TypeInferencer {
             case "DOUBLE": case "DOUBLEPRECISION":
                 return NumericType.FLOAT;
             case "DECFLOAT":
-                return NumericType.DOUBLE;
+                return NumericType.DECFLOAT;
             case "BOOLEAN":
                 return BooleanType.BOOLEAN;
             case "BINARY":

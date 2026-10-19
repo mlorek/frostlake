@@ -43,7 +43,6 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * CREATE, ALTER, DROP and UNDROP of notebooks and Streamlit apps, and EXECUTE NOTEBOOK. The objects are catalog
@@ -282,15 +281,14 @@ public class AppObjectCommandHandler {
                 + SqlIdentifiers.canonicalText(QualifiedName.parse(stage.substring(1)).last()) + "'."));
         }
         final String stageName = SqlIdentifiers.canonicalText(QualifiedName.parse(stage).last());
-        final Schema schema = catalog.resolveOwningSchema(stage);
+        final Schema schema = catalog.resolveOwningSchema(SqlIdentifiers.canonicalText(stage));
         if (schema == null || !schema.hasStageExact(stageName)) {
             throw new RuntimeException("The specified stage " + stageName + " does not exist or the current role"
                 + " does not have access. Owner of the Streamlit must have at least READ on the specified stage.");
         }
         // The stage is read by its name as the catalog holds it, whichever way the location spells it.
-        final int nameStart = stage.length() - QualifiedName.parse(stage).last().length();
-        final StagePrefix files = queryExecutor.resolveStagePrefix(stageName.equals(stageName.toUpperCase(Locale.ROOT))
-            ? "@" + stage.substring(0, nameStart) + stageName + (slash >= 0 ? reference.substring(slash) : "") : from);
+        final StagePrefix files = queryExecutor.resolveStagePrefix("@" + SqlIdentifiers.canonicalText(stage)
+            + (slash >= 0 ? reference.substring(slash) : ""));
         if (files == null || files.getRoot() == null) {
             return;
         }
@@ -475,7 +473,7 @@ public class AppObjectCommandHandler {
      */
     private String queryWarehouse(final FrostlakeParser.IdentifierContext name) {
         final String warehouse = SqlIdentifiers.canonical(name);
-        if (!catalog.hasWarehouse(warehouse)) {
+        if (!catalog.hasWarehouseExact(warehouse)) {
             throw new RuntimeException("The specified warehouse " + warehouse + " does not exist or the current role "
                 + "does not have access. Owner of the Streamlit must have at least USAGE on the specified warehouse.");
         }

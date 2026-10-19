@@ -522,7 +522,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             // 5.000000 must stay a scaled BigDecimal, exactly as the engine now produces for
             // division/AVG (stripping trailing zeros here erased Snowflake's result scale).
             final BigDecimal decimal = (BigDecimal) value;
-            if (decimal.scale() <= 0 && decimal.precision() <= 18) {
+            if (decimal.scale() <= 0 && decimal.precision() - decimal.scale() <= 18) {
                 return decimal.longValueExact();
             }
             return decimal;

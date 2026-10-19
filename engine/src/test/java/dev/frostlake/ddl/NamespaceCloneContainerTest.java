@@ -149,6 +149,8 @@ public class NamespaceCloneContainerTest {
     @Test
     public void theCloningRoleOwnsTheCloneAndItsChildrenKeepTheirOwners() {
         engine.execute("USE ROLE ACCOUNTADMIN");
+        // SYSADMIN reaches what ACCOUNTADMIN makes through the user's other roles, active as secondary ones.
+        engine.execute("USE SECONDARY ROLES ALL");
         engine.execute("CREATE DATABASE o1");
         engine.execute("CREATE TABLE o1.PUBLIC.t (a INT)");
         engine.execute("CREATE SCHEMA o1.s2");

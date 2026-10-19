@@ -21,7 +21,7 @@ import java.nio.charset.Charset;
 /**
  * How a COPY load reads a delimited file's records and what it does to a row before the table's constraints judge it
  * (documented): the file is read in the character set its ENCODING names and split at its FIELD_DELIMITER and
- * RECORD_DELIMITER (see {@link CsvLoadRecords}), a byte sequence the set cannot read is
+ * RECORD_DELIMITER (see {@link CsvRecordReader}), a byte sequence the set cannot read is
  * replaced by U+FFFD under REPLACE_INVALID_CHARACTERS = TRUE and refuses its record otherwise; a JSON record loses its
  * null-valued fields and null array elements under STRIP_NULL_VALUES = TRUE; each column the
  * statement's column list leaves out takes its DEFAULT, or the next IDENTITY value, as an INSERT that names the same

@@ -22,6 +22,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -54,6 +55,15 @@ final class GeneratorBounds {
 
     /** The functions whose answer is the row's own. */
     private static final Set<String> PER_ROW = Set.of("RANDOM", "SEQ1", "SEQ2", "SEQ4", "SEQ8", "UUID_STRING");
+
+    /**
+     * The functions the account does not fold while it judges a bound: a bound calling one is no constant, whatever
+     * its arguments (live-verified) - {@code LENGTH('abc')}, {@code SQRT(9)}, {@code CEIL(1.1)}, where ABS, FLOOR,
+     * MOD, the conversions and the date parts fold.
+     */
+    private static final Set<String> UNFOLDED = Set.of("LENGTH", "LEN", "DATEDIFF", "SQRT", "TRUNC", "TRUNCATE",
+        "CEIL", "ROUND", "POWER", "POW", "BITAND", "ARRAY_SIZE", "REGEXP_COUNT", "HASH", "SIGN", "LN", "EXP", "LOG",
+        "CHARINDEX");
 
     /** The functions that answer the first of their arguments that is no NULL. */
     private static final Set<String> FIRST_NON_NULL = Set.of("NVL", "IFNULL", "COALESCE");
@@ -93,7 +103,16 @@ final class GeneratorBounds {
         for (final FrostlakeParser.NamedArgumentContext argument : named) {
             final String name = argument.variableName().getText().toUpperCase(Locale.ROOT);
             final int position = "ROWCOUNT".equals(name) ? 1 : "TIMELIMIT".equals(name) ? 2 : 0;
-            if (position == 0 || argument.expression() == null || bounds.readsNoRow(argument.expression())) {
+            if (position == 0 || argument.expression() == null) {
+                continue;
+            }
+            if (callsUnfolded(argument.expression()) || bounds.foldsLate(argument.expression())
+                    || bounds.subtractsDates(argument.expression())) {
+                throw new RuntimeException(SqlCompilationError.of("argument " + position
+                    + " to function GENERATOR needs to be constant, found '"
+                    + bounds.lateResidual(argument.expression()) + "'"));
+            }
+            if (bounds.readsNoRow(argument.expression())) {
                 continue;
             }
             final BoundFold fold = bounds.fold(argument.expression());
@@ -103,6 +122,114 @@ final class GeneratorBounds {
                     + ParseTreeText.getOriginalText(fold.residual()).toUpperCase(Locale.ROOT) + "'"));
             }
         }
+    }
+
+    /** Whether an expression calls a function the account does not fold while it judges a bound. */
+    private static boolean callsUnfolded(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext && UNFOLDED.contains(nameOf(node))) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (callsUnfolded(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a bound adds or subtracts a value the account folds only after it has judged the bound: a
+     * ZEROIFNULL of a NULL, or a product of a constant call with zero - {@code ABS(-2) + ZEROIFNULL(NULL)} is refused
+     * as {@code '2 + 0'} and {@code DAYOFMONTH(CURRENT_DATE) * 0 + 2} as {@code '0 + 2'}, where {@code 2 + 0} and
+     * {@code t.n * 0 + 2} fold (live-verified).
+     */
+    private boolean foldsLate(final ParserRuleContext written) {
+        final ParserRuleContext node = unwrapped(written);
+        if (!(node instanceof FrostlakeParser.AdditiveExprContext) || !readsNoRow(node)) {
+            return false;
+        }
+        for (final FrostlakeParser.ExpressionContext operand : ((FrostlakeParser.AdditiveExprContext) node)
+                .expression()) {
+            if (lateZero(unwrapped(operand))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a bound subtracts one date from another, which the account plans as the days between them and does
+     * not fold: {@code CURRENT_DATE - CURRENT_DATE + 2} is refused (live-verified).
+     */
+    private boolean subtractsDates(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.AdditiveExprContext
+                && ((FrostlakeParser.AdditiveExprContext) node).MINUS() != null && readsNoRow(node)) {
+            final List<FrostlakeParser.ExpressionContext> operands =
+                ((FrostlakeParser.AdditiveExprContext) node).expression();
+            try {
+                if (values.valueOf(operands.get(0)) instanceof LocalDate
+                        && values.valueOf(operands.get(1)) instanceof LocalDate) {
+                    return true;
+                }
+            } catch (final RuntimeException unread) {
+                return false;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (subtractsDates(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether an operand is a zero the account folds late: ZEROIFNULL(NULL), or a constant call times zero. */
+    private static boolean lateZero(final ParserRuleContext operand) {
+        if (operand instanceof FrostlakeParser.FunctionCallExprContext && "ZEROIFNULL".equals(nameOf(operand))) {
+            final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) operand;
+            return call.functionArgList() != null && call.functionArgList().functionArg().size() == 1
+                && call.functionArgList().functionArg(0).booleanExpr() != null
+                && "NULL".equalsIgnoreCase(call.functionArgList().functionArg(0).booleanExpr().getText());
+        }
+        if (operand instanceof FrostlakeParser.MultiplicativeExprContext
+                && ((FrostlakeParser.MultiplicativeExprContext) operand).STAR() != null) {
+            final List<FrostlakeParser.ExpressionContext> factors =
+                ((FrostlakeParser.MultiplicativeExprContext) operand).expression();
+            return "0".equals(factors.get(1).getText())
+                && unwrapped(factors.get(0)) instanceof FrostlakeParser.FunctionCallExprContext
+                || "0".equals(factors.get(0).getText())
+                && unwrapped(factors.get(1)) instanceof FrostlakeParser.FunctionCallExprContext;
+        }
+        return false;
+    }
+
+    /**
+     * A refused bound as the account echoes it: its plan, or, for a sum the account folds only late, each operand's
+     * value around the operator.
+     */
+    private String lateResidual(final ParserRuleContext written) {
+        final ParserRuleContext node = unwrapped(written);
+        if (!callsUnfolded(node) && foldsLate(node) && node instanceof FrostlakeParser.AdditiveExprContext) {
+            final FrostlakeParser.AdditiveExprContext sum = (FrostlakeParser.AdditiveExprContext) node;
+            final Object left = values.valueOf(sum.expression(0));
+            final Object right = values.valueOf(sum.expression(1));
+            if (left instanceof Number && right instanceof Number) {
+                return plain(left) + " " + sum.getChild(1).getText() + " " + plain(right);
+            }
+        }
+        return values.planText(written);
+    }
+
+    /** A number as the plan prints a folded one. */
+    private static String plain(final Object number) {
+        return number instanceof BigDecimal ? ((BigDecimal) number).stripTrailingZeros().toPlainString()
+            : number.toString();
     }
 
     /** Whether an expression reads no column of the relations in scope and calls no per-row function. */

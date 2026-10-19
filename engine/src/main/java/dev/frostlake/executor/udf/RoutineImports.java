@@ -99,7 +99,7 @@ public final class RoutineImports {
         if (stage == null) {
             return entry;
         }
-        return "@" + catalog.resolveOwningSchema(stageName).qualifiedName(stage.getName())
+        return "@" + catalog.resolveOwningSchema(SqlIdentifiers.canonicalText(stageName)).qualifiedName(stage.getName())
             + (slash >= 0 ? trimmed.substring(slash) : "");
     }
 
@@ -151,7 +151,8 @@ public final class RoutineImports {
         boolean held = false;
         try {
             final String[] parts = SqlIdentifiers.canonicalTextParts(tableName);
-            held = parts.length > 0 && catalog.resolveOwningSchema(tableName).hasTable(parts[parts.length - 1]);
+            held = parts.length > 0 && catalog.resolveOwningSchema(SqlIdentifiers.canonicalText(tableName))
+                .hasTable(parts[parts.length - 1]);
         } catch (final RuntimeException missing) {
             held = false;
         }
@@ -171,7 +172,8 @@ public final class RoutineImports {
 
     private static Stage resolveStage(final String stageName, final Catalog catalog) {
         try {
-            return catalog.getStage(stageName);
+            // The import names the stage as an identifier does: quoted parts kept, the rest folded.
+            return catalog.getStage(SqlIdentifiers.canonicalText(stageName));
         } catch (final RuntimeException notFound) {
             return null;
         }

@@ -145,7 +145,9 @@ public class BindVariableSubstitutor {
                         // A handler may not read what its block's BEGIN section declared (see HandlerLets).
                         declarations.requireReadableInHandler(nameTok.getText());
                     }
-                    final Object value = variables.get(nameTok.getText().toUpperCase(Locale.ROOT));
+                    final Object held = variables.get(nameTok.getText().toUpperCase(Locale.ROOT));
+                    final Object value = declarations != null
+                        ? declarations.boundValue(nameTok.getText(), held, statement) : held;
                     final RuntimeException infinite = statement ? InfiniteBindRefusal.of(value) : null;
                     if (infinite != null) {
                         throw infinite;

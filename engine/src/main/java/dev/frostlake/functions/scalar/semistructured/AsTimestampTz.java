@@ -22,13 +22,14 @@ import dev.frostlake.types.DateTimeType;
 import java.time.ZonedDateTime;
 import java.util.List;
 
-/** AS_TIMESTAMP_TZ(v) — the TIMESTAMP_TZ a VARIANT holds, else NULL; see {@link AsTimestampNtz}. */
+/** AS_TIMESTAMP_TZ(v [, scale]) — the TIMESTAMP_TZ a VARIANT holds, else NULL; see {@link AsTimestampNtz}. */
 public class AsTimestampTz extends BuiltInFunction {
     public AsTimestampTz() { super("AS_TIMESTAMP_TZ", DateTimeType.TIMESTAMP_TZ); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return args.get(0) instanceof ZonedDateTime ? args.get(0) : null;
+        final int scale = VariantTimestampScale.of("AS_TIMESTAMP_TZ", args);
+        return args.get(0) instanceof ZonedDateTime ? VariantTimestampScale.cut(args.get(0), scale) : null;
     }
 
     @Override
@@ -39,5 +40,5 @@ public class AsTimestampTz extends BuiltInFunction {
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

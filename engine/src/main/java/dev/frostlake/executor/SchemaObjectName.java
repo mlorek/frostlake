@@ -17,7 +17,6 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
@@ -54,16 +53,10 @@ public final class SchemaObjectName {
         if (parts.length > 3) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
-        final String databaseName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
-        if (databaseName == null) {
-            throw NoCurrentDatabaseRefusal.forStatement();
-        }
-        final String schemaName = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
-        if (schemaName == null) {
-            throw new RuntimeException("No database or schema selected");
-        }
-        final Database database = catalog.getDatabase(databaseName);
-        return new SchemaObjectName(database, database.getSchema(schemaName), parts[parts.length - 1],
+        // Resolved as every object's name is (see Catalog.requireOwningSchema): exactly, the session's database and
+        // schema standing in for the parts not written.
+        final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        return new SchemaObjectName(catalog.databaseExact(schema.getDatabaseName()), schema, parts[parts.length - 1],
             parts.length > 1);
     }
 

@@ -115,15 +115,21 @@ final class CallArgumentTypes {
         refuse("FIXED", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "OBJECT", "ARRAY");
         refuse("FLOAT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "OBJECT", "ARRAY");
         refuse("BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "OBJECT", "ARRAY");
-        refuse("DATE", "FIXED", "FLOAT", "BOOLEAN", "TIME", "BINARY", "OBJECT", "ARRAY");
-        refuse("NTZ", "TZ", "FIXED", "FLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
-        refuse("LTZ", "TZ", "FIXED", "FLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
-        refuse("TZ", "FIXED", "FLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
-        refuse("TIME", "FIXED", "FLOAT", "BOOLEAN", "DATE", "BINARY", "OBJECT", "ARRAY");
-        refuse("BINARY", "TEXT", "FIXED", "FLOAT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "OBJECT", "ARRAY");
+        refuse("DATE", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "TIME", "BINARY", "OBJECT", "ARRAY");
+        refuse("NTZ", "TZ", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
+        refuse("LTZ", "TZ", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
+        refuse("TZ", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "BINARY", "OBJECT", "ARRAY");
+        refuse("TIME", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "DATE", "BINARY", "OBJECT", "ARRAY");
+        refuse("BINARY", "TEXT", "FIXED", "FLOAT", "DECFLOAT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "OBJECT",
+            "ARRAY");
+        // A DECFLOAT parameter takes a DECFLOAT and nothing else (live-verified: CALL p(2) is refused).
+        refuse("DECFLOAT", "TEXT", "FIXED", "FLOAT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "OBJECT",
+            "ARRAY", "VARIANT");
         refuse("VARIANT", "TEXT", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY");
-        refuse("OBJECT", "FIXED", "FLOAT", "TEXT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY", "ARRAY");
-        refuse("ARRAY", "FIXED", "FLOAT", "TEXT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "OBJECT", "BINARY");
+        refuse("OBJECT", "FIXED", "FLOAT", "DECFLOAT", "TEXT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "BINARY",
+            "ARRAY");
+        refuse("ARRAY", "FIXED", "FLOAT", "DECFLOAT", "TEXT", "BOOLEAN", "DATE", "TIME", "NTZ", "LTZ", "TZ", "OBJECT",
+            "BINARY");
     }
 
     /** What a parameter of a type no pair has been measured for weighs: more than any conversion. */
@@ -764,6 +770,9 @@ final class CallArgumentTypes {
         }
         if (type instanceof StringType) {
             return "TEXT";
+        }
+        if (NumericType.isDecfloat(type)) {
+            return "DECFLOAT";
         }
         if (type instanceof NumericType) {
             return NumericType.isApproximate(type) ? "FLOAT" : "FIXED";

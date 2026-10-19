@@ -111,7 +111,7 @@ public class ScriptStatementsInHistoryTest {
         assertEquals("CREATE TABLE t2 (a INT);", historyColumn("query_text", ids[2]));
         assertEquals("INSERT", historyColumn("query_type", ids[1]));
         assertEquals("1", historyColumn("rows_produced", ids[1]));
-        assertEquals("CREATE", historyColumn("query_type", ids[2]));
+        assertEquals("CREATE_TABLE", historyColumn("query_type", ids[2]));
         assertEquals("SUCCESS", historyColumn("execution_status", ids[2]));
         // Each completes, and is listed, before the block it ran in.
         assertEquals("[SELECT 'one';, INSERT INTO t VALUES (3);, CREATE TABLE t2 (a INT);, BEGIN SELECT 'one';"

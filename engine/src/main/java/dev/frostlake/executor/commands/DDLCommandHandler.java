@@ -958,21 +958,8 @@ public class DDLCommandHandler implements CommandHandler {
         final Schema schema;
         final String mvName;
 
-        if (parts.length == 1) {
-            schema = resolveCurrentSchema();
-            mvName = parts[0];
-        } else if (parts.length == 2) {
-            if (catalog.getCurrentDatabase() == null) {
-                throw NoCurrentDatabaseRefusal.forStatement();
-            }
-            schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-            mvName = parts[1];
-        } else if (parts.length == 3) {
-            schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            mvName = parts[2];
-        } else {
-            throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
-        }
+        schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        mvName = parts[parts.length - 1];
 
         final MaterializedView mv = schema.getMaterializedView(mvName);
         final FrostlakeParser.MaterializedViewActionContext action = ctx.materializedViewAction();
@@ -991,13 +978,11 @@ public class DDLCommandHandler implements CommandHandler {
             logger.trace("Suspended materialized view: {}", qualifiedName);
         } else if (action.RESUME() != null) {
             // A view resumes over the body it was created with: one that no longer compiles is refused as the
-            // body is, and stays as it was. Resuming lifts the mark a SUSPEND left and no other: a view its base
-            // table's DDL invalidated stays invalid (live-verified).
+            // body is, and stays as it was. Resuming lifts the mark a SUSPEND left, and the one a column's type or
+            // nullability left; a view whose base table lost or renamed a column stays invalid (live-verified).
             queryExecutor.compileMaterializedView(mv, qualifiedName);
             mv.setSuspended(false);
-            if (mv.getInvalidReason() != null) {
-                mv.setResumedWhileInvalid(true);
-            }
+            MaterializedViewValidity.resumed(mv);
             logger.trace("Resumed materialized view: {}", qualifiedName);
         } else if (action.RENAME() != null) {
             renameMaterializedView(schema, mv, qualifiedNameParts(action.qualifiedName()));
@@ -1025,9 +1010,7 @@ public class DDLCommandHandler implements CommandHandler {
 
     /** The schema a dynamic table's name places it in: its own parts, else the session's database and schema. */
     private Schema dynamicTableSchema(final String[] parts) {
-        return parts.length == 1 ? resolveCurrentSchema()
-            : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-            : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+        return catalog.requireOwningSchema(QualifiedName.of(parts));
     }
 
     /**
@@ -1351,11 +1334,11 @@ public class DDLCommandHandler implements CommandHandler {
             dt.setTargetLag(TargetLag.canonicalize(extractStringLiteral(setting.STRING_LITERAL())));
         } else if ("WAREHOUSE".equals(name) && setting.identifier() != null) {
             final String warehouse = getText(setting.identifier());
-            if (!catalog.hasWarehouse(warehouse)) {
+            if (!catalog.hasWarehouseExact(warehouse)) {
                 // Live's sentence for a warehouse, which has no "not authorized" half (live-verified).
-                throw new RuntimeException("Warehouse '" + warehouse.toUpperCase(Locale.ROOT) + "' does not exist.");
+                throw new RuntimeException("Warehouse '" + warehouse + "' does not exist.");
             }
-            dt.setWarehouse(warehouse.toUpperCase(Locale.ROOT));
+            dt.setWarehouse(warehouse);
         } else if ("COMMENT".equals(name) && setting.STRING_LITERAL() != null) {
             dt.setComment(extractStringLiteral(setting.STRING_LITERAL()));
         } else if ("DATA_RETENTION_TIME_IN_DAYS".equals(name) && setting.INTEGER_LITERAL() != null
@@ -1400,18 +1383,7 @@ public class DDLCommandHandler implements CommandHandler {
         final Schema schema;
         final Sequence sequence;
         try {
-            if (parts.length == 1) {
-                schema = resolveCurrentSchema();
-            } else if (parts.length == 2) {
-                if (catalog.getCurrentDatabase() == null) {
-                    throw NoCurrentDatabaseRefusal.forStatement();
-                }
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-            } else if (parts.length == 3) {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            } else {
-                throw new RuntimeException("Invalid sequence name: " + qualifiedName);
-            }
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             sequence = schema.getSequenceExact(parts[parts.length - 1]);
         } catch (final RuntimeException absent) {
             // IF EXISTS forgives the sequence's absence, and nothing the action itself refuses.
@@ -1564,7 +1536,7 @@ public class DDLCommandHandler implements CommandHandler {
         } else if (ctx.WAREHOUSE() != null) {
             final String warehouseName = queryExecutor.resolveObjectName(ctx.objectName());
             // A warehouse that is not there is refused without its name (live-verified).
-            if (!catalog.hasWarehouse(warehouseName)) {
+            if (!catalog.hasWarehouseExact(warehouseName)) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "Object does not exist, or operation cannot be performed."));
             }
@@ -1915,18 +1887,9 @@ public class DDLCommandHandler implements CommandHandler {
         logger.debug("{} already exists (IF NOT EXISTS)", objectName);
     }
 
+    /** The schema an object's name belongs to, as every statement resolves one (see Catalog.requireOwningSchema). */
     Schema resolveSchemaFromQualifiedName(final String qualifiedName) {
-        final String[] parts = QualifiedName.parse(qualifiedName).parts();
-        if (parts.length == 3) {
-            // A fully qualified name names its own database and needs no current one.
-            return catalog.getDatabase(parts[0]).getSchema(parts[1]);
-        }
-        final String dbName = catalog.getCurrentDatabase();
-        if (dbName == null) throw NoCurrentDatabaseRefusal.forStatement();
-        if (parts.length == 2) {
-            return catalog.getDatabase(dbName).getSchema(parts[0]);
-        }
-        return resolveCurrentSchema();
+        return catalog.requireOwningSchema(QualifiedName.parse(qualifiedName));
     }
 
     /** Extract just the object name (last part) from a qualified name, preserving case. */
@@ -1946,7 +1909,7 @@ public class DDLCommandHandler implements CommandHandler {
             throw NoCurrentDatabaseRefusal.schemaForStatement();
         }
 
-        return catalog.getDatabase(dbName).getSchema(schemaName);
+        return catalog.databaseExact(dbName).schemaExact(schemaName);
     }
 
     /**

@@ -28,4 +28,12 @@ interface RowFreeValues {
      * @return its value, null for a NULL
      */
     Object valueOf(final ParserRuleContext expression);
+
+    /**
+     * An expression as the plan prints it, which a refused bound is echoed as.
+     *
+     * @param expression the expression as written
+     * @return its plan text, or the text as written, upper-cased, where the plan's printer does not read it
+     */
+    String planText(final ParserRuleContext expression);
 }

@@ -619,6 +619,31 @@ public final class CorrelationPlanJudgement {
         // An outer join may extend a relation with NULLs its statistics do not see, so beside one no name is constant.
         final CorrelatedSubqueryRule rule = new CorrelatedSubqueryRule(executor, outerNames, relations,
             outerJoined || unpinned ? null : new CatalogRelationConstancy(executor, relations));
+        final FrostlakeParser.FunctionCallExprContext havingAggregate =
+            node instanceof FrostlakeParser.ScalarSubqueryExprContext
+                ? HavingAggregateSubqueries.enclosingAggregate(node, executor) : null;
+        if (havingAggregate != null && HavingAggregateSubqueries.settledAround(havingAggregate, executor)) {
+            // The HAVING never plans it: an OR the aggregate stands under is settled TRUE.
+            return null;
+        }
+        if (havingAggregate != null && !rule.readsNoOuterName(subquery)) {
+            // An aggregate of its own nests in the HAVING's once the subquery is decorrelated
+            // (HavingAggregateSubqueries).
+            final String nested = HavingAggregateSubqueries.refusal(executor, relations, havingAggregate,
+                (FrostlakeParser.ScalarSubqueryExprContext) node);
+            if (nested != null) {
+                refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
+                judgedForItsAggregate = false;
+                return nested.isEmpty() ? new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery"
+                    + " type cannot be evaluated at line " + at.getLine() + ", position " + at.getCharPositionInLine()))
+                    : new RuntimeException(nested);
+            }
+            if (HavingAggregateSubqueries.answered(executor, relations, havingAggregate,
+                    (FrostlakeParser.ScalarSubqueryExprContext) node)) {
+                // The HAVING computes it group by group (HavingAggregateSubqueries).
+                return null;
+            }
+        }
         if (scalar && orderedInQualifyWindow(node) && !rule.readsNoOuterName(subquery)) {
             // A subquery reading the outer row as the ordering key of a window the QUALIFY reads is no join the plan
             // can make, whatever its shape, where the same key in a select list's window is answered (live-verified).

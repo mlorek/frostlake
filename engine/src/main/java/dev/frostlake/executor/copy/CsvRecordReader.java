@@ -24,7 +24,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The records of one staged CSV file as INFER_SCHEMA splits them.
+ * The records of one staged CSV file, as every reader of one splits them: INFER_SCHEMA, a staged-file query, and a
+ * COPY load and its validation (see {@link #forLoad}), which report a record that does not parse through their own
+ * result rather than refusing the statement.
  *
  * <p>A record ends at the RECORD_DELIMITER — a newline by default, which a carriage return before it joins — and
  * a field at the FIELD_DELIMITER; either may be several characters or NONE. An empty record is no record.
@@ -109,48 +111,90 @@ public final class CsvRecordReader {
     private int recordEndLine = 1;
     private int recordEndColumn = 1;
 
+    /** Whether a blank line is passed over rather than read as a record of one empty field. */
+    private final boolean skipBlankLines;
+
+    /** Whether a COPY load reads the file (see {@link #forLoad}), which keeps each record's raw text and place. */
+    private final boolean load;
+
+    /** The UTF-8 bytes of the characters taken so far, the account's BYTE_OFFSET counting. */
+    private long bytesTaken;
+
+    /** The byte the last record started at. */
+    private long recordStartByte;
+
+    /** The last record's characters as the file holds them, its record delimiter included (a load's only). */
+    private final StringBuilder raw = new StringBuilder();
+
+    /** The length of the last record's raw text without its record delimiter. */
+    private int rawLength;
+
+    /** Whether the characters taken now belong to the record being read. */
+    private boolean capturing;
+
+    /** Where each field of the last record started, counted in characters from the record's start. */
+    private final List<Integer> fieldOffsets = new ArrayList<Integer>();
+
+    /** The blank lines passed over before the last record. */
+    private int blankSkipped;
+
+    /** The width a load's table expects, which tells a record delimiter's place from a field delimiter's. */
+    private int loadWidth = -1;
+
     /**
-     * A reader over one file.
+     * A reader over one file, by the effective format's delimiters, enclosure, escapes and TRIM_SPACE.
      *
-     * @param source the file's characters
+     * @param source       the file's characters
      * @param relativeName the file's stage-relative name, as the refusals name it
-     * @param options the call's options
+     * @param options      the effective format
+     * @param stagedQuery  whether a staged-file query reads the file: its refusals are worded as the query's own, and
+     *                     it reads a blank line as a record of NULLs unless SKIP_BLANK_LINES passes it over
+     *                     (live-verified), where a schema scan passes over every blank line
      */
-    CsvRecordReader(final Reader source, final String relativeName, final SchemaScanOptions options) {
+    public CsvRecordReader(final Reader source, final String relativeName, final FileFormatOptions options,
+                           final boolean stagedQuery) {
+        this(source, relativeName, options, stagedQuery, false);
+    }
+
+    private CsvRecordReader(final Reader source, final String relativeName, final FileFormatOptions options,
+                            final boolean stagedQuery, final boolean load) {
         this.source = source;
         this.relativeName = relativeName;
-        this.fieldDelimiter = options.fieldDelimiter();
-        this.recordDelimiter = options.recordDelimiter();
-        this.enclosure = options.enclosure();
-        this.escape = options.escape();
-        this.escapeUnenclosed = options.escapeUnenclosed();
-        this.trimSpace = options.trimSpace();
-        this.stagedQuery = false;
+        this.fieldDelimiter = options.getFieldDelimiter();
+        this.recordDelimiter = options.getRecordDelimiter();
+        this.enclosure = options.getEnclosure();
+        this.escape = options.getEscape();
+        this.escapeUnenclosed = options.getEscapeUnenclosed();
+        this.trimSpace = options.trimsSpace();
+        this.skipBlankLines = options.skipsBlankLines() || !stagedQuery && !load;
+        this.stagedQuery = stagedQuery;
+        this.load = load;
     }
 
     /**
-     * A reader over one file as a staged-file query reads it.
+     * A reader for a COPY load, which splits the file as a staged-file query does and reads a blank line as a record
+     * of one empty field unless SKIP_BLANK_LINES passes it over. A load reports what a record holds through its own
+     * result, so each record's place is kept: its first line and byte, each field's start, and its raw text.
      *
-     * @param source the file's characters
-     * @param relativeName the file's stage-relative name, as the refusals name it
-     * @param fieldDelimiter the text between two fields, null for NONE
-     * @param recordDelimiter the text between two records, null for NONE
-     * @param enclosure FIELD_OPTIONALLY_ENCLOSED_BY, or null
-     * @param escape ESCAPE, or null
-     * @param escapeUnenclosed ESCAPE_UNENCLOSED_FIELD, or null
+     * @param source       the file's characters
+     * @param relativeName the file's name, as the refusals name it
+     * @param options      the effective format
+     * @return the reader
      */
-    public CsvRecordReader(final Reader source, final String relativeName, final String fieldDelimiter,
-                           final String recordDelimiter, final Character enclosure, final Character escape,
-                           final Character escapeUnenclosed) {
-        this.source = source;
-        this.relativeName = relativeName;
-        this.fieldDelimiter = fieldDelimiter;
-        this.recordDelimiter = recordDelimiter;
-        this.enclosure = enclosure;
-        this.escape = escape;
-        this.escapeUnenclosed = escapeUnenclosed;
-        this.trimSpace = false;
-        this.stagedQuery = true;
+    static CsvRecordReader forLoad(final Reader source, final String relativeName, final FileFormatOptions options) {
+        return new CsvRecordReader(source, relativeName, options, true, true);
+    }
+
+    /**
+     * The width the load's table expects: a character after a closing enclosure stands in for the record delimiter
+     * in the field of that number, and for the field delimiter in any other.
+     *
+     * @param width the table's column count, or -1 to judge by the file's first record
+     * @return this reader
+     */
+    CsvRecordReader expectingWidth(final int width) {
+        this.loadWidth = width;
+        return this;
     }
 
     /**
@@ -189,9 +233,11 @@ public final class CsvRecordReader {
      * @throws IOException when the file cannot be read
      */
     public List<String> next(final int width, final long row, final List<Boolean> enclosedOut) throws IOException {
-        int blank = recordDelimiterLength();
+        blankSkipped = 0;
+        int blank = skipBlankLines ? recordDelimiterLength() : 0;
         while (blank > 0) {
             consume(blank);
+            blankSkipped++;
             blank = recordDelimiterLength();
         }
         if (peek(0) < 0) {
@@ -209,8 +255,13 @@ public final class CsvRecordReader {
         enclosedOut.clear();
         unreadable.clear();
         fieldStarts.clear();
+        fieldOffsets.clear();
         final int startLine = line;
         recordStartLine = startLine;
+        recordStartByte = bytesTaken;
+        raw.setLength(0);
+        rawLength = 0;
+        capturing = load;
         final List<String> fields = new ArrayList<String>();
         int ending = NEXT_FIELD;
         while (ending == NEXT_FIELD) {
@@ -223,6 +274,7 @@ public final class CsvRecordReader {
             final int fieldLine = line;
             final int fieldColumn = column;
             fieldStarts.add(new int[] {fieldLine, fieldColumn});
+            fieldOffsets.add(Integer.valueOf(raw.length()));
             final boolean enclosed = enclosureAhead();
             ending = enclosed ? enclosedField(value, header, width, row, startLine, index)
                 : unenclosedField(value, header);
@@ -230,6 +282,7 @@ public final class CsvRecordReader {
                 : settled(value.toString(), fieldLine, fieldColumn, row, startLine, index));
             enclosedOut.add(Boolean.valueOf(enclosed));
         }
+        capturing = false;
         return fields;
     }
 
@@ -361,6 +414,7 @@ public final class CsvRecordReader {
         if (peek(0) < 0) {
             recordEndLine = line;
             recordEndColumn = column;
+            rawLength = raw.length();
             return FILE_END;
         }
         final int field = fieldDelimiterLength();
@@ -372,6 +426,7 @@ public final class CsvRecordReader {
         if (record > 0) {
             recordEndLine = line;
             recordEndColumn = column;
+            rawLength = raw.length();
             consume(record);
             return RECORD_END;
         }
@@ -380,12 +435,17 @@ public final class CsvRecordReader {
 
     /**
      * The refusal of the last record's width against a table's, in a load's words, or null when the widths agree.
-     * The rule is COPY's (see {@code CopyCommandExecutor.requireCsvColumnCount}), and a table stage's query follows it
-     * (live-verified): the file's first record of another width is {@code Number of columns in file (F) does not match
-     * that of the corresponding table (T), …}, placed just past the record — at the next line's start when the file
-     * goes on — against column F, named when the table has one; a later record holding more fields is refused at the
-     * delimiter that should have ended it, against the table's last column, and one holding fewer just past its end,
-     * against the first column it never reached.
+     * The rule is COPY's under ERROR_ON_COLUMN_COUNT_MISMATCH, and a table stage's query follows it (live-verified):
+     * WHICH sentence a record gets turns on whether it is its file's FIRST data record, whatever the direction, the
+     * table's width, the delimiter or the record's place in the file. The first record of another width is
+     * {@code Number of columns in file (F) does not match that of the corresponding table (T), …}, placed just past
+     * the record — at the next line's start when the file goes on — against column F, named when the table has one
+     * ({@code "T"["ID":1]}) and bare when it has not ({@code "T"[3]}). A later record holding more fields is
+     * {@code Field delimiter ',' found while expecting record delimiter '\n'}, quoting the format's own delimiters,
+     * refused at the delimiter that should have ended it, against the table's last column; one holding fewer is
+     * {@code End of record reached while expected to parse column '…'} just past its end, against the first column it
+     * never reached. A wholly blank line is one empty field, so on a table wider than one column it is a short
+     * record — the reason SKIP_BLANK_LINES exists.
      *
      * @param fieldCount  the last record's fields
      * @param table       the table's name, as the refusal spells it
@@ -422,6 +482,122 @@ public final class CsvRecordReader {
             recordEndColumn, row, missing);
     }
 
+    /**
+     * The refusal of the last record's width against a table's, as a load reports it — the sentence, the place and
+     * the column apart, by the rule {@link #tableWidthRefusal} gives; null when the widths agree.
+     *
+     * @param fieldCount  the last record's fields
+     * @param table       the table's name
+     * @param columns     the table's column names, in order
+     * @param firstRecord whether the record is its file's first
+     * @return the refusal, or null
+     * @throws IOException when the file cannot be read
+     */
+    CsvColumnCountException loadWidthRefusal(final int fieldCount, final String table, final List<String> columns,
+                                             final boolean firstRecord) throws IOException {
+        final int width = columns.size();
+        if (fieldCount == width) {
+            return null;
+        }
+        if (firstRecord) {
+            final boolean goesOn = peek(0) >= 0;
+            final String against = fieldCount > width ? "\"" + table + "\"[" + fieldCount + "]"
+                : tableColumn(table, columns, fieldCount);
+            return new CsvColumnCountException("Number of columns in file (" + fieldCount
+                + ") does not match that of the corresponding table (" + width
+                + "), use file format option error_on_column_count_mismatch=false to ignore this error",
+                goesOn ? line : recordEndLine, Integer.valueOf(goesOn ? column : recordEndColumn), against);
+        }
+        if (fieldCount > width) {
+            final int[] past = fieldStarts.get(width);
+            return new CsvColumnCountException("Field delimiter '" + shown(fieldDelimiter)
+                + "' found while expecting record delimiter '" + shown(recordDelimiter) + "'", past[0],
+                Integer.valueOf(past[1] - (fieldDelimiter == null ? 0 : fieldDelimiter.length())),
+                tableColumn(table, columns, width));
+        }
+        final String missing = tableColumn(table, columns, fieldCount + 1);
+        return new CsvColumnCountException("End of record reached while expected to parse column '" + missing + "'",
+            recordEndLine, Integer.valueOf(recordEndColumn), missing);
+    }
+
+    /**
+     * The line the last record started on.
+     *
+     * @return the line, from 1
+     */
+    int recordLine() {
+        return recordStartLine;
+    }
+
+    /**
+     * The byte the last record started at, counting the file's characters in UTF-8.
+     *
+     * @return the byte, from 0
+     */
+    long recordByte() {
+        return recordStartByte;
+    }
+
+    /**
+     * Where a field of the last record started, counted in characters from the record's start.
+     *
+     * @param field the field, from 0
+     * @return the character, from 1
+     */
+    int fieldCharacter(final int field) {
+        return field >= 0 && field < fieldOffsets.size() ? fieldOffsets.get(field).intValue() + 1 : 1;
+    }
+
+    /**
+     * The last record's text as the file holds it, without its record delimiter.
+     *
+     * @return the text
+     */
+    String rawRecord() {
+        return raw.substring(0, rawLength);
+    }
+
+    /**
+     * The blank lines SKIP_BLANK_LINES passed over before the last record.
+     *
+     * @return how many
+     */
+    int blankLinesSkipped() {
+        return blankSkipped;
+    }
+
+    /**
+     * Whether the file holds anything after the last record.
+     *
+     * @return whether it goes on
+     * @throws IOException when the file cannot be read
+     */
+    boolean goesOn() throws IOException {
+        return peek(0) >= 0;
+    }
+
+    /**
+     * Skips what is left of a record a fault stopped, through its record delimiter, so the next record is read from
+     * the next line; its raw text is kept whole.
+     *
+     * @throws IOException when the file cannot be read
+     */
+    void skipRecordRest() throws IOException {
+        capturing = load;
+        while (peek(0) >= 0) {
+            final int record = recordDelimiterLength();
+            if (record > 0) {
+                rawLength = raw.length();
+                consume(record);
+                capturing = false;
+                return;
+            }
+            take();
+        }
+        rawLength = raw.length();
+        capturing = false;
+    }
+
     /** {@code "T"["C":n]}, a table's n-th column as a load's refusal names it. */
     private static String tableColumn(final String table, final List<String> columns, final int ordinal) {
         return "\"" + table + "\"[\"" + columns.get(ordinal - 1) + "\":" + ordinal + "]";
@@ -444,7 +620,7 @@ public final class CsvRecordReader {
         final int atLine = line;
         final int atColumn = column;
         final char found = (char) peek(0);
-        final int expected = width > 0 ? width : firstWidth;
+        final int expected = width > 0 ? width : loadWidth > 0 ? loadWidth : firstWidth;
         final String detail = "Found character '" + found + "' instead of " + (expected > 0 && index == expected
             ? "record delimiter '" + shown(recordDelimiter) : "field delimiter '" + shown(fieldDelimiter)) + "'";
         if (width > 0 && index + 1 + fieldDelimitersLeft() > width) {
@@ -499,8 +675,9 @@ public final class CsvRecordReader {
         final String where = "\n  File '" + relativeName + "', line " + atLine + ", character " + atColumn;
         final String at = detail + where + "\n  Row " + row + startingAt(atLine, startLine) + ", column "
             + columnReference(index);
-        return new RuntimeException(stagedQuery ? at
-            : at + where + "\n  Row 0 starts at line 0, column " + columnReference(index));
+        final String message = stagedQuery ? at
+            : at + where + "\n  Row 0 starts at line 0, column " + columnReference(index);
+        return new CsvParseFault(message, detail, atLine, atColumn, index);
     }
 
     private static String startingAt(final int atLine, final int startLine) {
@@ -566,6 +743,10 @@ public final class CsvRecordReader {
                 column = 1;
             } else {
                 column++;
+            }
+            bytesTaken += c < 0x80 ? 1 : c < 0x800 || Character.isSurrogate((char) c) ? 2 : 3;
+            if (capturing) {
+                raw.append((char) c);
             }
         }
         return c;

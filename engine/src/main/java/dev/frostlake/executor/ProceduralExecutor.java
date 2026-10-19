@@ -102,6 +102,7 @@ import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
@@ -160,6 +161,12 @@ public class ProceduralExecutor {
      * NUMBER(2,0) to RETURN x. Empty for every name whose conversion kept the declared type.
      */
     private final Map<String, DataType> conversionTypes = new HashMap<>();
+    /**
+     * The answers {@code x := (CALL p())} gave names, held as the CALL handed them back, by name: the conversion to
+     * the name's type waits for an expression that reads it (see {@link #readHeld}). An entry counts while the name
+     * still holds that very answer.
+     */
+    private final Map<String, Object> callAnswers = new HashMap<>();
     /**
      * The FOR-loop counters in flight, by name. A counter binds as NUMBER(9,0) — the type a
      * {@code :i} carries into a statement and a column derived from it declares — but it is no
@@ -670,6 +677,7 @@ public class ProceduralExecutor {
             throw failed;
         }
         setVariable(stmt.getVariableName(), value);
+        callAnswers.remove(stmt.getVariableName().toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -975,7 +983,7 @@ public class ProceduralExecutor {
      * @param nullable whether the refusal words the target nullable
      */
     private static void refuseArgumentPastWidth(final Object value, final NumericType type, final boolean nullable) {
-        if (type.getPrecision() <= 0 || NumericType.isApproximate(type)) {
+        if (type.getPrecision() <= 0 || NumericType.isApproximate(type) || NumericType.isDecfloat(type)) {
             return;
         }
         final BigDecimal parsed;
@@ -1127,7 +1135,16 @@ public class ProceduralExecutor {
         returnedDeclaredType = null;
         returnedStaticType = null;
         if (expression != null) {
-            final Object value = evaluateExpression(expression);
+            final Object answer = returnedCallAnswer(expression);
+            if (answer != null && !takesDeclaredReturnType(expression, answer)) {
+                // A bare RETURN of a CALL's answer held unconverted hands it back as the CALL did: DECLARE x DATE …
+                // x := (CALL pv('abc')); RETURN x answers abc (live-verified).
+                returnValue = answer;
+                returnedStaticType = literalValueType(answer);
+                returnFlag = true;
+                return;
+            }
+            final Object value = answer != null ? answer : evaluateExpression(expression);
             if (returnsAsText(expression)) {
                 returnValue = asReturnedText(value);
             } else if (takesDeclaredReturnType(expression, value)) {
@@ -1712,6 +1729,9 @@ public class ProceduralExecutor {
         }
         if (initialiser instanceof VariableExpression) {
             final DataType declared = getDeclaredVariableType(((VariableExpression) initialiser).getName());
+            if (NumericType.isDecfloat(declared)) {
+                return declared;
+            }
             if (declared instanceof NumericType) {
                 final NumericType numeric = (NumericType) declared;
                 return numeric.getScale() == 0 && !"FLOAT".equalsIgnoreCase(numeric.getName())
@@ -2392,7 +2412,7 @@ public class ProceduralExecutor {
         } else if (expr instanceof VariableExpression) {
             handlerLets.requireReadable(((VariableExpression) expr).getName(), expr.getSourceLine(),
                 expr.getSourcePosition());
-            return getVariable(((VariableExpression) expr).getName());
+            return readHeld(((VariableExpression) expr).getName(), getVariable(((VariableExpression) expr).getName()));
         } else if (expr instanceof BinaryExpression) {
             final BinaryExpression binExpr = (BinaryExpression) expr;
             if (binExpr.getOperator() == BinaryOperator.AND || binExpr.getOperator() == BinaryOperator.OR) {
@@ -2400,6 +2420,9 @@ public class ProceduralExecutor {
             }
             final Object left = evaluateExpression(binExpr.getLeft());
             final Object right = evaluateExpression(binExpr.getRight());
+            if (isDecfloatOperand(binExpr.getLeft()) || isDecfloatOperand(binExpr.getRight())) {
+                return evaluateDecfloatOperation(binExpr, left, right);
+            }
             return evaluateBinaryOperation(binExpr.getOperator(), left, right);
         } else if (expr instanceof ExecuteImmediateExpression) {
             final ExecuteImmediateExpression execExpr = (ExecuteImmediateExpression) expr;
@@ -2419,7 +2442,7 @@ public class ProceduralExecutor {
                         unbound.add(bindValues.size() + 1);
                     }
                     bindValues.add(usingBind(bind instanceof VariableExpression
-                        ? ((VariableExpression) bind).getName() : null, evaluateExpression(bind)));
+                        ? ((VariableExpression) bind).getName() : null, usingArgument(bind)));
                 }
             }
             final List<int[]> written = new ArrayList<>();
@@ -2719,7 +2742,12 @@ public class ProceduralExecutor {
             queryExecutor != null ? queryExecutor.getFunctionRegistry() : null,
             queryExecutor != null ? queryExecutor.getCatalog() : null,
             queryExecutor);
-        final Map<String, Object> varContext = new HandlerGuardedVariables(handlerLets);
+        final Map<String, Object> varContext = new HandlerGuardedVariables(handlerLets, new VariableReadConversion() {
+            @Override
+            public Object read(final String name, final Object value) {
+                return readHeld(name, value);
+            }
+        });
         varContext.putAll(scope.variables());
         ev.setResultContext(varContext);
         ev.setScriptNameTypes(namesInScope());
@@ -2832,6 +2860,64 @@ public class ProceduralExecutor {
     /** A connective side's truth, read as AND reads it: TRUE, FALSE, NULL, or the refusal of a value that is none. */
     private Boolean truthOf(final Object value) {
         return (Boolean) evaluateBinaryOperation(BinaryOperator.AND, value, Boolean.TRUE);
+    }
+
+    /** The operators that keep a DECFLOAT operand's type. */
+    private static final Set<BinaryOperator> DECFLOAT_ARITHMETIC = new HashSet<BinaryOperator>(Arrays.asList(
+        BinaryOperator.ADD, BinaryOperator.SUBTRACT, BinaryOperator.MULTIPLY, BinaryOperator.DIVIDE,
+        BinaryOperator.MODULO));
+
+    /**
+     * Whether an operand of a block's expression is a DECFLOAT: a name declared one, a SQL expression typed one,
+     * or arithmetic or a negation over one.
+     */
+    private boolean isDecfloatOperand(final BaseExpression operand) {
+        if (operand instanceof VariableExpression) {
+            return NumericType.isDecfloat(getDeclaredVariableType(((VariableExpression) operand).getName()));
+        }
+        if (operand instanceof SqlScalarExpression) {
+            try {
+                return NumericType.isDecfloat(DeclarationTypes.staticType(
+                    ((SqlScalarExpression) operand).getExpression(), variableTypes, queryExecutor));
+            } catch (final RuntimeException untyped) {
+                return false;
+            }
+        }
+        if (operand instanceof BinaryExpression) {
+            final BinaryExpression arithmetic = (BinaryExpression) operand;
+            return DECFLOAT_ARITHMETIC.contains(arithmetic.getOperator())
+                && (isDecfloatOperand(arithmetic.getLeft()) || isDecfloatOperand(arithmetic.getRight()));
+        }
+        return operand instanceof UnaryExpression && ((UnaryExpression) operand).getOperator() == UnaryOperator.NEGATE
+            && isDecfloatOperand(((UnaryExpression) operand).getOperand());
+    }
+
+    /**
+     * An operation of a block's expression over a DECFLOAT, in DECFLOAT's terms: arithmetic and a comparison keep
+     * 38 significant digits, and a concatenation reads the DECFLOAT as its own text — y / 3 over y DECFLOAT 2 is
+     * 0.66666666666666666666666666666666666667 and y || '|' over 1/3 reads 3.3333333333333333333333333333333333333e-1|
+     * (live-verified).
+     */
+    private Object evaluateDecfloatOperation(final BinaryExpression expr, final Object left, final Object right) {
+        final boolean leftDecfloat = isDecfloatOperand(expr.getLeft());
+        final boolean rightDecfloat = isDecfloatOperand(expr.getRight());
+        if (expr.getOperator() == BinaryOperator.CONCAT) {
+            return evaluateBinaryOperation(BinaryOperator.CONCAT, leftDecfloat ? decfloatText(left) : left,
+                rightDecfloat ? decfloatText(right) : right);
+        }
+        final BinaryOperationExpression node = new BinaryOperationExpression(decfloatOperand(left, leftDecfloat),
+            expr.getOperator(), decfloatOperand(right, rightDecfloat));
+        return node.accept(new ExpressionEvaluatorVisitor(null, null, null, null));
+    }
+
+    /** A DECFLOAT's text, or the value itself when it holds no number. */
+    private static Object decfloatText(final Object value) {
+        return value instanceof Number ? Decfloats.text(Decfloats.of((Number) value, "TO_DECFLOAT")) : value;
+    }
+
+    /** An operand's value, typed DECFLOAT when it is one, so the operation is evaluated as DECFLOAT's. */
+    private static Expression decfloatOperand(final Object value, final boolean decfloat) {
+        return decfloat ? new CastExpression(astLiteral(value), "DECFLOAT") : astLiteral(value);
     }
 
     private Object evaluateBinaryOperation(final BinaryOperator operator,
@@ -2983,6 +3069,23 @@ public class ProceduralExecutor {
      * @param value    the value
      * @return what the statement is handed
      */
+    /**
+     * A USING argument's value: a name hands over what it holds, a CALL's answer unconverted - {@code OPEN c USING (x)}
+     * binds the text abc a DATE x was given by {@code x := (CALL pv('abc'))} (live-verified) - and any other argument
+     * is evaluated.
+     */
+    private Object usingArgument(final BaseExpression bind) {
+        if (bind instanceof VariableExpression && ((VariableExpression) bind).getName() != null) {
+            final String name = ((VariableExpression) bind).getName();
+            final Object held = getVariable(name);
+            if (holdsCallAnswer(name, held)) {
+                handlerLets.requireReadable(name, bind.getSourceLine(), bind.getSourcePosition());
+                return held;
+            }
+        }
+        return evaluateExpression(bind);
+    }
+
     public Object usingBind(final String variable, final Object value) {
         return UsingBindText.of(value, variable == null ? null : getDeclaredVariableType(variable));
     }
@@ -3018,6 +3121,105 @@ public class ProceduralExecutor {
     }
 
     /**
+     * Gives a variable the answer of {@code x := (CALL p())}, held as the CALL handed it back. The conversion to the
+     * variable's type waits for an expression that reads the variable, and fails there as an EXPRESSION_ERROR at that
+     * expression: {@code DECLARE x DATE … x := (CALL pv('abc'))} assigns, {@code RETURN x} answers abc, and
+     * {@code RETURN TO_VARCHAR(x)} is refused, {@code Date 'abc' is not recognized} (live-verified). A variable of a
+     * semi-structured type, one holding a result set or a cursor, and one declared without a type take the answer as
+     * any assignment converts it.
+     *
+     * @param name   the variable
+     * @param answer the CALL's answer
+     */
+    public void assignCallAnswer(final String name, final Object answer) {
+        final String key = name.toUpperCase(Locale.ROOT);
+        final DataType declared = variableTypes.get(key);
+        final Object current = getVariable(name);
+        if (answer == null || declared == null || VariantJsonText.isSemiStructured(declared)
+                || current instanceof ResultSetVariable || current instanceof ResultSet || current instanceof Cursor) {
+            executeStatement(new SetStatement(name, new LiteralExpression(answer)));
+            return;
+        }
+        initialiserTypes.remove(key);
+        conversionTypes.remove(key);
+        setVariable(name, answer);
+        callAnswers.put(key, answer);
+    }
+
+    /**
+     * The CALL's answer a name holds unconverted, which a USING argument written as the bare name binds as it is
+     * (see {@link #usingArgument}); null when the name holds none.
+     *
+     * @param name the name a USING argument writes
+     * @return the answer, or null
+     */
+    public Object heldCallAnswer(final String name) {
+        final Object held = hasVariable(name) ? getVariable(name) : null;
+        if (!holdsCallAnswer(name, held)) {
+            return null;
+        }
+        handlerLets.requireReadable(name, 0, 0);
+        return held;
+    }
+
+    /** Whether a variable holds the very answer {@link #assignCallAnswer} gave it, still unconverted. */
+    private boolean holdsCallAnswer(final String name, final Object value) {
+        return value != null && callAnswers.get(name.toUpperCase(Locale.ROOT)) == value;
+    }
+
+    /**
+     * A variable's value as an expression reads it: a CALL's answer held unconverted converts to the variable's type
+     * here, a text keeping its length - over a VARCHAR(2), {@code LENGTH(x)} of the answer abcdef is 6 - and a number
+     * taking the type's scale (live-verified). Any other value is read as held.
+     *
+     * @param name  the variable
+     * @param value the value it holds
+     * @return the value the expression reads
+     */
+    Object readHeld(final String name, final Object value) {
+        if (!holdsCallAnswer(name, value)) {
+            return value;
+        }
+        final DataType declared = variableTypes.get(name.toUpperCase(Locale.ROOT));
+        return declared instanceof StringType && value instanceof String ? value : heldUnder(value, declared);
+    }
+
+    /**
+     * The value a {@code :name} bind writes into a SQL text: a CALL's answer held unconverted converts as any read of
+     * it does, and a statement the block runs refuses one that does not convert as the bind it is,
+     * {@code Invalid bind value (abc) for type (DATE).} (live-verified).
+     *
+     * @param name      the variable
+     * @param value     the value it holds
+     * @param statement whether the text is a statement the block runs rather than one of its own expressions
+     * @return the value the bind writes
+     */
+    Object boundValue(final String name, final Object value, final boolean statement) {
+        if (!statement || !holdsCallAnswer(name, value)) {
+            return readHeld(name, value);
+        }
+        final DataType declared = variableTypes.get(name.toUpperCase(Locale.ROOT));
+        try {
+            return readHeld(name, value);
+        } catch (final RuntimeException unconverted) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid bind value (" + value + ") for type ("
+                + SqlTypeNames.canonical(declared) + ")."), unconverted);
+        }
+    }
+
+    /** The CALL's answer a bare {@code RETURN x} hands back unconverted, or null where it reads no such answer. */
+    private Object returnedCallAnswer(final BaseExpression expression) {
+        if (!(expression instanceof VariableExpression) || ((VariableExpression) expression).isBindForm()
+                || ((VariableExpression) expression).getName() == null) {
+            return null;
+        }
+        final String name = ((VariableExpression) expression).getName();
+        handlerLets.requireReadable(name, expression.getSourceLine(), expression.getSourcePosition());
+        final Object value = getVariable(name);
+        return holdsCallAnswer(name, value) ? value : null;
+    }
+
+    /**
      * The value a statement or an expression of the running block reads from a name, which a handler may not
      * read of a name its block's BEGIN section declared (see {@link HandlerLets}).
      *
@@ -3027,6 +3229,29 @@ public class ProceduralExecutor {
     public Object readVariable(final String name) {
         handlerLets.requireReadable(name, 0, 0);
         return scope.getVariable(name);
+    }
+
+    /**
+     * The value one of the block's expressions reads from a name: {@link #readVariable}'s, a CALL's answer held
+     * unconverted converting to the name's type (see {@link #readHeld}).
+     *
+     * @param name the name read
+     * @return its value as the expression reads it
+     */
+    public Object readExpressionValue(final String name) {
+        return readHeld(name, readVariable(name));
+    }
+
+    /**
+     * The value a {@code :name} reference reads where the SQL engine resolves it: in one of the block's own
+     * expressions a CALL's answer held unconverted converts as any read of it does, and in a statement the block runs
+     * it is refused as the bind it is when it does not convert (see {@link #boundValue}).
+     *
+     * @param name the name read
+     * @return its value as the reference reads it
+     */
+    public Object readBind(final String name) {
+        return boundValue(name, getVariable(name), !bindsIntoBlockExpression());
     }
 
     /**
@@ -3747,7 +3972,7 @@ public class ProceduralExecutor {
             final List<Object> binds = new ArrayList<>();
             for (final BaseExpression bind : stmt.getUsingBindings()) {
                 binds.add(usingBind(bind instanceof VariableExpression ? ((VariableExpression) bind).getName() : null,
-                    evaluateExpression(bind)));
+                    usingArgument(bind)));
             }
             openCursorWithQuery(cursor, binds);
         }
@@ -3938,6 +4163,12 @@ public class ProceduralExecutor {
     }
 
     private Object toNumericValue(final Object value, final NumericType type, final boolean nullable) {
+        if (NumericType.isDecfloat(type)) {
+            // A DECFLOAT holds the value exactly, to 38 significant digits: its nominal scale of 0 rounds nothing
+            // (x DECFLOAT := 1.5 holds 1.5, live-verified).
+            return value instanceof Number ? Decfloats.of((Number) value, "TO_DECFLOAT")
+                : ValueCaster.castValue(value, "DECFLOAT");
+        }
         final BigDecimal parsed;
         if (value instanceof Number && NonFiniteDoubles.isNonFinite((Number) value)) {
             // NaN and the infinities have no exact form: an approximate name holds one as it is, and an

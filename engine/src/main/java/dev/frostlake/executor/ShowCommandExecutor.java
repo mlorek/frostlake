@@ -84,7 +84,7 @@ public class ShowCommandExecutor {
         this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine, ownership);
         this.pipelineExecutor = new ShowPipelineExecutor(catalog, ownership);
         this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry, ownership);
-        this.infraExecutor = new ShowInfraExecutor(catalog);
+        this.infraExecutor = new ShowInfraExecutor(catalog, ownership);
         // The security and session families read securityManager live through this facade, so they receive
         // a reference to it rather than the (still-null-at-construction) SecurityManager value.
         this.securityExecutor = new ShowSecurityExecutor(catalog, this);

@@ -26,6 +26,7 @@ import dev.frostlake.executor.MaterializedViewRefresh;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ProjectionSlot;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RecursiveViewChain;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -37,7 +38,7 @@ import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
-import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.DynamicTableColumn;
@@ -255,21 +256,8 @@ public class CreateRelationalHandler implements CommandHandler {
             final Schema schema;
             final String viewName;
 
-            if (parts.length == 1) {
-                schema = ddl.resolveCurrentSchema();
-                viewName = parts[0];
-            } else if (parts.length == 2) {
-                if (catalog.getCurrentDatabase() == null) {
-                    throw NoCurrentDatabaseRefusal.forStatement();
-                }
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                viewName = parts[1];
-            } else if (parts.length == 3) {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                viewName = parts[2];
-            } else {
-                throw new RuntimeException("Invalid view name: " + qualifiedName);
-            }
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            viewName = parts[parts.length - 1];
             CreatedObjectProperties.requireViewProperties(ctx, schema.getName());
             if (orReplace) {
                 // One of INFORMATION_SCHEMA's views is not replaced (live-verified).
@@ -313,7 +301,10 @@ public class CreateRelationalHandler implements CommandHandler {
                 // sentence a table's is.
                 ColumnDefinitionParser.rejectDuplicateNames(columnNames);
             }
-            final String selectQuery = ctx.RECURSIVE() != null && unionsBranches(ctx.selectStatement())
+            // A RECURSIVE view runs as a recursive CTE when its body recurses on it (see RecursiveViewChain); any other
+            // body reads the view by its name as any query would, which over a view not yet created refuses it.
+            final String selectQuery = ctx.RECURSIVE() != null
+                    && RecursiveViewChain.of(ctx.selectStatement(), viewName) != null
                 ? recursiveDefinition(ctx.objectName().getStop().getText(), writtenColumns, writtenQuery)
                 : writtenQuery;
             final View view = ctx.viewColumnList() != null
@@ -478,19 +469,6 @@ public class CreateRelationalHandler implements CommandHandler {
             }
         }
         return null;
-    }
-
-    /**
-     * Whether a query's top level unions branches: {@code a UNION [ALL] b}, also after an anchor that combines its own
-     * operands otherwise, {@code SELECT 5 EXCEPT SELECT 6 UNION ALL …} (live-verified).
-     */
-    private static boolean unionsBranches(final FrostlakeParser.SelectStatementContext query) {
-        for (final FrostlakeParser.SetOperatorContext operator : query.setOperator()) {
-            if (operator.UNION() != null) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -727,21 +705,8 @@ public class CreateRelationalHandler implements CommandHandler {
             final Schema schema;
             final String mvName;
 
-            if (parts.length == 1) {
-                schema = ddl.resolveCurrentSchema();
-                mvName = parts[0];
-            } else if (parts.length == 2) {
-                if (catalog.getCurrentDatabase() == null) {
-                    throw NoCurrentDatabaseRefusal.forStatement();
-                }
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                mvName = parts[1];
-            } else if (parts.length == 3) {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                mvName = parts[2];
-            } else {
-                throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
-            }
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            mvName = parts[parts.length - 1];
 
             CreatedObjectProperties.requireMaterializedViewProperties(ctx, schema.getName());
             // A name another kind of relation holds, and for a plain create a materialized view of the name,
@@ -780,6 +745,7 @@ public class CreateRelationalHandler implements CommandHandler {
             final String[] source = sourceRelation(ctx.selectStatement());
             if (source != null) {
                 mv.setSource(source[0], source[1], source[2]);
+                mv.bindBaseTable(MaterializedViewValidity.tableNamed(catalog, mv));
                 mv.setMaterializedAsOf(MaterializedViewRefresh.lastWrite(catalog, source[0], source[1], source[2]));
             }
 
@@ -898,17 +864,8 @@ public class CreateRelationalHandler implements CommandHandler {
             final Schema schema;
             final String dtName;
             // The name is kept as the reference resolved it, quoted case and all, as a table's is.
-            if (parts.length == 1) {
-                schema = ddl.resolveCurrentSchema();
-                dtName = parts[0];
-            }
-            else if (parts.length == 2) {
-                schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                dtName = parts[1];
-            } else {
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                dtName = parts[2];
-            }
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            dtName = parts[parts.length - 1];
 
             // A dynamic table has a CREATE privilege of its own: CREATE TABLE does not authorize it.
             ddl.checkCreatePrivilege(Privilege.CREATE_DYNAMIC_TABLE, schema);
@@ -933,7 +890,7 @@ public class CreateRelationalHandler implements CommandHandler {
                             targetLag = TargetLag.canonicalize(ddl.extractStringLiteral(opt.STRING_LITERAL()));
                         }
                     } else if (opt.WAREHOUSE() != null && opt.identifier() != null) {
-                        warehouse = getText(opt.identifier()).toUpperCase(Locale.ROOT);
+                        warehouse = getText(opt.identifier());
                         WarehouseReference.require(catalog, warehouse);
                     } else if (opt.REFRESH_MODE() != null) {
                         if (opt.FULL() != null) refreshMode = RefreshMode.FULL;
@@ -1007,13 +964,7 @@ public class CreateRelationalHandler implements CommandHandler {
 
     /** The schema a dynamic table's name parts place it in, the session supplying what the name leaves out. */
     private Schema dynamicTableSchema(final String[] parts) {
-        if (parts.length == 1) {
-            return ddl.resolveCurrentSchema();
-        }
-        if (parts.length == 2) {
-            return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-        }
-        return catalog.getDatabase(parts[0]).getSchema(parts[1]);
+        return catalog.requireOwningSchema(QualifiedName.of(parts));
     }
 
     /**
@@ -1053,7 +1004,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 clone.setTargetLag(option.DOWNSTREAM() != null ? "DOWNSTREAM"
                     : TargetLag.canonicalize(ddl.extractStringLiteral(option.STRING_LITERAL())));
             } else if (option.WAREHOUSE() != null) {
-                final String warehouse = getText(option.identifier()).toUpperCase(Locale.ROOT);
+                final String warehouse = getText(option.identifier());
                 WarehouseReference.require(catalog, warehouse);
                 clone.setWarehouse(warehouse);
             }

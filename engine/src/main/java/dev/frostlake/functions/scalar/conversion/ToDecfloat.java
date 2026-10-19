@@ -20,6 +20,8 @@ import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.DecfloatRangeException;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
@@ -29,8 +31,8 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * TO_DECFLOAT(expr [, format]) — a 38-digit decimal float on the account, carried here as a DOUBLE,
- * the engine's stand-in for DECFLOAT (a DECFLOAT column is one too). It is not TO_DOUBLE: it takes a
+ * TO_DECFLOAT(expr [, format]) — a decimal of 38 significant digits (see {@link Decfloats}). It is not TO_DOUBLE: it
+ * takes a
  * BOOLEAN, where TO_DOUBLE(TRUE) is refused while the statement compiles, and words its own failures
  * (all live-verified):
  *
@@ -53,25 +55,28 @@ import java.util.List;
  * many arguments; neither reaches a row.
  */
 public class ToDecfloat extends BuiltInFunction {
-    public ToDecfloat() { super("TO_DECFLOAT", NumericType.DOUBLE); }
+    public ToDecfloat() { super("TO_DECFLOAT", NumericType.DECFLOAT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         final Object value = args.get(0);
         if (value == null) return null;
         if (value instanceof Boolean) {
-            return Double.valueOf(((Boolean) value).booleanValue() ? 1.0 : 0.0);
+            return ((Boolean) value).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
         }
         if (value instanceof Number) {
-            return representable(((Number) value).doubleValue());
+            return representable((Number) value);
         }
         if (value instanceof VariantValue) {
             return fromVariant((VariantValue) value);
         }
         if (args.size() > 1 && args.get(1) != null) {
-            return ToDouble.formatted(value.toString(), args.get(1).toString(), NumericFormatModel.DECFLOAT);
+            final Double formatted = ToDouble.formatted(value.toString(), args.get(1).toString(),
+                NumericFormatModel.DECFLOAT);
+            // The model reads the text as a double; its shortest text is the decimal the text wrote.
+            return formatted == null ? null : Decfloats.held(new BigDecimal(formatted.toString()));
         }
-        final Double read = parsed(value.toString());
+        final BigDecimal read = parsed(value.toString());
         if (read == null) {
             // The text is echoed trimmed: TO_DECFLOAT(' ') is "Numeric value '' is not recognized".
             throw new RuntimeException(NumericRangeRefusal.unreadableText(value.toString().trim()));
@@ -84,16 +89,16 @@ public class ToDecfloat extends BuiltInFunction {
         final JsonNode node = value.node();
         if (TypedScalarNode.typedValueOf(node) == null) {
             if (node.isBoolean()) {
-                return Double.valueOf(node.booleanValue() ? 1.0 : 0.0);
+                return node.booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
             }
             if (node.isDouble() || node.isFloat()) {
                 throw new RuntimeException("DecFloat not supported");
             }
             if (node.isNumber()) {
-                return representable(node.doubleValue());
+                return Decfloats.held(node.decimalValue());
             }
             if (node.isTextual()) {
-                final Double read = parsed(node.asText());
+                final BigDecimal read = parsed(node.asText());
                 if (read != null) {
                     return read;
                 }
@@ -103,22 +108,25 @@ public class ToDecfloat extends BuiltInFunction {
             + " to DECFLOAT");
     }
 
-    /** A decimal text, trimmed, as its double; null when it spells no number — NaN and inf included. */
-    private static Double parsed(final String text) {
+    /** A decimal text, trimmed, as a DECFLOAT holds it; null when it spells no number — NaN and inf included. */
+    private static BigDecimal parsed(final String text) {
         try {
-            return Double.valueOf(new BigDecimal(text.trim()).doubleValue());
-        } catch (final NumberFormatException unreadable) {
+            return Decfloats.held(new BigDecimal(text.trim()));
+        } catch (final NumberFormatException | DecfloatRangeException unreadable) {
             return null;
         }
     }
 
-    /** A DECFLOAT holds no infinity, so a FLOAT one is refused naming the operation. */
-    private static Double representable(final double value) {
-        if (Double.isInfinite(value)) {
+    /**
+     * A number as a DECFLOAT holds it; a DECFLOAT holds no infinity, so a FLOAT one is refused naming the
+     * operation.
+     */
+    private static BigDecimal representable(final Number value) {
+        if ((value instanceof Double || value instanceof Float) && Double.isInfinite(value.doubleValue())) {
             throw new RuntimeException("Decfloat out of representable range, operation: TO_DECFLOAT("
-                + SharedFunctionHelpers.floatText(value) + ")");
+                + SharedFunctionHelpers.floatText(value.doubleValue()) + ")");
         }
-        return Double.valueOf(value);
+        return Decfloats.of(value, "TO_DECFLOAT");
     }
 
     @Override

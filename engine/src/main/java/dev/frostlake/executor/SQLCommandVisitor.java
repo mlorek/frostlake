@@ -113,6 +113,8 @@ import dev.frostlake.transaction.TransactionAbortedMessages;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
@@ -128,6 +130,10 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -147,6 +153,13 @@ import org.antlr.v4.runtime.misc.Interval;
 public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     private static final Logger logger = LoggerFactory.getLogger(SQLCommandVisitor.class);
+
+    /** A TIME's text as a SELECT … INTO carries it, every fractional digit kept. */
+    private static final DateTimeFormatter CARRIED_TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSSSSS");
+
+    /** A TIMESTAMP_NTZ's text as a SELECT … INTO carries it. */
+    private static final DateTimeFormatter CARRIED_TIMESTAMP =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS");
 
     /** A refusal of the number, the names or the types of a call's arguments that names a place: the place, then the sentence. */
     private static final Pattern PLACED_COUNT = Pattern.compile(
@@ -1036,7 +1049,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     proceduralExecutor.judgeBlockExpression(ctx.booleanExpr(),
                         parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters()));
                 }
-                defaultValue = evaluateExpression(ctx.booleanExpr());
+                defaultValue = ctx.dataTypeName() != null
+                    ? declaredInitialValue(ctx.booleanExpr(), parseDeclaredType(ctx.dataTypeName(),
+                        ctx.typeParameters()))
+                    : evaluateExpression(ctx.booleanExpr());
             }
 
             final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
@@ -1324,7 +1340,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             proceduralExecutor.judgeBlockExpression(ctx.booleanExpr(),
                 parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters()));
         }
-        final Object defaultValue = evaluateExpression(ctx.booleanExpr());
+        final Object defaultValue = ctx.dataTypeName() != null
+            ? declaredInitialValue(ctx.booleanExpr(), parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters()))
+            : evaluateExpression(ctx.booleanExpr());
         final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
             ctx.dataTypeName() != null ? parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters())
                 : inferredDeclarationType(ctx.booleanExpr()));
@@ -1393,8 +1411,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             } finally {
                 LeadingCommentOffset.end(displaced);
             }
-            proceduralExecutor.executeStatement(new SetStatement(varName,
-                new LiteralExpression(ProceduralExecutor.procedureReturnValue(result))));
+            // The answer is held as the CALL handed it back, its conversion waiting for a read of the variable.
+            proceduralExecutor.assignCallAnswer(varName, ProceduralExecutor.procedureReturnValue(result));
             logger.trace("Assigned variable {} from procedure call", varName);
             return null;
         }
@@ -1467,8 +1485,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final List<Object> binds = new ArrayList<>();
         if (ctx.USING() != null && ctx.expressionList() != null) {
             for (final FrostlakeParser.ExpressionContext bindExpr : ctx.expressionList().expression()) {
-                // Each value is handed over as its text (see UsingBindText).
-                binds.add(proceduralExecutor.usingBind(bindExpr.getText(), evaluateExpression(bindExpr)));
+                // Each value is handed over as its text (see UsingBindText), a CALL's answer a name holds unconverted
+                // as the CALL handed it back.
+                final Object held = bindExpr instanceof FrostlakeParser.QualifiedNameExprContext
+                    ? proceduralExecutor.heldCallAnswer(
+                        ((FrostlakeParser.QualifiedNameExprContext) bindExpr).qualifiedName().getText())
+                    : null;
+                binds.add(proceduralExecutor.usingBind(bindExpr.getText(),
+                    held != null ? held : evaluateExpression(bindExpr)));
             }
         }
         // A cursor's query binds none of the block's variables (see ProceduralExecutor.cursorQuery).
@@ -1589,10 +1613,33 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     private void assignSelectIntoTarget(final FrostlakeParser.SelectIntoStatementContext into, final String varName,
                                         final Object value) {
         if (proceduralExecutor != null) {
-            final LiteralExpression assigned = new LiteralExpression(value);
+            final LiteralExpression assigned = new LiteralExpression(carriedAsText(varName, value));
             assigned.setSourcePosition(into.getStart().getLine(), into.getStart().getCharPositionInLine());
             proceduralExecutor.executeStatement(new SetStatement(varName, assigned));
         }
+    }
+
+    /**
+     * The value a SELECT … INTO hands a DATE, TIME or TIMESTAMP_NTZ target: its text, which the target reads back
+     * under the session's input format, so {@code DATE_INPUT_FORMAT = 'DD/MM/YYYY'} refuses a fetched date as
+     * {@code Date '2024-02-01' is not recognized} at the SELECT (live-verified); any other value as it is.
+     */
+    private Object carriedAsText(final String varName, final Object value) {
+        final DataType declared = proceduralExecutor.getDeclaredVariableType(varName);
+        if (!(declared instanceof DateTimeType)) {
+            return value;
+        }
+        final String kind = declared.getName().toUpperCase(Locale.ROOT);
+        if ("DATE".equals(kind) && value instanceof LocalDate) {
+            return value.toString();
+        }
+        if ("TIME".equals(kind) && value instanceof LocalTime) {
+            return CARRIED_TIME.format((LocalTime) value);
+        }
+        if (("TIMESTAMP_NTZ".equals(kind) || "TIMESTAMP".equals(kind)) && value instanceof LocalDateTime) {
+            return CARRIED_TIMESTAMP.format((LocalDateTime) value);
+        }
+        return value;
     }
 
     private FrostlakeParser.QueryStatementContext parseCursorQuery(final String sql) {
@@ -3287,12 +3334,15 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return columnParser.parseLiteral(ctx);
     }
 
+    /** The session's current schema, refused as a statement with no current database, then schema, is refused. */
     public Schema resolveCurrentSchema() {
-        if (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null) {
+        if (catalog.getCurrentDatabase() == null) {
             throw NoCurrentDatabaseRefusal.forStatement();
         }
-        return catalog.getDatabase(catalog.getCurrentDatabase())
-                     .getSchema(catalog.getCurrentSchema());
+        if (catalog.getCurrentSchema() == null) {
+            throw NoCurrentDatabaseRefusal.schemaForStatement();
+        }
+        return catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema());
     }
 
     private String resolveFullyQualifiedName(final String qualifiedName) {
@@ -3336,6 +3386,33 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     /** Scripting-value evaluation, a NOT, AND or OR included. */
     private Object evaluateExpression(final FrostlakeParser.BooleanExprContext ctx) {
         return expressionBuilder.evaluateExpression(ctx);
+    }
+
+    /**
+     * A typed declaration's initial value. A DECFLOAT takes a decimal literal by its digits — DECLARE y DECFLOAT
+     * DEFAULT 0.1 holds 0.1, not the double nearest it (live-verified) — where every other type reads the literal
+     * as scripting does.
+     *
+     * @param ctx      the initialiser
+     * @param declared the declared type
+     * @return the value
+     */
+    private Object declaredInitialValue(final FrostlakeParser.BooleanExprContext ctx, final DataType declared) {
+        if (NumericType.isDecfloat(declared) && ctx instanceof FrostlakeParser.ValueExprContext) {
+            FrostlakeParser.ExpressionContext value = ((FrostlakeParser.ValueExprContext) ctx).expression();
+            boolean negated = false;
+            if (value instanceof FrostlakeParser.UnaryExprContext) {
+                negated = ((FrostlakeParser.UnaryExprContext) value).MINUS() != null;
+                value = ((FrostlakeParser.UnaryExprContext) value).expression();
+            }
+            if (value instanceof FrostlakeParser.LiteralExprContext
+                    && ((FrostlakeParser.LiteralExprContext) value).literal().FLOAT_LITERAL() != null) {
+                final BigDecimal exact = NumericLiteralTypes.exactValue(
+                    ((FrostlakeParser.LiteralExprContext) value).literal().FLOAT_LITERAL().getText());
+                return negated ? exact.negate() : exact;
+            }
+        }
+        return evaluateExpression(ctx);
     }
 
     /**

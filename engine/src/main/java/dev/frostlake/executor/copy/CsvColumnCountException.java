@@ -18,8 +18,8 @@ package dev.frostlake.executor.copy;
 
 /**
  * A staged CSV record whose field count does not match the target table's column count, rejected by
- * {@code ERROR_ON_COLUMN_COUNT_MISMATCH} (see
- * {@code CopyCommandExecutor.requireCsvColumnCount} for the rule and the live evidence behind it).
+ * {@code ERROR_ON_COLUMN_COUNT_MISMATCH} (see {@link CsvRecordReader#tableWidthRefusal} for the rule and the live
+ * evidence behind it).
  *
  * <p>It carries its own {@code first_error} geometry rather than letting the generic CSV error describer
  * work it out: the record is rejected BEFORE a row is ever built, so there is no built row to re-check

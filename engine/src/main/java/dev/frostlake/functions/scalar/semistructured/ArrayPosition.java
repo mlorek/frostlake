@@ -21,6 +21,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -45,6 +46,7 @@ public class ArrayPosition extends BuiltInFunction {
             final JsonNode el = arr.get(i);
             if (ArrayFunctionHelper.nodesEqual(el, target)) return (long) i;
             if (value != null && el.isTextual() && UuidTextNode.holds(el) == UuidTextNode.holds(target)
+                    && !DecfloatTextNode.holds(el) && !DecfloatTextNode.holds(target)
                     && el.asText().equals(value.toString())) return (long) i;
         }
         return null;

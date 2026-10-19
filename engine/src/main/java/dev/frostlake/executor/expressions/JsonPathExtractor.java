@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.TypedVectorNode;
 import dev.frostlake.values.UuidTextNode;
@@ -111,6 +112,9 @@ final class JsonPathExtractor {
         if (typedMember != null) return typedMember;
         // A UUID member stays the VARIANT that remembers its type — TYPEOF(OBJECT_CONSTRUCT('k', u):k) is UUID.
         if (UuidTextNode.holds(node)) return VariantValue.ofNode(node);
+        // So does a DECFLOAT member: TYPEOF(OBJECT_CONSTRUCT('k', CAST(1.5 AS DECFLOAT)):k) is DECFLOAT
+        // (live-verified).
+        if (DecfloatTextNode.holds(node)) return VariantValue.ofNode(node);
         if (node.isTextual()) {
             // A STRING whose content itself looks like JSON structure ('["ROLE"]', '{"a":1}') keeps its
             // QUOTED JSON form — unquoting it made a string value indistinguishable from a real

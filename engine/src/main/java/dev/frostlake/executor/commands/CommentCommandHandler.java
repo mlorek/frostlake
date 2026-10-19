@@ -25,7 +25,6 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.model.Database;
@@ -147,16 +146,7 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Schema schema;
                 try {
-                    if (parts.length == 1) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                    } else if (parts.length == 2) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    } else {
-                        throw new RuntimeException("Invalid schema name: " + schemaName);
-                    }
+                    schema = catalog.resolveSchema(QualifiedName.of(parts));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Schema does not exist (IF EXISTS): {}", schemaName);
@@ -332,21 +322,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String funcName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        funcName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        funcName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        funcName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid function name: " + functionName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    funcName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Function schema does not exist (IF EXISTS): {}", functionName);
@@ -380,21 +357,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String procName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        procName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        procName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        procName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid procedure name: " + procedureName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    procName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Procedure schema does not exist (IF EXISTS): {}", procedureName);
@@ -427,21 +391,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String strmName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        strmName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        strmName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        strmName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid stream name: " + streamName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    strmName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Stream schema does not exist (IF EXISTS): {}", streamName);
@@ -473,21 +424,8 @@ public class CommentCommandHandler implements CommandHandler {
                 final Schema schema;
                 final String tskName;
                 try {
-                    if (parts.length == 1) {
-                        schema = visitor.resolveCurrentSchema();
-                        tskName = parts[0];
-                    } else if (parts.length == 2) {
-                        if (catalog.getCurrentDatabase() == null) {
-                            throw NoCurrentDatabaseRefusal.forStatement();
-                        }
-                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        tskName = parts[1];
-                    } else if (parts.length == 3) {
-                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        tskName = parts[2];
-                    } else {
-                        throw new RuntimeException("Invalid task name: " + taskName);
-                    }
+                    schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                    tskName = parts[parts.length - 1];
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Task schema does not exist (IF EXISTS): {}", taskName);
@@ -515,7 +453,7 @@ public class CommentCommandHandler implements CommandHandler {
                 final String warehouseName = visitor.getText(ctx.identifier());
                 final Warehouse warehouse;
                 try {
-                    warehouse = catalog.getWarehouse(warehouseName);
+                    warehouse = catalog.getWarehouseExact(warehouseName);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
@@ -694,13 +632,7 @@ public class CommentCommandHandler implements CommandHandler {
     /** Resolve the schema owning a (possibly-qualified) object referenced in a COMMENT ON statement.
      *  Parts come from the parse tree, so a quoted name containing a dot stays one part. */
     private Schema commentTargetSchema(final FrostlakeParser.QualifiedNameContext nameCtx) {
-        final String[] parts = qualifiedNameParts(nameCtx);
-        if (parts.length == 3) {
-            return catalog.getDatabase(parts[0]).getSchema(parts[1]);
-        } else if (parts.length == 2) {
-            return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-        }
-        return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+        return catalog.requireOwningSchema(QualifiedName.of(qualifiedNameParts(nameCtx)));
     }
 
     /**

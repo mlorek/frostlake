@@ -54,7 +54,7 @@ final class CsvUnloadWriter {
     private static final String EMPTY_STRING_REFUSAL = "Cannot unload empty string without file format option"
         + " field_optionally_enclosed_by being specified.";
 
-    private final CsvFormatOptions options;
+    private final FileFormatOptions options;
     private final BuiltInFunction toText;
 
     /**
@@ -63,7 +63,7 @@ final class CsvUnloadWriter {
      * @param options the unload's options
      * @param toText  the function that casts a value to text, TO_VARCHAR
      */
-    CsvUnloadWriter(final CsvFormatOptions options, final BuiltInFunction toText) {
+    CsvUnloadWriter(final FileFormatOptions options, final BuiltInFunction toText) {
         this.options = options;
         this.toText = toText;
     }

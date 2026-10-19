@@ -102,7 +102,7 @@ final class JdbcMetadataQueries {
      */
     private static final String SQL_TYPE_EXPRESSION =
         "CASE WHEN DATA_TYPE = 'NUMBER' AND NUMERIC_SCALE = 0 THEN " + Types.BIGINT
-        + " WHEN DATA_TYPE = 'NUMBER' THEN " + Types.DECIMAL
+        + " WHEN DATA_TYPE IN ('NUMBER', 'DECFLOAT') THEN " + Types.DECIMAL
         + " WHEN DATA_TYPE = 'FLOAT' THEN " + Types.DOUBLE
         + " WHEN DATA_TYPE = 'BOOLEAN' THEN " + Types.BOOLEAN
         + " WHEN DATA_TYPE = 'DATE' THEN " + Types.DATE
@@ -125,9 +125,13 @@ final class JdbcMetadataQueries {
         + " WHEN DATA_TYPE = 'TIMESTAMP_TZ' THEN 'TIMESTAMPTZ'"
         + " ELSE DATA_TYPE END";
 
-    /** Precision for exact numerics, declared length for character and binary, 0 for everything else. */
+    /**
+     * Precision for exact numerics — 38 for a DECFLOAT, whose catalog row carries none (live-verified) — declared
+     * length for character and binary, 0 for everything else.
+     */
     private static final String COLUMN_SIZE_EXPRESSION =
         "CASE WHEN DATA_TYPE = 'NUMBER' THEN NUMERIC_PRECISION"
+        + " WHEN DATA_TYPE = 'DECFLOAT' THEN 38"
         + " WHEN DATA_TYPE = 'TEXT' THEN CHARACTER_MAXIMUM_LENGTH"
         + " WHEN DATA_TYPE = 'BINARY' THEN PARSE_JSON(SHOWN_TYPE):length::INTEGER"
         + " ELSE 0 END";

@@ -1208,6 +1208,7 @@ public class DatabaseEngine {
                 endWalStatement();
                 oweCheckpointForUnreplayableReads(sql);
                 checkpointAfterRun();
+                UdfRuntimes.statementEnded();
             }
         }
     }

@@ -574,6 +574,18 @@ public class Stream implements Taggable {
         return offsetSequence;
     }
 
+    /**
+     * Puts back where the offset fell, as a snapshot of the stream recorded it: a clone, a checkpoint's restore and a
+     * write-ahead log's recovery restore the tables' snapshots under their own numbers, which the offset is read
+     * against, and snapshots taken after the restore are numbered past it.
+     *
+     * @param sequence the offset's place, a number {@link SnapshotSequence#mark()} gave
+     */
+    public void restoreOffsetSequence(final long sequence) {
+        offsetSequence = sequence;
+        SnapshotSequence.advancePast(sequence);
+    }
+
     /** A dynamic-table stream's image of the table's rows at the last refresh it saw, or null. */
     public List<List<Object>> getRefreshImage() {
         return refreshImage;

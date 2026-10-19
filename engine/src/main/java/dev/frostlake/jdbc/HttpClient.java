@@ -16,6 +16,7 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.http.SessionNamespace;
 import dev.frostlake.http.SqlRequest;
 import dev.frostlake.http.SqlResponse;
 
@@ -136,6 +137,9 @@ class HttpClient {
     private volatile int heartbeatSecondsProperty = MAX_HEARTBEAT_SECONDS;
     private volatile Boolean sessionKeepAlive;
     private volatile Integer sessionHeartbeatSeconds;
+    // Where the session stood after the last answer that said, or null before one has (or from a server that
+    // predates the report).
+    private volatile SessionNamespace namespace;
     // Guarded by heartbeatLock, not by this, so a beat never waits behind a running statement.
     private final Object heartbeatLock = new Object();
     private ScheduledFuture<?> heartbeat;
@@ -407,6 +411,9 @@ class HttpClient {
                 this.sessionId = response.getSessionId();
                 followKeepAlive(response);
             }
+            if (response.getNamespace() != null) {
+                namespace = response.getNamespace();
+            }
             return response;
 
         } catch (final IOException e) {
@@ -464,6 +471,64 @@ class HttpClient {
      */
     public String getSessionId() {
         return sessionId;
+    }
+
+    /**
+     * Where the session stands, as the last answer that reported it said. A connection that has sent nothing yet
+     * starts its session here, as its first statement would have, so a fresh connection knows where it stands.
+     *
+     * @return the session's database, schema and user, or null when the server reports none
+     */
+    public SessionNamespace namespace() {
+        final SessionNamespace known = namespace;
+        if (known != null || sessionId != null) {
+            return known;
+        }
+        synchronized (this) {
+            if (namespace == null && sessionId == null) {
+                openSession();
+            }
+            return namespace;
+        }
+    }
+
+    /**
+     * Starts this connection's session with {@code POST /api/sessions}, adopting it as a first statement's answer
+     * would be adopted. A server that answers no such request leaves the connection as it was.
+     */
+    private void openSession() {
+        final HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + "/api/sessions"))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString("{}"))
+            .build();
+        try {
+            final HttpResponse<String> answer = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (answer.statusCode() != 200) {
+                return;
+            }
+            final SqlResponse response = MAPPER.readValue(answer.body(), SqlResponse.class);
+            if (response.isSuccess() && response.getSessionId() != null) {
+                tracksSessions = response.carriesNewSession();
+                sessionId = response.getSessionId();
+                if (response.getNamespace() != null) {
+                    namespace = response.getNamespace();
+                }
+            }
+        } catch (final IOException | JacksonException unreadable) {
+            logger.debug("Could not start a session for the namespace: {}", unreadable.getMessage());
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * The server this client talks to.
+     *
+     * @return its base URL, such as {@code http://localhost:18082}
+     */
+    String baseUrl() {
+        return baseUrl;
     }
 
     /**

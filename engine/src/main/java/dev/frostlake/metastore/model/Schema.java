@@ -612,6 +612,20 @@ public class Schema extends SqlObject {
     }
 
     /**
+     * The view of exactly this canonical name, as SQL names one: a name that differs only in case is another view,
+     * which is not here (live-verified).
+     *
+     * @param name the canonical name
+     * @return the view
+     */
+    public View getViewExact(final String name) {
+        if (!hasViewExact(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
+        }
+        return getView(name);
+    }
+
+    /**
      * Drops the view of exactly this canonical name, refused as missing when only another case of it exists.
      *
      * @param name the canonical name
@@ -1923,6 +1937,36 @@ public class Schema extends SqlObject {
 
     public List<Pipe> getPipes() {
         return new ArrayList<>(pipes.values());
+    }
+
+    /** Whether a pipe of EXACTLY this name is here: a name that differs only in case is another pipe. */
+    public boolean hasPipeExact(final String name) {
+        return pipes.containsKey(name);
+    }
+
+    /**
+     * The pipe of EXACTLY this name, as SQL names one: a name that differs only in case is another pipe, which is
+     * not here (live-verified).
+     *
+     * @param name the canonical name
+     * @return the pipe
+     */
+    public Pipe getPipeExact(final String name) {
+        final Pipe pipe = pipes.get(name);
+        if (pipe == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
+        }
+        return pipe;
+    }
+
+    /**
+     * Drops the pipe of EXACTLY this name.
+     *
+     * @param name the canonical name
+     */
+    public void dropPipeExact(final String name) {
+        getPipeExact(name);
+        pipes.remove(name);
     }
 
     // Sequences

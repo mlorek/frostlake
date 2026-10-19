@@ -28,6 +28,7 @@ import dev.frostlake.types.IntervalQualifier;
 import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.TemporalText;
 import dev.frostlake.values.VariantJsonFormat;
 import dev.frostlake.values.VariantJsonText;
@@ -131,7 +132,9 @@ public class ResultSetData {
                 // out of a VARIANT, which the engine holds unwrapped and would send as a bare JSON number.
                 // A STRING read out of one crosses JSON-quoted, as live's driver hands it back.
                 final String unwrappedDouble = VariantJsonText.unwrappedDoubleText(cell, declared);
-                rowData.add(cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
+                rowData.add(cell instanceof Number && NumericType.isDecfloat(declared)
+                        ? Decfloats.text(Decfloats.of((Number) cell, "TO_DECFLOAT"))
+                    : cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
                     : cell instanceof VariantValue ? variantText((VariantValue) cell)
                     : cell instanceof VectorValue ? cell.toString()
                     : cell instanceof String && VariantJsonText.isSemiStructured(declared)

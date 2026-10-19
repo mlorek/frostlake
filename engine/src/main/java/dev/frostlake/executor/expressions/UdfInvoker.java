@@ -620,6 +620,20 @@ final class UdfInvoker {
     }
 
     Object evaluateUserDefinedFunction(final Function function, final List<Object> rawArgs) {
+        return evaluateUserDefinedFunction(function, rawArgs, null);
+    }
+
+    /**
+     * {@link #evaluateUserDefinedFunction(Function, List)} with each argument's own static type, which a SQL
+     * function's parameter takes its exact type and its binary width from (see SqlArgumentText).
+     *
+     * @param function the function
+     * @param rawArgs  the arguments in the parameters' order
+     * @param argTypes the arguments' static types in the same order, or null where they are not known
+     * @return the function's answer
+     */
+    Object evaluateUserDefinedFunction(final Function function, final List<Object> rawArgs,
+                                       final List<DataType> argTypes) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         RoutineSecretsCheck.require(catalog, function.getEnvironment());
         final List<Object> given = withParameterDefaults(function, rawArgs);
@@ -653,7 +667,7 @@ final class UdfInvoker {
         if (language == UdfLanguage.JAVA) {
             return evaluateJavaFunction(function, args);
         } else if (language == UdfLanguage.SQL) {
-            return evaluateSqlFunction(function, args, given);
+            return evaluateSqlFunction(function, args, given, argTypes);
         } else if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
                 || language == UdfLanguage.SCALA) {
             // A handler loaded from IMPORTS finds a file an internal named stage keeps where the engine keeps it.
@@ -698,18 +712,19 @@ final class UdfInvoker {
      * in the function's own schema — then along the search path from there — whatever schema the calling
      * session is in, and CURRENT_SCHEMA() inside it is the function's (live-verified).
      */
-    private Object evaluateSqlFunction(final Function function, final List<Object> args, final List<Object> given) {
+    private Object evaluateSqlFunction(final Function function, final List<Object> args, final List<Object> given,
+                                       final List<DataType> argTypes) {
         // A function met again while its own body is evaluated is a cycle no CREATE refused (see SqlFunctionCycle).
         SqlFunctionCycle.enter(function);
         try {
             final QueryExecutor queryExecutor = visitor.getQueryExecutor();
             if (queryExecutor == null) {
-                return evaluateSqlFunctionBody(function, args, given);
+                return evaluateSqlFunctionBody(function, args, given, argTypes);
             }
             return queryExecutor.inRoutineHome(function.getHome(), function.getOwner(), new RoutineBody() {
                 @Override
                 public Object run() {
-                    return evaluateSqlFunctionBody(function, args, given);
+                    return evaluateSqlFunctionBody(function, args, given, argTypes);
                 }
             });
         } finally {
@@ -718,7 +733,7 @@ final class UdfInvoker {
     }
 
     private Object evaluateSqlFunctionBody(final Function function, final List<Object> args,
-                                           final List<Object> given) {
+                                           final List<Object> given, final List<DataType> argTypes) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         // A body that closes its own frame before a semicolon runs what the frame holds (see SqlUdfBodyFrame).
         final String body = SqlUdfBodyFrame.executableBody(function.getBody());
@@ -732,8 +747,11 @@ final class UdfInvoker {
         final String trimmedBody = body.trim();
         if (queryExecutor != null && queryExecutor.isQueryStatement(trimmedBody)) {
             // Substitute parameter placeholders
-            final String sql = substituteParams(trimmedBody, params, args, given);
+            final String sql = substituteParams(trimmedBody, params, args, given, argTypes);
             final List<ResultSet> results;
+            // A refusal the body earns is placed in the body as the account frames it, inside parentheses: a
+            // windowless QUALIFY at body position 16 is refused at 17 (live-verified).
+            final SourcePosition displaced = ExpressionSource.begin(new SourcePosition(1, 1));
             try {
                 // The body is part of the calling query, not a statement of its own: Snowflake inlines it, so
                 // it takes no query ID and adds nothing to QUERY_HISTORY, however many rows call it.
@@ -752,6 +770,8 @@ final class UdfInvoker {
                     throw privilegeRefusalIn(e);
                 }
                 throw new RuntimeException("Error executing SQL function: " + describe(e), e);
+            } finally {
+                ExpressionSource.end(displaced);
             }
             if (results.isEmpty() || results.get(0).getRowCount() == 0) {
                 return null;
@@ -804,7 +824,7 @@ final class UdfInvoker {
         // subquery executes through the query engine, where the parameter table's bindings are not
         // visible. Substituting first (lexer-driven, quote-safe) makes the body self-contained; the
         // table binding then covers nothing but is kept as a harmless fallback.
-        final String exprBody = substituteParams(trimmedBody, params, args, given);
+        final String exprBody = substituteParams(trimmedBody, params, args, given, argTypes);
 
         // Bind all parameters into a single multi-column table row
         if (!params.isEmpty() && queryExecutor != null) {
@@ -932,7 +952,7 @@ final class UdfInvoker {
      *  answers the value again, of the parameter's type (see {@link SqlArgumentText}): every parameter in one
      *  pass, and only where the body reads a value (see {@link ParameterReferences}). */
     private String substituteParams(final String body, final List<Parameter> params, final List<Object> args,
-                                    final List<Object> given) {
+                                    final List<Object> given, final List<DataType> argTypes) {
         final List<String> names = new ArrayList<>();
         final List<String> bound = new ArrayList<>();
         for (int i = 0; i < params.size() && i < args.size(); i++) {
@@ -958,7 +978,8 @@ final class UdfInvoker {
                 // The value itself, of its own type and at its full precision (see SqlArgumentText). An
                 // argument the call converted is the parameter's type through and through.
                 argStr = SqlArgumentText.forParameter(argVal, param.getDataType(),
-                    i >= given.size() || given.get(i) != argVal);
+                    i >= given.size() || given.get(i) != argVal,
+                    argTypes != null && i < argTypes.size() ? argTypes.get(i) : null);
             }
             names.add(param.getName());
             bound.add(argStr);

@@ -20,20 +20,31 @@ import java.util.TreeMap;
 
 /**
  * The block's variables as one of its SQL expressions reads them, by name in any letter case: a name the running
- * handlers may not read is refused where the expression looks it up (see {@link HandlerLets}).
+ * handlers may not read is refused where the expression looks it up (see {@link HandlerLets}), and a value is handed
+ * over as the block's reads convert it (see {@link VariableReadConversion}).
  */
 public final class HandlerGuardedVariables extends TreeMap<String, Object> {
 
     private static final long serialVersionUID = 1L;
 
     private final transient HandlerLets handlerLets;
+    private final transient VariableReadConversion reads;
 
     /**
      * @param handlerLets what the running handlers may not read
      */
     public HandlerGuardedVariables(final HandlerLets handlerLets) {
+        this(handlerLets, null);
+    }
+
+    /**
+     * @param handlerLets what the running handlers may not read
+     * @param reads       converts a value as the expression reads it, or null to hand each value over as held
+     */
+    public HandlerGuardedVariables(final HandlerLets handlerLets, final VariableReadConversion reads) {
         super(String.CASE_INSENSITIVE_ORDER);
         this.handlerLets = handlerLets;
+        this.reads = reads;
     }
 
     @Override
@@ -48,9 +59,11 @@ public final class HandlerGuardedVariables extends TreeMap<String, Object> {
 
     @Override
     public Object get(final Object key) {
-        if (key instanceof String) {
-            handlerLets.requireReadable((String) key, 0, 0);
+        if (!(key instanceof String)) {
+            return super.get(key);
         }
-        return super.get(key);
+        handlerLets.requireReadable((String) key, 0, 0);
+        final Object value = super.get(key);
+        return reads == null ? value : reads.read((String) key, value);
     }
 }

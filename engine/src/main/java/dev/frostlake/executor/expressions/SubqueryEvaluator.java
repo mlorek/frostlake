@@ -62,6 +62,9 @@ import java.util.Set;
 final class SubqueryEvaluator {
 
     private final ExpressionEvaluatorVisitor visitor;
+    /** The joined relations {@link #carriers} was read from, and their columns by name: the first relation's. */
+    private List<Table> carriersOf;
+    private Map<String, TableColumn> carriers;
     /** The subqueries whose correlation this evaluator has judged supported, keyed by use and text. */
     private final Set<String> judgedCorrelations = new HashSet<>();
     /** Each EXISTS met, by its copy's key, as it is run (see {@link #countedBody}). */
@@ -1205,6 +1208,10 @@ final class SubqueryEvaluator {
     private void addRowBindings(final Map<String, Object> context) {
         final Table table = visitor.getTable();
         final Row row = visitor.getRow();
+        // The collated columns among them, recorded under the same keys, and the keys a row further out recorded
+        // one under that this row shadows (see OuterNameBindings).
+        final Map<String, TableColumn> collated = new HashMap<>();
+        final Set<String> bound = OuterNameBindings.recordsCollations(context) ? new HashSet<String>() : null;
         if (table != null && row != null && !visitor.isScopeOpaqueToSubqueries()) {
             final List<TableColumn> columns = table.getColumns();
             // Every column under its EXACT spelling: live resolves "x" and X to two columns, and neither reaches
@@ -1220,8 +1227,10 @@ final class SubqueryEvaluator {
                 final String colName = columns.get(i).getName();
                 final Object value = row.getValue(i);
                 context.put(table.getName() + "." + colName, value);
+                noteCollation(collated, bound, table.getName() + "." + colName, columns.get(i));
                 if (bare.add(colName)) {
                     context.put(colName, shared.contains(colName) ? OuterNameBindings.AMBIGUOUS : value);
+                    noteCollation(collated, bound, colName, collationCarrier(columns.get(i)));
                 }
             }
             OuterNameBindings.recordColumns(context, bare);
@@ -1248,8 +1257,53 @@ final class SubqueryEvaluator {
                 for (int i = 0; i < aliased.getColumns().size() && offset + i < row.getValues().size(); i++) {
                     context.put(entry.getKey() + "." + aliased.getColumns().get(i).getName(),
                         row.getValue(offset + i));
+                    noteCollation(collated, bound, entry.getKey() + "." + aliased.getColumns().get(i).getName(),
+                        aliased.getColumns().get(i));
                 }
             }
+        }
+        OuterNameBindings.recordCollations(context, collated, bound);
+    }
+
+    /**
+     * The column a bare outer name reads its collation from: the column itself, else — where the row is a join's,
+     * whose relation carries every side's column without its declaration — the first joined relation's that
+     * carries the name, as the bare name reads that relation's value.
+     */
+    private TableColumn collationCarrier(final TableColumn column) {
+        if (column.getCollation() != null) {
+            return column;
+        }
+        final List<Table> joined = visitor.getMultiTableAllTables();
+        if (joined != carriersOf) {
+            carriersOf = joined;
+            carriers = joined == null ? null : firstCarriers(joined);
+        }
+        final TableColumn carrier = carriers == null ? null : carriers.get(column.getName());
+        return carrier != null ? carrier : column;
+    }
+
+    /** Each name's first carrier among joined relations, or null where none of their columns has a collation. */
+    private static Map<String, TableColumn> firstCarriers(final List<Table> joined) {
+        boolean collated = false;
+        final Map<String, TableColumn> first = new HashMap<>();
+        for (final Table relation : joined) {
+            for (final TableColumn candidate : relation.getColumns()) {
+                first.putIfAbsent(candidate.getName(), candidate);
+                collated |= candidate.getCollation() != null;
+            }
+        }
+        return collated ? first : null;
+    }
+
+    /** Note a key this row binds, and the column under it where the column carries a collation. */
+    private static void noteCollation(final Map<String, TableColumn> collated, final Set<String> bound,
+                                      final String key, final TableColumn column) {
+        if (bound != null) {
+            bound.add(key);
+        }
+        if (column.getCollation() != null) {
+            collated.put(key, column);
         }
     }
 }

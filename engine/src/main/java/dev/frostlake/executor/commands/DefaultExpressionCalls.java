@@ -19,6 +19,7 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RoutineOverloads;
 import dev.frostlake.executor.RoutineSecretsCheck;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -29,16 +30,15 @@ import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
-import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
-import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -47,8 +47,10 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * The user-defined functions a DEFAULT expression calls, judged as the account judges them (live-verified).
@@ -110,7 +112,7 @@ final class DefaultExpressionCalls {
                 if (mismatched != null) {
                     throw mismatched;
                 }
-                throw invalidColumnDefault(planText(barelyNamed(written)));
+                throw invalidColumnDefault(defaultEcho(written, calls));
             }
             final String body = SqlUdfBodyFrame.executableBody(function.getBody()).trim();
             final ParseTree parsed = parsedBody(body);
@@ -491,31 +493,9 @@ final class DefaultExpressionCalls {
         return first;
     }
 
+    /** The user-defined function overloads a call's name reaches (see {@link RoutineOverloads#functions}). */
     private List<Function> overloads(final List<String> parts) {
-        final Catalog catalog = queryExecutor.getCatalog();
-        final String name = parts.get(parts.size() - 1);
-        try {
-            if (parts.size() == 3) {
-                return catalog.databaseExact(parts.get(0)).schemaExact(parts.get(1)).getFunctionOverloads(name);
-            }
-            final String database = catalog.getCurrentDatabase();
-            if (database == null || parts.size() > 3) {
-                return new ArrayList<Function>();
-            }
-            if (parts.size() == 2) {
-                return catalog.getDatabase(database).schemaExact(parts.get(0)).getFunctionOverloads(name);
-            }
-            for (final Schema onPath : queryExecutor.searchPathSchemas()) {
-                if (!onPath.getFunctionOverloads(name).isEmpty()) {
-                    return onPath.getFunctionOverloads(name);
-                }
-            }
-            final String schema = catalog.getCurrentSchema();
-            return schema == null ? new ArrayList<Function>()
-                : catalog.getDatabase(database).getSchema(schema).getFunctionOverloads(name);
-        } catch (final RuntimeException noSuchSchema) {
-            return new ArrayList<Function>();
-        }
+        return RoutineOverloads.functions(queryExecutor, parts);
     }
 
     /**
@@ -543,6 +523,34 @@ final class DefaultExpressionCalls {
             cursor = to;
         }
         return bare.append(text, cursor, text.length()).toString();
+    }
+
+    /**
+     * A column default as the refusal of a function it cannot hold echoes it: the plan's spelling, a conversion to
+     * FLOAT as TO_DOUBLE, and the call of a Snowflake Scripting function as the conversion of its answer to the number
+     * it declares — {@code [TO_NUMBER(FBLK())]}, {@code [CASE_FLATTENED((TO_DOUBLE(TO_NUMBER(FBLK()))) >
+     * (TO_DOUBLE(0.5)), 1, 0)]} (live-verified); as written where the plan's printer does not read it.
+     */
+    private String defaultEcho(final FrostlakeParser.ExpressionContext written,
+                               final List<FrostlakeParser.FunctionCallExprContext> calls) {
+        final Map<String, DataType> converted = new HashMap<>();
+        for (final FrostlakeParser.FunctionCallExprContext call : calls) {
+            final Function function = called(call);
+            if (function != null && function.getUdfLanguage() == UdfLanguage.SQL && function.getBody() != null
+                    && !expandsAsSql(function) && function.getReturnType() instanceof NumericType
+                    && !NumericType.isApproximate(function.getReturnType())) {
+                converted.put(function.getName().toUpperCase(Locale.ROOT), function.getReturnType());
+            }
+        }
+        final String text = barelyNamed(written);
+        try {
+            final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(
+                new Table("$DEFAULT", new ArrayList<TableColumn>(), true), null, queryExecutor.getFunctionRegistry(),
+                queryExecutor.getCatalog());
+            return printer.strictDefaultEchoText(AntlrExpressionParser.parse(text), converted);
+        } catch (final RuntimeException unprintable) {
+            return text;
+        }
     }
 
     /** An expression's text as the plan prints it; as written where the plan's printer does not read it. */

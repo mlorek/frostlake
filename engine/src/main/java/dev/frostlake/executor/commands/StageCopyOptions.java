@@ -19,16 +19,14 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.copy.OnErrorOption;
 import dev.frostlake.parser.FrostlakeParser;
-import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.antlr.v4.runtime.misc.Interval;
 
 /**
@@ -49,8 +47,8 @@ import org.antlr.v4.runtime.misc.Interval;
  * list of values, words or strings, {@code Invalid value specified for property 'ON_ERROR'}. A size's NULL after a
  * size conflicts with it. A list of names alone is taken, and ignored.
  *
- * <p>The options and their values: ON_ERROR takes ABORT_STATEMENT, CONTINUE, SKIP_FILE, SKIP_FILE_n and a string
- * 'SKIP_FILE_p%' whose p is a number from 0 to 100; SIZE_LIMIT a whole number of 64 bits; PURGE, RETURN_FAILED_ONLY,
+ * <p>The options and their values: ON_ERROR takes what a COPY statement takes (see {@link OnErrorOption});
+ * SIZE_LIMIT a whole number of 64 bits; PURGE, RETURN_FAILED_ONLY,
  * ENFORCE_LENGTH, TRUNCATECOLUMNS and FORCE TRUE or FALSE, never a string; MATCH_BY_COLUMN_NAME CASE_SENSITIVE,
  * CASE_INSENSITIVE or NONE; LOAD_MODE FULL_INGEST or ADD_FILES_COPY. A word or a string of those spellings counts in
  * any case. INCLUDE_METADATA and FILE_PROCESSOR are named options whose values are not judged here. The options of a
@@ -68,19 +66,10 @@ final class StageCopyOptions {
 
     private static final Set<String> UNJUDGED = new HashSet<>(Arrays.asList("INCLUDE_METADATA", "FILE_PROCESSOR"));
 
-    private static final Set<String> ON_ERROR_WORDS = new HashSet<>(Arrays.asList(
-        "ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"));
-
     private static final Set<String> MATCH_BY_COLUMN_NAME_WORDS = new HashSet<>(Arrays.asList(
         "CASE_SENSITIVE", "CASE_INSENSITIVE", "NONE"));
 
     private static final Set<String> LOAD_MODE_WORDS = new HashSet<>(Arrays.asList("FULL_INGEST", "ADD_FILES_COPY"));
-
-    private static final Pattern SKIP_FILE_COUNT = Pattern.compile("SKIP_FILE_[0-9]+");
-
-    private static final Pattern SKIP_FILE_SHARE = Pattern.compile("SKIP_FILE_(.+)%");
-
-    private static final BigDecimal WHOLE = new BigDecimal(100);
 
     private StageCopyOptions() {
     }
@@ -182,8 +171,7 @@ final class StageCopyOptions {
         }
         final String upper = word.toUpperCase(Locale.ROOT);
         if ("ON_ERROR".equals(name)) {
-            return ON_ERROR_WORDS.contains(upper) || SKIP_FILE_COUNT.matcher(upper).matches()
-                || value.STRING_LITERAL() != null && isShare(upper) ? word : null;
+            return OnErrorOption.parse(upper) != null ? word : null;
         }
         if ("MATCH_BY_COLUMN_NAME".equals(name)) {
             return MATCH_BY_COLUMN_NAME_WORDS.contains(upper) ? word : null;
@@ -212,20 +200,6 @@ final class StageCopyOptions {
             return Long.toString(Long.parseLong(written));
         } catch (final NumberFormatException tooLarge) {
             return null;
-        }
-    }
-
-    /** ON_ERROR's share of a file's records: SKIP_FILE_p% with p a number from 0 to 100. */
-    private static boolean isShare(final String upper) {
-        final Matcher share = SKIP_FILE_SHARE.matcher(upper);
-        if (!share.matches()) {
-            return false;
-        }
-        try {
-            final BigDecimal percent = new BigDecimal(share.group(1));
-            return percent.signum() >= 0 && percent.compareTo(WHOLE) <= 0;
-        } catch (final NumberFormatException notANumber) {
-            return false;
         }
     }
 

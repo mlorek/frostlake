@@ -50,7 +50,7 @@ import java.util.Set;
  * <p>The body is pruned only where a blank cannot change which rows it produces: no DISTINCT, no
  * hierarchical query, no aggregate without GROUP BY, no GROUP BY ALL, no ordinal GROUP BY or ORDER BY key,
  * and nothing but UNION ALL between its arms. An item the body names elsewhere is kept, unless only other
- * pruned items name it.
+ * pruned items name it, and so is an item holding a window call in an arm with a QUALIFY.
  */
 final class UnreadColumnPruning {
 
@@ -124,7 +124,8 @@ final class UnreadColumnPruning {
         final List<String> unreadNames = new ArrayList<String>();
         for (int i = 0; i < heads.size(); i++) {
             final String name = names != null ? (i < names.size() ? names.get(i) : null) : nameOf(heads.get(i));
-            if (name != null && !read.contains(name.toUpperCase(Locale.ROOT)) && expressionInEveryArm(arms, i)) {
+            if (name != null && !read.contains(name.toUpperCase(Locale.ROOT)) && expressionInEveryArm(arms, i)
+                    && !windowForQualify(arms, i)) {
                 unread.add(i);
                 unreadNames.add(name);
             }
@@ -386,6 +387,32 @@ final class UnreadColumnPruning {
             }
         }
         return true;
+    }
+
+    /**
+     * Whether an item holds a window call in an arm with a QUALIFY: the QUALIFY is judged against the select list as
+     * written, which needs a window call, so blanking the one it has would refuse a query that answers.
+     */
+    private static boolean windowForQualify(final List<FrostlakeParser.SelectOperandContext> arms, final int index) {
+        for (final FrostlakeParser.SelectOperandContext arm : arms) {
+            if (arm.selectClause().qualifyClause() != null && holdsWindow(itemAt(arm, index))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a tree holds a window's OVER clause. */
+    private static boolean holdsWindow(final ParseTree node) {
+        if (node instanceof FrostlakeParser.OverClauseContext) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsWindow(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static ParserRuleContext itemAt(final FrostlakeParser.SelectOperandContext arm, final int index) {

@@ -704,11 +704,11 @@ public class TagReferencesFunction extends TableFunction {
         if (written.length == 1) {
             try {
                 if ("WAREHOUSE".equals(domain)) {
-                    found = catalog.getWarehouse(simpleName);
+                    found = catalog.getWarehouseExact(simpleName);
                 } else if ("COMPUTE POOL".equals(domain)) {
-                    found = catalog.getComputePool(simpleName);
+                    found = catalog.getComputePoolExact(simpleName);
                 } else if ("USER".equals(domain)) {
-                    found = catalog.getUser(simpleName);
+                    found = catalog.getUserExact(simpleName);
                 } else if ("NETWORK POLICY".equals(domain)) {
                     found = catalog.getSecurityObjects().get(SecurityObjectKind.NETWORK_POLICY, simpleName);
                 } else if ("INTEGRATION".equals(domain)) {

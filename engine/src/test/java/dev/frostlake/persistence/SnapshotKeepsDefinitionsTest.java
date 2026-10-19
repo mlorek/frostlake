@@ -176,6 +176,50 @@ public class SnapshotKeepsDefinitionsTest {
         return out;
     }
 
+    /** A view's columns keep the masking and projection policies and the tags an ALTER VIEW set on them. */
+    @Test
+    public void viewColumnsKeepTheirPoliciesAndTags() throws Exception {
+        final DatabaseEngine original = new DatabaseEngine();
+        original.execute("CREATE DATABASE vp");
+        original.execute("USE SCHEMA vp.PUBLIC");
+        original.execute("CREATE TABLE base (id INT, name VARCHAR(20))");
+        original.execute("INSERT INTO base VALUES (1, 'secret')");
+        original.execute("CREATE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> '***'");
+        original.execute("CREATE PROJECTION POLICY pp AS () RETURNS PROJECTION_CONSTRAINT -> "
+            + "PROJECTION_CONSTRAINT(ALLOW => false)");
+        original.execute("CREATE TAG tg");
+        original.execute("CREATE VIEW v AS SELECT id, name FROM base");
+        original.execute("ALTER VIEW v MODIFY COLUMN name SET MASKING POLICY mp");
+        original.execute("ALTER VIEW v MODIFY COLUMN id SET PROJECTION POLICY pp");
+        original.execute("ALTER VIEW v MODIFY COLUMN name SET TAG tg = 'tv'");
+        final List<String> wanted = viewPolicies(original);
+        assertEquals(Arrays.asList("***", "refused", "MP|NAME", "PP|ID", "TG|tv|NAME"), wanted);
+        for (final DatabaseEngine copy : copiesOf(original)) {
+            assertEquals(wanted, viewPolicies(copy));
+            copy.shutdown();
+        }
+        original.shutdown();
+    }
+
+    /** What reads the view's column policies: the masked column, the projected one, the references to both. */
+    private static List<String> viewPolicies(final DatabaseEngine on) {
+        on.execute("USE ROLE ACCOUNTADMIN");
+        on.execute("USE SCHEMA vp.PUBLIC");
+        final List<String> out = new ArrayList<>(rows(on, "SELECT name FROM v", "NAME"));
+        try {
+            on.executeQuery("SELECT id FROM v");
+            out.add("read");
+        } catch (final RuntimeException refused) {
+            out.add("refused");
+        }
+        out.addAll(rows(on, "SELECT policy_name, ref_column_name FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES("
+            + "REF_ENTITY_NAME => 'v', REF_ENTITY_DOMAIN => 'VIEW')) ORDER BY 1", "POLICY_NAME", "REF_COLUMN_NAME"));
+        out.addAll(rows(on, "SELECT tag_name, tag_value, column_name FROM "
+            + "TABLE(INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS('v', 'TABLE'))", "TAG_NAME", "TAG_VALUE",
+            "COLUMN_NAME"));
+        return out;
+    }
+
     @Test
     public void dynamicTablesKeepTheirSettings() throws Exception {
         final DatabaseEngine original = new DatabaseEngine();

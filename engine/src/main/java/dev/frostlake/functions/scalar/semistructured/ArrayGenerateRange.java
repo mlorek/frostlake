@@ -18,12 +18,12 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.node.ArrayNode;
 
-import java.math.RoundingMode;
 import java.util.List;
 
 /**
@@ -36,13 +36,14 @@ public class ArrayGenerateRange extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        // A text or a VARIANT bound is read as the whole number it holds (see decimalOf).
-        final long start = wholeLong(args.get(0));
-        final long stop = wholeLong(args.get(1));
+        // A bound or a step is read as the whole number it gives, a text's or a VARIANT's included and a fraction
+        // rounded: ARRAY_GENERATE_RANGE(0, 2.6) is [0,1,2] and a step of 1.6 steps by 2 (live-verified).
+        final long start = WholeNumbers.wholeLong(args.get(0));
+        final long stop = WholeNumbers.wholeLong(args.get(1));
         long step = 1;
         if (args.size() > 2) {
             if (args.get(2) == null) return null;
-            step = wholeLong(args.get(2));
+            step = WholeNumbers.wholeLong(args.get(2));
         }
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         if (step > 0) {
@@ -51,12 +52,6 @@ public class ArrayGenerateRange extends BuiltInFunction {
             for (long i = start; i > stop; i += step) result.add(i);
         }
         return VariantValue.ofNode(result);
-    }
-
-    /** A bound as the whole number it holds: a number as before, a text or a VARIANT as {@link #decimalOf} reads it. */
-    private static long wholeLong(final Object value) {
-        return value instanceof Number ? ((Number) value).longValue()
-            : decimalOf(value).setScale(0, RoundingMode.HALF_UP).longValue();
     }
 
     @Override

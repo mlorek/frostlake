@@ -232,8 +232,8 @@ public final class TableFunctionArguments {
 
     /**
      * COPY_HISTORY takes its table and its start time, by name or position: a call that gives fewer arguments is
-     * refused for the count, and a table given as NULL as missing, each naming the first part of the call's name
-     * (live-verified).
+     * refused for the count, and a table given as NULL as missing, each naming the first part of the call's name;
+     * TO_QUERY's text given as {@code SQL => NULL} is missing too (live-verified).
      *
      * @param functionName  the function, unqualified and upper-cased
      * @param nameToken     the first token of the call's name, whose position the refusal reports
@@ -242,6 +242,16 @@ public final class TableFunctionArguments {
      */
     public static void validateRequiredArguments(final String functionName, final Token nameToken,
                                                  final List<String> namesInOrder, final List<String> argumentTexts) {
+        if (TO_QUERY.equals(functionName)) {
+            // TO_QUERY's text given as NULL by its name is missing; a NULL given positionally is no string.
+            for (int i = 0; i < namesInOrder.size(); i++) {
+                if ("SQL".equals(namesInOrder.get(i)) && "NULL".equalsIgnoreCase(argumentTexts.get(i).trim())) {
+                    throw new RuntimeException(at(nameToken, "missing required argument [SQL] for function ["
+                        + nameToken.getText().toUpperCase(Locale.ROOT) + "]"));
+                }
+            }
+            return;
+        }
         if (!COPY_HISTORY.equals(functionName)) {
             return;
         }

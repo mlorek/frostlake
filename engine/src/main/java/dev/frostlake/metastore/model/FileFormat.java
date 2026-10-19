@@ -96,12 +96,35 @@ public class FileFormat {
      * @return the values in the order written, or null
      */
     public List<String> getNullIfValues() {
-        final String stored = getOption(NULL_IF);
+        return nullIfValues(getOption(NULL_IF));
+    }
+
+    /**
+     * NULL_IF's values as a stored NULL_IF option holds them (see {@link #getNullIfValues}) — the one reading for a
+     * named format's option and for the format a stage or a table keeps. A listing of the form {@code [a, b]}, with
+     * a backslash doubled, is how an earlier version kept a stage's values, and still reads.
+     *
+     * @param stored the option's stored text, or null
+     * @return the values in the order written, or null for no option
+     */
+    public static List<String> nullIfValues(final String stored) {
         if (stored == null) {
             return null;
         }
         final List<String> values = new ArrayList<>();
         if (stored.isEmpty()) {
+            return values;
+        }
+        if (stored.charAt(0) == '[' && stored.endsWith("]")) {
+            final String inner = stored.substring(1, stored.length() - 1);
+            int start = 0;
+            for (int i = 0; !inner.isEmpty() && i <= inner.length(); i++) {
+                if (i == inner.length() || inner.startsWith(", ", i)) {
+                    values.add(inner.substring(start, i).replace("\\\\", "\\"));
+                    start = i + 2;
+                    i++;
+                }
+            }
             return values;
         }
         final boolean separated = stored.charAt(0) == VALUE_SEPARATOR;
@@ -117,12 +140,14 @@ public class FileFormat {
     }
 
     /**
-     * Set NULL_IF's values, kept as {@link #getNullIfValues} reads them back.
+     * Set NULL_IF's values, kept as {@link #getNullIfValues} reads them back: a list whose first value opens a
+     * bracket is kept behind the separator too, so that it is never read as an earlier version's listing.
      *
      * @param values the values in the order written
      */
     public void setNullIfValues(final List<String> values) {
-        boolean ambiguous = values.size() == 1 && values.get(0).isEmpty();
+        boolean ambiguous = values.size() == 1 && values.get(0).isEmpty()
+            || !values.isEmpty() && values.get(0).startsWith("[");
         for (final String value : values) {
             ambiguous = ambiguous || value.indexOf(',') >= 0;
         }
