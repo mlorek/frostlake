@@ -44,6 +44,7 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.parser.BlockValueSubqueryLines;
 import dev.frostlake.parser.EndOfInput;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
@@ -256,6 +257,12 @@ final class RoutineBodyCompiler {
             // And a tag function one of the body's own expressions calls is answered now (see CompiledTagCalls).
             CompiledTagCalls.requireInProcedureBody(block, queryExecutor);
             return;
+        }
+        // A block's value that is a query in parentheses which does not parse is refused at CREATE, at the query's
+        // SELECT and then its own fault (see BlockValueSubqueryLines).
+        final List<String> valueLines = BlockValueSubqueryLines.lines(body, spokenTokens(body));
+        if (valueLines != null) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", valueLines)));
         }
         // A block whose one fault is a LET of a name alone is refused for that at CREATE, as a DECLARE's is.
         final SourcePosition statements = LeadingCommentOffset.begin(null);
@@ -1765,9 +1772,10 @@ final class RoutineBodyCompiler {
                 + " returns DATAFRAME in function " + routineName + " with handler " + handler);
         }
         JavaHandlerSignature.check(found, argumentTypes, returnType, routineName, handler, procedure);
-        if (!procedure && !Modifier.isStatic(found.getModifiers())) {
-            // A function's handler that is no static method is called on an instance, and the account makes one
-            // as the function is created: a class it cannot make one of is refused here (live-verified).
+        if (!Modifier.isStatic(found.getModifiers())) {
+            // A handler that is no static method is called on an instance, and the account makes one as the
+            // routine is created, a procedure's as a function's: a class it cannot make one of, or one whose
+            // constructor raises, is refused here (live-verified).
             JavaHandlerInstances.create(compiled, " in function " + routineName + " with handler " + handler);
         }
     }

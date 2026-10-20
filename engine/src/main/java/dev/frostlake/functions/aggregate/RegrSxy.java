@@ -62,4 +62,10 @@ public class RegrSxy extends AggregateFunction {
     public SemiStructuredRejection temporalRejection(final int position) {
         return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
     }
+
+    /** A VECTOR is refused in the product's words too, the X listed first (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
+    }
 }

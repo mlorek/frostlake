@@ -154,6 +154,24 @@ final class IntegrationReferences {
             throw new RuntimeException(SqlCompilationError.of("invalid value [" + integration.getName()
                 + "] for parameter 'API_AUTHENTICATION'"));
         }
+        requireAllowedScopes(integration, scopes);
+    }
+
+    /**
+     * An OAuth secret's new OAUTH_SCOPES, set by an ALTER, are scopes the integration it authenticates through
+     * allows, as a CREATE's are.
+     *
+     * @param name the integration's canonical name, or null when the secret names none
+     * @param scopes the scopes set
+     */
+    void requireSecretScopes(final String name, final List<String> scopes) {
+        final Integration integration = name == null ? null : catalog.getIntegrations().find(name);
+        if (integration != null) {
+            requireAllowedScopes(integration, scopes);
+        }
+    }
+
+    private static void requireAllowedScopes(final Integration integration, final List<String> scopes) {
         if (!allowedScopes(integration).containsAll(scopes)) {
             throw new RuntimeException(SqlCompilationError.of("invalid value '" + scopes
                 + "' for property 'OAUTH_SCOPES'"));

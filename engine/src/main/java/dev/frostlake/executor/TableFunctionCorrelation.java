@@ -72,7 +72,8 @@ final class TableFunctionCorrelation {
                              final List<Table> leftTables, final Set<String> selectAliases,
                              final Map<String, Object> outerNames) {
         final ParserRuleContext call = callOf(source);
-        if (call == null) {
+        if (call == null || partitioned(source)) {
+            // A call partitioned OVER the rows to its left reads them, whatever its arguments name.
             return true;
         }
         final Expression parsed;
@@ -127,6 +128,20 @@ final class TableFunctionCorrelation {
     }
 
     /** The call a table-function source makes, or null for any other source. */
+    /** Whether a table function's call is written with an OVER clause, inside TABLE( … ) or after LATERAL. */
+    private static boolean partitioned(final FrostlakeParser.TableSourceContext source) {
+        if (source.overClause() != null) {
+            return true;
+        }
+        final FrostlakeParser.ExpressionContext call = source.TABLE() != null ? source.expression() : null;
+        return call instanceof FrostlakeParser.FunctionCallExprContext
+                && ((FrostlakeParser.FunctionCallExprContext) call).overClause() != null
+            || call instanceof FrostlakeParser.FunctionCallMixedArgsExprContext
+                && ((FrostlakeParser.FunctionCallMixedArgsExprContext) call).overClause() != null
+            || call instanceof FrostlakeParser.FunctionCallNamedArgsExprContext
+                && ((FrostlakeParser.FunctionCallNamedArgsExprContext) call).overClause() != null;
+    }
+
     private static ParserRuleContext callOf(final FrostlakeParser.TableSourceContext source) {
         if (source == null) {
             return null;

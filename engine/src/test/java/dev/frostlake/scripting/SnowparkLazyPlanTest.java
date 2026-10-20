@@ -19,6 +19,7 @@ package dev.frostlake.scripting;
 import com.snowflake.snowpark_java.DataFrame;
 import com.snowflake.snowpark_java.Session;
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.executor.udf.SnowparkStatementFailure;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -90,7 +91,7 @@ public class SnowparkLazyPlanTest extends BaseDatabaseTest {
         final Session session = new Session(engine);
         assertNotNull(session.table("no_such_table_at_all"),
             "table() hands back a plan; the name is not resolved until an action");
-        assertThrows(RuntimeException.class, new Executable() {
+        assertThrows(SnowparkStatementFailure.class, new Executable() {
             @Override
             public void execute() {
                 session.table("no_such_table_at_all").collect();
@@ -100,14 +101,14 @@ public class SnowparkLazyPlanTest extends BaseDatabaseTest {
 
     /**
      * The owner's-rights refusal fires at the ACTION, because that is where live raises it — the same
-     * handler returns normally when it never collects.
+     * handler returns normally when it never collects — as the driver's exception a failed statement is.
      */
     @Test
     public void theOwnersRightsRefusalFiresAtTheAction() {
         final Session owner = new Session(engine, true);
         owner.sql("CREATE TEMPORARY TABLE lazy_tmp (a INTEGER)");
 
-        final UnsupportedOperationException ex = assertThrows(UnsupportedOperationException.class,
+        final SnowparkStatementFailure ex = assertThrows(SnowparkStatementFailure.class,
             new Executable() {
                 @Override
                 public void execute() {

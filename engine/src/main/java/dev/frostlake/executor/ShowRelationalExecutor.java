@@ -808,7 +808,8 @@ final class ShowRelationalExecutor {
                     dbName, scName,
                     ShowResultHelpers.text(mv.getOwner()),
                     ShowResultHelpers.text(mv.getComment()),
-                    mv.ddl(scName + "." + mv.getName()),
+                    // A SECURE materialized view's text is its owner's to read, as a secure view's is (documented).
+                    mv.isSecure() && !ownership.actsAsOwner(mv.getOwner()) ? "" : mv.ddl(scName + "." + mv.getName()),
                     String.valueOf(mv.isSecure()), "true",
                     ShowResultHelpers.ownerRoleType(mv.getOwner()), "OFF"
                 )));
@@ -895,8 +896,9 @@ final class ShowRelationalExecutor {
                     MaterializedViewValidity.reason(mv),
                     MaterializedViewRefresh.behindBy(catalog, mv),
                     ShowResultHelpers.text(mv.getComment()),
-                    // The full CREATE statement, as written.
-                    mv.getListedText() != null ? mv.getListedText() : mv.ddl(scName + "." + mv.getName()),
+                    // The full CREATE statement, as written; a SECURE one's is its owner's to read (documented).
+                    mv.isSecure() && !ownership.actsAsOwner(mv.getOwner()) ? ""
+                        : mv.getListedText() != null ? mv.getListedText() : mv.ddl(scName + "." + mv.getName()),
                     mv.isSecure() ? "true" : "false",
                     mv.getClusterKeys().isEmpty() || mv.isReclusterSuspended() ? "OFF" : "ON",
                     "ROLE"

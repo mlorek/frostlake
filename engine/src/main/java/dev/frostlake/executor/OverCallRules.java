@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
@@ -187,6 +188,7 @@ final class OverCallRules {
                 throw new RuntimeException(SqlCompilationError.of("Invalid function type ["
                     + spelledName(functionName(call)) + "] for window function."));
             }
+            rejectOrderedDistinctCount(canonical, call);
         }
     }
 
@@ -436,6 +438,26 @@ final class OverCallRules {
             text.append(echo.print(values.get(i)));
         }
         return text.append(')').toString();
+    }
+
+    /**
+     * COUNT(DISTINCT a, b) over a window that orders its rows counts one argument alone, and refuses more at its OVER:
+     * "too many arguments for function [Window function COUNT(DISTINCT ...)] expected 1, got 2" (live-verified over
+     * an ordered, framed window); over an unordered window it is taken.
+     */
+    private static void rejectOrderedDistinctCount(final String canonical, final ParserRuleContext call) {
+        if (!"COUNT".equals(canonical) || !(call instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return;
+        }
+        final FrostlakeParser.FunctionCallExprContext count = (FrostlakeParser.FunctionCallExprContext) call;
+        final int arguments = count.functionArgList() == null ? 0 : count.functionArgList().functionArg().size();
+        if (count.DISTINCT() == null || arguments < 2 || count.overClause() == null
+                || count.overClause().orderByClause() == null) {
+            return;
+        }
+        final Token over = count.overClause().OVER().getSymbol();
+        throw new RuntimeException(SqlCompilationError.at(over.getLine(), over.getCharPositionInLine(),
+            "too many arguments for function [Window function COUNT(DISTINCT ...)] expected 1, got " + arguments));
     }
 
     private static RuntimeException positioned(final ParserRuleContext call, final String detail) {

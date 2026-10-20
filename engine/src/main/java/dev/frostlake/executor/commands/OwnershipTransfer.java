@@ -358,7 +358,8 @@ final class OwnershipTransfer {
     private static boolean movableKind(final String kind) {
         return "TABLE".equals(kind) || "VIEW".equals(kind) || "SEQUENCE".equals(kind)
             || "STAGE".equals(kind) || "STREAM".equals(kind) || "FUNCTION".equals(kind)
-            || "PROCEDURE".equals(kind) || "TASK".equals(kind) || "PIPE".equals(kind);
+            || "PROCEDURE".equals(kind) || "TASK".equals(kind) || "PIPE".equals(kind)
+            || "MATERIALIZED_VIEW".equals(kind);
     }
 
     /**

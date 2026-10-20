@@ -17,6 +17,7 @@
 package com.snowflake.snowpark_java;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.executor.udf.SnowparkStatementFailure;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.storage.ResultSet;
 
@@ -76,13 +77,20 @@ public class Session {
     /**
      * Submit one statement — the action end of a {@link DataFrame}, and the point every per-statement
      * rule applies at: the owner's-rights temporary-object refusal, and the one-query-in-flight permit
-     * (a permit about queries being RUN, which under a lazy plan is here rather than at sql()).
+     * (a permit about queries being RUN, which under a lazy plan is here rather than at sql()). A statement
+     * refused reaches the handler as the driver's exception (see {@link SnowparkStatementFailure}).
      */
     ResultSet runPlan(final String sqlText) {
-        rejectTemporaryObjectUnderOwnersRights(sqlText);
+        try {
+            rejectTemporaryObjectUnderOwnersRights(sqlText);
+        } catch (final RuntimeException refused) {
+            throw SnowparkStatementFailure.raise(refused);
+        }
         beginQuery();
         try {
             return engine.executeQuery(sqlText);
+        } catch (final RuntimeException refused) {
+            throw SnowparkStatementFailure.raise(refused);
         } finally {
             queryInFlight.set(false);
         }

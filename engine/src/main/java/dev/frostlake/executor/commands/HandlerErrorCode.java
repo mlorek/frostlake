@@ -36,12 +36,17 @@ import dev.frostlake.transaction.TransactionManager;
  * 42601; an expression a VALUES clause does not take 2014 / 22000, an INSERT whose values do not match its columns
  * 2020 / 21S01, a result asked of a statement that failed 711 / 02000 and a text that is no JSON 100069 / 22P02; an
  * OPEN of an open cursor 92215 / P0000 and a CLOSE of one that is not open 92201 / P0000; a RESULTSET read before
- * anything was given to it 92212 / P0000. A refusal of no known family reads 100351 / P0000. A hybrid table's
- * primary key already held is 200001 / 22000 and a foreign key it breaks 200009 / 22000 (documented).
+ * anything was given to it 92212 / P0000; the report of an exception a Java or a Scala procedure's handler raised,
+ * a statement it ran that failed included, 100315 / P0000. A refusal of no known family reads 100351 / P0000. A
+ * hybrid table's primary key already held is 200001 / 22000 and a foreign key it breaks 200009 / 22000
+ * (documented).
  */
 final class HandlerErrorCode {
 
     private static final String UNINITIALIZED_RESULTSET = "Stored procedure execution error: uninitialized resultSet '";
+
+    /** How the report of an exception a Java or a Scala handler raised starts. */
+    private static final String USER_ERROR_REPORT = "User Error Report: ";
 
     private static final HandlerErrorCode OTHER = new HandlerErrorCode(100351, "P0000");
 
@@ -62,6 +67,9 @@ final class HandlerErrorCode {
     static HandlerErrorCode of(final String message) {
         if (message == null) {
             return OTHER;
+        }
+        if (message.startsWith(USER_ERROR_REPORT)) {
+            return new HandlerErrorCode(100315, "P0000");
         }
         if (message.startsWith("Compilation of SQL UDF failed")) {
             return new HandlerErrorCode(90203, "42601");

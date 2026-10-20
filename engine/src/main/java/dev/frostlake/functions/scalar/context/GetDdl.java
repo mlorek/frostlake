@@ -605,7 +605,8 @@ public class GetDdl extends BuiltInFunction {
             sb.append("TRANSIENT ");
         }
         final IcebergTableMetadata iceberg = table.getIcebergMetadata();
-        sb.append(iceberg != null ? "ICEBERG TABLE " : "TABLE ").append(name);
+        // A hybrid table is written as one, so its DDL run back makes a hybrid table again (documented).
+        sb.append(iceberg != null ? "ICEBERG TABLE " : table.isHybrid() ? "HYBRID TABLE " : "TABLE ").append(name);
         // A clustering key is spelled between the name and the column list, as its statement wrote it, the paren
         // following it directly.
         if (!table.getClusterKeys().isEmpty()) {

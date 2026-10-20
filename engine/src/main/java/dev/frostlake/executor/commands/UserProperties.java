@@ -168,7 +168,7 @@ final class UserProperties {
                     ? property.qualifiedName().getText()
                     : text(property.STRING_LITERAL())).toUpperCase(Locale.ROOT));
             } else if (property.DEFAULT_SECONDARY_ROLES() != null) {
-                user.setDefaultSecondaryRoles(rolesJson(property));
+                user.writeDefaultSecondaryRoles(rolesJson(property));
             } else if (property.LOGIN_NAME() != null) {
                 // A login name is upper-cased however it is written — `LOGIN_NAME = 'ln'` stores LN.
                 // DISPLAY_NAME beside it keeps the case it was given.

@@ -35,6 +35,8 @@ public class TaskSnapshot implements Serializable {
     // freshly generated identity in that case rather than failing.
     public String id;
     public String createdByUser;
+    /** The user who last resumed the task; null when nobody did, or in a snapshot taken before it was kept. */
+    public String resumedBy;
     public List<String> explicitParameters = new ArrayList<>();
     public String schedule;
     public String scheduleType;

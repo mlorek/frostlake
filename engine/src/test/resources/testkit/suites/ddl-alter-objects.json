@@ -201,6 +201,8 @@
      "skip": {"backends": ["snowflake"], "reason": "works as a role it creates, which a replay on a live account is not switched to (the Java test had the same assumption)"},
      "steps": [
       {"sql": "CREATE OR REPLACE ROLE data_owner"},
+      {"sql": "GRANT USAGE ON DATABASE test_db TO ROLE data_owner"},
+      {"sql": "GRANT USAGE ON SCHEMA test_schema TO ROLE data_owner"},
       {"sql": "GRANT CREATE TABLE ON SCHEMA test_schema TO ROLE data_owner"},
       {"sql": "GRANT ROLE data_owner TO ROLE SYSADMIN"},
       {"sql": "USE ROLE data_owner"},

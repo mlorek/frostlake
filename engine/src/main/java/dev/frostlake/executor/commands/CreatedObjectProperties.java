@@ -155,31 +155,48 @@ final class CreatedObjectProperties {
         }
         requireMetricSchedule(names, values, true);
         for (final Integer i : order) {
-            refuseOtherTableKindParameter(ParameterRegistry.canonical(names.get(i)), values.get(i), ctx);
+            refuseOtherTableKindParameter(ParameterRegistry.canonical(names.get(i)), values.get(i), createdName(ctx),
+                false);
         }
     }
 
     /**
-     * Refuses a parameter a plain table takes no value of: one of an Iceberg table, of a table in a catalog-linked
-     * database, of another kind of table, or a staging format no format of the name answers (live-verified).
+     * Refuses a parameter a plain table takes no value of, at its CREATE or an ALTER … SET: one of an Iceberg table,
+     * of a table in a catalog-linked database, of another kind of table, or a staging format no format of the name
+     * answers (live-verified). An empty CATALOG and EXTERNAL_VOLUME read differently at each: CREATE asks for the
+     * integration and names no table, where ALTER refuses the integration and names the table; an empty
+     * CATALOG_SYNC is taken by ALTER.
+     *
+     * @param key       the parameter's name, canonical
+     * @param value     its value as written, or null
+     * @param tableName the table's name, as its last written part reads
+     * @param atAlter   whether an ALTER … SET writes it
      */
-    private static void refuseOtherTableKindParameter(final String key, final FrostlakeParser.CopyOptionValueContext
-            value, final FrostlakeParser.CreateStatementContext ctx) {
+    static void refuseOtherTableKindParameter(final String key, final FrostlakeParser.CopyOptionValueContext value,
+                                              final String tableName, final boolean atAlter) {
         final String text = value == null ? null : value.STRING_LITERAL() != null
             ? SqlStringLiterals.decode(value.STRING_LITERAL().getText()) : value.getText();
+        final boolean empty = text == null || text.isEmpty();
         switch (key) {
             case "CATALOG":
-                throw new RuntimeException(text == null || text.isEmpty()
+                throw new RuntimeException(empty && !atAlter
                     ? SqlCompilationError.inline("Iceberg tables require a catalog integration to be specified")
                     : "Catalog integration cannot be set for legacy iceberg tables");
             case "EXTERNAL_VOLUME":
-                throw new RuntimeException(text == null || text.isEmpty()
-                    ? "Iceberg table null must have the table parameter EXTERNAL_VOLUME defined on the table, schema,"
-                        + " database, or account."
-                    : "EXTERNAL_VOLUME is not supported on table " + createdName(ctx) + ".");
+                throw new RuntimeException(empty
+                    ? "Iceberg table " + (atAlter ? tableName : "null") + " must have the table parameter"
+                        + " EXTERNAL_VOLUME defined on the table, schema, database, or account."
+                    : "EXTERNAL_VOLUME is not supported on table " + tableName + ".");
             case "CATALOG_SYNC":
+                if (empty && atAlter) {
+                    return;
+                }
                 throw new RuntimeException("Catalog integration " + text
                     + " is not valid. Please ensure required properties are valid.");
+            case "VENDED_CREDENTIAL_STORAGE_REGION":
+                // The account leaves the sentence's second placeholder unfilled.
+                throw new RuntimeException(SqlCompilationError.of("invalid value [Table must be an unmanaged table"
+                    + " with credential vending enabled.] for parameter '{1}'"));
             case "PURGE_ON_DROP_TABLE":
                 throw new RuntimeException(SqlCompilationError.of(
                     "invalid parameter 'PURGE_ON_DROP_TABLE can only be set on tables in a catalog-linked database'"));
@@ -194,7 +211,7 @@ final class CreatedObjectProperties {
                     + " Iceberg tables.");
             case "STAGE_FILE_FORMAT":
                 // A number names a format by its digits, which no format of the schema answers.
-                if (value != null && value.INTEGER_LITERAL() != null) {
+                if (!atAlter && value != null && value.INTEGER_LITERAL() != null) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("File format", value.getText()));
                 }
                 return;

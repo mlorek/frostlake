@@ -163,7 +163,8 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
 
     @Override
     public void setObject(final int parameterIndex, final Object x, final int targetSqlType) throws SQLException {
-        parameters.put(parameterIndex, x);
+        // A Time binds at its clock in UTC whatever type it is bound as, as by setTime (live-verified).
+        parameters.put(parameterIndex, x instanceof Time ? JdbcMarshaling.timeAtUtc((Time) x) : x);
     }
 
     @Override
@@ -331,7 +332,7 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
 
     @Override
     public void setObject(final int parameterIndex, final Object x, final int targetSqlType, final int scaleOrLength) throws SQLException {
-        parameters.put(parameterIndex, x);
+        parameters.put(parameterIndex, x instanceof Time ? JdbcMarshaling.timeAtUtc((Time) x) : x);
     }
 
     @Override

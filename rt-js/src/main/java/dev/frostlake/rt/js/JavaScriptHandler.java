@@ -17,9 +17,11 @@
 package dev.frostlake.rt.js;
 
 import dev.frostlake.executor.udf.HandlerJson;
+import dev.frostlake.executor.udf.HandlerLanguages;
 import dev.frostlake.executor.udf.JavaScriptIdentifiers;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
@@ -53,6 +55,15 @@ final class JavaScriptHandler {
 
     /** The line of the evaluated source that holds the body's first line. */
     static final int BODY_FIRST_LINE = 3;
+
+    /**
+     * What a table function's driver answers in place of the rows written when the handler object is no object,
+     * or followed by a member's name when that member is no function (see {@link JavaScriptTableFunction}).
+     */
+    static final String NO_MEMBER = "\u0001M:";
+
+    /** What {@link #tableSource} is given for an argument that is no constant of the statement. */
+    static final Object NOT_CONSTANT = new Object();
 
     /**
      * What the invoker reads a semi-structured argument's text with, in a scope the handler's body cannot see.
@@ -380,14 +391,19 @@ final class JavaScriptHandler {
      *
      * <p>The driver takes an operation first - 0 to begin a partition, 1 to read a row, 2 to end the
      * partition - and answers the rows written during it as JSON, each cell a tagged text: {@code u} for a
-     * NULL, {@code b1} / {@code b0}, {@code n} and a number, {@code s} and a text.
+     * NULL, {@code b1} / {@code b0}, {@code n} and a number, {@code s} and a text. A handler object that is no
+     * object, or a member it calls that is no function, is answered as {@link #NO_MEMBER}; one with no
+     * {@code processRow} at all as null.
      *
      * @param parameters the function's parameters
      * @param columns    the function's declared columns
      * @param body       the handler body as written
+     * @param constants  for each parameter, the value of its argument when that is a constant of the statement,
+     *                   else {@link #NOT_CONSTANT}; null for none
      * @return the script
      */
-    static String tableSource(final List<Parameter> parameters, final List<Parameter> columns, final String body) {
+    static String tableSource(final List<Parameter> parameters, final List<Parameter> columns, final String body,
+                              final List<Object> constants) {
         final StringBuilder passed = new StringBuilder();
         final StringBuilder converted = new StringBuilder();
         final StringBuilder row = new StringBuilder();
@@ -406,7 +422,12 @@ final class JavaScriptHandler {
                     .append(" = arrive(a").append(i).append("); }\n");
             }
             row.append(i > 0 ? ", " : "").append(key).append(": a").append(i);
-            info.append(i > 0 ? ", " : "").append(key).append(": {isNullable: true, isConst: false")
+            // A constant number is told by its value (live-verified); a constant of another type is not measured.
+            final Object constant = constants == null || i >= constants.size() ? NOT_CONSTANT : constants.get(i);
+            final boolean told = type instanceof NumericType && constant instanceof Number;
+            info.append(i > 0 ? ", " : "").append(key).append(": {")
+                .append(told ? "constValue: " + numberLiteral((Number) constant) + ", " : "")
+                .append("isNullable: true, isConst: ").append(told)
                 .append(type instanceof NumericType ? ", type: 'real'" : "").append('}');
         }
         final StringBuilder cells = new StringBuilder();
@@ -452,17 +473,36 @@ final class JavaScriptHandler {
             .append("var took = function () { var out = toJson(written); written = []; return out; };\n")
             .append("return function (operation").append(passed).append(") {\n")
             .append("if (operation === 0) {\n")
-            .append("if (udtfObject === null || udtfObject === undefined || typeof udtfObject.processRow !== 'function') ")
-            .append("{ return null; }\n")
-            .append("if (udtfObject.initialize !== undefined) { udtfObject.initialize(argumentInfo, context); }\n")
+            .append("if (udtfObject === null || typeof udtfObject !== 'object' && typeof udtfObject !== 'function') ")
+            .append("{ return '").append(NO_MEMBER).append("'; }\n")
+            .append("if (udtfObject.processRow === undefined) { return null; }\n")
+            .append("if (udtfObject.initialize !== undefined) { if (typeof udtfObject.initialize !== 'function') ")
+            .append("{ return '").append(NO_MEMBER).append("initialize'; } ")
+            .append("udtfObject.initialize(argumentInfo, context); }\n")
             .append("return took();\n}\n")
             .append("if (operation === 2) {\n")
-            .append("if (udtfObject.finalize !== undefined) { udtfObject.finalize(rowWriter, context); }\n")
+            .append("if (udtfObject.finalize !== undefined) { if (typeof udtfObject.finalize !== 'function') ")
+            .append("{ return '").append(NO_MEMBER).append("finalize'; } ")
+            .append("udtfObject.finalize(rowWriter, context); }\n")
             .append("return took();\n}\n")
+            .append("if (typeof udtfObject.processRow !== 'function') { return '").append(NO_MEMBER)
+            .append("processRow'; }\n")
             .append(converted)
             .append("udtfObject.processRow({").append(row).append("}, rowWriter, context);\n")
             .append("return took();\n")
             .append("};\n})();\n})()").toString();
+    }
+
+    /** A number as a JavaScript literal of its double value. */
+    private static String numberLiteral(final Number number) {
+        final double value = number.doubleValue();
+        if (Double.isNaN(value)) {
+            return "NaN";
+        }
+        if (Double.isInfinite(value)) {
+            return value > 0 ? "Infinity" : "-Infinity";
+        }
+        return Double.toString(value);
     }
 
     /** A name as a JavaScript string literal. */
@@ -616,7 +656,21 @@ final class JavaScriptHandler {
         for (int i = 0; i < arguments.size(); i++) {
             values[at++] = argumentValue(name, parameters.get(i), arguments.get(i));
         }
-        return ((Invocable) engine).invokeMethod(invoker, "call", values);
+        // A Python handler's frames lie below when a Python procedure runs the statement that calls this one. The
+        // script engine fills an Error's stack by walking the thread's frames and fails on the other language's, so
+        // under one an Error carries no frames: its message and its stack's text are kept.
+        final boolean underPython = HandlerLanguages.isRunning(UdfLanguage.PYTHON);
+        final Object limit = underPython ? engine.eval("Error.stackTraceLimit") : null;
+        if (underPython) {
+            engine.eval("Error.stackTraceLimit = 0");
+        }
+        try {
+            return ((Invocable) engine).invokeMethod(invoker, "call", values);
+        } finally {
+            if (underPython) {
+                engine.eval("Error.stackTraceLimit = " + limit);
+            }
+        }
     }
 
     /** One argument as the invoker takes it. */

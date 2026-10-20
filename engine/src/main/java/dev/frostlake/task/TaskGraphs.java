@@ -17,12 +17,14 @@
 package dev.frostlake.task;
 
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -35,6 +37,27 @@ import java.util.Set;
 public final class TaskGraphs {
 
     /** Static helpers only. */
+    /**
+     * The fire a task's schedule names after one it is scheduled for, as NEXT_SCHEDULED_TIME tells it for a
+     * scheduled run: an interval later (live-verified), or the CRON expression's next instant.
+     *
+     * @param task      the task
+     * @param scheduled the fire the run is scheduled for
+     * @return the next fire, or null for a task without a schedule
+     */
+    public static LocalDateTime fireAfter(final Task task, final LocalDateTime scheduled) {
+        if (task.getSchedule() == null || scheduled == null) {
+            return null;
+        }
+        if (task.getScheduleType() == ScheduleType.CRON) {
+            final ZonedDateTime next = CronSchedule.parse(task.getSchedule())
+                .nextFireAfter(scheduled.atZone(ZoneId.systemDefault()));
+            return next == null ? null : next.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
+        }
+        final long seconds = IntervalSchedule.seconds(task.getSchedule());
+        return scheduled.plusSeconds(seconds > 0L ? seconds : 3600L);
+    }
+
     private TaskGraphs() {
     }
 

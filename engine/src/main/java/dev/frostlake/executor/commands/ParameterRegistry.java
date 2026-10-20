@@ -33,9 +33,10 @@ import java.util.Set;
  * refusals an unknown name earns (live-verified): a session name answers
  * {@code invalid parameter '<name>'} for SET and UNSET alike, the name exactly as written
  * ({@code nosuch} stays lower-case), an object property answers
- * {@code invalid property '<NAME>' for '<KIND>'}, where an unquoted name upper-folds and a quoted one
- * keeps its quotes. The registry is the ACCOUNT's list, not the engine's implemented subset, so a
- * real parameter the engine merely ignores is never refused.
+ * {@code invalid property '<name>' for '<KIND>'}, the name as written too ({@code foo}, {@code Foo}, and a
+ * quoted one with its quotes). The registry is the ACCOUNT's list, not the engine's implemented subset, so a
+ * real parameter the engine merely ignores is never refused. A few parameters a table takes no value of are
+ * refused at a table's level by name (see {@link #isTableUnsettable}).
  */
 final class ParameterRegistry {
 
@@ -43,6 +44,9 @@ final class ParameterRegistry {
     private static final Set<String> TABLE = load("table");
     private static final Set<String> DATABASE = load("database");
     private static final Set<String> SCHEMA = load("schema");
+    private static final Set<String> TABLE_UNSETTABLE = load("table_unsettable");
+    private static final Set<String> ALERT = load("alert");
+    private static final Set<String> ALERT_UNSETTABLE = load("alert_unsettable");
 
     static {
         // ALTER TABLE SET also takes PROPERTIES that are not SHOW PARAMETERS entries — the staged
@@ -67,6 +71,35 @@ final class ParameterRegistry {
         return TABLE.contains(canonicalName);
     }
 
+    /**
+     * Whether a parameter is one a table refuses at its own level rather than for want of access: the task, alert,
+     * logging and pipe ones and a few defaults, {@code cannot set parameter 'LOG_LEVEL' at 'TABLE'} (live-verified).
+     *
+     * @param canonicalName the parameter's name, canonical
+     * @return whether a table refuses it so
+     */
+    static boolean isTableUnsettable(final String canonicalName) {
+        return TABLE_UNSETTABLE.contains(canonicalName);
+    }
+
+    /** Whether ALTER ALERT … SET takes a parameter: a session parameter, or an alert's own (live-verified). */
+    static boolean isAlertParameter(final String canonicalName) {
+        return ALERT.contains(canonicalName);
+    }
+
+    /**
+     * Whether an object of a kind refuses a parameter at its own level, {@code cannot set parameter 'X' at 'TABLE'},
+     * rather than for want of access (live-verified for tables and alerts).
+     *
+     * @param kind          the object's kind, as the refusal names it
+     * @param canonicalName the parameter's name, canonical
+     * @return whether the object refuses it so
+     */
+    static boolean isUnsettable(final String kind, final String canonicalName) {
+        return "TABLE".equals(kind) ? TABLE_UNSETTABLE.contains(canonicalName)
+            : "ALERT".equals(kind) && ALERT_UNSETTABLE.contains(canonicalName);
+    }
+
     static boolean isDatabaseParameter(final String canonicalName) {
         return DATABASE.contains(canonicalName);
     }
@@ -84,9 +117,9 @@ final class ParameterRegistry {
             "invalid property '" + spelledName + "' for '" + objectKind + "'"));
     }
 
-    /** The name as the refusal spells it: quoted verbatim (quotes kept), unquoted upper-folded. */
+    /** The name as the refusal spells it: as written, a quoted name with its quotes (live-verified). */
     static String spell(final String rawTokenText) {
-        return rawTokenText.startsWith("\"") ? rawTokenText : rawTokenText.toUpperCase(Locale.ROOT);
+        return rawTokenText;
     }
 
     /** The lookup key: a quoted name's exact content, an unquoted name upper-folded. */

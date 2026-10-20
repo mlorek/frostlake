@@ -40,6 +40,10 @@ public class TimeSlice extends BuiltInFunction {
         final boolean dateInput = args.get(0) instanceof LocalDate;
         final LocalDateTime t = SharedFunctionHelpers.toLocalDateTime(args.get(0));
         final long n = WholeNumbers.wholeLong(args.get(1));
+        if (n <= 0) {
+            // A length written out is judged as the statement compiles; one a row gives, as it is read (live-verified).
+            throw new RuntimeException("Invalid parameter value: " + n + ". Reason: non-positive slice length");
+        }
         final IntervalUnit unit = DateUnitVocabulary.sliceUnit(args.get(2));
         if (unit == null) {
             throw SharedFunctionHelpers.notADateTimeComponent(args.get(2), "TIME_SLICE");

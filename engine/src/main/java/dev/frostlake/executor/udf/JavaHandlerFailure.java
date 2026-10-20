@@ -34,6 +34,9 @@ public final class JavaHandlerFailure {
     /** The name the report places a frame of an inline Java body in. */
     private static final String JAVA_SOURCE = "InlineCode.java";
 
+    /** The major version of a class file compiled for Java 17. */
+    private static final int JAVA_17_CLASS_FILE = 61;
+
     private JavaHandlerFailure() {
     }
 
@@ -61,7 +64,7 @@ public final class JavaHandlerFailure {
      */
     public static String report(final Throwable thrown, final Class<?> handled, final String where,
                                 final String source, final String forwarder) {
-        final StringBuilder text = new StringBuilder(HEAD).append(named(thrown));
+        final StringBuilder text = new StringBuilder(HEAD).append(named(thrown, handled));
         List<String> enclosing = frames(thrown, handled, source, forwarder);
         for (final String frame : enclosing) {
             text.append("\n\tat ").append(frame);
@@ -75,7 +78,7 @@ public final class JavaHandlerFailure {
                     && own.get(own.size() - 1 - common).equals(enclosing.get(enclosing.size() - 1 - common))) {
                 common++;
             }
-            text.append("\nCaused by: ").append(named(cause));
+            text.append("\nCaused by: ").append(named(cause, handled));
             for (int i = 0; i < own.size() - common; i++) {
                 text.append("\n\tat ").append(own.get(i));
             }
@@ -124,14 +127,24 @@ public final class JavaHandlerFailure {
 
     /**
      * An exception as the report names it: as Java prints it, except that a NullPointerException the virtual
-     * machine raised is named without the sentence newer machines compose for it, which the account's does not.
+     * machine raised is named without the sentence newer machines compose for it when the handler runs on Java 11,
+     * whose machine composes none; a handler of a routine whose RUNTIME_VERSION is 17 or later keeps it
+     * (live-verified). The level is that of the class file the handler's source compiled to.
      */
-    private static String named(final Throwable thrown) {
+    private static String named(final Throwable thrown, final Class<?> handled) {
         final String message = thrown.getMessage();
-        if (thrown.getClass() == NullPointerException.class && message != null && message.contains(" because \"")) {
+        if (thrown.getClass() == NullPointerException.class && message != null && message.contains(" because \"")
+                && classFileVersion(handled) < JAVA_17_CLASS_FILE) {
             return thrown.getClass().getName();
         }
         return thrown.toString();
+    }
+
+    /** The major version of the class file a handler's inline source compiled to, 0 for a class of a JAR. */
+    private static int classFileVersion(final Class<?> handled) {
+        final ClassLoader loader = handled.getClassLoader();
+        return loader instanceof InMemoryClassLoader
+            ? ((InMemoryClassLoader) loader).classFileVersion(handled.getName()) : 0;
     }
 
     /** A throwable's frames from where it arose down to the handler's last own frame, as the report spells them. */
@@ -147,10 +160,15 @@ public final class JavaHandlerFailure {
         final List<String> frames = new ArrayList<>();
         for (int i = 0; i <= last; i++) {
             final StackTraceElement frame = trace[i];
-            frames.add(own(frame, handled)
-                ? "function_handler_0//" + frame.getClassName() + '.' + frame.getMethodName() + '(' + source + ':'
-                    + frame.getLineNumber() + ')'
-                : frame.toString());
+            if (own(frame, handled)) {
+                frames.add("function_handler_0//" + frame.getClassName() + '.' + frame.getMethodName() + '('
+                    + source + ':' + frame.getLineNumber() + ')');
+            } else if (frame.getClassName().startsWith(SnowparkStatementFailure.SNOWPARK_PACKAGE)) {
+                // Snowpark's classes are loaded beside the handler's, and their frames are named as its are.
+                frames.add("function_handler_0//" + frame);
+            } else {
+                frames.add(frame.toString());
+            }
         }
         if (forwarder != null && last >= 0) {
             frames.add(forwarder);

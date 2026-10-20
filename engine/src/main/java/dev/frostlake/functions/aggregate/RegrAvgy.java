@@ -61,4 +61,10 @@ public class RegrAvgy extends AggregateFunction {
     public SemiStructuredRejection temporalRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
     }
+
+    /** A VECTOR is refused as a BOOLEAN is, in the DOUBLE conversion's words (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return booleanRejection(position);
+    }
 }

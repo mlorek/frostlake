@@ -73,7 +73,7 @@ public final class JdbcMarshaling {
     private static final DateTimeFormatter BOUND_TIMESTAMP =
         DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSSSS");
     private static final DateTimeFormatter BOUND_DATE = DateTimeFormatter.ofPattern("uuuu-MM-dd");
-    private static final DateTimeFormatter BOUND_TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private static final DateTimeFormatter BOUND_TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
     /**
      * Map an engine {@code DataType} to a {@link java.sql.Types} constant, using its PARAMETERS where
@@ -514,7 +514,7 @@ public final class JdbcMarshaling {
 
     /**
      * A Time bound with a Calendar, as the account's driver binds one: the Calendar is not read, and the time is the
-     * one its moment shows in UTC, in any session (live-verified).
+     * one its moment shows in UTC, in any session, its milliseconds kept (live-verified).
      *
      * @param x the value
      * @return the value to bind
@@ -523,7 +523,10 @@ public final class JdbcMarshaling {
         if (x == null) {
             return null;
         }
-        return Time.valueOf(LocalTime.ofInstant(Instant.ofEpochMilli(x.getTime()), ZoneOffset.UTC));
+        final LocalTime utc = LocalTime.ofInstant(Instant.ofEpochMilli(x.getTime()), ZoneOffset.UTC);
+        final Time bound = Time.valueOf(utc);
+        bound.setTime(bound.getTime() + utc.getNano() / 1_000_000L);
+        return bound;
     }
 
     /**
@@ -823,11 +826,13 @@ public final class JdbcMarshaling {
                     + t.getCharPositionInLine() + "\nBind variable ? not set."));
             }
             if (t.getType() == FrostlakeLexer.QUESTION && !unbound.contains(++param)) {
-                if (numbered) {
+                if (numbered && params.get(param) != null) {
+                    // A NULL bound there is no limit, as a NULL written there is (live-verified).
                     requireNoRowCount(tokens, i);
                 }
                 final String literal = !numbered ? formatLiteral(params.get(param))
-                    : aloneInValuesRow(tokens, i) ? formatLiteral(params.get(param)) : usingLiteral(params.get(param));
+                    : aloneInValuesRow(tokens, i) || rowCountPlace(tokens, i) ? formatLiteral(params.get(param))
+                    : usingLiteral(params.get(param));
                 out.append(sql, cursor, t.getStartIndex());
                 out.append(literal);
                 cursor = t.getStopIndex() + 1;
@@ -993,18 +998,30 @@ public final class JdbcMarshaling {
 
     /**
      * Refuse a USING list's {@code ?} standing where a row count belongs: the list hands a text over, and a LIMIT
-     * and an OFFSET take none — {@code Invalid row count '?' in limit clause} (live-verified).
+     * and an OFFSET take none — {@code Invalid row count '?' in limit clause} (live-verified). A NULL bound there is
+     * no text and limits nothing.
      */
     private static void requireNoRowCount(final List<Token> tokens, final int placeholder) {
+        if (rowCountPlace(tokens, placeholder)) {
+            final int type = tokenBefore(tokens, placeholder);
+            throw new RuntimeException(SqlCompilationError.of("Invalid row count '?' in "
+                + (type == FrostlakeLexer.LIMIT ? "limit clause" : "result offset clause")));
+        }
+    }
+
+    /** Whether a placeholder stands where a LIMIT's or an OFFSET's row count belongs. */
+    private static boolean rowCountPlace(final List<Token> tokens, final int placeholder) {
+        final int type = tokenBefore(tokens, placeholder);
+        return type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.OFFSET;
+    }
+
+    /** The type of the token before a placeholder on the default channel, or EOF where none is. */
+    private static int tokenBefore(final List<Token> tokens, final int placeholder) {
         int before = placeholder - 1;
         while (before >= 0 && tokens.get(before).getChannel() != Token.DEFAULT_CHANNEL) {
             before--;
         }
-        final int type = before < 0 ? Token.EOF : tokens.get(before).getType();
-        if (type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.OFFSET) {
-            throw new RuntimeException(SqlCompilationError.of("Invalid row count '?' in "
-                + (type == FrostlakeLexer.LIMIT ? "limit clause" : "result offset clause")));
-        }
+        return before < 0 ? Token.EOF : tokens.get(before).getType();
     }
 
     /**
@@ -1044,7 +1061,10 @@ public final class JdbcMarshaling {
             return "TO_DATE('" + BOUND_DATE.format(((Date) value).toLocalDate()) + "', 'YYYY-MM-DD')";
         }
         if (value instanceof Time) {
-            return "TO_TIME('" + ((Time) value).toLocalTime().format(BOUND_TIME) + "', 'HH24:MI:SS')";
+            // A Time carries its milliseconds in its moment alone: toLocalTime() reads the clock to the second.
+            final Time time = (Time) value;
+            final LocalTime clock = time.toLocalTime().withNano((int) Math.floorMod(time.getTime(), 1000L) * 1_000_000);
+            return "TO_TIME('" + clock.format(BOUND_TIME) + "', 'HH24:MI:SS.FF3')";
         }
         if (value instanceof BinaryValue) {
             // A binary parameter binds as a hex literal, which the parser reads back as BINARY.

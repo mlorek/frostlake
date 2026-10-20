@@ -210,6 +210,39 @@ final class SubqueryEvaluator {
         return body;
     }
 
+    /**
+     * An IN's subquery as it is run: a condition the statistics settle inside an aggregate's argument written as its
+     * value (see {@link CorrelatedSubqueryRule#settledBodyText}). Every other subquery is run as written.
+     *
+     * @param expr the subquery
+     * @return the subquery to run, positioned as {@code expr} is
+     */
+    private SubqueryExpression settledBody(final SubqueryExpression expr) {
+        final String key = "in\u0000" + memoKey(expr);
+        SubqueryExpression body = statisticsBodies.get(key);
+        if (body != null) {
+            return body;
+        }
+        body = expr;
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(expr.getSubquery());
+        if (parsed != null) {
+            final Set<String> outerNames = new HashSet<>();
+            for (final String name : buildLateralContext().keySet()) {
+                outerNames.add(name.toUpperCase(Locale.ROOT));
+            }
+            final String text = new CorrelatedSubqueryRule(queryExecutor, outerNames, visitor.scopeRelations())
+                .settledBodyText(parsed);
+            if (text != null) {
+                body = new SubqueryExpression(text);
+                body.setPosition(expr.getPosition());
+                body.setQueryPosition(expr.getQueryPosition());
+            }
+        }
+        statisticsBodies.put(key, body);
+        return body;
+    }
+
     Object evaluateScalarSubquery(final SubqueryExpression expr) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         if (queryExecutor == null) {
@@ -521,7 +554,7 @@ final class SubqueryEvaluator {
         if (requireSupportedCorrelation(expr, false, true, not, subject)) {
             return null;
         }
-        final List<ResultSet> results = executeSubquery(expr);
+        final List<ResultSet> results = executeSubquery(settledBody(expr));
 
         if (results.isEmpty()) {
             return not;

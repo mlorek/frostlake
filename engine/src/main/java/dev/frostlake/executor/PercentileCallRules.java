@@ -252,10 +252,11 @@ final class PercentileCallRules {
         // that name outranks the alias, so those names are left alone.
         final String keyType = declaredTypeText(
             withSiblingAliases(call, key, table, allTables), table, aliasToTable, allTables);
-        // TIME is spelled with its precision — TIME(9) — and a BINARY key is refused in the same
-        // sentence (live-verified); a BOOLEAN one is an internal error on the account and is left alone.
+        // TIME is spelled with its precision — TIME(9) — and a BINARY or a VECTOR key is refused in the same
+        // sentence, the windowed call too (live-verified); a BOOLEAN one is an internal error on the account and is
+        // left alone.
         if (keyType != null && (keyType.equals("DATE") || keyType.startsWith("TIME")
-                || keyType.startsWith("BINARY"))) {
+                || keyType.startsWith("BINARY") || keyType.startsWith("VECTOR"))) {
             throw new RuntimeException(SqlCompilationError.of(
                 "incompatible types: [" + keyType + "] and [" + NUMERIC_COUNTERPART + "]"));
         }

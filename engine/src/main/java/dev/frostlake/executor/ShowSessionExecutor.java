@@ -166,6 +166,8 @@ final class ShowSessionExecutor {
                 inForce = setByUser;
             } else if (setByAccount != null) {
                 inForce = setByAccount;
+            } else if (SystemParameters.value(key) != null) {
+                inForce = SystemParameters.value(key);
             } else if ("JSON_INDENT".equals(key)) {
                 inForce = String.valueOf(VariantJsonFormat.indent());
             } else {
@@ -174,7 +176,7 @@ final class ShowSessionExecutor {
             // The LEVEL is where the value in force came from: a parameter this session has SET reads
             // SESSION, one the account sets reads ACCOUNT, and one still on its default reads EMPTY.
             rows.add(new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
-                levelOf(setBySession ? "SESSION" : setByUser != null ? "USER" : null, setByAccount),
+                levelOf(setBySession ? "SESSION" : setByUser != null ? "USER" : null, setByAccount, key),
                 parameter.getDescription(), parameter.getType())));
         }
         // A session parameter the catalog has never heard of still appears once it is set — with no
@@ -243,10 +245,10 @@ final class ShowSessionExecutor {
                 // The user's own setting, else the account's, else the default.
                 final String setByUser = listed.getParameters().get(key);
                 final String setByAccount = AccountParameters.value(catalog, key);
-                final String inForce = setByUser != null ? setByUser
-                    : setByAccount != null ? setByAccount : parameter.getDefaultValue();
+                final String inForce = setByUser != null ? setByUser : inherited(key, setByAccount,
+                    parameter.getDefaultValue());
                 row = new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
-                    levelOf(setByUser != null ? "USER" : null, setByAccount), parameter.getDescription(),
+                    levelOf(setByUser != null ? "USER" : null, setByAccount, key), parameter.getDescription(),
                     parameter.getType()));
             }
             addIfLike(rows, row, likePattern);
@@ -256,16 +258,23 @@ final class ShowSessionExecutor {
 
     /**
      * Where a parameter's value in force came from: the level that set it, else ACCOUNT when the account sets it,
-     * else empty, the default.
+     * else SYSTEM when the system does ({@link SystemParameters}), else empty, the default.
      *
      * @param ownLevel     the level the listed object set it at, or null when it did not
      * @param setByAccount the account's value, or null when the account leaves it at its default
+     * @param key          the parameter's name
      */
-    private static String levelOf(final String ownLevel, final String setByAccount) {
+    private static String levelOf(final String ownLevel, final String setByAccount, final String key) {
         if (ownLevel != null) {
             return ownLevel;
         }
-        return setByAccount != null ? "ACCOUNT" : "";
+        return setByAccount != null ? "ACCOUNT" : SystemParameters.value(key) != null ? "SYSTEM" : "";
+    }
+
+    /** What a parameter inherits where nothing below the account sets it: the account's, the system's, the default. */
+    private static String inherited(final String key, final String setByAccount, final String defaultValue) {
+        return setByAccount != null ? setByAccount
+            : SystemParameters.value(key) != null ? SystemParameters.value(key) : defaultValue;
     }
 
     private static void addIfLike(final List<Row> rows, final Row row, final String likePattern) {
@@ -337,17 +346,18 @@ final class ShowSessionExecutor {
             }
             final String set = task.getSessionParameters().get(key);
             final String setByAccount = AccountParameters.value(catalog, key);
-            final String inherited = setByAccount != null ? setByAccount : row.getDefaultValue();
-            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited, row.getDefaultValue(),
-                levelOf(set != null ? "TASK" : null, setByAccount), row.getDescription(), row.getType())));
+            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited(key, setByAccount,
+                row.getDefaultValue()), row.getDefaultValue(), levelOf(set != null ? "TASK" : null, setByAccount, key),
+                row.getDescription(), row.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
     }
 
     /**
      * SHOW PARAMETERS IN ALERT: the session parameters a task carries for its runs, in the task listing's order,
-     * without the task's own (live-verified); an alert sets none of them, so each is the account's value or its
-     * default. SUSPEND_ALERT_AFTER_NUM_FAILURES is a property of the alert and no parameter: it is not listed.
+     * without the task's own (live-verified): each as ALTER ALERT … SET set it on the alert, at level ALERT, else the
+     * account's value or its default. SUSPEND_ALERT_AFTER_NUM_FAILURES is a property of the alert and no parameter:
+     * it is not listed.
      *
      * @param written     the alert as written
      * @param likePattern the LIKE filter, or null
@@ -358,6 +368,7 @@ final class ShowSessionExecutor {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Alert",
                 written.schema().qualifiedName(written.name())));
         }
+        final Map<String, String> own = written.schema().getAlert(written.name()).getParameters();
         final List<Row> rows = new ArrayList<>();
         for (final String key : SessionParameterCatalog.taskScopeNames()) {
             if (TASK_ONLY.contains(key) || !matchesParameterFilter(key, likePattern)) {
@@ -367,9 +378,11 @@ final class ShowSessionExecutor {
             if (row == null) {
                 continue;
             }
+            final String set = own.get(key);
             final String setByAccount = AccountParameters.value(catalog, key);
-            rows.add(new Row(Arrays.asList(key, setByAccount != null ? setByAccount : row.getDefaultValue(),
-                row.getDefaultValue(), levelOf(null, setByAccount), row.getDescription(), row.getType())));
+            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited(key, setByAccount, row.getDefaultValue()),
+                row.getDefaultValue(), levelOf(set != null ? "ALERT" : null, setByAccount, key), row.getDescription(),
+                row.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
     }

@@ -1,0 +1,8 @@
+# The parameters an alert refuses at its own level, one per line: "cannot set parameter '<name>' at 'ALERT'"
+# (live-verified).
+ENABLE_NOTEBOOK_CREATION_IN_PERSONAL_DB
+ENABLE_STAGE_S3_PRIVATELINK_FOR_US_EAST_1
+NETWORK_POLICY
+SNOWSIGHT_USE_DASHED_CLASSIC_UI_URL
+SNOWSIGHT_USE_REGIONLESS_CLASSIC_UI_URL
+SQL_TRACE_QUERY_TEXT

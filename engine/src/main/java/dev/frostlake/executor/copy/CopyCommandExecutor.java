@@ -27,6 +27,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StagePathSegments;
 import dev.frostlake.executor.StagePrefix;
+import dev.frostlake.executor.StageQueryArguments;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.StorageIntegrationReference;
@@ -320,6 +321,7 @@ public final class CopyCommandExecutor {
         List<String> files = null;
         List<String> columns = null;
         FrostlakeParser.CopyTransformationContext transformation = null;
+        StageQueryArguments transformationArguments = null;
         // The format the files are read by, at the account's defaults until a format says otherwise: the stage's
         // own first, then the statement's FILE_FORMAT - the format it names, then the options written beside it
         // (see FileFormatOptions).
@@ -358,6 +360,7 @@ public final class CopyCommandExecutor {
                     // FROM (SELECT $1, $2, … FROM @stage) — column transformation over staged file fields.
                     transformation = sourceCtx.copyTransformation();
                     validateTransformationFunctions(transformation);
+                    transformationArguments = StageQueryArguments.read(executor, transformation.stageQueryParams());
                     fromLocation = executor.stageRefToLocation(transformation.stageRef());
                     fromLocationDisplay = ParseTreeText.getOriginalText(transformation.stageRef());
                     executor.requireStagePrivilege(Privilege.READ, transformation.stageRef());
@@ -437,6 +440,16 @@ public final class CopyCommandExecutor {
             }
         }
 
+        // A transformation's staged-file arguments read the files where the statement writes no FILE_FORMAT or
+        // PATTERN of its own.
+        if (transformationArguments != null) {
+            if (!seenCopyOptions.contains("FILE_FORMAT") && transformationArguments.format() != null) {
+                format.takeFormat(transformationArguments.format());
+            }
+            if (pattern == null && transformationArguments.pattern() != null) {
+                pattern = transformationArguments.pattern();
+            }
+        }
         // The effective format, settled once every clause is read (see FileFormatOptions): the CSV delimiters (NONE
         // as the word), the enclosure and the escapes as characters, NULL_IF (the
         // text \N when no format names one), the header, blank-line, width and field rules, the character set,

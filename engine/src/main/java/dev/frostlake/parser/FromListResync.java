@@ -95,6 +95,11 @@ final class FromListResync {
             // A fault inside a call's parentheses — IDENTIFIER(…), TABLE(…), a table function — is that call's.
             return null;
         }
+        if (faultDepth == 0 && faultType == FrostlakeLexer.DOT
+                && spoken.get(slotStart).getType() == FrostlakeLexer.LATERAL) {
+            // So is a dot in the name a LATERAL call is called by: the parser names that call's lines itself.
+            return null;
+        }
         final boolean firstSlot = slotStart == from + 1;
         if (!firstSlot && faultDepth == 0 && slotStart == fault) {
             fault = faultAsFirstReference(sql, spoken, from, slotStart);

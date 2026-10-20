@@ -1019,8 +1019,7 @@ public class DDLCommandHandler implements CommandHandler {
      *
      * @throws RuntimeException the does-not-exist refusal when there is none
      */
-    public DynamicTable resolveDynamicTable(final FrostlakeParser.QualifiedNameContext name) {
-        final String[] parts = qualifiedNameParts(name);
+    public DynamicTable resolveDynamicTable(final String[] parts) {
         return dynamicTableSchema(parts).getDynamicTable(parts[parts.length - 1]);
     }
 
@@ -1230,9 +1229,9 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     private Object handleAlterDynamicTable(final FrostlakeParser.AlterStatementContext ctx) {
-        final String qn = getText(ctx.qualifiedName());
+        final String qn = queryExecutor.alterTargetName(ctx);
         DynamicTableProperties.rejectUntakeable(ctx.dynamicTableAction());
-        final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+        final String[] parts = queryExecutor.alterTargetNameParts(ctx);
         final Schema schema = dynamicTableSchema(parts);
         final String dtName = parts[parts.length - 1];
         final FrostlakeParser.DynamicTableActionContext action = ctx.dynamicTableAction();

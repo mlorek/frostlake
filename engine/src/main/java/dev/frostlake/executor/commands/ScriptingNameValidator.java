@@ -107,6 +107,12 @@ final class ScriptingNameValidator {
     private static final String NO_FIELDS = "\u0001";
 
     /**
+     * What marks, likewise, a variable a DECLARE or a LET gives a value of whatever type, which a dotted name cannot
+     * read: {@code x.a} over a VARIANT or an OBJECT {@code x} is "invalid identifier 'X'" (live-verified).
+     */
+    private static final String NO_PATH = "\u0002";
+
+    /**
      * Names a script may use without declaring them. SQLCODE and the row counts resolve anywhere, NULL where
      * nothing has set them; SQLERRM and SQLSTATE are names inside an exception handler alone (see
      * {@code HANDLER_SUPPLIED}).
@@ -248,6 +254,9 @@ final class ScriptingNameValidator {
                 if (item instanceof FrostlakeParser.DeclarationItemContext) {
                     final FrostlakeParser.DeclarationItemContext typed = (FrostlakeParser.DeclarationItemContext) item;
                     declare(typed.identifier(), scope, counters);
+                    if (typed.dataTypeName() != null) {
+                        holdsValue(typed.identifier(), scope);
+                    }
                     if (holdsPlainValue(typed)) {
                         // A plain value holds no fields: y.v over an INT y is "invalid identifier 'Y'"
                         // (live-verified).
@@ -267,6 +276,7 @@ final class ScriptingNameValidator {
                             untyped.identifier().getStart());
                     }
                     declare(untyped.identifier(), scope, counters);
+                    holdsValue(untyped.identifier(), scope);
                     if (returns != null) {
                         returns.declared(untyped);
                     }
@@ -430,6 +440,9 @@ final class ScriptingNameValidator {
                 }
             }
             declare(let.variableName(), scope, counters);
+            if (let.CURSOR() == null && let.RESULTSET() == null) {
+                holdsValue(let.variableName(), scope);
+            }
             return;
         }
         if (node instanceof FrostlakeParser.SetStatementContext
@@ -516,6 +529,7 @@ final class ScriptingNameValidator {
             if (loop.variableName() != null) {
                 final String counter = canonical(text(loop.variableName()));
                 body.add(counter);
+                body.remove(NO_PATH + counter);
                 // An integer range's counter is read-only inside its loop; a cursor loop's record is
                 // not, and hides any counter of the same name.
                 if (loop.TO() != null) {
@@ -1228,7 +1242,8 @@ final class ScriptingNameValidator {
             return;
         }
         final String root = canonical(text(name.nameStartPart()));
-        if (!name.namePart().isEmpty() && (scope.contains(NO_RECORD + root) || scope.contains(NO_FIELDS + root))) {
+        if (!name.namePart().isEmpty() && (scope.contains(NO_RECORD + root) || scope.contains(NO_FIELDS + root)
+                || scope.contains(NO_PATH + root))) {
             // A range's counter is named alone, {@code r.v} over FOR r IN 1 TO 2 being "invalid identifier 'R'".
             final Token at = name.getStart();
             throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
@@ -1311,7 +1326,15 @@ final class ScriptingNameValidator {
                                 final Set<String> scope, final Set<String> counters) {
         if (identifier != null) {
             scope.add(canonical(text(identifier)));
+            scope.remove(NO_PATH + canonical(text(identifier)));
             counters.remove(canonical(text(identifier)));
+        }
+    }
+
+    /** Marks a declared variable as one holding a value, which no dotted name reads (see NO_PATH). */
+    private static void holdsValue(final ParserRuleContext identifier, final Set<String> scope) {
+        if (identifier != null) {
+            scope.add(NO_PATH + canonical(text(identifier)));
         }
     }
 

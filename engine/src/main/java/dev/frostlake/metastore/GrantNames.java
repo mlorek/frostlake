@@ -219,6 +219,32 @@ public final class GrantNames {
             || schema.hasMaterializedView(object) || schema.hasDynamicTable(object);
     }
 
+    /**
+     * The containers an object's recorded name names: a schema-level object's database and schema, a schema's
+     * database; none for a database, an account-level object or a name not written in full.
+     *
+     * @param objectType the object's kind, as grants record it
+     * @param recorded   the name the grant is recorded under, a routine's with its argument types or without
+     * @return the database's name, then the schema's, where the kind has them
+     */
+    public static String[] containers(final String objectType, final String recorded) {
+        if (objectType == null || recorded == null || !MEMBERS.contains(kindOf(objectType))) {
+            return new String[0];
+        }
+        final String kind = kindOf(objectType);
+        final int signature = "FUNCTION".equals(kind) || "PROCEDURE".equals(kind) ? signatureStart(recorded) : -1;
+        final String[] name;
+        try {
+            name = parts(signature < 0 ? recorded : recorded.substring(0, signature));
+        } catch (final RuntimeException unreadable) {
+            return new String[0];
+        }
+        if ("SCHEMA".equals(kind)) {
+            return name.length == 2 ? new String[] {name[0]} : new String[0];
+        }
+        return name.length == 3 ? new String[] {name[0], name[1]} : new String[0];
+    }
+
     /** Where a recorded routine name's signature opens, at the parenthesis its last one closes; -1 for none. */
     private static int signatureStart(final String recorded) {
         if (!recorded.endsWith(")")) {

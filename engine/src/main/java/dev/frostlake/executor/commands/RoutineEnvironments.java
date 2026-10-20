@@ -26,6 +26,8 @@ import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.JavaRuntimeLevel;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Integration;
+import dev.frostlake.metastore.model.IntegrationKind;
 import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObjectKind;
@@ -299,7 +301,8 @@ final class RoutineEnvironments {
 
     /**
      * The integrations a list names, canonical. The list is parenthesized and each name plain: a value written
-     * any other way is refused as the property's value, echoed as written. An integration has to exist.
+     * any other way is refused as the property's value, echoed as written. An integration has to exist, and be an
+     * external access integration.
      *
      * @param list the value written after EXTERNAL_ACCESS_INTEGRATIONS
      * @return the integrations' names, in written order
@@ -317,9 +320,15 @@ final class RoutineEnvironments {
                 throw invalidIntegration(item);
             }
             final String name = ParseTreeText.qualifiedNameParts(item.qualifiedName())[0];
-            if (catalog.getIntegrations().find(name) == null) {
+            final Integration integration = catalog.getIntegrations().find(name);
+            if (integration == null) {
                 throw new RuntimeException(SqlCompilationError.of("Integration '" + name
                     + "' does not exist or not authorized."));
+            }
+            // Only an external access integration lets a handler out (documented).
+            if (integration.getKind() != IntegrationKind.EXTERNAL_ACCESS) {
+                throw new RuntimeException(SqlCompilationError.of("Integration '" + name
+                    + "' is not an external access integration."));
             }
             names.add(name);
         }

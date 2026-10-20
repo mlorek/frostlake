@@ -239,6 +239,8 @@ final class CatalogSnapshotReader {
                 user.setDefaultWarehouse(userSnapshot.defaultWarehouse);
                 user.setDefaultNamespace(userSnapshot.defaultNamespace);
                 user.setDefaultSecondaryRoles(userSnapshot.defaultSecondaryRoles);
+                user.restoreDefaultSecondaryRolesWritten(
+                    Boolean.TRUE.equals(userSnapshot.defaultSecondaryRolesWritten));
                 user.setMustChangePassword(userSnapshot.mustChangePassword);
                 user.setUserType(userSnapshot.userType);
             }
@@ -703,6 +705,7 @@ final class CatalogSnapshotReader {
                         taskSnapshot.sqlStatement, taskSnapshot.warehouse);
                     task.setId(taskSnapshot.id);
                     task.setCreatedByUser(taskSnapshot.createdByUser);
+                    task.setResumedBy(taskSnapshot.resumedBy);
                     SnapshotTags.restore(task, taskSnapshot.tags);
                     if (taskSnapshot.explicitParameters != null) {
                         for (final String parameterName : taskSnapshot.explicitParameters) {
@@ -756,7 +759,8 @@ final class CatalogSnapshotReader {
                         for (final TaskExecutionSnapshot run : taskSnapshot.history) {
                             task.recordExecution(new TaskExecution(run.scheduledTime, run.startTime, run.endTime,
                                 TaskExecutionState.valueOf(run.state), run.errorMessage, run.rowsAffected,
-                                taskTrigger(run.scheduledFrom), run.attempt == null ? 1 : run.attempt.intValue()));
+                                taskTrigger(run.scheduledFrom), run.attempt == null ? 1 : run.attempt.intValue())
+                                .ranAs(run.queryId, run.errorCode, run.scheduledByUser));
                         }
                     }
                     schema.addTask(task);

@@ -60,6 +60,18 @@ final class JavaScriptErrorText {
      */
     static String of(final Throwable failure, final String name, final String body, final int firstLine,
                      final String script, final JavaScriptHost host, final String fallback) {
+        return of(failure, name, body, firstLine, script, host, fallback, false);
+    }
+
+    /**
+     * {@link #of(Throwable, String, String, int, String, JavaScriptHost, String)} for a table function's handler
+     * object as well: its frames are its own methods' and the functions they called, each by its name and at its
+     * line counted from 0, with no frame for the routine itself (live-verified).
+     *
+     * @param table whether the body is a table function's handler object
+     */
+    static String of(final Throwable failure, final String name, final String body, final int firstLine,
+                     final String script, final JavaScriptHost host, final String fallback, final boolean table) {
         final PolyglotException guest = guestFailure(failure);
         if (guest == null) {
             return fallback;
@@ -113,7 +125,7 @@ final class JavaScriptErrorText {
         if (json != null) {
             final int call = begin + new JavaScriptSourceScan(section).callPlace();
             return "JavaScript execution error: Uncaught " + told + " in " + name + " at '" + json.line()
-                + "' position " + json.column() + STACK + frames(roots, starts, sources, name, lines, call);
+                + "' position " + json.column() + STACK + frames(roots, starts, sources, name, lines, call, table);
         }
         final int origin = Math.min(place(told, own != null || unplaced, section, begin, scan, body, unplaced),
             body.length());
@@ -124,7 +136,7 @@ final class JavaScriptErrorText {
             + JavaScriptFaultWording.of(told, section, lines[lineOf(lines, origin) - 1], body,
                 around(scan, body, begin))
             + " in " + name + " at '" + lines[line - 1] + "' position " + (site - lineStart(lines, line)) + STACK
-            + frames(roots, starts, sources, name, lines, origin);
+            + frames(roots, starts, sources, name, lines, origin, table);
     }
 
     /**
@@ -363,17 +375,18 @@ final class JavaScriptErrorText {
      * The frames listed after {@code stackstrace: }: each function the failure passed through inside the body,
      * innermost first, then the handler itself. The innermost is listed at the line the failure arose on, the
      * others at the line of the call they had reached. The handler is the outermost frame inside the body; the
-     * wrappers around it lie outside the body's lines, and the engine's own code in another source.
+     * wrappers around it lie outside the body's lines, and the engine's own code in another source. A table
+     * function's handler object has no frame of its own: each frame is a function's, at its line counted from 0.
      */
     private static String frames(final List<String> roots, final List<Integer> starts, final List<String> sources,
-                                 final String name, final String[] lines, final int origin) {
+                                 final String name, final String[] lines, final int origin, final boolean table) {
         final StringBuilder listed = new StringBuilder();
         for (int i = 0; i < roots.size(); i++) {
             final int at = i == 0 ? origin : starts.get(i) + new JavaScriptSourceScan(sources.get(i)).callPlace();
             final String root = roots.get(i);
-            final boolean handler = i == roots.size() - 1;
-            listed.append(handler ? name : root == null || root.startsWith(":") ? "" : root).append(" line: ")
-                .append(lineOf(lines, at)).append(handler ? "" : "\n");
+            final boolean handler = !table && i == roots.size() - 1;
+            listed.append(i > 0 ? "\n" : "").append(handler ? name : root == null || root.startsWith(":") ? "" : root)
+                .append(" line: ").append(table ? lineOf(lines, at) - 1 : lineOf(lines, at));
         }
         return roots.isEmpty() ? name + " line: " + lineOf(lines, origin) : listed.toString();
     }

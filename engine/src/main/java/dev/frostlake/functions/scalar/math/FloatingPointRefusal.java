@@ -24,7 +24,7 @@ import java.math.MathContext;
  * operation as its runtime names it, over the arguments at six significant digits — "Invalid floating point
  * operation: sqrt(-1)", "… acos(2)", "… log(e,0)", "… pow(-8, 0.333333)" (live-verified).
  */
-final class FloatingPointRefusal {
+public final class FloatingPointRefusal {
 
     private static final MathContext SIX_DIGITS = new MathContext(6);
 
@@ -47,7 +47,7 @@ final class FloatingPointRefusal {
      * @param value an argument
      * @return its print
      */
-    static String number(final double value) {
+    public static String number(final double value) {
         if (Double.isNaN(value) || Double.isInfinite(value)) {
             return value > 0 ? "inf" : Double.isNaN(value) ? "nan" : "-inf";
         }

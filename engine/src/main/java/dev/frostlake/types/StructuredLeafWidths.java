@@ -141,7 +141,8 @@ public final class StructuredLeafWidths {
                 : new StructuredArrayType(element, ((StructuredArrayType) type).isElementNotNull());
         }
         if (type instanceof StringType && ((StringType) type).isUnsized()) {
-            return new StringType("VARCHAR", ((StringType) type).getMaxLength());
+            // A stored shape sizes a leaf written with no width at the column default (live-verified).
+            return StringType.VARCHAR;
         }
         if (type instanceof BinaryType && ((BinaryType) type).getWidthSpelling() == BinaryWidthSpelling.UNSIZED) {
             return new BinaryType(BinaryType.DEFAULT_WIDTH, ((BinaryType) type).isFixed());

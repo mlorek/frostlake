@@ -120,6 +120,27 @@ public class Task implements Named, Taggable {
         return lastReturnValue;
     }
 
+    /** The user who last resumed the task: whom its scheduled runs are scheduled by. */
+    private String resumedBy;
+
+    /**
+     * The user who last resumed the task, as SCHEDULED_BY_USER tells it for the task's scheduled runs.
+     *
+     * @return the user's name, or null when nobody resumed it
+     */
+    public String getResumedBy() {
+        return resumedBy;
+    }
+
+    /**
+     * Records who resumed the task.
+     *
+     * @param resumedBy the user's name
+     */
+    public void setResumedBy(final String resumedBy) {
+        this.resumedBy = resumedBy;
+    }
+
     public void setLastReturnValue(final String lastReturnValue) {
         this.lastReturnValue = lastReturnValue;
     }
@@ -429,6 +450,45 @@ public class Task implements Named, Taggable {
      *
      * @return the copy
      */
+    /**
+     * Takes another task's definition, as CREATE OR ALTER TASK changes a task to what the statement writes: its
+     * schedule, warehouse, body, predecessors, condition, comment, contacts and every parameter, a property the
+     * statement leaves out taken unset. The task keeps its name, owner, state, runs and tags.
+     *
+     * @param written the task as the statement writes it
+     */
+    public void redefineAs(final Task written) {
+        schedule = written.schedule;
+        scheduleType = written.scheduleType;
+        sqlStatement = written.sqlStatement;
+        warehouse = written.warehouse;
+        predecessors.clear();
+        predecessors.addAll(written.predecessors);
+        comment = written.comment;
+        condition = written.condition;
+        explicitParameters.clear();
+        explicitParameters.addAll(written.explicitParameters);
+        suspendTaskAfterNumFailures = written.suspendTaskAfterNumFailures;
+        taskAutoRetryAttempts = written.taskAutoRetryAttempts;
+        userTaskManagedInitialWarehouseSize = written.userTaskManagedInitialWarehouseSize;
+        serverlessTaskMaxStatementSize = written.serverlessTaskMaxStatementSize;
+        targetCompletionInterval = written.targetCompletionInterval;
+        errorIntegration = written.errorIntegration;
+        userTaskMinimumTriggerIntervalInSeconds = written.userTaskMinimumTriggerIntervalInSeconds;
+        allowOverlappingExecution = written.allowOverlappingExecution;
+        userTaskTimeoutMs = written.userTaskTimeoutMs;
+        config = written.config;
+        overlapPolicy = written.overlapPolicy;
+        sessionParameters.clear();
+        sessionParameters.putAll(written.sessionParameters);
+        contacts.clear();
+        contacts.putAll(written.contacts);
+        successIntegration = written.successIntegration;
+        finalizedRootTask = written.finalizedRootTask;
+        executeAsUser = written.executeAsUser;
+        serverlessTaskMinStatementSize = written.serverlessTaskMinStatementSize;
+    }
+
     public Task cloneDefinition() {
         final Task copy = new Task(name, schedule, scheduleType, sqlStatement, warehouse);
         copy.explicitParameters.addAll(explicitParameters);

@@ -20,6 +20,7 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AlertExecution;
 import dev.frostlake.metastore.model.AlertState;
@@ -85,6 +86,8 @@ public class TaskScheduler {
     private static final ThreadLocal<String> CURRENT_GRAPH_CONFIG = new ThreadLocal<>();
     // The attempt of its graph run the runs a retry starts on this thread belong to; unset, a run is attempt 1.
     private static final ThreadLocal<Integer> CURRENT_ATTEMPT = new ThreadLocal<>();
+    /** The user the graph run on this thread is scheduled by: who ran EXECUTE TASK, or who resumed the root. */
+    private static final ThreadLocal<String> SCHEDULED_BY = new ThreadLocal<>();
     /** How often a running scheduler looks for dynamic tables whose target lag has passed. */
     private static final long DYNAMIC_TABLE_SWEEP_SECONDS = 10L;
     /** The running scheduler's look for dynamic tables due a refresh, or null while stopped. */
@@ -555,6 +558,7 @@ public class TaskScheduler {
         // called startTaskScheduler() first (Snowflake semantics — RESUME is what activates a task).
         start();
         task.setState(TaskState.STARTED);
+        task.setResumedBy(taskExecutor.currentUser());
         scheduleTask(qualifiedTaskName, task);
     }
 
@@ -564,7 +568,13 @@ public class TaskScheduler {
     }
 
     private void executeTask(final String qualifiedTaskName, final Task task) {
-        runGraph(qualifiedTaskName, task, TaskTrigger.SCHEDULE, task.getConfig());
+        // A scheduled run is scheduled by whoever resumed the task (live-verified).
+        SCHEDULED_BY.set(task.getResumedBy());
+        try {
+            runGraph(qualifiedTaskName, task, TaskTrigger.SCHEDULE, task.getConfig());
+        } finally {
+            SCHEDULED_BY.remove();
+        }
     }
 
     /**
@@ -672,6 +682,18 @@ public class TaskScheduler {
         return LocalDateTime.ofInstant(instant.truncatedTo(ChronoUnit.MILLIS), ZoneId.systemDefault());
     }
 
+    /**
+     * A run with the query that ran the task's statement — its id and the code of the error it failed with, as the
+     * query's history row has them — and the user the run was scheduled by (live-verified).
+     */
+    private TaskExecution ranAs(final Task task, final TaskExecution run) {
+        final QueryHistory ran = taskExecutor.lastRecordedQuery();
+        final boolean ours = ran != null && task.getSqlStatement() != null
+            && task.getSqlStatement().equals(ran.getQueryText());
+        return run.ranAs(ours ? ran.getQueryId() : null,
+            ours && ran.getErrorCode() != null ? String.valueOf(ran.getErrorCode()) : null, SCHEDULED_BY.get());
+    }
+
     private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final Set<String> visited,
                                     final TaskTrigger trigger) {
         // Read the way SQL reads the time, so what the run does next reads a later instant.
@@ -722,8 +744,8 @@ public class TaskScheduler {
                 try {
                     final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
-                    task.recordExecution(new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
-                        TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger, graphAttempt));
+                    task.recordExecution(ranAs(task, new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
+                        TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger, graphAttempt)));
 
                     // Calculate next run time (only for interval-scheduled tasks — a CRON task
                     // stamps its next fire when it re-arms)
@@ -741,8 +763,8 @@ public class TaskScheduler {
                     return;
 
                 } catch (final Exception e) {
-                    task.recordExecution(new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
-                        TaskExecutionState.FAILED, e.getMessage(), 0, trigger, graphAttempt));
+                    task.recordExecution(ranAs(task, new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
+                        TaskExecutionState.FAILED, e.getMessage(), 0, trigger, graphAttempt)));
                     logger.error("Task {} failed (attempt {}/{}): {}",
                         qualifiedTaskName, attempt, maxAttempts, e.getMessage());
 
@@ -837,6 +859,17 @@ public class TaskScheduler {
      */
     public void executeTaskManually(final String qualifiedTaskName, final boolean retryLast,
                                     final String retryGraphRunGroup, final String usingConfig) {
+        // A run EXECUTE TASK starts is scheduled by the user who ran the statement (live-verified).
+        SCHEDULED_BY.set(taskExecutor.currentUser());
+        try {
+            executeManually(qualifiedTaskName, retryLast, retryGraphRunGroup, usingConfig);
+        } finally {
+            SCHEDULED_BY.remove();
+        }
+    }
+
+    private void executeManually(final String qualifiedTaskName, final boolean retryLast,
+                                 final String retryGraphRunGroup, final String usingConfig) {
         // The task's schema as every object's is resolved (see Catalog.requireOwningSchema): a fully qualified
         // name's database is honoured, so a task in another database runs from wherever the session is
         // (live-verified), and the task is named exactly - a quoted name in another case is another task.

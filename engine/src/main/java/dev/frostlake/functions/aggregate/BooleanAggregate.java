@@ -55,4 +55,10 @@ public abstract class BooleanAggregate extends AggregateFunction {
     public SemiStructuredRejection structuredRejection(final int position) {
         return SemiStructuredRejection.BOOLEAN_CONVERSION_PARAMETER;
     }
+
+    /** A VECTOR is refused in TO_BOOLEAN's words, as a FLOAT is (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.BOOLEAN_CONVERSION_PARAMETER;
+    }
 }

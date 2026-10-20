@@ -1839,7 +1839,9 @@ public class ProceduralExecutor {
                         binds);
                     throw lead == null ? echoed : BoundText.displaced(echoed, lead[0], lead[1]);
                 }
-                rsv.setResultSet(r.isEmpty() ? null : r.get(0));
+                // An unaliased column is named by the query as the block wrote it.
+                rsv.setResultSet(r.isEmpty() ? null
+                    : BindColumnNames.asWritten(r.get(0), rsv.getSelectQuery(), bound, queryExecutor));
             }
             return rsv.getResultSet();
         }

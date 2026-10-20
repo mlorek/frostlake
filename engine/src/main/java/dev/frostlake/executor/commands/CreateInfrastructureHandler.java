@@ -39,6 +39,7 @@ import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
@@ -46,6 +47,7 @@ import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
 import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.parser.FrostlakeParser;
@@ -97,18 +99,19 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String taskQualifiedName = getText(ctx.qualifiedName(0));
         final String taskName = ddl.extractObjectName(taskQualifiedName);
         final boolean orReplace = ctx.or_replace() != null;
+        final boolean orAlter = ctx.or_alter() != null;
         TaskBodySyntax.requireOneStatement(ctx);
 
         try {
-            DDLCommandHandler.refuseTakenName(!orReplace && !ifNotExists,
+            DDLCommandHandler.refuseTakenName(!orReplace && !orAlter && !ifNotExists,
                 hasTaskNamed(ddl.resolveSchemaFromQualifiedName(taskQualifiedName), taskName),
                 qualifiedNameParts(ctx.qualifiedName(0)));
             ddl.checkCreatePrivilege(Privilege.CREATE_TASK,
                 ddl.resolveSchemaFromQualifiedName(taskQualifiedName));
-            if (orReplace) {
+            final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQualifiedName);
+            if (orReplace || orAlter && hasTaskNamed(schema, taskName)) {
                 queryExecutor.requireOwnership("TASK", qualifiedNameParts(ctx.qualifiedName(0)), null);
             }
-            final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQualifiedName);
             final String sqlText = taskBodyText(ctx.taskBody());
 
             // The first step reads the statement alone — a property named twice, a name no task carries, a
@@ -181,6 +184,19 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             if (ctx.taskContacts() != null) {
                 TaskContacts.apply(task, ctx.taskContacts(), catalog);
+            }
+            if (orAlter && hasTaskNamed(schema, taskName)) {
+                // The task there becomes what the statement writes: a property it leaves out is unset, while its
+                // state, its runs and its tags stay (live-verified, documented). A root that runs is not changed.
+                final Task standing = schema.getTaskExact(taskName);
+                if (standing.getPredecessors().isEmpty() && standing.getState() == TaskState.STARTED) {
+                    throw new RuntimeException("Unable to update graph with root task "
+                        + schema.qualifiedName(standing.getName()) + " since that root task is not suspended.");
+                }
+                standing.redefineAs(task);
+                ConditionalDdlOutcome.alteredInPlace();
+                logger.trace("Altered task: {}", taskQualifiedName);
+                return null;
             }
             if (orReplace && hasTaskNamed(schema, taskName)) {
                 schema.dropTask(taskName);
@@ -867,6 +883,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             String comment = null;
             boolean sawFileFormat = false;
             boolean sawCloudAccessOption = false;
+            Integration storageIntegration = null;
             boolean credentials = false;
             boolean encryptionKey = false;
             StageDirectoryOptions directory = null;
@@ -950,7 +967,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         }
                         if ("STORAGE_INTEGRATION".equals(key)) {
                             // The integration is looked up before the stage's own shape is judged.
-                            StorageIntegrationReference.require(catalog, option.copyOptionValue());
+                            storageIntegration = StorageIntegrationReference.require(catalog,
+                                option.copyOptionValue());
                         }
                         if ("CREDENTIALS".equals(key) || "STORAGE_INTEGRATION".equals(key)) {
                             sawCloudAccessOption = true;
@@ -971,6 +989,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
 
             CloudStageUrls.require(url);
+            StorageIntegrationReference.requireLocation(storageIntegration, url);
             refuseLocalUrlUnlessEnabled(url);
             // A replacement drops the stage it replaces once the new one is judged whole, so a refused statement
             // leaves that stage as it was (live-verified).

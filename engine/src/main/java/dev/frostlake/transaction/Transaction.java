@@ -65,6 +65,10 @@ public class Transaction {
     private final StorageEngine storageEngine;
     private final StreamManager streamManager;
     private boolean explicit;   // started by an explicit BEGIN → suspends statement-end autocommit
+    /** Whether a statement of an autocommit session began the transaction, to end with that statement. */
+    private boolean statementScoped;
+    /** The user whose SYSTEM$ABORT_TRANSACTION ended the transaction, or null while nobody has. */
+    private volatile String abortedBy;
     private boolean begunInBlock;
     private int scope;
     private Transaction outer;
@@ -285,6 +289,27 @@ public class Transaction {
 
     public void setExplicit(final boolean explicit) {
         this.explicit = explicit;
+    }
+
+    /**
+     * Whether the transaction ends with the statement that began it: one a statement of an autocommit session
+     * began, which no BEGIN has made explicit since.
+     */
+    public boolean isStatementScoped() {
+        return statementScoped && !explicit;
+    }
+
+    public void setStatementScoped(final boolean statementScoped) {
+        this.statementScoped = statementScoped;
+    }
+
+    /** The user whose SYSTEM$ABORT_TRANSACTION ended the transaction, or null while nobody has. */
+    public String getAbortedBy() {
+        return abortedBy;
+    }
+
+    public void setAbortedBy(final String abortedBy) {
+        this.abortedBy = abortedBy;
     }
 
     /**
