@@ -330,6 +330,7 @@ final class UpdateDeleteExecutor {
         }
         final Map<String, Integer> setIndexes = setIndexes(table, assignments);
         final boolean[] jsonColumns = jsonReadColumns(table, targetAlias, assignments, setIndexes);
+        final DataType[] decfloatColumns = decfloatColumns(table, targetAlias, assignments, setIndexes);
         final boolean[] kept = JsonTextWrites.keptAsWritten(table, jsonColumns, setIndexes.values());
         final RowPositions rowPositions = new RowPositions(rows);
         plan.add(new StageOperator(updateDescription(table, assignments)) {
@@ -367,7 +368,8 @@ final class UpdateDeleteExecutor {
                                     ? executor.declaredDefaultFor(table, colIndex, fullyQualifiedName)
                                     : executor.evaluateUpdateValue(valueExpr, row, table, targetAlias);
                                 newValue = jsonColumns != null && jsonColumns[colIndex]
-                                    ? JsonTextWrites.stored(computed, executor.getFunctionRegistry()) : computed;
+                                    ? JsonTextWrites.stored(computed, executor.getFunctionRegistry())
+                                    : DecfloatWrites.stored(computed, decfloatColumns, colIndex);
                             } catch (final RuntimeException failed) {
                                 // A plain UPDATE's SET value that cannot be computed is a DML failure on
                                 // that column, live-verified: "DML operation to table UPD failed on column
@@ -469,6 +471,7 @@ final class UpdateDeleteExecutor {
                 try {
                     final Map<String, Integer> setIndexes = setIndexes(table, assignments);
                     final boolean[] jsonColumns = jsonReadColumns(table, targetAlias, assignments, setIndexes);
+                    final DataType[] decfloatColumns = decfloatColumns(table, targetAlias, assignments, setIndexes);
                     // Every row's new image is computed before the write set takes any, so a subquery over the
                     // table sees it as the statement began (live-verified).
                     final List<Row> written = new ArrayList<>();
@@ -480,7 +483,7 @@ final class UpdateDeleteExecutor {
                         final Integer idx = pending ? pendingPositions.take(row) : effectivePositions.take(row);
                         if (idx != null) {
                             images.add(buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes,
-                                jsonColumns, writtenName, targetAlias));
+                                jsonColumns, decfloatColumns, writtenName, targetAlias));
                             pendingAt.add(pending ? idx : null);
                             idsAt.add(pending ? null : effectiveIds.get(idx.intValue()));
                             written.add(row);
@@ -650,12 +653,7 @@ final class UpdateDeleteExecutor {
                 continue;
             }
             if (scope == null) {
-                scope = new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-                final Map<String, Table> aliasToTable = new HashMap<>();
-                aliasToTable.put((alias != null ? alias : table.getName()).toUpperCase(Locale.ROOT), table);
-                final List<Table> relations = new ArrayList<>();
-                relations.add(table);
-                scope.setMultiTableContext(aliasToTable, relations);
+                scope = targetScope(table, alias);
             }
             final int index = setIndexes.get(assignment.getKey()).intValue();
             if (readAsJson(table, index, ExpressionEvaluator.parse(assignment.getValue()), scope)) {
@@ -664,6 +662,61 @@ final class UpdateDeleteExecutor {
             }
         }
         return json;
+    }
+
+    /**
+     * The column type each SET value that is a DECFLOAT is written into, where the column holds it in its own form - a
+     * VARIANT's DECFLOAT member, a text column's text (see DecfloatWrites) - one slot per column of the table; null
+     * when no value is so written.
+     */
+    private DataType[] decfloatColumns(final Table table, final String alias, final Map<String, String> assignments,
+                                       final Map<String, Integer> setIndexes) {
+        final Map<Integer, Expression> setByColumn = new HashMap<>();
+        for (final Map.Entry<String, String> assignment : assignments.entrySet()) {
+            final TableColumn column = table.getColumns().get(setIndexes.get(assignment.getKey()).intValue());
+            if (DecfloatWrites.holdsOwnForm(column.getDataType())) {
+                setByColumn.put(setIndexes.get(assignment.getKey()), ExpressionEvaluator.parse(assignment.getValue()));
+            }
+        }
+        return setByColumn.isEmpty() ? null : decfloatColumns(table, setByColumn, targetScope(table, alias));
+    }
+
+    /**
+     * {@link #decfloatColumns(Table, String, Map, Map)} for SET values already parsed, typed over {@code scope}.
+     */
+    private static DataType[] decfloatColumns(final Table table, final Map<Integer, Expression> setByColumn,
+                                              final ExpressionEvaluator scope) {
+        DataType[] decfloat = null;
+        for (final Map.Entry<Integer, Expression> set : setByColumn.entrySet()) {
+            final int index = set.getKey().intValue();
+            final DataType target = table.getColumns().get(index).getDataType();
+            if (set.getValue() instanceof DefaultMarkerExpression) {
+                continue;
+            }
+            final DataType source;
+            try {
+                source = scope.inferStaticType(set.getValue());
+            } catch (final RuntimeException untyped) {
+                continue;
+            }
+            if (DecfloatWrites.reshapes(source, target)) {
+                decfloat = decfloat != null ? decfloat : new DataType[table.getColumns().size()];
+                decfloat[index] = target;
+            }
+        }
+        return decfloat;
+    }
+
+    /** The scope a single-table UPDATE's SET values are typed in: the target, by its alias or its name. */
+    private ExpressionEvaluator targetScope(final Table table, final String alias) {
+        final ExpressionEvaluator scope =
+            new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        final Map<String, Table> aliasToTable = new HashMap<>();
+        aliasToTable.put((alias != null ? alias : table.getName()).toUpperCase(Locale.ROOT), table);
+        final List<Table> relations = new ArrayList<>();
+        relations.add(table);
+        scope.setMultiTableContext(aliasToTable, relations);
+        return scope;
     }
 
     /** Whether the value a SET writes to the column at {@code index} is a text read as JSON (see JsonTextWrites). */
@@ -685,7 +738,7 @@ final class UpdateDeleteExecutor {
     private Row buildUpdatedRow(final Row source, final Table table, final Map<String, String> assignments,
                                 final Map<String, SourcePosition> origins,
                                 final Map<String, Integer> setIndexes, final boolean[] jsonColumns,
-                                final String writtenName, final String alias) {
+                                final DataType[] decfloatColumns, final String writtenName, final String alias) {
         final Row newRow = source.copy();
         // Every value reads the row as it was, in the table's column order (see inColumnOrder).
         for (final String column : inColumnOrder(assignments, setIndexes)) {
@@ -704,7 +757,8 @@ final class UpdateDeleteExecutor {
                     ? executor.declaredDefaultFor(table, colIndex, homeName(table))
                     : executor.evaluateUpdateValue(valueExpr, source, table, alias);
                 newValue = jsonColumns != null && jsonColumns[colIndex]
-                    ? JsonTextWrites.stored(computed, executor.getFunctionRegistry()) : computed;
+                    ? JsonTextWrites.stored(computed, executor.getFunctionRegistry())
+                    : DecfloatWrites.stored(computed, decfloatColumns, colIndex);
             } catch (final RuntimeException failed) {
                 throw DmlWriteTarget.isRowTimeFailure(failed)
                     ? DmlWriteTarget.failedOnColumn(writtenName, column, failed) : failed;
@@ -768,6 +822,7 @@ final class UpdateDeleteExecutor {
             }
         }
         final boolean[] jsonRead = jsonColumns;
+        final DataType[] decfloatColumns = decfloatColumns(target, setByColumn, ev);
         final boolean[] kept = JsonTextWrites.keptAsWritten(target, jsonRead, setByColumn.keySet());
         final TransactionWriteSet writeSet = executor.isDeferredApply()
             ? executor.getTransactionManager().getCurrentTransaction().getWriteSet() : null;
@@ -839,7 +894,7 @@ final class UpdateDeleteExecutor {
                 final List<Row> changed = new ArrayList<>();
                 for (final Row combinedRow : combinedRows) {
                     images.add(applySet(targetOf.get(combinedRow), target, combinedRow, ev, setByColumn, jsonRead,
-                        kept, writtenName));
+                        decfloatColumns, kept, writtenName));
                     changed.add(targetOf.get(combinedRow));
                 }
                 guards.requireUpdate(target, targetFqn, targetRows, changed, images);
@@ -1178,7 +1233,7 @@ final class UpdateDeleteExecutor {
     /** Apply the SET assignments (evaluated over the combined target+source row) to a copy of the target. */
     private Row applySet(final Row targetRow, final Table target, final Row combinedRow,
             final ExpressionEvaluator ev, final Map<Integer, Expression> setByColumn, final boolean[] jsonColumns,
-            final boolean[] kept, final String writtenName) {
+            final DataType[] decfloatColumns, final boolean[] kept, final String writtenName) {
         final Row newRow = targetRow.copy();
         for (final Map.Entry<Integer, Expression> s : setByColumn.entrySet()) {
             // The bare DML DEFAULT writes the column's declared default, as the single-table path does.
@@ -1189,7 +1244,7 @@ final class UpdateDeleteExecutor {
             newRow.setValue(index, jsonColumns != null && jsonColumns[index]
                 ? JsonTextWrites.storedOnColumn(computed, executor.getFunctionRegistry(), writtenName,
                     target.getColumns().get(index).getName())
-                : computed);
+                : DecfloatWrites.stored(computed, decfloatColumns, index));
         }
         // UPDATE … FROM: a SET value that cannot be computed stays bare (live); the WRITE is enveloped, and so is a
         // text that is no JSON.

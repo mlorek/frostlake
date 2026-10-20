@@ -21,9 +21,11 @@ its reply by serving whatever arrives first.
 
 Values that JSON lacks travel as one-key objects: {"$dec": "1.25"}, {"$f": "nan"}, {"$dt": iso},
 {"$dtz": iso with offset}, {"$d": iso}, {"$t": iso}, {"$b": hex}, {"$json": text} (semi-structured),
+{"$vec": {"t": "f" or "i", "v": [...]}} (a VECTOR, handed over as a memoryview of 32-bit elements),
 {"$o": [[key, value], ...]} (a dict, keeping its order), {"$host": name} (an engine object) and
 {"$rs": {...}} (a result set), {"$outcome": {...}} (a statement's result or refusal). Anything the handler prints goes to stderr, which the engine logs.
 """
+import array as _array
 import datetime as _dt
 import decimal as _decimal
 import json as _json
@@ -47,6 +49,19 @@ _sys.stdout = _os.fdopen(1, "w", encoding="utf-8", buffering=1)
 # The engine starts the worker isolated (-I), which ignores PYTHONIOENCODING, so stderr is made UTF-8 here.
 _sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
+# The worker's own references to what its protocol is made of, bound before any routine runs: a routine that replaces
+# json.dumps (to give it a default serializer, say), json.loads or decimal.Decimal changes the module's member, not
+# these, and so cannot change the lines the worker writes or the values it reads (#2389). The encoder and decoder are
+# the worker's own instances, so json's shared default ones play no part either.
+_ENCODE = _json.JSONEncoder(allow_nan=False, separators=(",", ":")).encode
+_DECODE = _json.JSONDecoder().decode
+_ARRAY = _array.array
+_DATETIME = _dt.datetime
+_DATE = _dt.date
+_TIME = _dt.time
+_DECIMAL = _decimal.Decimal
+_FORMAT_EXCEPTION = _traceback.format_exception
+
 _GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
 # The names a routine's namespace starts with; each call runs in a namespace of its own (op "enter"), and what
 # the namespace held before is put back when the call is through (op "leave"). _FRAMES holds those saved states.
@@ -68,6 +83,16 @@ _GUARDED = []
 _FUNCTIONS = []
 _GUARDED_IDS = set()
 _MISSING = object()
+# What else routines share, as it stood when the worker started (see _snapshot), and op "restore" puts back (#2387):
+# the standard library's modules then imported - (name, module, class, members) each -, the names then on sys.modules,
+# the working directory and the decimal context. Through the standard library's own functions, bound here.
+_STDLIB = []
+_MODULES_BASE = set()
+_GETCWD = _os.getcwd
+_CHDIR = _os.chdir
+_SETCONTEXT = _decimal.setcontext
+_CWD_BASE = None
+_DECIMAL_BASE = None
 
 
 def _owned(value):
@@ -162,7 +187,75 @@ def _put_back_function(function, code, defaults, kwdefaults, cells):
                 cell.cell_contents = value
 
 
+def _standard_library():
+    # The standard library's modules on sys.modules: the built-in and frozen ones and those whose file lies in the
+    # standard library's directory, but not in the site-packages beneath it. The builtins module is put back whole on
+    # its own, and the worker's module and the runtime's helper modules are guarded (see _guard). A module's dunder
+    # members are the import system's: importing importlib renames _frozen_importlib importlib._bootstrap.
+    import sysconfig
+    paths = sysconfig.get_paths()
+    stdlib = _os.path.join(paths["stdlib"], "")
+    packages = tuple(_os.path.join(paths[key], "") for key in ("purelib", "platlib"))
+    found = []
+    for name, module in list(_sys.modules.items()):
+        if (not issubclass(type(module), _types.ModuleType) or name in ("__main__", "builtins")
+                or name.startswith("__frostlake")):
+            continue
+        members = module.__dict__
+        origin = getattr(members.get("__spec__"), "origin", None)
+        path = members.get("__file__")
+        if origin in ("built-in", "frozen") or (isinstance(path, str) and path.startswith(stdlib)
+                                                and not path.startswith(packages)):
+            found.append((name, module, type(module), dict((key, value) for key, value in members.items()
+                                                            if not (key.startswith("__") and key.endswith("__")))))
+    return found
+
+
+def _snapshot():
+    global _CWD_BASE, _DECIMAL_BASE
+    _STDLIB.extend(_standard_library())
+    _MODULES_BASE.update(_sys.modules)
+    _CWD_BASE = _GETCWD()
+    _DECIMAL_BASE = _decimal.getcontext().copy()
+
+
+def _imported(key, value):
+    # What an import puts on sys.modules: a module with a spec, or what its parent module holds under that name - a
+    # native module's submodules (pyexpat.errors) and the names a module gives them there (xml.parsers.expat.errors).
+    # A module a routine made itself (types.ModuleType) has no spec, and anything else is no module at all.
+    if issubclass(type(value), _types.ModuleType) and value.__dict__.get("__spec__") is not None:
+        return True
+    parent, dot, child = key.rpartition(".")
+    holder = _sys.modules.get(parent) if dot else None
+    return issubclass(type(holder), _types.ModuleType) and holder.__dict__.get(child, _MISSING) is value
+
+
+def _put_back_standard_library():
+    # A member a routine replaced or deleted comes back, as does the module on sys.modules; a member added stays, as
+    # a module gains them as it runs (a package its submodules, a cache its entries). What a routine put on
+    # sys.modules that no import made goes, a real module stays: numpy cannot be imported twice in one process.
+    for name, module, kind, pristine in _STDLIB:
+        if type(module) is not kind:
+            module.__class__ = kind
+        _put_back_members(module.__dict__, pristine)
+    modules = _sys.modules
+    for name, module, kind, pristine in _STDLIB:
+        if modules.get(name, _MISSING) is not module:
+            modules[name] = module
+    for key in [k for k in modules if k not in _MODULES_BASE and k not in _INSTALLED]:
+        if not _imported(key, modules[key]):
+            del modules[key]
+    try:
+        moved = _GETCWD() != _CWD_BASE
+    except OSError:
+        moved = True
+    if moved:
+        _CHDIR(_CWD_BASE)
+    _SETCONTEXT(_DECIMAL_BASE.copy())
+
+
 def _restore():
+    _put_back_standard_library()
     current = _builtins.__dict__
     for key in [k for k in current if k not in _BUILTINS_BASE]:
         del current[key]
@@ -251,7 +344,7 @@ class _Outcome(object):
 
 
 def _send(message):
-    _OUT.write(_json.dumps(message, allow_nan=False, separators=(",", ":")))
+    _OUT.write(_ENCODE(message))
     _OUT.write("\n")
     _OUT.flush()
 
@@ -278,21 +371,21 @@ def _encode(value):
         if value in (float("inf"), float("-inf")):
             return {"$f": "inf" if value > 0 else "-inf"}
         return value
-    if isinstance(value, _decimal.Decimal):
+    if isinstance(value, _DECIMAL):
         if value.is_nan():
             return {"$f": "nan"}
         if value.is_infinite():
             return {"$f": "inf" if value > 0 else "-inf"}
         return {"$dec": str(value)}
-    if isinstance(value, _dt.datetime):
+    if isinstance(value, _DATETIME):
         if value != value:
             return None
         if value.tzinfo is not None and value.utcoffset() is not None:
             return {"$dtz": value.isoformat()}
         return {"$dt": value.replace(tzinfo=None).isoformat()}
-    if isinstance(value, _dt.date):
+    if isinstance(value, _DATE):
         return {"$d": value.isoformat()}
-    if isinstance(value, _dt.time):
+    if isinstance(value, _TIME):
         return {"$t": value.replace(tzinfo=None).isoformat()}
     if isinstance(value, (bytes, bytearray, memoryview)):
         return {"$b": bytes(value).hex()}
@@ -331,21 +424,26 @@ def _decode(value):
     if "$o" in value:
         return dict((k, _decode(v)) for k, v in value["$o"])
     if "$dec" in value:
-        return _decimal.Decimal(value["$dec"])
+        return _DECIMAL(value["$dec"])
     if "$f" in value:
         return float(value["$f"])
     if "$dt" in value:
-        return _dt.datetime.fromisoformat(value["$dt"])
+        return _DATETIME.fromisoformat(value["$dt"])
     if "$dtz" in value:
-        return _dt.datetime.fromisoformat(value["$dtz"])
+        return _DATETIME.fromisoformat(value["$dtz"])
     if "$d" in value:
-        return _dt.date.fromisoformat(value["$d"])
+        return _DATE.fromisoformat(value["$d"])
     if "$t" in value:
-        return _dt.time.fromisoformat(value["$t"])
+        return _TIME.fromisoformat(value["$t"])
     if "$b" in value:
         return bytes.fromhex(value["$b"])
     if "$json" in value:
-        return _json.loads(value["$json"])
+        return _DECODE(value["$json"])
+    if "$vec" in value:
+        # A VECTOR, as Snowflake's type mapping hands one to a Python handler: a memoryview, here of 32-bit floats
+        # ("f") or ints ("i"), which indexes, iterates and answers tolist() as the elements (#2391).
+        vector = value["$vec"]
+        return memoryview(_ARRAY(vector["t"], [float(v) if vector["t"] == "f" else v for v in vector["v"]]))
     if "$host" in value:
         return _JavaObject(value["$host"])
     if "$rs" in value:
@@ -356,10 +454,37 @@ def _decode(value):
 
 
 def _error(failure):
-    message = str(failure)
-    name = type(failure).__name__
-    return {"type": name, "message": message, "text": name + ": " + message if message else name,
-            "traceback": "".join(_traceback.format_exception(type(failure), failure, failure.__traceback__))}
+    # Never fails, as the reply must go out whatever the exception is: a failure escaping here would end the worker,
+    # or, under a procedure's session.sql, leave the request unanswered (#2388). An exception whose str() fails reads
+    # as GraalPy words it, a type whose name cannot be read by the name type itself holds, or else by its repr.
+    kind = type(failure)
+    try:
+        name = kind.__name__
+        if not isinstance(name, str):
+            raise TypeError("__name__ is no str")
+    except BaseException:
+        try:
+            name = type.__dict__["__name__"].__get__(kind)
+        except BaseException:
+            name = _repr_or(kind, "BaseException")
+    try:
+        message = str(failure)
+    except BaseException:
+        message = "<exception str() failed>"
+    text = name + ": " + message if message else name
+    try:
+        trace = "".join(_FORMAT_EXCEPTION(kind, failure, failure.__traceback__))
+    except BaseException:
+        trace = text
+    return {"type": name, "message": message, "text": text, "traceback": trace}
+
+
+def _repr_or(value, fallback):
+    try:
+        text = repr(value)
+        return text if isinstance(text, str) else fallback
+    except BaseException:
+        return fallback
 
 
 def _call(handle, method, args):
@@ -429,7 +554,7 @@ def _serve(until_reply=False):
         line = _IN.readline()
         if not line:
             _sys.exit(0)
-        message = _json.loads(line)
+        message = _DECODE(line)
         if "re" in message:
             if until_reply:
                 return message
@@ -440,10 +565,13 @@ def _serve(until_reply=False):
             reply = {"re": 1, "error": _error(failure)}
         try:
             _send(reply)
-        except (TypeError, ValueError) as unencodable:
+        except BaseException as unencodable:
+            # Nothing was written: the line is encoded whole before it goes out. The error reply holds text only.
             _send({"re": 1, "error": _error(unencodable)})
 
 
+# What the standard library holds is taken before the worker's module is guarded, which keeps what it took.
+_snapshot()
 # This worker's own module, under which its functions and classes (_JavaObject, _call, ...) run, is a module
 # routines reach (sys.modules["__main__"]) and so is guarded too.
 _guard(_sys.modules["__main__"])

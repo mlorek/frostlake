@@ -26,7 +26,10 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VectorCastRefusal;
+import dev.frostlake.values.VectorValue;
 import org.graalvm.polyglot.Value;
 
 import java.math.BigDecimal;
@@ -45,7 +48,8 @@ import java.util.Locale;
  * which truncates, {@code float(value)}, {@code str(value)}, {@code bool(value)} — and judges the classes a DATE,
  * a TIMESTAMP, an ARRAY, an OBJECT and a BINARY take, a TIMESTAMP_NTZ and a TIMESTAMP_LTZ a {@code datetime}
  * without an offset; this side builds the SQL value from the text it reports, rounds a NUMBER with a scale half to
- * even, and words the refusals as the account does, each naming the routine and its handler.
+ * even, and words the refusals as the account does, each naming the routine and its handler. A VECTOR takes its
+ * elements as a list, a tuple or a memoryview, cast as {@code ::VECTOR} casts them (unmeasured on an account).
  *
  * <p>A semi-structured answer is the value's JSON with every float marked as a DOUBLE (see {@link HandlerJson}),
  * a tuple as a list, and a date, a time, a datetime, a {@code Decimal} and {@code bytes} as {@code str(value)};
@@ -122,6 +126,11 @@ final class PythonReturn {
                 return ('refuse', 'python value needs to be a dict to convert to Snowflake OBJECT')
             if kind == 'VARIANT':
                 return ('value', __fl_json.dumps(__fl_spell(v)))
+            if kind == 'VECTOR':
+                elements = v.tolist() if isinstance(v, memoryview) or hasattr(v, 'tolist') else v
+                if isinstance(elements, (list, tuple)):
+                    return ('value', __fl_json.dumps(list(elements)))
+                return ('value', __fl_json.dumps(str(v)))
             if kind == 'BINARY':
                 if not isinstance(v, (bytes, bytearray)):
                     raise TypeError("cannot convert '" + type(v).__name__ + "' object to bytes")
@@ -159,6 +168,9 @@ final class PythonReturn {
         }
         if (declared instanceof VariantType) {
             return "VARIANT";
+        }
+        if (declared instanceof VectorType) {
+            return "VECTOR";
         }
         final String written = declared == null || declared.getName() == null ? ""
             : declared.getName().toUpperCase(Locale.ROOT);
@@ -286,6 +298,15 @@ final class PythonReturn {
         }
         if (declared instanceof BooleanType) {
             return Boolean.valueOf("true".equals(text));
+        }
+        if (declared instanceof VectorType) {
+            // The elements' JSON, cast as ::VECTOR casts it: the dimension and each element judged, with the cast's
+            // own refusals; anything but a list, a tuple, a memoryview or what answers tolist() is no vector (#2391).
+            try {
+                return VectorValue.cast(text, (VectorType) declared);
+            } catch (final VectorCastRefusal refused) {
+                throw new PythonReturnRefusal(refused.getMessage() + where);
+            }
         }
         if (declared instanceof BinaryType) {
             return HandlerResults.binary(BinaryValue.fromHex(text.toUpperCase(Locale.ROOT)), (BinaryType) declared,

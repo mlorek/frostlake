@@ -84,7 +84,9 @@ interface PythonBackend {
 
     /**
      * An outermost statement on this thread has ended: put back what its routines changed in the state the
-     * interpreter shares between calls (the built-in names, the environment, the runtime's helper modules).
+     * interpreter shares between calls (the built-in names, the environment, the runtime's helper modules, the
+     * standard library's modules, what a routine put on {@code sys.modules}, the working directory and the decimal
+     * context).
      */
     void restoreShared();
 

@@ -91,4 +91,34 @@ public class WalCompactionTest {
             reopened.close();
         }
     }
+
+    @Test
+    public void aCounterMarkAfterTheCheckpointSurvivesCompaction() throws IOException {
+        final Path path = dir.resolve("wal.log");
+        final WriteAheadLog log = new WriteAheadLog(path);
+        try {
+            log.appendCounters(Collections.singletonList(new CounterMark(CounterMark.SEQUENCE, "D", "S", "Q", 5L)));
+            log.appendCheckpoint("c1");
+            log.appendCounters(Arrays.asList(new CounterMark(CounterMark.SEQUENCE, "D", "S", "Q", 7L),
+                new CounterMark(CounterMark.IDENTITY, "D", "S", "T", -3L)));
+            log.truncateToCheckpoint("c1");
+        } finally {
+            log.close();
+        }
+        final WriteAheadLog reopened = new WriteAheadLog(path);
+        try {
+            final List<WalRecord> records = reopened.readAll();
+            assertEquals(2, records.size());
+            assertEquals(WalRecordType.COUNTERS, records.get(1).getType());
+            final StringBuilder marks = new StringBuilder();
+            for (final CounterMark mark : records.get(1).getCounterMarks()) {
+                marks.append(mark.getKind()).append(':').append(mark.getDatabase()).append('.')
+                    .append(mark.getSchema()).append('.').append(mark.getName()).append('=').append(mark.getNext())
+                    .append(' ');
+            }
+            assertEquals("SEQUENCE:D.S.Q=7 IDENTITY:D.S.T=-3 ", marks.toString());
+        } finally {
+            reopened.close();
+        }
+    }
 }

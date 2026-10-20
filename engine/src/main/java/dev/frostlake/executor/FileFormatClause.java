@@ -168,6 +168,7 @@ public final class FileFormatClause {
         String formatName = null;
         String formatNameWritten = null;
         String comment = null;
+        WrittenFormatOption compression = null;
         for (final WrittenFormatOption option : options) {
             if (!seen.add(option.name)) {
                 throw new RuntimeException(SqlCompilationError.conflictingFileFormatParameter(option.name));
@@ -198,9 +199,18 @@ public final class FileFormatClause {
             } else if ("NULL_IF".equals(option.name)) {
                 into.setNullIfValues(Collections.singletonList(option.value));
             } else {
-                FileFormatSurfaces.requireLegalValue(option.name, option.value, option.written);
+                if ("COMPRESSION".equals(option.name)) {
+                    // Which codecs are legal depends on the type, which may be written after COMPRESSION.
+                    compression = option;
+                } else {
+                    FileFormatSurfaces.requireLegalValue(option.name, option.value, option.written);
+                }
                 into.setOption(option.name, option.value);
             }
+        }
+        if (compression != null) {
+            FileFormatSurfaces.requireLegalCompression(formatName == null || writtenType != null ? into.getType() : null,
+                compression.value, compression.written);
         }
         // Cross-type membership is judged against the EFFECTIVE type, wherever TYPE sat in the list; a list that
         // names a format and writes no type of its own is judged by the format it names.

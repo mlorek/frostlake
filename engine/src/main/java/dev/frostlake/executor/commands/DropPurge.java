@@ -79,7 +79,7 @@ final class DropPurge {
                 return owner(parts, catalog).hasCortexSearchServiceExact(parts[parts.length - 1]);
             }
             if (ctx.JOIN() != null) {
-                return owner(parts, catalog).hasJoinPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT));
+                return owner(parts, catalog).hasJoinPolicy(parts[parts.length - 1]);
             }
             if (ctx.AGGREGATION() != null) {
                 return owner(parts, catalog).hasAggregationPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT));

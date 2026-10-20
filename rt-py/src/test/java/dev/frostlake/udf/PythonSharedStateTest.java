@@ -23,6 +23,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * What Python routines share on a thread beside their own names - the built-in names, the environment and the
@@ -30,7 +31,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * statement ran reaches neither the next statement's routines nor another engine's: a built-in name it added is gone,
  * an environment variable it set is unset, and a snowpark method it replaced is the emulation's own again. So for a
  * member it added to an emulation class or module, a class only a closure of the emulation holds, and a function's
- * code or closure cell, whether the statement succeeded or failed (#2386).
+ * code or closure cell, whether the statement succeeded or failed (#2386). So too for the standard library's modules
+ * imported when the interpreter was made: a member a routine replaced or deleted is back, as is the module on
+ * {@code sys.modules}, a module a routine made itself or anything else it put there is gone while one it imported
+ * stays, and the working directory and the decimal context are as they were (#2387).
  */
 public class PythonSharedStateTest {
 
@@ -117,6 +121,46 @@ public class PythonSharedStateTest {
 
     private static final String UNTOUCHED = "DataFrame GroupedFrame 1 save_as_table Column False False";
 
+    /**
+     * Changes the standard library: replaces {@code json.dumps} and deletes {@code json.JSONDecoder}, puts a module of
+     * its own, a non-module and a stand-in for {@code decimal} on {@code sys.modules} and takes {@code os} off it,
+     * imports {@code email.mime}, moves the working directory and narrows the decimal context. Answers the working
+     * directory it started in.
+     */
+    private static final String CHANGES_STDLIB = """
+        CREATE FUNCTION change_stdlib() RETURNS VARCHAR LANGUAGE PYTHON RUNTIME_VERSION = '3.12' HANDLER = 'h' AS $$
+        import decimal, json, os, sys, tempfile, types
+        def h():
+            started = os.getcwd()
+            json.dumps = lambda *a, **k: 'HACKED'
+            del json.JSONDecoder
+            made = types.ModuleType('fl_made'); made.v = 'leaked'
+            sys.modules['fl_made'] = made
+            sys.modules['fl_number'] = 42
+            sys.modules['decimal'] = types.ModuleType('decimal')
+            del sys.modules['os']
+            import email.mime
+            os.chdir(tempfile.gettempdir())
+            decimal.getcontext().prec = 3
+            return started
+        $$""";
+
+    /** What the change would show: json, sys.modules, the working directory, 1/7, whether email.mime is imported. */
+    private static final String READS_STDLIB = """
+        CREATE FUNCTION read_stdlib() RETURNS VARCHAR LANGUAGE PYTHON RUNTIME_VERSION = '3.12' HANDLER = 'h' AS $$
+        import sys
+        def h():
+            imported = 'email.mime' in sys.modules
+            import decimal, json, os
+            return '|'.join([json.dumps([1]), str(hasattr(json, 'JSONDecoder')), str(sys.modules.get('fl_made')),
+                             str(sys.modules.get('fl_number')), str(sys.modules['decimal'] is decimal
+                                                                    and hasattr(decimal, 'Decimal')),
+                             str(sys.modules.get('os') is os), os.getcwd(),
+                             str(decimal.Decimal(1) / decimal.Decimal(7)), str(imported)])
+        $$""";
+
+    private static final String PRISTINE_STDLIB = "[1]|True|None|None|True|True|%s|0.1428571428571428571428571429|";
+
     private static DatabaseEngine engineWith(final String... routines) {
         final DatabaseEngine engine = new DatabaseEngine();
         engine.execute("CREATE DATABASE d");
@@ -155,6 +199,37 @@ public class PythonSharedStateTest {
         try {
             assertEquals("None|None|False", scalar(second, "SELECT peek()"));
             assertEquals("7", scalar(second, "CALL runs_sql()"));
+        } finally {
+            second.shutdown();
+        }
+    }
+
+    @Test
+    public void whatARoutineChangesInTheStandardLibraryIsPutBackInTheNextStatement() {
+        final DatabaseEngine engine = engineWith(CHANGES_STDLIB, READS_STDLIB);
+        try {
+            final String before = scalar(engine, "SELECT read_stdlib()");
+            final String started = scalar(engine, "SELECT change_stdlib()");
+            assertEquals(String.format(PRISTINE_STDLIB, started) + "True", scalar(engine, "SELECT read_stdlib()"));
+            // Whether email.mime was imported before depends on what ran on the thread before this test.
+            assertTrue(before.startsWith(String.format(PRISTINE_STDLIB, started)), before);
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    @Test
+    public void anotherEngineFindsTheStandardLibraryAsItWas() {
+        final DatabaseEngine first = engineWith(CHANGES_STDLIB);
+        final String started;
+        try {
+            started = scalar(first, "SELECT change_stdlib()");
+        } finally {
+            first.shutdown();
+        }
+        final DatabaseEngine second = engineWith(READS_STDLIB);
+        try {
+            assertEquals(String.format(PRISTINE_STDLIB, started) + "True", scalar(second, "SELECT read_stdlib()"));
         } finally {
             second.shutdown();
         }

@@ -156,7 +156,7 @@ final class MergeCompilation {
         grouped.addAll(setValues);
         grouped.addAll(matchedConditions);
         for (final ParserRuleContext expression : grouped) {
-            if (executor.holdsAggregate(expression)) {
+            if (executor.holdsAggregateOver(expression, merged, bothAliases)) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "[PSEUDOCOLUMN(VOL_ID)] is not a valid group by expression"));
             }

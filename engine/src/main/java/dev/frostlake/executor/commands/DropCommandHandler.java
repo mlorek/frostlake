@@ -984,13 +984,15 @@ public class DropCommandHandler implements CommandHandler {
                 final String[] parts = dropNameParts(ctx);
                 try {
                     final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                    final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+                    // Named exactly, as a masking policy is.
+                    final String policyName = parts[parts.length - 1];
                     if (!schema.hasJoinPolicy(policyName)) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
                             schema.qualifiedName(policyName)));
                     }
                     if (catalog.isJoinPolicyInUse(policyName)) {
-                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
+                            + policyName.toUpperCase(Locale.ROOT)
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
                     schema.dropJoinPolicy(policyName);

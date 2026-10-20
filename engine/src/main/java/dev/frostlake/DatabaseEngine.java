@@ -43,10 +43,12 @@ import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.persistence.CatalogSnapshot;
 import dev.frostlake.persistence.CheckpointDebt;
+import dev.frostlake.persistence.CounterMark;
 import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
 import dev.frostlake.persistence.WalRecord;
@@ -407,13 +409,19 @@ public class DatabaseEngine {
                         try {
                             final List<WalRecord> transactions = new ArrayList<WalRecord>();
                             final List<Integer> logIndexes = new ArrayList<Integer>();
+                            // The counter marks logged before each transaction record, and after the last.
+                            final List<List<CounterMark>> marks = new ArrayList<List<CounterMark>>();
+                            marks.add(new ArrayList<CounterMark>());
                             for (int i = from; i < records.size(); i++) {
                                 if (records.get(i).getType() == WalRecordType.TRANSACTION) {
                                     transactions.add(records.get(i));
                                     logIndexes.add(Integer.valueOf(i));
+                                    marks.add(new ArrayList<CounterMark>());
+                                } else if (records.get(i).getType() == WalRecordType.COUNTERS) {
+                                    marks.get(transactions.size()).addAll(records.get(i).getCounterMarks());
                                 }
                             }
-                            replayed[0] = replayInPlace(transactions, logIndexes, own, sessions);
+                            replayed[0] = replayInPlace(transactions, logIndexes, marks, own, sessions);
                         } finally {
                             for (final SessionSettings session : sessions.values()) {
                                 replaySessions.add(Long.valueOf(session.getSessionNumber()));
@@ -459,17 +467,20 @@ public class DatabaseEngine {
      * Replays the logged transactions, each statement in the place it first ran (see {@link WalReplaySchedule}): a
      * transaction whose statements ran while other sessions committed has them run between those sessions' records,
      * inside its transaction, which commits when the replay reaches its own record. A transaction the replay cannot
-     * re-apply is rolled back and listed among the replay's failures.
+     * re-apply is rolled back and listed among the replay's failures. The counter marks logged between two records
+     * move their counters on where they were logged, before the statements placed there run.
      *
      * @return how many transaction records were replayed
      */
     private int replayInPlace(final List<WalRecord> transactions, final List<Integer> logIndexes,
+                              final List<List<CounterMark>> marks,
                               final SessionSettings own, final Map<String, SessionSettings> sessions) {
         final WalReplaySchedule schedule = WalReplaySchedule.of(transactions);
         final Map<String, Long> open = new HashMap<String, Long>();
         final Set<Integer> failed = new HashSet<Integer>();
         int replayed = 0;
         for (int k = 0; k < transactions.size(); k++) {
+            applyCounterMarks(marks.get(k));
             for (final int[] early : schedule.runBefore(k)) {
                 if (!failed.contains(Integer.valueOf(early[0]))) {
                     replayInTransaction(transactions.get(early[0]), early[0], early[1],
@@ -491,6 +502,7 @@ public class DatabaseEngine {
                 commitReplayed(rec, k, logIndexes.get(k).intValue(), own, sessions, open, failed);
             }
         }
+        applyCounterMarks(marks.get(transactions.size()));
         // A transaction the log holds no commit for cannot be open here; whatever is, the replay does not keep.
         for (final Long left : open.values()) {
             transactionManager.setCurrentTransaction(left);
@@ -761,24 +773,107 @@ public class DatabaseEngine {
 
     /**
      * A sequence never hands a value out twice, and a value it handed out stays drawn whatever becomes of the
-     * statement that drew it: a ROLLBACK and a statement's failure undo none (documented). A draw no record of the log
-     * carries for certain owes a checkpoint, which keeps the sequences as they stand: one of a statement that failed,
-     * one of a statement the log leaves out though it drew - a read of a view or a function that draws - and one of a
-     * statement kept inside a transaction that may yet roll back.
+     * statement that drew it: a ROLLBACK and a statement's failure undo none (documented); an IDENTITY column, which
+     * the account draws from a sequence of its own, keeps its values the same way. A draw no record of the log carries
+     * for certain - one of a statement that failed, one of a statement the log leaves out though it drew (a read of a
+     * view or a function that draws), and one of a statement kept inside a transaction, which may yet roll back or be
+     * ended by a shutdown or a crash - is marked in the log at once, before the statement's client sees it: where each
+     * counter it drew from stands now (see {@link CounterMark}). A checkpoint owed until the transaction ended, as
+     * before, was never paid by a transaction a shutdown or a crash ended, and a restart handed its values out again.
      *
      * @param drawn  what the statement drew
      * @param logged whether the log keeps the statement
      */
-    private void oweCheckpointForUnloggedDraws(final List<CounterDraw> drawn, final boolean logged) {
+    private void markUnloggedDraws(final List<CounterDraw> drawn, final boolean logged) {
         if (wal == null || replaying || logged && !transactionManager.isLastingTransaction()) {
             return;
         }
+        final Set<String> sequences = new HashSet<String>();
+        final Set<String> identities = new HashSet<String>();
         for (final CounterDraw draw : drawn) {
-            if (draw.getCounter().startsWith(Sequence.COUNTER_PREFIX)) {
-                runCheckpointDue.set(Boolean.TRUE);
-                return;
+            final String counter = draw.getCounter();
+            if (counter.startsWith(Sequence.COUNTER_PREFIX)) {
+                sequences.add(counter.substring(Sequence.COUNTER_PREFIX.length()));
+            } else if (counter.startsWith(Table.IDENTITY_COUNTER_PREFIX)) {
+                identities.add(counter.substring(Table.IDENTITY_COUNTER_PREFIX.length()));
             }
         }
+        if (sequences.isEmpty() && identities.isEmpty()) {
+            return;
+        }
+        try {
+            wal.appendCounters(counterMarks(sequences, identities));
+        } catch (final IOException e) {
+            throw new RuntimeException("WAL append failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Where the sequences and the permanent tables' IDENTITY columns of these names stand, in every schema: a draw
+     * names its counter by the object's name alone, and marking a same-named one elsewhere at its own place is
+     * harmless.
+     */
+    private List<CounterMark> counterMarks(final Set<String> sequences, final Set<String> identities) {
+        final List<CounterMark> marks = new ArrayList<CounterMark>();
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                for (final String name : sequences) {
+                    if (schema.hasSequenceExact(name)) {
+                        marks.add(new CounterMark(CounterMark.SEQUENCE, database.getName(), schema.getName(), name,
+                            schema.getSequenceExact(name).peekNextValue()));
+                    }
+                }
+                if (identities.isEmpty()) {
+                    continue;
+                }
+                for (final Table table : schema.getTables()) {
+                    final Long next = table.getNextIdentityValue();
+                    if (identities.contains(table.getName()) && !table.isTemporary() && next != null) {
+                        marks.add(new CounterMark(CounterMark.IDENTITY, database.getName(), schema.getName(),
+                            table.getName(), next.longValue()));
+                    }
+                }
+            }
+        }
+        return marks;
+    }
+
+    /**
+     * Moves the counters a {@link WalRecordType#COUNTERS} record marks at least as far as it marks them, during the
+     * replay: a counter whose object is gone, or held only by a temporary table, is passed over.
+     */
+    private void applyCounterMarks(final List<CounterMark> marks) {
+        for (final CounterMark mark : marks) {
+            final Schema schema = replayedSchema(mark.getDatabase(), mark.getSchema());
+            if (schema == null) {
+                continue;
+            }
+            if (CounterMark.SEQUENCE.equals(mark.getKind())) {
+                if (schema.hasSequenceExact(mark.getName())) {
+                    schema.getSequenceExact(mark.getName()).advanceTo(mark.getNext());
+                }
+                continue;
+            }
+            for (final Table table : schema.getTables()) {
+                if (table.getName().equals(mark.getName()) && !table.isTemporary()) {
+                    table.advanceIdentityTo(mark.getNext());
+                }
+            }
+        }
+    }
+
+    /** The schema of exactly these canonical names, or null. */
+    private Schema replayedSchema(final String databaseName, final String schemaName) {
+        for (final Database database : catalog.getAllDatabases()) {
+            if (database.getName().equals(databaseName)) {
+                for (final Schema schema : database.getAllSchemas()) {
+                    if (schema.getName().equals(schemaName)) {
+                        return schema;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -824,7 +919,7 @@ public class DatabaseEngine {
     /** Lets go of what {@link #beginWalStatement} noted, once the outermost statement is over. */
     private void endWalStatement() {
         walStatementStart.remove();
-        oweCheckpointForUnloggedDraws(StatementDraws.endRecording(), false);
+        markUnloggedDraws(StatementDraws.endRecording(), false);
         StatementResults.endRecording(false);
         StatementAnswers.endRecording();
         runsLoggedApart.remove();
@@ -881,7 +976,7 @@ public class DatabaseEngine {
             ? StatementAnswers.endRecording() : Collections.<String, List<String>>emptyMap();
         final boolean apart = Boolean.TRUE.equals(runsLoggedApart.get());
         runsLoggedApart.remove();
-        oweCheckpointForUnloggedDraws(drawn, logged);
+        markUnloggedDraws(drawn, logged);
         if (started != null) {
             walStatementStart.remove();
         }
@@ -1162,7 +1257,7 @@ public class DatabaseEngine {
 
             @Override
             public void fail(final RuntimeException cause) {
-                oweCheckpointForUnloggedDraws(StatementDraws.endRecording(), false);
+                markUnloggedDraws(StatementDraws.endRecording(), false);
                 rollbackFailedStatement(statementSavepoint[0], cause);
                 statementSavepoint[0] = null;
             }

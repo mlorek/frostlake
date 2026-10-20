@@ -563,14 +563,14 @@ public class QueryExecutor implements ImportLocalizer {
             public boolean listsFunction(final Schema schema, final Function function) {
                 final GrantedObject granted = functionGrant(schema, function);
                 return securityManager == null
-                    || securityManager.reaches(granted.getKind(), granted.getName(), granted.getOwner());
+                    || securityManager.reaches(granted.getKind(), granted.getRecordedName(), granted.getOwner());
             }
 
             @Override
             public boolean listsProcedure(final Schema schema, final Procedure procedure) {
                 final GrantedObject granted = procedureGrant(schema, procedure);
                 return securityManager == null
-                    || securityManager.reaches(granted.getKind(), granted.getName(), granted.getOwner());
+                    || securityManager.reaches(granted.getKind(), granted.getRecordedName(), granted.getOwner());
             }
         });
         this.visitor = new SQLCommandVisitor(catalog, this);
@@ -10556,14 +10556,15 @@ public class QueryExecutor implements ImportLocalizer {
                 }
                 return;
             }
+            // A name reaches the pipe, task or alert that carries it exactly: an unquoted LX_P names no "lx_p".
             case "PIPE":
-                catalog.requireOwningSchema(QualifiedName.of(parts)).getPipe(parts[parts.length - 1]);
+                catalog.requireOwningSchema(QualifiedName.of(parts)).getPipeExact(parts[parts.length - 1]);
                 return;
             case "TASK":
-                catalog.requireOwningSchema(QualifiedName.of(parts)).getTask(parts[parts.length - 1]);
+                catalog.requireOwningSchema(QualifiedName.of(parts)).getTaskExact(parts[parts.length - 1]);
                 return;
             case "ALERT":
-                catalog.requireOwningSchema(QualifiedName.of(parts)).getAlert(parts[parts.length - 1]);
+                catalog.requireOwningSchema(QualifiedName.of(parts)).getAlertExact(parts[parts.length - 1]);
                 return;
             case "WAREHOUSE":
                 catalog.getWarehouseExact(parts[parts.length - 1]);
@@ -10593,7 +10594,7 @@ public class QueryExecutor implements ImportLocalizer {
             case "RESOURCE_MONITOR":
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Resource monitor", written));
             case "FILE_FORMAT":
-                if (!catalog.requireOwningSchema(QualifiedName.of(parts)).hasFileFormat(name)) {
+                if (!catalog.requireOwningSchema(QualifiedName.of(parts)).hasFileFormatExact(name)) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("File format", written));
                 }
                 return;
@@ -10605,7 +10606,7 @@ public class QueryExecutor implements ImportLocalizer {
             case "STREAM": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                 try {
-                    schema.getStream(name);
+                    schema.getStreamExact(name);
                 } catch (final RuntimeException missing) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", written));
                 }
@@ -10613,7 +10614,7 @@ public class QueryExecutor implements ImportLocalizer {
             }
             case "MASKING_POLICY": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                if (schema.getMaskingPolicy(name) == null) {
+                if (schema.getMaskingPolicyExact(name) == null) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
                         schema.qualifiedName(name)));
                 }
@@ -10621,7 +10622,7 @@ public class QueryExecutor implements ImportLocalizer {
             }
             case "ROW_ACCESS_POLICY": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                if (schema.getRowAccessPolicy(name) == null) {
+                if (schema.getRowAccessPolicyExact(name) == null) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
                         schema.qualifiedName(name)));
                 }
@@ -10867,40 +10868,42 @@ public class QueryExecutor implements ImportLocalizer {
                 }
                 return null;
             }
+            // Each kind is looked up by the exact name the statement wrote: a name that differs only in case is
+            // another object's, which a grant on this one never reaches.
             case "SEQUENCE": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final Sequence sequence = schema.getSequence(parts[parts.length - 1]);
+                final Sequence sequence = schema.getSequenceExact(parts[parts.length - 1]);
                 return new GrantedObject("SEQUENCE", schema.qualifiedName(sequence.getName()), sequence.getOwner(),
                     sequence.getCreatedTime(), memberSpellings(schema, sequence.getName()));
             }
             case "STAGE": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final Stage stage = schema.getStage(parts[parts.length - 1]);
+                final Stage stage = schema.getStageExact(parts[parts.length - 1]);
                 return new GrantedObject("STAGE", schema.qualifiedName(stage.getName()), stage.getOwner(),
                     stage.getCreatedTime(), memberSpellings(schema, stage.getName()));
             }
             case "FILE_FORMAT": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final FileFormat format = schema.getFileFormat(parts[parts.length - 1]);
+                final FileFormat format = schema.getFileFormatExact(parts[parts.length - 1]);
                 return format == null ? null : new GrantedObject("FILE_FORMAT", schema.qualifiedName(format.getName()),
                     format.getOwner(), format.getCreatedTime(), memberSpellings(schema, format.getName()));
             }
             case "MASKING_POLICY": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final MaskingPolicy policy = schema.getMaskingPolicy(parts[parts.length - 1]);
+                final MaskingPolicy policy = schema.getMaskingPolicyExact(parts[parts.length - 1]);
                 return policy == null ? null : new GrantedObject("MASKING_POLICY", schema.qualifiedName(policy.getName()),
                     policy.getOwner(), policy.getCreatedTime(), memberSpellings(schema, policy.getName()));
             }
             case "ROW_ACCESS_POLICY": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final RowAccessPolicy policy = schema.getRowAccessPolicy(parts[parts.length - 1]);
+                final RowAccessPolicy policy = schema.getRowAccessPolicyExact(parts[parts.length - 1]);
                 return policy == null ? null : new GrantedObject("ROW_ACCESS_POLICY",
                     schema.qualifiedName(policy.getName()), policy.getOwner(), policy.getCreatedTime(),
                     memberSpellings(schema, policy.getName()));
             }
             case "STREAM": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final Stream stream = schema.getStream(parts[parts.length - 1]);
+                final Stream stream = schema.getStreamExact(parts[parts.length - 1]);
                 // A stream stamps the host's wall clock; read back in the host's zone it is the instant it was made.
                 return new GrantedObject("STREAM", schema.qualifiedName(stream.getName()), stream.getOwner(),
                     stream.getCreatedAt().atZone(ZoneId.systemDefault()).toInstant(),
@@ -10908,7 +10911,7 @@ public class QueryExecutor implements ImportLocalizer {
             }
             case "TASK": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final Task task = schema.getTask(parts[parts.length - 1]);
+                final Task task = schema.getTaskExact(parts[parts.length - 1]);
                 if (task == null) {
                     return null;
                 }
@@ -10918,16 +10921,16 @@ public class QueryExecutor implements ImportLocalizer {
             }
             case "ALERT": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                if (!schema.hasAlert(parts[parts.length - 1])) {
+                if (!schema.hasAlertExact(parts[parts.length - 1])) {
                     return null;
                 }
-                final Alert alert = schema.getAlert(parts[parts.length - 1]);
+                final Alert alert = schema.getAlertExact(parts[parts.length - 1]);
                 return new GrantedObject("ALERT", schema.qualifiedName(alert.getName()), alert.getOwner(),
                     alert.getCreatedTime(), memberSpellings(schema, alert.getName()));
             }
             case "PIPE": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-                final Pipe pipe = schema.getPipe(parts[parts.length - 1]);
+                final Pipe pipe = schema.getPipeExact(parts[parts.length - 1]);
                 if (pipe == null) {
                     return null;
                 }
@@ -11320,12 +11323,14 @@ public class QueryExecutor implements ImportLocalizer {
         if (granted.getOwner() == null || granted.getOwner().equalsIgnoreCase(actingRole)) {
             return;
         }
-        // A granted ALTER, which this engine records where a GRANT names it, lets its holder alter the object.
+        // A granted ALTER, which this engine records where a GRANT names it, lets its holder alter the object. The
+        // privileges are asked by the name they are recorded under, which for a routine is not the reported one.
+        final String recorded = granted.getRecordedName();
         final boolean held = privilege == null
-            ? securityManager.holdsAnyPrivilege(granted.getKind(), granted.getName(), granted.getOwner())
-            : securityManager.holdsPrivilege(privilege, granted.getKind(), granted.getName(), granted.getOwner())
+            ? securityManager.holdsAnyPrivilege(granted.getKind(), recorded, granted.getOwner())
+            : securityManager.holdsPrivilege(privilege, granted.getKind(), recorded, granted.getOwner())
                 || privilege == Privilege.MODIFY && securityManager.holdsPrivilege(Privilege.ALTER,
-                    granted.getKind(), granted.getName(), granted.getOwner());
+                    granted.getKind(), recorded, granted.getOwner());
         if (held) {
             requireUsedContainers(granted);
             return;
@@ -11412,20 +11417,20 @@ public class QueryExecutor implements ImportLocalizer {
      * recorded under its signature (GrantNames.routine); its first spelling is its bare name, as refusals name it.
      */
     public static GrantedObject functionGrant(final Schema schema, final Function overload) {
+        final String recorded = GrantNames.routine(schema, overload.getName(), overload.getParameters());
         return new GrantedObject("FUNCTION",
             SqlIdentifiers.spellAlreadyCanonicalPath(schema.qualifiedName(overload.getName()))
                 + argumentTypes(overload.getParameters()),
-            overload.getOwner(), overload.getCreatedTime(),
-            spellings(overload.getName(), GrantNames.routine(schema, overload.getName(), overload.getParameters())));
+            overload.getOwner(), overload.getCreatedTime(), spellings(overload.getName(), recorded), recorded);
     }
 
     /** A procedure overload as its grants name it, its privileges found under its signature. */
     public static GrantedObject procedureGrant(final Schema schema, final Procedure overload) {
+        final String recorded = GrantNames.routine(schema, overload.getName(), overload.getParameters());
         return new GrantedObject("PROCEDURE",
             SqlIdentifiers.spellAlreadyCanonicalPath(schema.qualifiedName(overload.getName()))
                 + argumentTypes(overload.getParameters()),
-            overload.getOwner(), overload.getCreatedTime(),
-            spellings(overload.getName(), GrantNames.routine(schema, overload.getName(), overload.getParameters())));
+            overload.getOwner(), overload.getCreatedTime(), spellings(overload.getName(), recorded), recorded);
     }
 
     /**
@@ -11634,9 +11639,7 @@ public class QueryExecutor implements ImportLocalizer {
                 if (callsGrouping(value)) {
                     throw new RuntimeException(SqlCompilationError.of("GROUPING function without a GROUP BY."));
                 }
-                final List<ParserRuleContext> aggregates = new ArrayList<>();
-                collectAggregateCallsOutsideNestedQueries(value, aggregates);
-                if (!aggregates.isEmpty()) {
+                if (!aggregateCallsOver(value, table, aliasToTable).isEmpty()) {
                     throw new RuntimeException(SqlCompilationError.of(
                         "[PSEUDOCOLUMN(VOL_ID)] is not a valid group by expression"));
                 }
@@ -11646,7 +11649,12 @@ public class QueryExecutor implements ImportLocalizer {
                 + "] appears outside of SELECT, QUALIFY, and ORDER BY clauses."));
         }
         if (where != null) {
-            rejectAggregatesIn(where, "where clause", echo);
+            final CallTypingScope enclosing = beginCallTyping(table, aliasToTable);
+            try {
+                rejectAggregatesIn(where, "where clause", echo);
+            } finally {
+                endCallTyping(enclosing);
+            }
         }
     }
 
@@ -11694,11 +11702,29 @@ public class QueryExecutor implements ImportLocalizer {
         return !found.isEmpty();
     }
 
+    /**
+     * Whether a clause holds an aggregate call of its own, outside any query nested in it, its calls typed over the
+     * clause's relations (see {@link #beginCallTyping}): a call its arguments send to a scalar overload is none.
+     *
+     * @param clause       the clause
+     * @param table        the relation it reads
+     * @param aliasToTable its relations by alias, or null
+     * @return whether it holds an aggregate
+     */
+    boolean holdsAggregateOver(final ParseTree clause, final Table table, final Map<String, Table> aliasToTable) {
+        return !aggregateCallsOver(clause, table, aliasToTable).isEmpty();
+    }
+
     /** Refuse the first aggregate call in a clause as {@code Invalid aggregate function in <clause> […]}. */
     void rejectAggregatesInClause(final ParserRuleContext clause, final String clauseName, final Table table,
                                   final Map<String, Table> aliasToTable, final List<Table> allTables) {
-        rejectAggregatesIn(clause, clauseName,
-            new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog, this));
+        final CallTypingScope enclosing = beginCallTyping(table, aliasToTable);
+        try {
+            rejectAggregatesIn(clause, clauseName,
+                new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog, this));
+        } finally {
+            endCallTyping(enclosing);
+        }
     }
 
     /** Whether an expression calls GROUPING itself, outside any query nested in it. */
@@ -13282,7 +13308,7 @@ public class QueryExecutor implements ImportLocalizer {
         // An ON holding an aggregate or a window call is refused by its clause rule once the FROM clause is
         // resolved (rejectAggregatesOutsideAllowedClauses, rejectWindowFunctionsOutsideAllowedClauses), which
         // is the sentence live gives; until then no pair is judged against it.
-        final boolean refusedByClauseRule = holdsAggregate(joinCtx.booleanExpr())
+        final boolean refusedByClauseRule = holdsAggregateOver(joinCtx.booleanExpr(), leftTable, aliasToTable)
             || windowEvaluator.hasWindowFunctionInTree(joinCtx.booleanExpr());
 
         // Create condition evaluator that combines rows and evaluates the condition
@@ -14385,8 +14411,13 @@ public class QueryExecutor implements ImportLocalizer {
         if (clause == null) {
             return;
         }
-        final List<ParserRuleContext> found = new ArrayList<>();
-        collectAggregateCallsOutsideNestedQueries(clause, found);
+        final List<ParserRuleContext> found;
+        if (table != null) {
+            found = aggregateCallsOver(clause, table, aliasToTable);
+        } else {
+            found = new ArrayList<>();
+            collectAggregateCallsOutsideNestedQueries(clause, found);
+        }
         for (final ParserRuleContext call : found) {
             if (!readsOuterRowAlone(call, lateralContext, table, aliasToTable)) {
                 if (lateralContext != null && !lateralContext.isEmpty()) {
@@ -14514,16 +14545,11 @@ public class QueryExecutor implements ImportLocalizer {
                 && !(node instanceof FrostlakeParser.SelectListContext)) {
             return;
         }
-        final CallTypingScope enclosing = callTypingScope.get();
-        callTypingScope.set(new CallTypingScope(table, aliasToTable));
+        final CallTypingScope enclosing = beginCallTyping(table, aliasToTable);
         try {
             rejectMisplacedCalls(node, echo, table, aliasToTable, allTables);
         } finally {
-            if (enclosing == null) {
-                callTypingScope.remove();
-            } else {
-                callTypingScope.set(enclosing);
-            }
+            endCallTyping(enclosing);
         }
     }
 
@@ -17238,6 +17264,53 @@ public class QueryExecutor implements ImportLocalizer {
     }
 
     /**
+     * Types the calls judged from here on over a clause's own relations (see {@link #callChoosesAggregate}), until
+     * {@link #endCallTyping} restores the scope this hands back. A clause that refuses aggregates - a WHERE, a join's
+     * ON, an UPDATE's SET - is judged this way, so a call its arguments send to a scalar overload beside an aggregate
+     * one is no aggregate there: {@code WHERE mix(v) = 'scalar1'} over an INT {@code v} runs the scalar
+     * {@code mix(x INT)} for each row (FL-443). Typed over no relation, its argument found no column, and the call
+     * counted as the aggregate.
+     *
+     * @param table        the relation the clause reads
+     * @param aliasToTable the clause's relations by alias, or null
+     * @return the scope it replaces, for {@link #endCallTyping}
+     */
+    CallTypingScope beginCallTyping(final Table table, final Map<String, Table> aliasToTable) {
+        final CallTypingScope enclosing = callTypingScope.get();
+        callTypingScope.set(new CallTypingScope(table, aliasToTable));
+        return enclosing;
+    }
+
+    /**
+     * Restores the typing scope {@link #beginCallTyping} replaced.
+     *
+     * @param enclosing the scope it handed back, or null
+     */
+    void endCallTyping(final CallTypingScope enclosing) {
+        if (enclosing == null) {
+            callTypingScope.remove();
+        } else {
+            callTypingScope.set(enclosing);
+        }
+    }
+
+    /**
+     * The aggregate calls a clause holds outside any query nested in it, its calls typed over its own relations (see
+     * {@link #beginCallTyping}).
+     */
+    private List<ParserRuleContext> aggregateCallsOver(final ParseTree clause, final Table table,
+                                                       final Map<String, Table> aliasToTable) {
+        final List<ParserRuleContext> found = new ArrayList<>();
+        final CallTypingScope enclosing = beginCallTyping(table, aliasToTable);
+        try {
+            collectAggregateCallsOutsideNestedQueries(clause, found);
+        } finally {
+            endCallTyping(enclosing);
+        }
+        return found;
+    }
+
+    /**
      * A user aggregate as a call runs it: the overload its arguments' static types choose over the clause's relations,
      * the same for every group - an all-NULL group and a typed NULL too - as a scalar function's call chooses its own
      * (live-verified). A call whose arguments cannot be typed leaves the choice to each group's values.
@@ -18654,6 +18727,13 @@ public class QueryExecutor implements ImportLocalizer {
             // FROM @stage[/path] [(FILE_FORMAT => ..., PATTERN => ...)]: query the staged files.
             StageReferenceShape.refuseEmptyTableStageSchema(source.stageRef());
             requireStagePrivilege(Privilege.READ, source.stageRef());
+            final List<String> stageParts = source.stageRef().TILDE() != null || source.stageRef().PERCENT() != null
+                ? null : StageReferenceShape.nameParts(source.stageRef());
+            if (stageParts != null && stageParts.size() <= 3 && !stageParts.contains("")) {
+                // A named stage is the one of exactly that name, as LIST names it: @LX_ST reads no "lx_st". A name
+                // of too many or empty parts is left to the query's own refusal.
+                StageReferenceShape.namedStage(source.stageRef(), catalog);
+            }
             return new StageQueryExecutor(this).queryStage(
                 stageRefToLocation(source.stageRef()), source.stageQueryParams(), alias)
                 .describedAs("STAGE[" + getOriginalText(source.stageRef()) + "]").readWhilePlanning();
@@ -20011,19 +20091,29 @@ public class QueryExecutor implements ImportLocalizer {
      * @return what the refresh changed and how many tables it refreshed
      */
     public DynamicTableRefreshOutcome refreshDynamicTableManually(final Schema home, final DynamicTable dynamicTable) {
-        final Set<DynamicTable> refreshed = new LinkedHashSet<>();
-        refreshUpstream(home, dynamicTable, refreshed);
-        // The table's query is expanded as a view's body is: a relation it reads that is gone fails the refresh.
-        final boolean outerExpansion = ViewExpansion.begin();
-        final long[] changed;
+        // The table's query reads with its owner's rights, as a view's does: a role that only operates the table,
+        // holding OPERATE on it and nothing on what it reads, refreshes it (documented: OPERATE lets a role refresh).
+        final String rights = securityManager != null ? securityManager.enterOwnerRights(dynamicTable.getOwner())
+            : null;
         try {
-            changed = refreshDynamicTableNow(home, dynamicTable);
-        } catch (final ViewExpansionException missing) {
-            throw DynamicTableRefreshFailure.manual(dynamicTable, missing);
+            final Set<DynamicTable> refreshed = new LinkedHashSet<>();
+            refreshUpstream(home, dynamicTable, refreshed);
+            // The table's query is expanded as a view's body is: a relation it reads that is gone fails the refresh.
+            final boolean outerExpansion = ViewExpansion.begin();
+            final long[] changed;
+            try {
+                changed = refreshDynamicTableNow(home, dynamicTable);
+            } catch (final ViewExpansionException missing) {
+                throw DynamicTableRefreshFailure.manual(dynamicTable, missing);
+            } finally {
+                ViewExpansion.end(outerExpansion);
+            }
+            return new DynamicTableRefreshOutcome(changed, changed == null ? 0 : refreshed.size() + 1);
         } finally {
-            ViewExpansion.end(outerExpansion);
+            if (securityManager != null) {
+                securityManager.leaveOwnerRights(rights);
+            }
         }
-        return new DynamicTableRefreshOutcome(changed, changed == null ? 0 : refreshed.size() + 1);
     }
 
     /** Refreshes the dynamic tables a dynamic table reads, the ones they read first, each once. */
@@ -24114,33 +24204,47 @@ public class QueryExecutor implements ImportLocalizer {
     /**
      * A FLATTEN of a structured ARRAY or MAP that is not RECURSIVE: VALUE has the type the input declares for its
      * elements or values (documented), each value held as that type holds it. A structured OBJECT's fields may each
-     * have a type of their own, so its VALUE stays VARIANT, as a RECURSIVE one's does (live-verified).
+     * have a type of their own, so its VALUE stays VARIANT, as a RECURSIVE one's does (live-verified). A MAP's KEY
+     * has the type the map declares for its keys (documented: "the key column matches the MAP's key type"), so a
+     * NUMBER-keyed map's keys are numbers that sort 1, 2, 10, as MAP_KEYS answers them (FL-479); the member text a
+     * MAP holds each key under is read back as that number.
      *
      * @param planned   the planned call
      * @param inputType the static type of its INPUT, or null when it cannot be told
      * @param recursive whether the call is RECURSIVE
-     * @return the call, its VALUE typed
+     * @return the call, its VALUE and KEY typed
      */
     private static PlannedTableFunction typedFlatten(final PlannedTableFunction planned, final DataType inputType,
                                                      final boolean recursive) {
         final DataType element = recursive ? null
             : inputType instanceof StructuredArrayType ? ((StructuredArrayType) inputType).getElementType()
             : inputType instanceof MapType ? ((MapType) inputType).getValueType() : null;
-        if (element == null || planned.columns == null) {
+        final DataType key = !recursive && inputType instanceof MapType
+            && ((MapType) inputType).getKeyType() instanceof NumericType ? ((MapType) inputType).getKeyType() : null;
+        if (element == null && key == null || planned.columns == null) {
             return planned;
         }
         final List<ResultSetColumn> columns = new ArrayList<>(planned.columns);
         int valueAt = -1;
+        int keyAt = -1;
         for (int i = 0; i < columns.size(); i++) {
-            if ("VALUE".equals(columns.get(i).getName())) {
+            if (element != null && "VALUE".equals(columns.get(i).getName())) {
                 valueAt = i;
+            } else if (key != null && "KEY".equals(columns.get(i).getName())) {
+                keyAt = i;
             }
         }
-        if (valueAt < 0) {
+        if (valueAt < 0 && keyAt < 0) {
             return planned;
         }
-        columns.set(valueAt, new ResultSetColumn("VALUE", element, null, element));
-        final int at = valueAt;
+        if (valueAt >= 0) {
+            columns.set(valueAt, new ResultSetColumn("VALUE", element, null, element));
+        }
+        if (keyAt >= 0) {
+            columns.set(keyAt, new ResultSetColumn("KEY", key, null, key));
+        }
+        final int valueSlot = valueAt;
+        final int keySlot = keyAt;
         final MemoizedResultSet untyped = planned.result;
         return new PlannedTableFunction(planned.name, planned.callText, new MemoizedResultSet(new ResultSetProvider() {
             @Override
@@ -24148,8 +24252,12 @@ public class QueryExecutor implements ImportLocalizer {
                 final List<Row> rows = new ArrayList<>();
                 for (final Row row : untyped.getResultSet().getRows()) {
                     final List<Object> values = new ArrayList<>(row.getValues());
-                    if (at < values.size()) {
-                        values.set(at, StructuredLeaf.typed(values.get(at), element));
+                    if (valueSlot >= 0 && valueSlot < values.size()) {
+                        values.set(valueSlot, StructuredLeaf.typed(values.get(valueSlot), element));
+                    }
+                    if (keySlot >= 0 && keySlot < values.size() && values.get(keySlot) != null) {
+                        values.set(keySlot, StructuredLeaf.typed(
+                            new BigDecimal(values.get(keySlot).toString()), key));
                     }
                     rows.add(new Row(values));
                 }
@@ -24421,9 +24529,15 @@ public class QueryExecutor implements ImportLocalizer {
         final boolean nullExtends = onCondition != null && joinCtx.joinType() != null
             && joinCtx.joinType().LEFT() != null;
         // An ON holding an aggregate or a window call is refused by its clause rule once the FROM clause is
-        // resolved; until then no pair is judged against it.
+        // resolved; until then no pair is judged against it. Its calls are typed over both sides, as that rule
+        // types them, so a scalar overload beside an aggregate one is no aggregate here either (FL-443).
+        final Map<String, Table> onScope = aliasToTable != null ? new HashMap<>(aliasToTable) : new HashMap<>();
+        if (rightAlias != null) {
+            onScope.put(rightAlias.toUpperCase(Locale.ROOT), rightTable);
+        }
         final boolean refusedByClauseRule = onCondition != null
-            && (holdsAggregate(onCondition) || windowEvaluator.hasWindowFunctionInTree(onCondition));
+            && (holdsAggregateOver(onCondition, leftTable, onScope)
+                || windowEvaluator.hasWindowFunctionInTree(onCondition));
         final Table lateralShape = rightTable;
         final String lateralAlias = rightAlias;
         // A table function computed from the rows to its left numbers them as its input records; one that

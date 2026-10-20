@@ -386,7 +386,7 @@ public class GetDdl extends BuiltInFunction {
      * privilege on its signature, nor hold MANAGE GRANTS (documented).
      */
     private void requireSeen(final GrantedObject routine, final String written) {
-        if (ownership != null && !ownership.sees(routine.getKind(), routine.getName(), routine.getOwner())) {
+        if (ownership != null && !ownership.sees(routine.getKind(), routine.getRecordedName(), routine.getOwner())) {
             throw objectDoesNotExist(written);
         }
     }

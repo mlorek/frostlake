@@ -181,7 +181,8 @@ final class UnmodelledListings {
         if (modelled != null && schemas != null) {
             // The kinds listed here that are modelled: the session, authentication or packages policies of the
             // scope's schemas.
-            return new ResultSet(columns.getColumns(), SecurityObjectCommandHandler.showRows(modelled, schemas));
+            return new ResultSet(columns.getColumns(), SecurityObjectCommandHandler.showRows(modelled, schemas,
+                queryExecutor.getSecurityManager()));
         }
         return columns;
     }

@@ -122,6 +122,7 @@ import java.math.BigDecimal;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -599,7 +600,11 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     throw new RuntimeException(SqlCompilationError.objectOfOtherType("VIEW", "DYNAMIC_TABLE"));
                 }
-                checkAlter(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
+                if (operatesDynamicTable(dynamicAction)) {
+                    checkOperate(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
+                } else {
+                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
+                }
                 if (dynamicAction.tagSet() != null) {
                     applyTagSet(ddlHandler.resolveDynamicTable(alteredParts), dynamicAction.tagSet());
                 } else if (dynamicAction.tagUnset() != null) {
@@ -1576,7 +1581,13 @@ public class AlterCommandHandler implements CommandHandler {
                 schema = catalog.requireOwningSchema(QualifiedName.of(taskParts));
                 // A quoted name in another case is another task, which is not there (live-verified).
                 final Task task = schema.getTaskExact(taskName);
-                checkAlter(SecurableObjectType.TASK, taskQn);
+                if (ctx.taskAction().RESUME() != null || ctx.taskAction().SUSPEND() != null) {
+                    // OPERATE "Grants the ability to suspend or resume a task" (documented); every other action
+                    // is the owner's.
+                    checkOperate(SecurableObjectType.TASK, taskQn);
+                } else {
+                    checkAlter(SecurableObjectType.TASK, taskQn);
+                }
 
                 // Canonical scheduler key (DB.SCHEMA.TASK), built identically for RESUME and SUSPEND so the
                 // scheduler arms and later cancels the same entry.
@@ -3068,6 +3079,51 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
+    /**
+     * Authorize an ALTER that operates a task or a dynamic table rather than changing what it is: OPERATE, or
+     * owning the object, which holds every privilege on it. Neither kind has an ALTER privilege to grant.
+     */
+    private void checkOperate(final SecurableObjectType objectType, final String objectName) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null) {
+            return;
+        }
+        // A privilege is recorded under the kind's underscored name (DYNAMIC_TABLE), and the owner is looked up by
+        // the kind's words (DYNAMIC TABLE).
+        if (!security.holdsPrivilege(Privilege.OPERATE, objectType.name(), objectName,
+                catalog.getObjectOwnerRole(objectType.getCatalogName(), objectName))) {
+            security.checkPermission(Privilege.OPERATE, objectType, objectName);
+        }
+    }
+
+    /**
+     * Whether an ALTER DYNAMIC TABLE action is one OPERATE allows: without it a role cannot "suspend, resume,
+     * refresh, or change the warehouse or target lag" (documented, dynamic table privileges). A rename, a swap,
+     * the tags, the reclustering and the other properties stay the owner's.
+     */
+    private static boolean operatesDynamicTable(final FrostlakeParser.DynamicTableActionContext action) {
+        if (action.RECLUSTER() != null) {
+            return false;
+        }
+        if (action.SUSPEND() != null || action.RESUME() != null || action.REFRESH() != null) {
+            return true;
+        }
+        final List<FrostlakeParser.DynamicTablePropertyContext> properties = new ArrayList<>();
+        if (action.SET() != null) {
+            for (final FrostlakeParser.DynamicTableSettingContext setting : action.dynamicTableSetting()) {
+                properties.add(setting.dynamicTableProperty());
+            }
+        } else if (action.UNSET() != null) {
+            properties.addAll(action.dynamicTableProperty());
+        }
+        for (final FrostlakeParser.DynamicTablePropertyContext property : properties) {
+            if (property.TARGET_LAG() == null && property.WAREHOUSE() == null) {
+                return false;
+            }
+        }
+        return !properties.isEmpty();
+    }
+
     /** The policy an ALTER found, its absence refused in live's sentence. */
     private <P extends SqlObject> P existingPolicy(final P found, final String kind, final String policyName) {
         if (found == null) {
@@ -3369,6 +3425,10 @@ public class AlterCommandHandler implements CommandHandler {
         final TaskProperties properties = new TaskProperties(catalog, schema);
         final List<String> resolved = properties.requirePredecessors(task, names);
         properties.requireConfigFree(task);
+        // Neither the graph the task leaves as a root nor the one it joins may run.
+        final List<Task> graphs = new ArrayList<>(properties.namedPredecessors(names));
+        graphs.add(task);
+        properties.requireSuspendedRoots(graphs);
         for (final String predecessor : resolved) {
             if (!TaskProperties.hasPredecessor(task, predecessor)) {
                 task.addPredecessor(predecessor);
@@ -3379,7 +3439,10 @@ public class AlterCommandHandler implements CommandHandler {
     /** ALTER TASK … REMOVE AFTER: every named task must be a predecessor, and each stops being one. */
     private void removeTaskPredecessors(final Task task, final List<FrostlakeParser.QualifiedNameContext> names,
                                         final Schema schema) {
-        final List<String> removed = new TaskProperties(catalog, schema).requireRemovablePredecessors(task, names);
+        final TaskProperties properties = new TaskProperties(catalog, schema);
+        final List<String> removed = properties.requireRemovablePredecessors(task, names);
+        // A child leaves its graph only while the graph's root is suspended.
+        properties.requireSuspendedRoots(Collections.singletonList(task));
         for (final String name : removed) {
             final Iterator<String> it = task.getPredecessors().iterator();
             while (it.hasNext()) {
@@ -3994,6 +4057,14 @@ public class AlterCommandHandler implements CommandHandler {
                     throw new RuntimeException("Cannot drop column '" + keyed
                         + "' which belongs to a clustering key\n");
                 }
+                if (table.hasRowAccessPolicy() && table.getRowAccessPolicyColumns().contains(keyed)) {
+                    // A column the row access policy reads stays while the policy is attached: dropped, it would
+                    // leave every read of the table failing on the policy's argument. The rule and the account's
+                    // sentence are not documented or measured; refusing is the conservative choice.
+                    throw new RuntimeException(SqlCompilationError.of("Cannot drop column '" + keyed
+                        + "' because it is referenced by row access policy '" + table.getRowAccessPolicyName()
+                        + "'. Drop the row access policy from the table first."));
+                }
             }
         }
         final Set<String> dropping = new LinkedHashSet<>();
@@ -4012,6 +4083,20 @@ public class AlterCommandHandler implements CommandHandler {
         }
         if (!dropping.isEmpty() && dropping.size() >= table.columnCount()) {
             throw new RuntimeException(SqlCompilationError.of("cannot drop all the columns of a table"));
+        }
+        for (final TableColumn masked : table.columnsView()) {
+            if (!masked.hasMaskingPolicy() || dropping.contains(masked.getName())) {
+                continue;
+            }
+            // A column a conditional masking policy reads through USING stays too, while the column it masks does:
+            // dropped, it would leave every read of that column failing (not documented or measured, as above).
+            for (final String argument : masked.getMaskingPolicyArguments()) {
+                if (!argument.equals(masked.getName()) && dropping.contains(argument)) {
+                    throw new RuntimeException(SqlCompilationError.of("Cannot drop column '" + argument
+                        + "' because it is referenced by masking policy '" + masked.getMaskingPolicyName()
+                        + "' on column '" + masked.getName() + "'. Unset the masking policy first."));
+                }
+            }
         }
         final String fullyQualifiedName = queryExecutor.getFullyQualifiedTableName(tableName);
         final Schema columnOwner = catalog.resolveOwningSchema(tableName);

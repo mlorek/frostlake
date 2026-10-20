@@ -289,7 +289,10 @@ public class CommentCommandHandler implements CommandHandler {
                 queryExecutor.requireOnRelation(Privilege.MODIFY, viewName);
                 final View view;
                 try {
-                    view = catalog.resolveView(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
+                    // Named exactly, as ALTER VIEW names it: an unquoted LX_V reaches no "lx_v".
+                    final String[] viewParts = qualifiedNameParts(ctx.qualifiedName());
+                    view = catalog.requireOwningSchema(QualifiedName.of(viewParts))
+                        .getViewExact(viewParts[viewParts.length - 1]);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("View does not exist (IF EXISTS): {}", viewName);

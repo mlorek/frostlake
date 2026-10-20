@@ -96,9 +96,9 @@ public final class AlertCommandHandler {
         }
         // Asked once the warehouse is known to be there (live-verified).
         queryExecutor.requireCreatePrivilege(Privilege.CREATE_ALERT, schema);
-        if (schema.hasAlert(name)) {
+        if (schema.hasAlertExact(name)) {
             if (ctx.or_alter() != null) {
-                alterInPlace(schema, schema.getAlert(name), definition);
+                alterInPlace(schema, schema.getAlertExact(name), definition);
                 // An existing alert is altered, and the statement answers as an ALTER does.
                 ConditionalDdlOutcome.alteredInPlace();
                 return null;
@@ -116,19 +116,19 @@ public final class AlertCommandHandler {
         if (definition.CLONE() != null) {
             final String[] sourceParts = ParseTreeText.qualifiedNameParts(definition.qualifiedName());
             final Schema sourceSchema = catalog.requireOwningSchema(QualifiedName.of(sourceParts));
-            alert = sourceSchema.getAlert(sourceParts[sourceParts.length - 1]).copy(name);
+            alert = sourceSchema.getAlertExact(sourceParts[sourceParts.length - 1]).copy(name);
         } else {
             alert = new Alert(name, sourceText(definition.alertCondition()),
                 ParseTreeText.taskBodyText(definition.taskBody()));
             applyProperties(catalog, alert, definition.alertProperty());
         }
-        if (schema.hasAlert(name)) {
-            final Alert replaced = schema.getAlert(name);
+        if (schema.hasAlertExact(name)) {
+            final Alert replaced = schema.getAlertExact(name);
             final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
             if (scheduler != null) {
                 scheduler.suspendAlert(schema.getDatabaseName(), schema.getName(), replaced);
             }
-            schema.dropAlert(name);
+            schema.dropAlertExact(name);
         }
         // The future grants on the schema's or the database's alerts are the new alert's (documented).
         final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "ALERT", schema, name);
@@ -218,10 +218,10 @@ public final class AlertCommandHandler {
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String alertName = parts[parts.length - 1];
-        if (!schema.hasAlert(alertName)) {
+        if (!schema.hasAlertExact(alertName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Alert", schema.qualifiedName(alertName)));
         }
-        return schema.getAlert(alertName);
+        return schema.getAlertExact(alertName);
     }
 
     /** ALTER ALERT … RESUME | SUSPEND | SET | UNSET | MODIFY CONDITION | MODIFY ACTION (tags are the caller's). */
@@ -325,10 +325,10 @@ public final class AlertCommandHandler {
             : ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String name = parts[parts.length - 1];
-        if (DropPurge.written(ctx.dropBehavior()) && (ifExists || schema.hasAlert(name))) {
+        if (DropPurge.written(ctx.dropBehavior()) && (ifExists || schema.hasAlertExact(name))) {
             throw DropPurge.refusal(parts);
         }
-        if (!schema.hasAlert(name)) {
+        if (!schema.hasAlertExact(name)) {
             if (ifExists) {
                 ConditionalDdlOutcome.dropSkipped();
                 return null;
@@ -337,9 +337,9 @@ public final class AlertCommandHandler {
         }
         final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
         if (scheduler != null) {
-            scheduler.suspendAlert(schema.getDatabaseName(), schema.getName(), schema.getAlert(name));
+            scheduler.suspendAlert(schema.getDatabaseName(), schema.getName(), schema.getAlertExact(name));
         }
-        schema.dropAlert(name);
+        schema.dropAlertExact(name);
         return null;
     }
 

@@ -322,8 +322,11 @@ final class MergeExecutor {
             }
             // Every value a branch writes is type-matched against its column before any row is read, as an
             // INSERT's is: WHEN MATCHED THEN UPDATE SET n = (1 = 1) is refused even when nothing matches.
+            // A DECFLOAT value a branch writes into a VARIANT or a text column is held in the column's own form of it
+            // (see DecfloatWrites); each such value is kept with its column's type.
+            final Map<ParserRuleContext, DataType> decfloatValues = new HashMap<>();
             final Set<ParserRuleContext> jsonValues = rejectMistypedBranchValues(targetTable, targetAlias,
-                sourceTable, sourceAlias, matchedClauses, notMatchedClauses);
+                sourceTable, sourceAlias, matchedClauses, notMatchedClauses, decfloatValues);
             // ... and judged by a projection policy as a projection is: UPDATE SET x = s.p and INSERT VALUES (s.p) write
             // the value into the target. The ON condition only uses the column.
             rejectRestrictedBranchValues(targetTable, targetAlias, sourceTable, sourceAlias, matchedClauses,
@@ -448,6 +451,9 @@ final class MergeExecutor {
                                                     ? JsonTextWrites.storedOnColumn(newValue,
                                                         executor.getFunctionRegistry(), targetTableName,
                                                         targetTable.getColumns().get(colIndex).getName())
+                                                    : decfloatValues.containsKey(assign.expression())
+                                                    ? DecfloatWrites.stored(newValue,
+                                                        decfloatValues.get(assign.expression()))
                                                     : newValue);
                                                 writtenColumns.add(Integer.valueOf(colIndex));
                                             }
@@ -583,6 +589,9 @@ final class MergeExecutor {
                                                     v));
                                                 values.add(JsonTextWrites.stored(computed,
                                                     executor.getFunctionRegistry()));
+                                            } else if (decfloatValues.containsKey(valueExprs.get(v))) {
+                                                values.add(DecfloatWrites.stored(computed,
+                                                    decfloatValues.get(valueExprs.get(v))));
                                             } else {
                                                 values.add(computed);
                                             }
@@ -837,7 +846,8 @@ final class MergeExecutor {
     private Set<ParserRuleContext> rejectMistypedBranchValues(final Table targetTable, final String targetAlias,
             final Table sourceTable, final String sourceAlias,
             final List<FrostlakeParser.MergeClauseContext> matchedClauses,
-            final List<FrostlakeParser.MergeClauseContext> notMatchedClauses) {
+            final List<FrostlakeParser.MergeClauseContext> notMatchedClauses,
+            final Map<ParserRuleContext, DataType> decfloatValues) {
         final Set<ParserRuleContext> jsonValues = new HashSet<>();
         final Map<String, Table> aliasToTable = new HashMap<>();
         final List<Table> allTables = new ArrayList<>();
@@ -867,7 +877,7 @@ final class MergeExecutor {
             for (final TableColumn column : targetTable.getColumns()) {
                 final ParserRuleContext value = assigned.get(column.getName());
                 if (value != null) {
-                    rejectMistypedValue(scope, column, value, jsonValues);
+                    rejectMistypedValue(scope, column, value, jsonValues, decfloatValues);
                 }
             }
         }
@@ -879,7 +889,7 @@ final class MergeExecutor {
             for (int i = 0; i < values.size(); i++) {
                 final TableColumn column = targetTable.getColumn(mergeInsertColumnName(clause, targetTable, i));
                 if (column != null) {
-                    rejectMistypedValue(scope, column, values.get(i), jsonValues);
+                    rejectMistypedValue(scope, column, values.get(i), jsonValues, decfloatValues);
                 }
             }
         }
@@ -942,10 +952,12 @@ final class MergeExecutor {
 
     /**
      * One branch value against its column; see {@link #rejectMistypedBranchValues}. A text read as JSON when the row
-     * is written (see JsonTextWrites) is taken into {@code jsonValues} instead.
+     * is written (see JsonTextWrites) is taken into {@code jsonValues} instead, and a DECFLOAT its column holds in a
+     * form of its own (see DecfloatWrites) into {@code decfloatValues}, with the column's type.
      */
     private void rejectMistypedValue(final ExpressionEvaluator scope, final TableColumn column,
-                                     final ParserRuleContext value, final Set<ParserRuleContext> jsonValues) {
+                                     final ParserRuleContext value, final Set<ParserRuleContext> jsonValues,
+                                     final Map<ParserRuleContext, DataType> decfloatValues) {
         final Expression parsed;
         final DataType sourceType;
         try {
@@ -962,6 +974,9 @@ final class MergeExecutor {
             return;
         }
         ColumnTypeFamilies.rejectMismatch(column, sourceType);
+        if (DecfloatWrites.reshapes(sourceType, column.getDataType())) {
+            decfloatValues.put(value, column.getDataType());
+        }
     }
 
     /** The target column the {@code index}-th VALUES item of a MERGE's INSERT feeds, by its canonical name. */

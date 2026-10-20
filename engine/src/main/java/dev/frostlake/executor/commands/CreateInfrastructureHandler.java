@@ -183,6 +183,16 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             properties.requireRootSettings(task);
             properties.requireServerlessSettings(task);
+            // The graph of a root that runs is not changed: no child is added under one of its tasks, and no child
+            // of it is recreated or redefined (a root that runs is refused below, by CREATE OR ALTER).
+            final List<Task> graphs = new ArrayList<>(properties.namedPredecessors(after));
+            if ((orAlter || orReplace) && hasTaskNamed(schema, taskName)) {
+                final Task standing = schema.getTaskExact(taskName);
+                if (!TaskGraphs.isRoot(standing) || standing.isFinalizer()) {
+                    graphs.add(standing);
+                }
+            }
+            properties.requireSuspendedRoots(graphs);
             // The tags are written right after the name, before every property, and each has to exist.
             if (ctx.tagList() != null) {
                 InlineTags.apply(task, ctx.tagList(), queryExecutor);

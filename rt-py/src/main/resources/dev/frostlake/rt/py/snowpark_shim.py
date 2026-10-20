@@ -26,6 +26,7 @@
 import builtins as _builtins
 import re as _re
 import datetime as _datetime
+import decimal as _decimal
 import json as _json
 import math as _math
 import sys as _sys
@@ -209,7 +210,29 @@ def _frostlake_install_snowpark():
             return value
 
     def _from_sql_value(value, sql_type):
+        # A row holds what the Python connector maps each type to (#2392): a NUMBER with a scale a Decimal and a
+        # whole one an int (PythonResultSet hands over the exact text of either where a double would lose digits),
+        # a TIME a datetime.time and a TIMESTAMP_TZ or _LTZ an aware datetime, a VECTOR a list. A SQL NULL the
+        # engine's row holds reaches GraalPy as a foreign None, which `is None` matches; it is None here.
+        if value is None:
+            return None
         n = (sql_type or '').upper()
+        if n == 'NUMBER' and isinstance(value, str):
+            return _decimal.Decimal(value) if '.' in value else int(value)
+        if n == 'TIME' and isinstance(value, str):
+            try:
+                return _datetime.time.fromisoformat(value)
+            except ValueError:
+                return value
+        if n in ('TIMESTAMP_TZ', 'TIMESTAMP_LTZ'):
+            if isinstance(value, _datetime.datetime):
+                return value
+            try:
+                return _datetime.datetime.fromisoformat(str(value))
+            except ValueError:
+                return value
+        if n.startswith('VECTOR'):
+            return list(value)
         if n in ('VARIANT', 'ARRAY', 'OBJECT'):
             return _from_variant_text(value)
         if n.startswith('TIMESTAMP'):
@@ -241,6 +264,8 @@ def _frostlake_install_snowpark():
             return 'TRUE' if value else 'FALSE'
         if isinstance(value, int):
             return str(value)
+        if isinstance(value, _decimal.Decimal) and value.is_finite():
+            return format(value, 'f')
         if isinstance(value, float):
             if _math.isnan(value) or _math.isinf(value):
                 return 'NULL'
@@ -1150,7 +1175,10 @@ def _frostlake_install_snowpark():
         def to_pandas(self, **kwargs):
             self._materialize()
             import pandas
-            return pandas.DataFrame(data=[list(r) for r in self._rows], columns=list(self._names))
+            # Snowpark's to_pandas reads a NUMBER with a scale as float64, as the rows held it before they held a
+            # Decimal (#2392).
+            return pandas.DataFrame(data=[[float(v) if isinstance(v, _decimal.Decimal) else v for v in r]
+                                          for r in self._rows], columns=list(self._names))
 
         def toPandas(self, **kwargs):
             return self.to_pandas(**kwargs)

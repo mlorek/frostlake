@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.SignedStorageWidth;
+import dev.frostlake.executor.expressions.NonFiniteCastRefusal;
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
@@ -49,6 +50,13 @@ public class ToNumber extends BuiltInFunction {
         // all typed NUMBER(2,0); an approximate conversion of the same value is refused at compile time.
         if (args.get(0) instanceof Boolean) {
             return ((Boolean) args.get(0)).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
+        }
+        // A NaN or an infinity, a FLOAT's or a VARIANT's, has no NUMBER value: TO_NUMBER is the conversion the cast
+        // performs (documented), so it is refused in the cast's own sentence, "Number out of representable range:
+        // type FIXED[SB16](38,0){not null}, value nan" (FL-482), not in BigDecimal's.
+        final RuntimeException nonFinite = NonFiniteCastRefusal.refusalFor(args.get(0), "FIXED");
+        if (nonFinite != null) {
+            throw nonFinite;
         }
         // A VARIANT reads through its member — a JSON number, a boolean as 1 / 0, numeric text — and
         // anything else fails the variant cast to FIXED (live: TO_NUMBER over {"x":1}).

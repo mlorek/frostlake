@@ -26,12 +26,18 @@ import java.util.List;
  * FLOOR(n [, scale]) — the input rounded DOWN, to whole numbers by default and to {@code scale}
  * decimal places when one is given. The twin of {@link Ceil} in every other respect.
  */
-public class Floor extends NumericArgumentFunction {
+public class Floor extends NumericArgumentFunction implements DecfloatRounding {
     public Floor() { super("FLOOR", NumericType.INTEGER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         return RoundedValue.of(args, RoundingMode.FLOOR);
+    }
+
+    /** A DECFLOAT is rounded to any scale its exponent reaches (see RoundedValue#ofDecfloat). */
+    @Override
+    public Object evaluateDecfloat(final List<Object> args) {
+        return RoundedValue.ofDecfloat(args, RoundingMode.FLOOR);
     }
 
     @Override

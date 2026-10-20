@@ -21,10 +21,12 @@ import dev.frostlake.executor.udf.TruffleLogBridge;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.TypeCategory;
+import dev.frostlake.types.VectorElementType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -154,14 +156,30 @@ public final class PythonRuntime {
      * replaced or deleted is put back and one it added is removed - an added {@code Session.__getattribute__} would
      * otherwise answer for {@code session.sql} in every later statement - and so for a class's bases, a module's
      * class and a function's code, defaults and closure cells. The cpython worker ({@code cpython_worker.py}) does
-     * the same, function for function. The standard library's modules are not guarded: the import system and the
-     * modules themselves change their members as they run.
+     * the same, function for function. {@code parse} builds an argument's Python value from its text through the
+     * runtime's own references to {@code json}, {@code decimal}, {@code datetime} and {@code array}, bound as it is
+     * made, as the worker decodes one: a routine that replaced {@code json.loads} or {@code decimal.Decimal} then
+     * changes no argument a routine it calls receives, as no routine's change reaches another on the account (#2389).
+     * The standard library's modules imported by then are put back too, but only
+     * in part (#2387): a member a routine replaced or deleted comes back - a dunder one aside, which the import system
+     * sets ({@code import importlib} renames {@code _frozen_importlib}) -, and the module on {@code sys.modules}, while
+     * one added stays, as the modules gain members as they run (a package its submodules, a cache its entries). The
+     * runtime imports {@code array}, {@code datetime}, {@code decimal} and {@code json} first, as the worker does for
+     * its own use, so that the same modules are covered on both backends; one first imported later is not, as a
+     * routine may have changed it before it is seen. What a routine put on {@code sys.modules} that no import made
+     * goes (a module without a spec, or no module at all, unless its parent module holds it under that name, as
+     * {@code pyexpat} holds {@code pyexpat.errors}), while a real module a routine imported stays: numpy cannot be
+     * imported twice in one process. The working directory and the decimal context are put back as well.
      */
     private static final String RUNTIME_SOURCE = """
         import types as _types
         import builtins as _builtins
         import os as _os
         import sys as _sys
+        import array as _array
+        import datetime as _datetime
+        import decimal as _decimal
+        import json as _json
         _namespace = None
         _base = None
         _builtins_base = None
@@ -171,13 +189,96 @@ public final class PythonRuntime {
         _functions = []
         _guarded_ids = set()
         _missing = object()
+        _stdlib = []
+        _modules_base = set()
+        _getcwd = _os.getcwd
+        _chdir = _os.chdir
+        _setcontext = _decimal.setcontext
+        _cwd_base = None
+        _decimal_base = None
         def bind(namespace, runtime):
             global _namespace, _base, _builtins_base, _environ_base
             _namespace = namespace
             _base = dict((k, v) for k, v in namespace.items() if k.startswith('__') and k.endswith('__'))
             _builtins_base = dict(_builtins.__dict__)
             _environ_base = dict(_os.environ)
+            _snapshot()
             _guard(runtime)
+        def _standard_library():
+            import sysconfig
+            paths = sysconfig.get_paths()
+            stdlib = _os.path.join(paths['stdlib'], '')
+            packages = tuple(_os.path.join(paths[key], '') for key in ('purelib', 'platlib'))
+            found = []
+            for name, module in list(_sys.modules.items()):
+                if (not issubclass(type(module), _types.ModuleType) or name in ('__main__', 'builtins')
+                        or name.startswith('__frostlake')):
+                    continue
+                members = module.__dict__
+                origin = getattr(members.get('__spec__'), 'origin', None)
+                path = members.get('__file__')
+                if origin in ('built-in', 'frozen') or (isinstance(path, str) and path.startswith(stdlib)
+                                                        and not path.startswith(packages)):
+                    found.append((name, module, type(module), dict((key, value) for key, value in members.items()
+                                                            if not (key.startswith('__') and key.endswith('__')))))
+            return found
+        def _snapshot():
+            global _cwd_base, _decimal_base
+            _stdlib.extend(_standard_library())
+            _modules_base.update(_sys.modules)
+            _cwd_base = _getcwd()
+            _decimal_base = _decimal.getcontext().copy()
+        def _imported(key, value):
+            if issubclass(type(value), _types.ModuleType) and value.__dict__.get('__spec__') is not None:
+                return True
+            parent, dot, child = key.rpartition('.')
+            holder = _sys.modules.get(parent) if dot else None
+            return issubclass(type(holder), _types.ModuleType) and holder.__dict__.get(child, _missing) is value
+        def _put_back_standard_library():
+            for name, module, kind, pristine in _stdlib:
+                if type(module) is not kind:
+                    module.__class__ = kind
+                _put_back_members(module.__dict__, pristine)
+            modules = _sys.modules
+            for name, module, kind, pristine in _stdlib:
+                if modules.get(name, _missing) is not module:
+                    modules[name] = module
+            for key in [k for k in modules if k not in _modules_base and k not in _installed]:
+                if not _imported(key, modules[key]):
+                    del modules[key]
+            try:
+                moved = _getcwd() != _cwd_base
+            except OSError:
+                moved = True
+            if moved:
+                _chdir(_cwd_base)
+            _setcontext(_decimal_base.copy())
+        _decode = _json.JSONDecoder().decode
+        _decimal_type = _decimal.Decimal
+        _date_type = _datetime.date
+        _time_type = _datetime.time
+        _datetime_type = _datetime.datetime
+        _array_type = _array.array
+        def parse(kind, text):
+            if kind == 'json':
+                return _decode(text)
+            if kind == 'decimal':
+                return _decimal_type(text)
+            if kind == 'int':
+                return int(text)
+            if kind == 'date':
+                return _date_type.fromisoformat(text)
+            if kind == 'time':
+                return _time_type.fromisoformat(text)
+            if kind == 'datetime':
+                return _datetime_type.fromisoformat(text)
+            if kind == 'bytes':
+                return bytes.fromhex(text)
+            if kind == 'f':
+                return memoryview(_array_type('f', [float(e) for e in text.split(',')]))
+            if kind == 'i':
+                return memoryview(_array_type('i', [int(e) for e in text.split(',')]))
+            raise ValueError('unknown kind ' + kind)
         def enter():
             saved = dict(_namespace)
             _namespace.clear()
@@ -268,6 +369,7 @@ public final class PythonRuntime {
                     else:
                         cell.cell_contents = value
         def restore():
+            _put_back_standard_library()
             current = _builtins.__dict__
             for key in [k for k in current if k not in _builtins_base]:
                 del current[key]
@@ -439,9 +541,11 @@ public final class PythonRuntime {
     /**
      * An outermost statement on this thread has ended: what its routines changed in the state the interpreter shares
      * between calls - the built-in names, the environment, the runtime's helper modules and the snowpark emulation's
-     * classes - is put back (see {@link #RUNTIME_SOURCE}), so that no routine reaches the next statement's, whichever
-     * engine runs it, through them. A thread with no interpreter, or whose interpreter ran nothing since the state
-     * was last put back, has nothing to put back, and an interpreter that cannot put it back is thrown away.
+     * classes, the members of the standard library's modules imported by then, what a routine put on
+     * {@code sys.modules}, the working directory and the decimal context - is put back (see {@link #RUNTIME_SOURCE}),
+     * so that no routine reaches the next statement's, whichever engine runs it, through them. A thread with no
+     * interpreter, or whose interpreter ran nothing since the state was last put back, has nothing to put back, and an
+     * interpreter that cannot put it back is thrown away.
      */
     static void restoreShared() {
         if (CONTEXT.get() == null || RUNTIME.get() == null || !Boolean.TRUE.equals(RAN.get())) {
@@ -613,12 +717,10 @@ public final class PythonRuntime {
      */
     public static boolean bindJson(final String name, final Object value) {
         if (value instanceof VariantValue) {
-            final String variantHolder = "__json_text_" + name;
             // The JSON of the value, not the display form: a variant STRING displays its content unquoted
             // and an XML variant displays as XML, and json.loads can read neither — nor the bare token an
             // array's SQL NULL element is written as, which arrives as None (live-verified).
-            bind(variantHolder, VariantText.standard(VariantUndefined.withNulls(((VariantValue) value).node())));
-            eval("import json\n" + name + " = json.loads(" + variantHolder + ")\n");
+            bindParsed(name, "json", VariantText.standard(VariantUndefined.withNulls(((VariantValue) value).node())));
             return true;
         }
         if (!(value instanceof CharSequence)) {
@@ -629,9 +731,7 @@ public final class PythonRuntime {
         } catch (final RuntimeException notJson) {
             return false;
         }
-        final String holder = "__json_text_" + name;
-        bind(holder, value.toString());
-        eval("import json\n" + name + " = json.loads(" + holder + ")\n");
+        bindParsed(name, "json", value.toString());
         return true;
     }
 
@@ -641,10 +741,21 @@ public final class PythonRuntime {
      * the handler an opaque foreign value.
      */
     public static boolean bindBytes(final String name, final String hex) {
-        final String holder = "__hex_text_" + name;
-        bind(holder, hex);
-        eval(name + " = bytes.fromhex(" + holder + ")\n");
+        bindParsed(name, "bytes", hex);
         return true;
+    }
+
+    /**
+     * Bind a global to the Python value the runtime's {@code parse} builds from a text (see {@link #RUNTIME_SOURCE}).
+     *
+     * @param name the global
+     * @param kind what the text is: {@code json}, {@code decimal}, {@code int}, {@code date}, {@code time},
+     *             {@code datetime}, {@code bytes}, or a VECTOR's array type code {@code f} or {@code i}
+     * @param text the text
+     */
+    private static void bindParsed(final String name, final String kind, final String text) {
+        final Context context = context();
+        context.getBindings("python").putMember(name, RUNTIME.get().invokeMember("parse", kind, text));
     }
 
     /**
@@ -653,7 +764,8 @@ public final class PythonRuntime {
      * {@code decimal.Decimal} at that scale, a DATE a {@code datetime.date}, a TIME a {@code datetime.time} and a
      * TIMESTAMP a {@code datetime.datetime} — without a zone for NTZ, at the session's wall clock for LTZ and with
      * its own offset for TZ, to the microsecond —, a semi-structured value a dict, a list or the scalar it holds,
-     * and a BINARY {@code bytes}. A BOOLEAN, a FLOAT and a text bind as they are.
+     * a BINARY {@code bytes} and a VECTOR a {@code memoryview} of its 32-bit elements (see {@link #bindVector}). A
+     * BOOLEAN, a FLOAT and a text bind as they are.
      *
      * @param name  the parameter's name
      * @param value the argument, converted to the parameter's SQL type
@@ -673,27 +785,26 @@ public final class PythonRuntime {
             bindBytes(name, ((BinaryValue) value).toHex());
             return;
         }
-        final String holder = "__arg_text_" + name;
+        if (value instanceof VectorValue) {
+            bindVector(name, (VectorValue) value);
+            return;
+        }
         if (value instanceof BigDecimal) {
             final BigDecimal number = (BigDecimal) value;
-            bind(holder, number.toPlainString());
-            eval(number.scale() > 0 ? "import decimal\n" + name + " = decimal.Decimal(" + holder + ")\n"
-                : name + " = int(" + holder + ")\n");
+            bindParsed(name, number.scale() > 0 ? "decimal" : "int", number.toPlainString());
             return;
         }
         if (value instanceof LocalDate) {
-            bind(holder, value.toString());
-            eval("import datetime\n" + name + " = datetime.date.fromisoformat(" + holder + ")\n");
+            bindParsed(name, "date", value.toString());
             return;
         }
         if (value instanceof LocalTime) {
-            bind(holder, ((LocalTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_TIME));
-            eval("import datetime\n" + name + " = datetime.time.fromisoformat(" + holder + ")\n");
+            bindParsed(name, "time", ((LocalTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_TIME));
             return;
         }
         if (value instanceof LocalDateTime) {
-            bind(holder, ((LocalDateTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_DATE_TIME));
-            eval("import datetime\n" + name + " = datetime.datetime.fromisoformat(" + holder + ")\n");
+            bindParsed(name, "datetime",
+                ((LocalDateTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_DATE_TIME));
             return;
         }
         if (value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
@@ -702,12 +813,34 @@ public final class PythonRuntime {
             final boolean keepsItsZone = type != null && type.getName() != null
                 && type.getName().toUpperCase(Locale.ROOT).endsWith("_TZ");
             // A TIMESTAMP_TZ keeps its offset; a TIMESTAMP_LTZ is the session's wall clock at that instant.
-            bind(holder, keepsItsZone ? zoned.format(PYTHON_ZONED)
+            bindParsed(name, "datetime", keepsItsZone ? zoned.format(PYTHON_ZONED)
                 : zoned.atZoneSameInstant(SessionZone.current()).toLocalDateTime().format(PYTHON_DATE_TIME));
-            eval("import datetime\n" + name + " = datetime.datetime.fromisoformat(" + holder + ")\n");
             return;
         }
         bind(name, value);
+    }
+
+    /**
+     * Bind a VECTOR argument as the Python value Snowflake's SQL-Python type mapping names for it, a {@code memoryview}
+     * (docs.snowflake.com/en/developer-guide/udf-stored-procedure-data-type-mapping; its format is not documented, and
+     * is taken to be the elements' own): one over an {@code array} of 32-bit floats ({@code 'f'}) for a
+     * {@code VECTOR(FLOAT, n)} and of 32-bit ints ({@code 'i'}) for a {@code VECTOR(INT, n)}, which a handler indexes,
+     * iterates, measures and turns into a list ({@code tolist()}) as it would the elements themselves. The cpython
+     * worker builds the same from its {@code $vec}. Binding the engine's value instead handed the handler a foreign
+     * object it could not index (#2391).
+     */
+    static void bindVector(final String name, final VectorValue vector) {
+        final boolean integral = vector.getElementType() == VectorElementType.INT;
+        final StringBuilder text = new StringBuilder();
+        for (int i = 0; i < vector.dimension(); i++) {
+            if (i > 0) {
+                text.append(',');
+            }
+            // A float32 element is exact as a double, and Double.toString's text (NaN and Infinity too) reads back
+            // through float() to that same double.
+            text.append(integral ? Long.toString((long) vector.element(i)) : Double.toString(vector.element(i)));
+        }
+        bindParsed(name, integral ? "i" : "f", text.toString());
     }
 
     private static final DateTimeFormatter PYTHON_TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");

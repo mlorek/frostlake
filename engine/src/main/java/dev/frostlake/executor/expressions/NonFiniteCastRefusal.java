@@ -39,7 +39,7 @@ import tools.jackson.databind.JsonNode;
  * <p>Both spell an infinity {@code inf} / {@code -inf} rather than echoing the word as written or as
  * it renders. None of this is derivable from any one cell, which is why each is measured.
  */
-final class NonFiniteCastRefusal {
+public final class NonFiniteCastRefusal {
 
     /** The sentence both spellings open with — the same lead every out-of-range numeric refusal uses. */
     private static final String LEAD = "Number out of representable range: type FIXED";
@@ -55,7 +55,7 @@ final class NonFiniteCastRefusal {
      *               target holds a non-finite perfectly well
      * @return the refusal, or null
      */
-    static RuntimeException refusalFor(final Object value, final String family) {
+    public static RuntimeException refusalFor(final Object value, final String family) {
         if (!"FIXED".equals(family)) {
             return null;
         }

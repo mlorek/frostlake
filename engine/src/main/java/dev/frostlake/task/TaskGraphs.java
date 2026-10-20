@@ -106,6 +106,64 @@ public final class TaskGraphs {
         return out;
     }
 
+    /**
+     * The root tasks a task's graph hangs from: following its predecessors up to the tasks that have none, or a
+     * finalizer's root. A root is its own. A predecessor that is gone is passed over, and a loop is walked once.
+     */
+    public static List<Task> rootsOf(final Schema schema, final Task task) {
+        final List<Task> roots = new ArrayList<>();
+        final Set<String> seen = new HashSet<>();
+        final List<Task> frontier = new ArrayList<>();
+        frontier.add(task);
+        seen.add(task.getName());
+        for (int i = 0; i < frontier.size(); i++) {
+            final Task member = frontier.get(i);
+            final List<String> above = new ArrayList<>(member.getPredecessors());
+            if (member.isFinalizer() && member.getFinalizedRootTask() != null) {
+                above.add(member.getFinalizedRootTask());
+            }
+            if (above.isEmpty() && !roots.contains(member)) {
+                roots.add(member);
+            }
+            for (final String name : above) {
+                final Task parent = taskNamed(schema, QualifiedName.parse(name).last());
+                if (parent != null && seen.add(parent.getName())) {
+                    frontier.add(parent);
+                }
+            }
+        }
+        return roots;
+    }
+
+    /**
+     * Whether a task of that name is {@code task} itself or one of its ancestors, the tasks its predecessors
+     * follow from: making it a child of {@code task} would close a loop.
+     */
+    public static boolean descendsFrom(final Schema schema, final Task task, final String name) {
+        final Set<String> seen = new HashSet<>();
+        final List<Task> frontier = new ArrayList<>();
+        frontier.add(task);
+        seen.add(task.getName());
+        for (int i = 0; i < frontier.size(); i++) {
+            final Task member = frontier.get(i);
+            if (member.getName().equals(name)) {
+                return true;
+            }
+            for (final String predecessor : member.getPredecessors()) {
+                final Task parent = taskNamed(schema, QualifiedName.parse(predecessor).last());
+                if (parent != null && seen.add(parent.getName())) {
+                    frontier.add(parent);
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The task of exactly that name in the schema, or null. */
+    private static Task taskNamed(final Schema schema, final String name) {
+        return schema.hasTaskExact(name) ? schema.getTaskExact(name) : null;
+    }
+
     /** The finalizer task attached to a root task, or null. */
     public static Task finalizerOf(final Schema schema, final Task root) {
         for (final Task candidate : schema.getTasks()) {

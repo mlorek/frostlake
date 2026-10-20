@@ -114,6 +114,22 @@ public class Sequence implements Named {
     }
 
     /**
+     * Moves the sequence on so the next draw serves {@code next} or a value further along its step, never back: what
+     * the write-ahead log's replay does with the mark of where the sequence stood once a statement drew from it.
+     *
+     * @param next the value the sequence served next when the mark was logged
+     */
+    public void advanceTo(final long next) {
+        long current = nextValue.get();
+        while (increment >= 0 ? current < next : current > next) {
+            if (nextValue.compareAndSet(current, next)) {
+                return;
+            }
+            current = nextValue.get();
+        }
+    }
+
+    /**
      * Restores the value one step before the next one, as {@link #getCurrentValueRaw()} gave it.
      */
     public void setCurrentValue(final long value) {

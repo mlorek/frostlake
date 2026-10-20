@@ -41,6 +41,7 @@ import dev.frostlake.metastore.model.SecurityPropertyType;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.UnmodelledDropKind;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -225,6 +226,24 @@ public final class SecurityObjectCommandHandler {
 
     private static RuntimeException missing(final SecurityObjectKind kind, final Schema schema, final String name) {
         return new RuntimeException(SqlCompilationError.doesNotExist(kind.noun(), display(kind, schema, name)));
+    }
+
+    /**
+     * Whether the session is told about a schema's security object: SHOW lists and DESCRIBE answers only what the
+     * role holds some privilege on, with USAGE on its database and schema, or owns (the SHOW usage note: "only
+     * returns objects for which the current user's current role has been granted at least one access privilege"),
+     * as for every other schema object.
+     *
+     * @param security the session's security manager, or null when none is installed
+     * @param kind the object's kind
+     * @param schema the schema holding it
+     * @param object the object
+     * @return whether it is shown
+     */
+    static boolean sees(final SecurityManager security, final SecurityObjectKind kind, final Schema schema,
+                        final SecurityObject object) {
+        return security == null
+            || security.sees(kind.name(), schema.qualifiedName(object.getName()), object.getOwner());
     }
 
     private Object create(final FrostlakeParser.SecurityObjectStatementContext ctx, final SecurityObjectKind kind) {
@@ -1106,7 +1125,9 @@ public final class SecurityObjectCommandHandler {
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : scopeOf(kind, ctx.securityListingScope())) {
             for (final SecurityObject object : schema.getSecurityObjects().list(kind)) {
-                rows.add(showRow(kind, schema, object, null));
+                if (sees(queryExecutor.getSecurityManager(), kind, schema, object)) {
+                    rows.add(showRow(kind, schema, object, null));
+                }
             }
         }
         final ResultSet listing = new ResultSet(showColumns(kind, false), rows);
@@ -1395,13 +1416,17 @@ public final class SecurityObjectCommandHandler {
      *
      * @param kind the kind listed
      * @param schemas the schemas the listing's scope covers
-     * @return a row per object, by database, schema and name
+     * @param security the session's security manager, which hides what the role is not told about; null for none
+     * @return a row per object the session sees, by database, schema and name
      */
-    static List<Row> showRows(final SecurityObjectKind kind, final List<Schema> schemas) {
+    static List<Row> showRows(final SecurityObjectKind kind, final List<Schema> schemas,
+                              final SecurityManager security) {
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : schemas) {
             for (final SecurityObject object : schema.getSecurityObjects().list(kind)) {
-                rows.add(showRow(kind, schema, object, null));
+                if (sees(security, kind, schema, object)) {
+                    rows.add(showRow(kind, schema, object, null));
+                }
             }
         }
         return sorted(new ResultSet(showColumns(kind, false), rows)).getRows();
@@ -1577,10 +1602,14 @@ public final class SecurityObjectCommandHandler {
      * @return the description, or null when no policy of the kind has the name
      */
     ResultSet describeModelled(final SecurityObjectKind kind, final String[] parts) {
-        final SecurityObject policy = catalog.requireOwningSchema(QualifiedName.of(parts)).getSecurityObjects()
-            .get(kind, parts[parts.length - 1]);
+        final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        final SecurityObject policy = schema.getSecurityObjects().get(kind, parts[parts.length - 1]);
         if (policy == null) {
             return null;
+        }
+        if (!sees(queryExecutor.getSecurityManager(), kind, schema, policy)) {
+            // A policy the role is not told about is missing for it, as an absent one is.
+            throw missing(kind, schema, parts[parts.length - 1]);
         }
         if (kind == SecurityObjectKind.AUTHENTICATION_POLICY) {
             return describeAuthenticationPolicy(policy);
@@ -1716,7 +1745,10 @@ public final class SecurityObjectCommandHandler {
         }
         final Schema schema = owningSchema(ctx.qualifiedName());
         final String name = lastPart(ctx.qualifiedName());
-        final SecurityObject object = schema.getSecurityObjects().get(kind, name);
+        final SecurityObject found = schema.getSecurityObjects().get(kind, name);
+        // An object the role is not told about is missing for it, with the same refusal as an absent one.
+        final SecurityObject object = found == null || sees(queryExecutor.getSecurityManager(), kind, schema, found)
+            ? found : null;
         if (object == null) {
             // Describing a rule asks for any of a list of account privileges, where the rest ask for MONITOR.
             throw kind == SecurityObjectKind.NETWORK_RULE

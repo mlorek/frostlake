@@ -364,11 +364,11 @@ final class ShowSessionExecutor {
      * @return the listing
      */
     public ResultSet showParametersInAlert(final SchemaObjectName written, final String likePattern) {
-        if (!written.schema().hasAlert(written.name())) {
+        if (!written.schema().hasAlertExact(written.name())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Alert",
                 written.schema().qualifiedName(written.name())));
         }
-        final Map<String, String> own = written.schema().getAlert(written.name()).getParameters();
+        final Map<String, String> own = written.schema().getAlertExact(written.name()).getParameters();
         final List<Row> rows = new ArrayList<>();
         for (final String key : SessionParameterCatalog.taskScopeNames()) {
             if (TASK_ONLY.contains(key) || !matchesParameterFilter(key, likePattern)) {

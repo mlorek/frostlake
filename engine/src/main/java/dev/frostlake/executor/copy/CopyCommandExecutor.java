@@ -2385,6 +2385,25 @@ public final class CopyCommandExecutor {
         }
     }
 
+    /**
+     * Refuse an unload to a type this engine cannot write, before anything is read or written. The account
+     * unloads CSV, JSON and PARQUET only (docs.snowflake.com, COPY INTO &lt;location&gt;: {@code TYPE = CSV | JSON |
+     * PARQUET}), so AVRO, ORC and XML are refused; PARQUET is the account's, but no Parquet writer ships here (the
+     * frostlake-formats module only reads it), so it is refused as this engine's limit rather than written as CSV.
+     */
+    private static void requireUnloadableType(final String fileFormat) {
+        final String type = fileFormat.toUpperCase(Locale.ROOT);
+        if ("CSV".equals(type) || "JSON".equals(type)) {
+            return;
+        }
+        if ("PARQUET".equals(type)) {
+            throw new RuntimeException("COPY INTO location: file format type 'PARQUET' is not supported by this"
+                + " engine for unloading (supported: CSV, JSON)");
+        }
+        throw new RuntimeException("COPY INTO location: file format type '" + type
+            + "' cannot be unloaded (supported for unloading: CSV, JSON, PARQUET)");
+    }
+
     private Object executeCopyIntoStage(final FrostlakeParser.CopyIntoStatementContext ctx, final String location,
             final String locationDisplay) {
         logger.info("Executing COPY INTO location: {}", location);
@@ -2474,6 +2493,7 @@ public final class CopyCommandExecutor {
         if (unloadOptions.getFileExtension() != null) {
             fileExtension = unloadOptions.getFileExtension();
         }
+        requireUnloadableType(fileFormat);
         final CsvUnloadWriter csv = new CsvUnloadWriter(unloadOptions,
             executor.getFunctionRegistry().getFunction("TO_VARCHAR"));
 

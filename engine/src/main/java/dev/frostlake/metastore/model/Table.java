@@ -43,6 +43,9 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class Table extends SqlObject implements SessionScoped {
 
+    /** What an IDENTITY column's draws are recorded under, before its table's name (see StatementDraws). */
+    public static final String IDENTITY_COUNTER_PREFIX = "IDENTITY:";
+
     /**
      * The DATA_RETENTION_TIME_IN_DAYS this object declares, or null when it declares none and
      * inherits its container's (the account default is 1 at the top of the chain).
@@ -641,7 +644,7 @@ public class Table extends SqlObject implements SessionScoped {
             : identity != null ? identity.getIdentityStart() : 1L;
         final long step = identity != null ? identity.getIdentityIncrement() : 1L;
         // A statement replayed from the write-ahead log takes the value it first drew (StatementDraws).
-        final String counter = "IDENTITY:" + getName();
+        final String counter = IDENTITY_COUNTER_PREFIX + getName();
         final Long replayed = StatementDraws.replayed(counter);
         final long drawn = replayed != null ? replayed.longValue() : current;
         nextIdentityValue = replayed != null ? StatementDraws.nextAfter(current, drawn, step) : current + step;
@@ -660,6 +663,21 @@ public class Table extends SqlObject implements SessionScoped {
             return null;
         }
         return nextIdentityValue != null ? nextIdentityValue : identity.getIdentityStart();
+    }
+
+    /**
+     * Moves the IDENTITY sequence on so the next draw answers {@code next} or a value further along its step, never
+     * back: what the write-ahead log's replay does with the mark of where it stood once a statement drew from it.
+     *
+     * @param next the value the next draw answered when the mark was logged
+     */
+    public synchronized void advanceIdentityTo(final long next) {
+        final TableColumn identity = identityColumn();
+        if (identity == null) {
+            return;
+        }
+        final long current = getNextIdentityValue().longValue();
+        nextIdentityValue = identity.getIdentityIncrement() >= 0 ? Math.max(current, next) : Math.min(current, next);
     }
 
     /**

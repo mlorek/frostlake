@@ -69,6 +69,11 @@ import org.slf4j.LoggerFactory;
  * its own — a task's run, an alert's evaluation, a pipe's load — is no part of its transaction: a statement a block
  * or a procedure runs to start it is logged at once in a record of its own, and the enclosing statement's replay does
  * not run it again.
+ *
+ * <p>A {@link WalRecordType#COUNTERS} record keeps where the sequences and IDENTITY columns a statement drew from
+ * stood when it ended, for a statement whose draws no committed record may carry: one inside a transaction, which a
+ * shutdown or a crash ends without a record, and one the log keeps no record of at all. The replay moves each counter
+ * at least that far, so no value a client saw is handed out again.
  */
 public class WriteAheadLog {
 
@@ -95,6 +100,8 @@ public class WriteAheadLog {
     /** False while reading a log before v6, whose contexts carry no identity answers. */
     private boolean readsAnswers = true;
     private static final byte REC_CHECKPOINT = 2;
+    /** Where counters stood once a statement drew from them (see {@link CounterMark}). */
+    private static final byte REC_COUNTERS = 3;
     private static final int MAX_STRING_BYTES = 1 << 28;  // 256 MB sanity cap — a larger length means a torn record
 
     private final Path path;
@@ -428,6 +435,34 @@ public class WriteAheadLog {
         return count;
     }
 
+    /**
+     * Append where counters stood once a statement drew from them, and force it to disk before the statement's
+     * client sees what it drew. No-op for an empty list.
+     *
+     * @param marks the counters' marks
+     * @throws IOException when the log cannot be written
+     */
+    public synchronized void appendCounters(final List<CounterMark> marks) throws IOException {
+        if (marks == null || marks.isEmpty()) {
+            return;
+        }
+        writeCounters(out, marks);
+        out.flush();
+        fileOut.getFD().sync();
+    }
+
+    private static void writeCounters(final DataOutputStream o, final List<CounterMark> marks) throws IOException {
+        o.writeByte(REC_COUNTERS);
+        o.writeInt(marks.size());
+        for (final CounterMark mark : marks) {
+            writeString(o, mark.getKind());
+            writeString(o, mark.getDatabase());
+            writeString(o, mark.getSchema());
+            writeString(o, mark.getName());
+            o.writeLong(mark.getNext());
+        }
+    }
+
     /** Append a checkpoint marker referencing a durable state snapshot, and force it to disk. */
     public synchronized void appendCheckpoint(final String checkpointRef) throws IOException {
         out.writeByte(REC_CHECKPOINT);
@@ -514,6 +549,14 @@ public class WriteAheadLog {
                 return WalRecord.transaction(statements, instants, contexts);
             } else if (type == REC_CHECKPOINT) {
                 return WalRecord.checkpoint(readString(in));
+            } else if (type == REC_COUNTERS) {
+                final int count = readCount(in);
+                final List<CounterMark> marks = new ArrayList<>(count);
+                for (int i = 0; i < count; i++) {
+                    marks.add(new CounterMark(readString(in), readString(in), readString(in), readString(in),
+                        in.readLong()));
+                }
+                return WalRecord.counters(marks);
             } else {
                 logger.warn("Unknown write-ahead log record type {}; stopping replay here", type);
                 return null;
@@ -573,6 +616,8 @@ public class WriteAheadLog {
                 if (rec.getType() == WalRecordType.TRANSACTION) {
                     // In this version's layout, which the header names: the instants and contexts kept too.
                     writeTransaction(tmpOut, rec);
+                } else if (rec.getType() == WalRecordType.COUNTERS) {
+                    writeCounters(tmpOut, rec.getCounterMarks());
                 } else {
                     tmpOut.writeByte(REC_CHECKPOINT);
                     writeString(tmpOut, rec.getCheckpointRef());

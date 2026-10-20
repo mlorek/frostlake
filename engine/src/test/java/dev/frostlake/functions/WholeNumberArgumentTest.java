@@ -92,4 +92,36 @@ public class WholeNumberArgumentTest extends MeasuredCellsTestSupport {
             {"SELECT CHR(1114112)", "REFUSED Invalid character code 1114112 in the CHR input"},
         });
     }
+
+    /**
+     * A position, a length, a count, an index or a code point read from a FLOAT's NaN or infinity, or a VARIANT's, is
+     * no number: it is refused as the FLOAT's cast to NUMBER refuses it, never read as 0 (FL-469). CHAR, whose code
+     * point names no character, answers NULL as it does for one out of range.
+     */
+    @Test
+    public void aNanOrAnInfinityIsNoPositionCountOrCodePoint() {
+        final String fixed = RANGE + "FIXED[SB16](38,0){not null}, value ";
+        assertCells(new String[][] {
+            {"SELECT CHAR('inf'::float) IS NULL, CHAR('nan'::float) IS NULL, CHAR('-inf'::float) IS NULL",
+                "true|true|true"},
+            {"SELECT CHAR(PARSE_JSON('NaN')) IS NULL, CHAR(66.6), CHAR(NULL::FLOAT) IS NULL", "true|C|true"},
+            {"SELECT GET([1,2,3], 'nan'::float)", fixed + "nan"},
+            {"SELECT SUBSTR('abcdef', 'inf'::float)", fixed + "inf"},
+            {"SELECT SUBSTR('abcdef', 2, 'inf'::float)", fixed + "inf"},
+            {"SELECT SUBSTR('abcdef', PARSE_JSON('Infinity'))", RANGE + "FIXED, value inf"},
+            {"SELECT LEFT('abcdef', 'inf'::float)", fixed + "inf"},
+            {"SELECT RIGHT('abcdef', '-inf'::float)", fixed + "-inf"},
+            {"SELECT REGEXP_INSTR('abc', 'b', 'inf'::float)", fixed + "inf"},
+            {"SELECT REGEXP_COUNT('abc', 'b', 'nan'::float)", fixed + "nan"},
+            {"SELECT REPEAT('ab', 'nan'::float)", fixed + "nan"},
+            {"SELECT LPAD('ab', 'inf'::float, 'x')", fixed + "inf"},
+            {"SELECT ARRAY_GENERATE_RANGE(0, 'inf'::float)", fixed + "inf"},
+            {"SELECT ARRAY_SLICE([1,2,3], 'nan'::float, 2)", fixed + "nan"},
+            {"SELECT INSERT('abc', 'inf'::float, 1, 'x')", fixed + "inf"},
+            {"SELECT GETBIT(5, 'nan'::float)", fixed + "nan"},
+            {"SELECT SPLIT_PART('a,b', ',', 'inf'::float)", fixed + "inf"},
+            {"SELECT SUBSTR('abcdef', 2.6::FLOAT, 2), GET([1,2,3], 1.6::FLOAT), CHAR(65.4::FLOAT)", "cd|3|A"},
+            {"SELECT BOOLAND('nan'::float, 1)", "true"},
+        });
+    }
 }

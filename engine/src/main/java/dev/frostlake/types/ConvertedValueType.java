@@ -26,7 +26,7 @@ import java.util.Locale;
  * <ul>
  *   <li>a BOOLEAN into an exact number is {@code NUMBER(2,0)} whatever width the target spells —
  *       {@code TRUE::NUMBER(5,1)} is {@code NUMBER(2,0)} and its value prints {@code 1}, not
- *       {@code 1.0};</li>
+ *       {@code 1.0}; into a DECFLOAT it is the DECFLOAT the target names;</li>
  *   <li>an exact number into a TIMESTAMP flavour declares the NUMBER's own scale as its precision, the
  *       written one ignored — {@code 5::TIMESTAMP_NTZ} is {@code TIMESTAMP_NTZ(0)} while
  *       {@code '2024-01-01'::TIMESTAMP_NTZ}, whose source is a text, keeps the default nine.</li>
@@ -56,8 +56,10 @@ public final class ConvertedValueType {
             return new DateTimeType(declared.getName(), epochPrecision((NumericType) source),
                 ((DateTimeType) declared).hasTimeZone());
         }
+        // A DECFLOAT has no width for the rule to override: CAST(TRUE AS DECFLOAT) is the DECFLOAT 1, as
+        // TO_DECFLOAT(TRUE) is (FL-492).
         if (declared instanceof NumericType && !NumericType.isApproximate(declared)
-                && source instanceof BooleanType) {
+                && !NumericType.isDecfloat(declared) && source instanceof BooleanType) {
             return new NumericType("NUMBER", 2, 0);
         }
         return declared;

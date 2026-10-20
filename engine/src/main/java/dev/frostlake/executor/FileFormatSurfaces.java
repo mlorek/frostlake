@@ -125,8 +125,21 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             prop("REPLACE_INVALID_CHARACTERS", "Boolean", "false")));
     }
 
-    private static final Set<String> COMPRESSION_VALUES = Set.of(
-        "AUTO", "GZIP", "BZ2", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE", "NONE");
+    /**
+     * The COMPRESSION values each TYPE takes, as docs.snowflake.com CREATE FILE FORMAT lists them: CSV, JSON and XML
+     * the eight codecs, AVRO the same but BZ2, PARQUET its own AUTO, LZO, SNAPPY and NONE (SNAPPY is the account's
+     * Parquet default). ORC has no COMPRESSION option at all; that refusal is the option's, not the value's.
+     */
+    private static final Map<String, Set<String>> COMPRESSION_VALUES = new LinkedHashMap<>();
+
+    static {
+        final Set<String> codecs = Set.of("AUTO", "GZIP", "BZ2", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE", "NONE");
+        COMPRESSION_VALUES.put("CSV", codecs);
+        COMPRESSION_VALUES.put("JSON", codecs);
+        COMPRESSION_VALUES.put("XML", codecs);
+        COMPRESSION_VALUES.put("AVRO", Set.of("AUTO", "GZIP", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE", "NONE"));
+        COMPRESSION_VALUES.put("PARQUET", Set.of("AUTO", "LZO", "SNAPPY", "NONE"));
+    }
 
     private FileFormatSurfaces() {
     }
@@ -197,6 +210,33 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
     }
 
     /**
+     * Judge a COMPRESSION value against the codecs its format TYPE takes, refusing any other in the account's
+     * words. A type this cannot name — a list that only names a format, or ORC, which has no COMPRESSION — is
+     * judged against every type's codecs, so only a value no type takes is refused here.
+     *
+     * @param type    the effective format type, or null when it is not known
+     * @param value   the value, decoded
+     * @param written the value as the statement spells it
+     */
+    public static void requireLegalCompression(final String type, final String value, final String written) {
+        if (value == null) {
+            return;
+        }
+        final String codec = value.toUpperCase(Locale.ROOT);
+        final Set<String> legal = type == null ? null : COMPRESSION_VALUES.get(type.toUpperCase(Locale.ROOT));
+        boolean known = legal != null && legal.contains(codec);
+        if (legal == null) {
+            for (final Set<String> codecs : COMPRESSION_VALUES.values()) {
+                known |= codecs.contains(codec);
+            }
+        }
+        if (!known) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter 'COMPRESSION'"));
+        }
+    }
+
+    /**
      * Judge a parameter's value and refuse it in the account's own words. The value is judged DECODED,
      * as the reader will see it - a doubled quote is ONE quote and an escaped backslash ONE backslash -
      * while the refusal echoes the text AS WRITTEN: a bare word bare, a string literal with its quotes.
@@ -224,9 +264,8 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
                 // A non-numeric SKIP_HEADER never parses this far.
             }
         }
-        if ("COMPRESSION".equals(upper) && !COMPRESSION_VALUES.contains(value.toUpperCase(Locale.ROOT))) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "invalid value [" + written + "] for parameter 'COMPRESSION'"));
+        if ("COMPRESSION".equals(upper)) {
+            requireLegalCompression(null, value, written);
         }
         if (DELIMITERS.contains(upper) && !isDelimiter(value)) {
             throw new RuntimeException(SqlCompilationError.of(

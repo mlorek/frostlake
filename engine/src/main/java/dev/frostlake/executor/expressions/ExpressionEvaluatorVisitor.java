@@ -77,6 +77,7 @@ import dev.frostlake.functions.scalar.datetime.LastDay;
 import dev.frostlake.functions.scalar.datetime.PlannedDateAdd;
 import dev.frostlake.functions.scalar.datetime.PlannedDateDiff;
 import dev.frostlake.functions.scalar.file.StageUrlFunction;
+import dev.frostlake.functions.scalar.math.DecfloatRounding;
 import dev.frostlake.functions.scalar.math.RoundingModeNames;
 import dev.frostlake.functions.scalar.string.Concat;
 import dev.frostlake.functions.scalar.string.Search;
@@ -3913,6 +3914,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (isDecfloatMathCall(funcName, expr)) {
                 return decfloatMath(funcName, argValues);
             }
+            if (func instanceof DecfloatRounding && !argValues.isEmpty() && argValues.get(0) instanceof Number
+                    && !(argValues.get(0) instanceof Double) && isDecfloatTyped(expr.getArguments().get(0))) {
+                // A DECFLOAT has no declared width for NUMBER's scale span to exceed (see RoundedValue).
+                return atDeclaredScale(funcName, expr, ((DecfloatRounding) func).evaluateDecfloat(argValues));
+            }
             try {
                 // DECODE and NVL2 are conditionals that do NOT short-circuit, so their branch cast
                 // belongs here rather than at the short-circuit exit — the rule is the conditional's,
@@ -5980,8 +5986,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return applyStructuredTarget(expr, value);
         }
         if (value instanceof Boolean && "DECFLOAT".equals(castTargetKind(expr.getTargetType()))) {
-            // A BOOLEAN cast to a DECFLOAT is 1 or 0, as TO_DECFLOAT reads it (live: CAST(TRUE AS DECFLOAT) is 1).
-            return applyStructuredTarget(expr, Double.valueOf(((Boolean) value).booleanValue() ? 1.0 : 0.0));
+            // A BOOLEAN cast to a DECFLOAT is 1 or 0, as TO_DECFLOAT reads it (live: CAST(TRUE AS DECFLOAT) is 1): the
+            // exact DECFLOAT, so arithmetic over it is DECFLOAT arithmetic (FL-492).
+            return applyStructuredTarget(expr, ((Boolean) value).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO);
         }
         if (value instanceof Boolean && "NUMBER".equals(castTargetKind(expr.getTargetType()))) {
             // A BOOLEAN cast to an EXACT number is the unscaled 1 or 0 typed NUMBER(2,0) whatever

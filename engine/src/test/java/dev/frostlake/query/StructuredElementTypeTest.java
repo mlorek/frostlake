@@ -111,6 +111,40 @@ public class StructuredElementTypeTest extends BaseDatabaseTest {
         }
     }
 
+    /**
+     * A FLATTEN of a MAP that is not RECURSIVE answers KEY as the map's key type (documented: "the key column matches
+     * the MAP's key type"), so a NUMBER-keyed map's keys sort 1, 2, 10, compare and add as numbers and a CTAS declares
+     * them NUMBER, as MAP_KEYS answers them (FL-479). A text-keyed map's KEY stays VARCHAR, as a RECURSIVE one's does.
+     */
+    @Test
+    public void aFlattenOfANumberKeyedMapHasNumberKeys() {
+        final String m = "{'1': 'x', '10': 'y', '2': 'z'}::MAP(INT, VARCHAR)";
+        try {
+            assertCells(engine, new String[][] {
+                {"SELECT f.key, f.value, SYSTEM$TYPEOF(f.key) FROM (SELECT " + m + " m), TABLE(FLATTEN(m)) f "
+                    + "ORDER BY f.key", "1, x, NUMBER(38,0)[SB16] | 2, z, NUMBER(38,0)[SB16] | 10, y, NUMBER(38,0)[SB16]"},
+                {"SELECT f.key + 1, f.key = 10 FROM (SELECT " + m + " m), LATERAL FLATTEN(INPUT => m) f ORDER BY 1",
+                    "2, false | 3, false | 11, true"},
+                {"SELECT key, SYSTEM$TYPEOF(key) FROM TABLE(FLATTEN({'-5': 'x', '3': 'y'}::MAP(NUMBER(10,0), VARCHAR))) "
+                    + "ORDER BY key", "-5, NUMBER(10,0)[SB8] | 3, NUMBER(10,0)[SB8]"},
+                {"CREATE OR REPLACE TABLE fz AS SELECT f.key k, f.value v FROM (SELECT " + m + " m), "
+                    + "TABLE(FLATTEN(m)) f", "Table FZ successfully created."},
+                {"SELECT k FROM fz ORDER BY k", "1 | 2 | 10"},
+                {"SELECT data_type, numeric_precision, numeric_scale FROM information_schema.columns "
+                    + "WHERE table_name = 'FZ' AND column_name = 'K'", "NUMBER, 38, 0"},
+                {"CREATE OR REPLACE TABLE mz (m MAP(INT, VARCHAR))", "Table MZ successfully created."},
+                {"INSERT INTO mz SELECT " + m, "1"},
+                {"SELECT f.key FROM mz, LATERAL FLATTEN(mz.m) f ORDER BY f.key", "1 | 2 | 10"},
+                {"SELECT key, this FROM TABLE(FLATTEN({}::MAP(INT, VARCHAR), OUTER => TRUE))", "null, {}"},
+                {"SELECT key, SYSTEM$TYPEOF(key) FROM TABLE(FLATTEN(" + m + ", RECURSIVE => TRUE)) ORDER BY key",
+                    "1, VARCHAR[LOB] | 10, VARCHAR[LOB] | 2, VARCHAR[LOB]"},
+            });
+        } finally {
+            engine.execute("DROP TABLE IF EXISTS fz");
+            engine.execute("DROP TABLE IF EXISTS mz");
+        }
+    }
+
     @Test
     public void aReadOfACastStructuredValueHasItsDeclaredType() {
         assertCells(engine, new String[][] {

@@ -45,14 +45,11 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.GeometryType;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StatementResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
-import dev.frostlake.values.DecfloatTextNode;
-import dev.frostlake.values.Decfloats;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -184,11 +181,17 @@ final class InsertExecutor {
                     rowTypes.add(types);
                 }
                 final List<DataType> foldedTypes = foldValuesColumns(rowCells, rowTypes);
+                // A column whose rows fold to a DECFLOAT is written into a VARIANT or a text column in the
+                // column's own form of it (see DecfloatWrites), as INSERT … SELECT writes it (FL-494, FL-495).
+                final DataType[] decfloatTargets = new DataType[foldedTypes.size()];
                 for (int position = 0; position < foldedTypes.size(); position++) {
                     final TableColumn target = valuesTarget(table, columnNames, position);
                     if (target != null) {
                         rejectRowValue(rowCells, position, target, evaluator);
                         ColumnTypeFamilies.rejectMismatch(target, foldedTypes.get(position));
+                        if (DecfloatWrites.reshapes(foldedTypes.get(position), target.getDataType())) {
+                            decfloatTargets[position] = target.getDataType();
+                        }
                     }
                 }
                 // A value a subquery hands out of a projection-restricted column is judged as that projection is:
@@ -227,8 +230,10 @@ final class InsertExecutor {
                         } finally {
                             ExpressionSource.end(displaced);
                         }
-                        values.add(convertToFold(value, rowTypes.get(row).get(position),
-                            foldedTypes.get(position), table, columnNames, position, tableName));
+                        final Object folded = convertToFold(value, rowTypes.get(row).get(position),
+                            foldedTypes.get(position), table, columnNames, position, tableName);
+                        values.add(decfloatTargets[position] != null && !(folded instanceof DefaultMarkerExpression)
+                            ? DecfloatWrites.stored(folded, decfloatTargets[position]) : folded);
                         position++;
                     }
                     valuesList.add(values);
@@ -254,7 +259,7 @@ final class InsertExecutor {
                 }
                 rejectMismatchedSelectColumnTypes(table, columnNames, selectResult.getColumns());
                 fitByDeclaredWidth = fitByDeclaredWidth(table, columnNames, selectResult.getColumns());
-                final boolean[] decfloatMembers = decfloatIntoVariant(table, columnNames, selectResult.getColumns());
+                final DataType[] decfloatMembers = decfloatIntoVariant(table, columnNames, selectResult.getColumns());
                 for (final Row row : selectResult.getRows()) {
                     valuesList.add(asDecfloatMembers(row.getValues(), decfloatMembers));
                 }
@@ -331,32 +336,37 @@ final class InsertExecutor {
      * static type is left alone — the channel never guesses.
      */
     /**
-     * Which source columns are DECFLOATs written into a VARIANT column, which holds each as the DECFLOAT member it is:
-     * {@code TYPEOF(v)} over such a row is DECFLOAT (live-verified). A runtime DECFLOAT is a decimal like a NUMBER's,
-     * so the source column's type decides.
+     * The column type each DECFLOAT source column is written into, where that column holds it in its own form: a
+     * VARIANT as the DECFLOAT member it is, {@code TYPEOF(v)} over such a row being DECFLOAT (live-verified), and a
+     * text column as its text (see DecfloatWrites). A runtime DECFLOAT is a decimal like a NUMBER's, so the source
+     * column's type decides. Null for every other source column.
      */
-    private static boolean[] decfloatIntoVariant(final Table table, final List<String> columnNames,
-                                                 final List<ResultSetColumn> sourceColumns) {
-        final boolean[] marked = new boolean[sourceColumns.size()];
+    private static DataType[] decfloatIntoVariant(final Table table, final List<String> columnNames,
+                                                  final List<ResultSetColumn> sourceColumns) {
+        final DataType[] marked = new DataType[sourceColumns.size()];
         for (int i = 0; i < sourceColumns.size(); i++) {
             final TableColumn target = columnNames != null
                 ? (i < columnNames.size() ? table.getColumn(columnNames.get(i)) : null)
                 : (i < table.getColumns().size() ? table.getColumns().get(i) : null);
-            marked[i] = target != null && target.getDataType() instanceof VariantType
-                && NumericType.isDecfloat(sourceColumns.get(i).getDataType());
+            if (target != null && DecfloatWrites.reshapes(sourceColumns.get(i).getDataType(), target.getDataType())) {
+                marked[i] = target.getDataType();
+            }
         }
         return marked;
     }
 
-    /** A source row with each marked DECFLOAT as the VARIANT holding it (see decfloatIntoVariant). */
-    private static List<Object> asDecfloatMembers(final List<Object> values, final boolean[] marked) {
+    /** A source row with each marked DECFLOAT as its column holds it (see decfloatIntoVariant). */
+    private static List<Object> asDecfloatMembers(final List<Object> values, final DataType[] marked) {
         List<Object> out = values;
         for (int i = 0; i < marked.length && i < values.size(); i++) {
-            if (marked[i] && values.get(i) instanceof Number && !(values.get(i) instanceof Double)) {
-                if (out == values) {
-                    out = new ArrayList<>(values);
+            if (marked[i] != null) {
+                final Object stored = DecfloatWrites.stored(values.get(i), marked[i]);
+                if (stored != values.get(i)) {
+                    if (out == values) {
+                        out = new ArrayList<>(values);
+                    }
+                    out.set(i, stored);
                 }
-                out.set(i, DecfloatTextNode.variantOf(Decfloats.of((Number) values.get(i), "TO_DECFLOAT")));
             }
         }
         return out;
@@ -913,7 +923,9 @@ final class InsertExecutor {
             }
             final Table sourceTable = executor.resultSetToTable(source, "multi_insert_source");
             requireResolvableRoutingExpressions(ctx, sourceTable);
-            rejectMistypedRoutedValues(ctx, source, sourceTable);
+            // Each INTO's DECFLOATs written into a VARIANT or a text column, by the INTO (see DecfloatWrites).
+            final Map<FrostlakeParser.MultiInsertIntoContext, DataType[]> decfloatTargets =
+                rejectMistypedRoutedValues(ctx, source, sourceTable);
             // Each INTO's values are judged by a projection policy as a projection is; the source query itself was,
             // as a statement's own select.
             final List<FrostlakeParser.ExpressionContext> routed = new ArrayList<>();
@@ -1002,7 +1014,9 @@ final class InsertExecutor {
                         }
                     }
                     insertRowInto(target, fqn,
-                        buildInsertRow(target, fqn, columnNames, insertValueIndexes(target, columnNames), values),
+                        buildInsertRow(target, fqn, columnNames, insertValueIndexes(target, columnNames),
+                            decfloatTargets.containsKey(into)
+                                ? asDecfloatMembers(values, decfloatTargets.get(into)) : values),
                         null, false, tableName);
                     insertedInto.get(fqn)[0]++;
                     rowsInserted++;
@@ -1094,9 +1108,13 @@ final class InsertExecutor {
      * @param ctx         the statement
      * @param source      the source query's result, for its columns' static types
      * @param sourceTable the source as a relation, the scope a routed expression reads
+     * @return for each INTO that writes a DECFLOAT into a VARIANT or a text column, the column type each such value is
+     *         written into, by its position (see decfloatIntoVariant)
      */
-    private void rejectMistypedRoutedValues(final FrostlakeParser.MultiTableInsertStatementContext ctx,
-                                            final ResultSet source, final Table sourceTable) {
+    private Map<FrostlakeParser.MultiInsertIntoContext, DataType[]> rejectMistypedRoutedValues(
+            final FrostlakeParser.MultiTableInsertStatementContext ctx, final ResultSet source,
+            final Table sourceTable) {
+        final Map<FrostlakeParser.MultiInsertIntoContext, DataType[]> decfloatTargets = new HashMap<>();
         final ExpressionEvaluator scope = new ExpressionEvaluator(sourceTable, executor.getFunctionRegistry(),
             executor.getCatalog(), executor);
         final Map<String, Table> unnamed = new HashMap<>();
@@ -1109,6 +1127,13 @@ final class InsertExecutor {
             final List<String> columnNames = columnNamesOf(into);
             if (into.expressionList() == null) {
                 rejectMismatchedSelectColumnTypes(target, columnNames, source.getColumns());
+                final DataType[] marked = decfloatIntoVariant(target, columnNames, source.getColumns());
+                for (final DataType written : marked) {
+                    if (written != null) {
+                        decfloatTargets.put(into, marked);
+                        break;
+                    }
+                }
                 continue;
             }
             final List<FrostlakeParser.ExpressionContext> values = into.expressionList().expression();
@@ -1128,8 +1153,15 @@ final class InsertExecutor {
                     continue;
                 }
                 ColumnTypeFamilies.rejectMismatch(column, written);
+                if (DecfloatWrites.reshapes(written, column.getDataType())) {
+                    if (!decfloatTargets.containsKey(into)) {
+                        decfloatTargets.put(into, new DataType[values.size()]);
+                    }
+                    decfloatTargets.get(into)[i] = column.getDataType();
+                }
             }
         }
+        return decfloatTargets;
     }
 
     /** An INTO clause's column list, or null when it writes every column of its target. */

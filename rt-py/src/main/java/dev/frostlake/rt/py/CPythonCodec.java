@@ -21,10 +21,12 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.VectorElementType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -53,7 +55,7 @@ import java.util.Map;
  * ({@code {"$dec": "1.25"}}, {@code {"$dt": iso}}, ... — see {@code cpython_worker.py}). Arguments are first
  * converted by the type their parameter declares, so a handler receives what Snowflake hands it: {@code int} for
  * a NUMBER without scale, {@code decimal.Decimal} with one, {@code float} for FLOAT, {@code date}, {@code time} and
- * naive or aware {@code datetime}, {@code bytes}, and dict/list for semi-structured values.
+ * naive or aware {@code datetime}, {@code bytes}, dict/list for semi-structured values and a memoryview for a VECTOR.
  */
 final class CPythonCodec {
 
@@ -255,6 +257,9 @@ final class CPythonCodec {
         if (value instanceof VariantValue) {
             return tagged("$json", VariantText.standard(VariantUndefined.withNulls(((VariantValue) value).node())));
         }
+        if (value instanceof VectorValue) {
+            return vector((VectorValue) value);
+        }
         if (value instanceof PythonResultSet) {
             return resultSet((PythonResultSet) value);
         }
@@ -298,6 +303,32 @@ final class CPythonCodec {
             return array;
         }
         return NODES.textNode(value.toString());
+    }
+
+    /**
+     * A VECTOR as the worker's {@code $vec}: its element type ({@code f} or {@code i}, the {@code array} type code the
+     * worker builds its memoryview from, as {@link PythonRuntime#bindVector} does on GraalPy) and its elements, a
+     * float one that is no finite number as the text {@code float()} reads.
+     */
+    private static JsonNode vector(final VectorValue vector) {
+        final boolean integral = vector.getElementType() == VectorElementType.INT;
+        final ArrayNode elements = NODES.arrayNode();
+        for (int i = 0; i < vector.dimension(); i++) {
+            final double element = vector.element(i);
+            if (integral) {
+                elements.add((long) element);
+            } else if (Double.isFinite(element)) {
+                elements.add(element);
+            } else {
+                elements.add(Double.isNaN(element) ? "nan" : element > 0 ? "inf" : "-inf");
+            }
+        }
+        final ObjectNode payload = NODES.objectNode();
+        payload.put("t", integral ? "i" : "f");
+        payload.set("v", elements);
+        final ObjectNode object = NODES.objectNode();
+        object.set("$vec", payload);
+        return object;
     }
 
     /** A result set as the worker's {@code $rs}: the same column names, types and plain row data the shim reads. */

@@ -1205,21 +1205,22 @@ public class Catalog {
                 case "VIEW": return resolveView(objectName).getOwner();
                 case "SCHEMA": return resolveSchema(objectName).getOwner();
                 case "DATABASE": return getDatabase(objectName).getOwner();
-                case "STAGE": return getStage(objectName).getOwner();
+                case "STAGE": return getStageExact(objectName).getOwner();
                 case "WAREHOUSE": return getWarehouse(objectName).getOwner();
                 default: {
-                    // Schema-level objects: resolve the containing schema, then the object by bare name.
+                    // Schema-level objects: resolve the containing schema, then the object by its exact bare name, as
+                    // the statement names it: an unquoted LX_S is not the owner of "lx_s".
                     final Schema schema = resolveSchemaForObject(objectName);
                     final String bare = objectName(objectName);
                     switch (objectType.toUpperCase(Locale.ROOT)) {
-                        case "STREAM": return schema.getStream(bare).getOwner();
-                        case "TASK": return schema.getTask(bare).getOwner();
-                        case "PIPE": return schema.getPipe(bare).getOwner();
+                        case "STREAM": return schema.getStreamExact(bare).getOwner();
+                        case "TASK": return schema.getTaskExact(bare).getOwner();
+                        case "PIPE": return schema.getPipeExact(bare).getOwner();
                         case "DYNAMIC TABLE": return schema.getDynamicTable(bare).getOwner();
                         case "MATERIALIZED VIEW": return schema.getMaterializedView(bare).getOwner();
-                        case "MASKING POLICY": return schema.getMaskingPolicy(bare).getOwner();
-                        case "ROW ACCESS POLICY": return schema.getRowAccessPolicy(bare).getOwner();
-                        case "TAG": return schema.getTag(bare).getOwner();
+                        case "MASKING POLICY": return schema.getMaskingPolicyExact(bare).getOwner();
+                        case "ROW ACCESS POLICY": return schema.getRowAccessPolicyExact(bare).getOwner();
+                        case "TAG": return schema.getTagExact(bare).getOwner();
                         default: return null;
                     }
                 }

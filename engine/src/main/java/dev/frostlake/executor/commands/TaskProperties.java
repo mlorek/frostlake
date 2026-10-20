@@ -30,6 +30,7 @@ import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.task.TaskGraphConfig;
@@ -631,8 +632,10 @@ final class TaskProperties {
 
     /**
      * The tasks an AFTER list names, refused when one does not exist (every name is looked up first), when the
-     * task has a finalizer, and then per name when it is the task itself, lives in another schema or is a
-     * finalizer task, which no task may follow. A name given twice is kept once.
+     * task has a finalizer, and then per name when it is the task itself, lives in another schema, is a
+     * finalizer task, which no task may follow, or follows from the task, which would close a loop: a task graph
+     * "starts with a scheduled root task and is linked together by dependencies" (documented), so no task is its
+     * own ancestor. A name given twice is kept once.
      *
      * @param task  the task that would run after them
      * @param names the predecessors as written
@@ -671,11 +674,55 @@ final class TaskProperties {
                 throw new RuntimeException("Task " + qualified(predecessor)
                     + " cannot have children as a finalizer task.");
             }
+            if (TaskGraphs.descendsFrom(schema, predecessor, task.getName())) {
+                // The account's sentence is not measured.
+                throw new RuntimeException("Task " + qualified(predecessor) + " cannot be a predecessor of task "
+                    + qualified(task) + " because it already runs after it: a task graph cannot have a cycle.");
+            }
             if (!resolved.contains(predecessor.getName())) {
                 resolved.add(predecessor.getName());
             }
         }
         return resolved;
+    }
+
+    /**
+     * Refuses a change to the graph of a root task that runs: the root "must be suspended before any task is
+     * recreated" and before "a child task is added (using CREATE TASK … AFTER or ALTER TASK … ADD AFTER) or removed
+     * (using ALTER TASK … REMOVE AFTER)" (documented). Each task given is asked for the roots its graph hangs from.
+     *
+     * @param members the tasks whose graphs the statement changes
+     */
+    void requireSuspendedRoots(final List<Task> members) {
+        for (final Task member : members) {
+            for (final Task root : TaskGraphs.rootsOf(schema, member)) {
+                if (root.getState() == TaskState.STARTED) {
+                    throw new RuntimeException("Unable to update graph with root task " + qualified(root)
+                        + " since that root task is not suspended.");
+                }
+            }
+        }
+    }
+
+    /**
+     * The tasks an AFTER list names that exist in the task's schema, for asking their roots; one that does not is
+     * refused by {@link #requirePredecessors} first.
+     *
+     * @param names the predecessors as written
+     * @return the tasks found
+     */
+    List<Task> namedPredecessors(final List<FrostlakeParser.QualifiedNameContext> names) {
+        final List<Task> found = new ArrayList<>();
+        for (final FrostlakeParser.QualifiedNameContext name : names) {
+            final List<String> parts = Arrays.asList(ParseTreeText.qualifiedNameParts(name));
+            final Schema home = schemaOf(parts);
+            final Task predecessor = home == null || !sameSchema(home) ? null
+                : exactTask(home, parts.get(parts.size() - 1));
+            if (predecessor != null) {
+                found.add(predecessor);
+            }
+        }
+        return found;
     }
 
     /**

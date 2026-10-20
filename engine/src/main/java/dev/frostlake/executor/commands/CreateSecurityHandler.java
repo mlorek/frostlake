@@ -496,12 +496,14 @@ public class CreateSecurityHandler implements CommandHandler {
         }
         try {
             final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written, as an aggregation policy's is.
+            final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "JOIN_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_JOIN_POLICY);
             if (orReplace) {
                 if (catalog.isJoinPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
+                        + policyName.toUpperCase(Locale.ROOT)
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
                 schema.dropJoinPolicy(policyName);

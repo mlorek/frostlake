@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.math;
 
+import dev.frostlake.values.Decfloats;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
@@ -43,6 +45,9 @@ import java.util.List;
  */
 final class RoundedValue {
 
+    /** The widest scale span a NUMBER is rounded across, and the scale arguments a DECFLOAT is rounded to. */
+    private static final int MAX_SPAN = 38;
+
     private RoundedValue() {
     }
 
@@ -56,12 +61,30 @@ final class RoundedValue {
             return approximatelyRounded(((Number) args.get(0)).doubleValue(), scale, mode);
         }
         final BigDecimal num = new BigDecimal(args.get(0).toString());
-        if (num.scale() - scale > 38) {
+        if (num.scale() - scale > MAX_SPAN) {
             throw new RuntimeException(
                 "Invalid parameter value: " + scale + ". Reason: Scale too large");
         }
         final BigDecimal rounded = num.setScale(scale, mode);
         return rounded.scale() < 0 ? rounded.setScale(0) : rounded;
+    }
+
+    /**
+     * The rounded value of a DECFLOAT, or null when the input or the scale is null. The scale span NUMBER refuses
+     * as "Scale too large" is a rule of a declared width, which a DECFLOAT does not have: its last digit's exponent
+     * goes down to -16383, so {@code ROUND(DECFLOAT '1e-50')} is 0 and {@code ROUND(DECFLOAT '1e-50', 2)} is 0
+     * (FL-491). The result is held as a DECFLOAT holds it (see Decfloats). A scale argument outside -38..38 keeps
+     * NUMBER's rule, since what the account answers there (say {@code ROUND(d, -7000)}) is unmeasured.
+     */
+    static Object ofDecfloat(final List<Object> args, final RoundingMode mode) {
+        if (args.get(0) == null || args.size() > 1 && args.get(1) == null) {
+            return null;
+        }
+        final int scale = args.size() > 1 ? scaleOf(args.get(1)) : 0;
+        if (scale < -MAX_SPAN || scale > MAX_SPAN) {
+            return of(args, mode);
+        }
+        return Decfloats.held(new BigDecimal(args.get(0).toString()).setScale(scale, mode));
     }
 
     /**

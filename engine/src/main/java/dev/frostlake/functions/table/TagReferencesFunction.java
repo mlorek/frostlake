@@ -773,23 +773,26 @@ public class TagReferencesFunction extends TableFunction {
         return null;
     }
 
-    /** The schema object of the domain and name, or null when there is none. */
+    /**
+     * The schema object of the domain and exactly that name, or null when there is none: a name that differs only in
+     * case is another object's.
+     */
     private static Object schemaObject(final Schema schema, final String domain, final String name) {
         try {
             if ("ALERT".equals(domain)) {
-                return schema.hasAlert(name) ? schema.getAlert(name) : null;
+                return schema.hasAlertExact(name) ? schema.getAlertExact(name) : null;
             }
             if ("STAGE".equals(domain)) {
-                return schema.getStage(name);
+                return schema.getStageExact(name);
             }
             if ("STREAM".equals(domain)) {
-                return schema.getStream(name);
+                return schema.getStreamExact(name);
             }
             if ("TASK".equals(domain)) {
-                return schema.getTask(name);
+                return schema.getTaskExact(name);
             }
             if ("PIPE".equals(domain)) {
-                return schema.getPipe(name);
+                return schema.getPipeExact(name);
             }
             if ("PASSWORD POLICY".equals(domain)) {
                 return schema.getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name);

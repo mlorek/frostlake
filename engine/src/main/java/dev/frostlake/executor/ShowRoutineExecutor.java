@@ -86,7 +86,7 @@ final class ShowRoutineExecutor {
 
     /** {@link #seen} for a routine overload, whose privileges are its signature's own. */
     private boolean seen(final GrantedObject routine) {
-        return ownership.sees(routine.getKind(), routine.getName(), routine.getOwner());
+        return ownership.sees(routine.getKind(), routine.getRecordedName(), routine.getOwner());
     }
 
     public ResultSet showProcedures(final String schemaName, final boolean userOnly) {

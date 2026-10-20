@@ -660,16 +660,22 @@ public class Schema extends SqlObject {
         materializedViews.add(materializedView);
     }
 
+    /**
+     * Drops the materialized view of EXACTLY this name. A materialized view's name is matched exactly, as a dynamic
+     * table's is: one created as "mv" and one created as MV are two views, and an unquoted MV never reaches "mv".
+     */
     public void dropMaterializedView(final String name) {
-        materializedViews.drop(name);
+        materializedViews.dropExact(name);
     }
 
+    /** The materialized view of EXACTLY this name, refused in the does-not-exist family when there is none. */
     public MaterializedView getMaterializedView(final String name) {
-        return materializedViews.get(name);
+        return materializedViews.getExact(name);
     }
 
+    /** Whether a materialized view of EXACTLY this name is here. */
     public boolean hasMaterializedView(final String name) {
-        return materializedViews.has(name);
+        return materializedViews.hasExact(name);
     }
 
     public List<MaterializedView> getMaterializedViews() {
@@ -722,12 +728,18 @@ public class Schema extends SqlObject {
     public void addJoinPolicy(final JoinPolicy policy) {
         joinPolicies.put(policy);
     }
-    public void dropJoinPolicy(final String name) { joinPolicies.remove(name); }
-    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.find(name); }
-    public boolean hasJoinPolicy(final String name) { return joinPolicies.has(name); }
+    // A join policy holds exactly its own name, as a masking, aggregation or projection policy does: "jp" and an
+    // unquoted JP are two policies, and neither name reaches the other.
+    public void dropJoinPolicy(final String name) {
+        if (joinPolicies.hasExact(name)) {
+            joinPolicies.dropExact(name);
+        }
+    }
+    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.findExact(name); }
+    public boolean hasJoinPolicy(final String name) { return joinPolicies.hasExact(name); }
     public List<JoinPolicy> getJoinPolicies() { return joinPolicies.values(); }
     public void renameJoinPolicy(final String oldName, final String newName) {
-        NamedObjects.rename(joinPolicies, oldName, newName.toUpperCase(Locale.ROOT));
+        NamedObjects.rename(joinPolicies, oldName, newName);
     }
 
     // Aggregation Policies
@@ -1154,6 +1166,30 @@ public class Schema extends SqlObject {
     /** The alert of that name, refused in the does-not-exist family when there is none. */
     public Alert getAlert(final String name) {
         return alerts.get(name);
+    }
+
+    /** Whether an alert of EXACTLY this name is here: a name that differs only in case is another alert. */
+    public boolean hasAlertExact(final String name) {
+        return alerts.hasExact(name);
+    }
+
+    /**
+     * The alert of EXACTLY this name, as SQL names one, refused in the does-not-exist family when there is none.
+     *
+     * @param name the canonical name
+     * @return the alert
+     */
+    public Alert getAlertExact(final String name) {
+        return alerts.getExact(name);
+    }
+
+    /**
+     * Drops the alert of EXACTLY this name.
+     *
+     * @param name the canonical name
+     */
+    public void dropAlertExact(final String name) {
+        alerts.dropExact(name);
     }
 
     /** Every alert of the schema. */

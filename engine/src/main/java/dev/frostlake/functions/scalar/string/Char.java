@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -27,6 +28,9 @@ public class Char extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        // A NaN or an infinity names no code point, so it gives NULL as one out of range does, not the refusal a
+        // position gets (FL-469; it was NULL before the arguments were read through WholeNumbers).
+        if (WholeNumbers.isNonFinite(args.get(0))) return null;
         // A code point is read as the whole number it gives, a text's included: CHAR('66.6') is C (live-verified).
         final int codePoint = wholeNumber(args.get(0));
         if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT) return null;

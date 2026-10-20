@@ -224,6 +224,60 @@ public class DecfloatTypeTest extends MeasuredCellsTestSupport {
         });
     }
 
+    /**
+     * CEIL, FLOOR, ROUND and TRUNC round a DECFLOAT to any scale in -38..38 whatever its exponent: NUMBER's "Scale too
+     * large" is a rule of a declared width, which a DECFLOAT has none of (FL-491). A scale argument past that range
+     * keeps NUMBER's rule, the account's answer there being unmeasured.
+     */
+    @Test
+    public void theRoundingFunctionsRoundAnyExponentOfADecfloat() {
+        engine.execute("CREATE OR REPLACE TABLE dr (d DECFLOAT)");
+        engine.execute("INSERT INTO dr VALUES (DECFLOAT '1e-50'), (DECFLOAT '-1e-50'), (DECFLOAT '1.25e-45')");
+        assertCells(new String[][] {
+            {"SELECT ROUND(DECFLOAT '1e-50')::VARCHAR, SYSTEM$TYPEOF(ROUND(DECFLOAT '1e-50'))",
+                "0|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT FLOOR(DECFLOAT '1e-50')::VARCHAR, CEIL(DECFLOAT '1e-50')::VARCHAR", "0|1"},
+            {"SELECT FLOOR(DECFLOAT '-1e-50')::VARCHAR, CEIL(DECFLOAT '-1e-50')::VARCHAR", "-1|0"},
+            {"SELECT TRUNC(DECFLOAT '-4.2e-5432')::VARCHAR, TRUNCATE(DECFLOAT '4.2e-5432', 3)::VARCHAR", "0|0"},
+            {"SELECT ROUND(DECFLOAT '1e-50', 2)::VARCHAR, ROUND(DECFLOAT '1.5e-40', 38)::VARCHAR", "0|0"},
+            {"SELECT ROUND(DECFLOAT '2.5e-38', 38)::VARCHAR, ROUND(DECFLOAT '2.5e-38', 38, 'HALF_TO_EVEN')::VARCHAR",
+                "3e-38|2e-38"},
+            {"SELECT ROUND(DECFLOAT '1.255', 2)::VARCHAR, ROUND(DECFLOAT '1.23e7002')::VARCHAR",
+                "1.26|1.23e7002"},
+            {"SELECT ROUND(DECFLOAT '123.456', -1)::VARCHAR, CEIL(DECFLOAT '1e-50', -38)::VARCHAR",
+                "120|1e38"},
+            {"SELECT ROUND(DECFLOAT '1.5e-40', 40)::VARCHAR, ROUND(DECFLOAT '1e-50', 100)::VARCHAR", "2e-40|1e-50"},
+            {"SELECT ROUND(d)::VARCHAR, CEIL(d, 1)::VARCHAR, SYSTEM$TYPEOF(FLOOR(d)) FROM dr ORDER BY d",
+                "0|0|DECFLOAT(38)[DECFLOAT18] ;; 0|0.1|DECFLOAT(38)[DECFLOAT18] ;; 0|0.1|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT ROUND(DECFLOAT '1e-100', 50)",
+                "REFUSED Invalid parameter value: 50. Reason: Scale too large"},
+            {"SELECT ROUND(1e-50::NUMBER(38,37)), CEIL(1.5::NUMBER(10,2), -37)",
+                "REFUSED Invalid parameter value: -37. Reason: Scale too large"},
+        });
+    }
+
+    /**
+     * A BOOLEAN cast to a DECFLOAT is the DECFLOAT 1 or 0, as TO_DECFLOAT reads it (live: CAST(TRUE AS DECFLOAT) is
+     * 1), so arithmetic over it is DECFLOAT arithmetic; the NUMBER(2,0) a BOOLEAN cast to NUMBER types as is no rule of
+     * a DECFLOAT (FL-492).
+     */
+    @Test
+    public void aBooleanCastToADecfloatIsADecfloat() {
+        engine.execute("CREATE OR REPLACE TABLE db (x BOOLEAN)");
+        engine.execute("INSERT INTO db VALUES (TRUE), (FALSE), (NULL)");
+        assertCells(new String[][] {
+            {"SELECT TRUE::DECFLOAT, SYSTEM$TYPEOF(TRUE::DECFLOAT), CAST(FALSE AS DECFLOAT), "
+                + "SYSTEM$TYPEOF(CAST(FALSE AS DECFLOAT))",
+                "1|DECFLOAT(38)[DECFLOAT18]|0|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT TO_DECFLOAT(TRUE), SYSTEM$TYPEOF(TO_DECFLOAT(TRUE))", "1|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT (x::DECFLOAT / 3)::VARCHAR, SYSTEM$TYPEOF(x::DECFLOAT) FROM db ORDER BY x DESC NULLS LAST",
+                "3.3333333333333333333333333333333333333e-1|DECFLOAT(38)[DECFLOAT18] ;; "
+                    + "0|DECFLOAT(38)[DECFLOAT18] ;; null|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT TYPEOF(TO_VARIANT(TRUE::DECFLOAT)), (TRUE::DECFLOAT + 0.5)::VARCHAR", "DECFLOAT|1.5"},
+            {"SELECT TRUE::NUMBER(5,1), SYSTEM$TYPEOF(TRUE::NUMBER(5,1))", "1|NUMBER(2,0)[SB1]"},
+        });
+    }
+
     @Test
     public void scriptingAndRoutinesKeepItExact() {
         engine.execute("CREATE OR REPLACE PROCEDURE df_p(x DECFLOAT) RETURNS DECFLOAT LANGUAGE SQL AS 'BEGIN RETURN "
