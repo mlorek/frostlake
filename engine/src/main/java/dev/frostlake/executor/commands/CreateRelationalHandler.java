@@ -36,6 +36,7 @@ import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.MaterializedViewValidity;
@@ -394,7 +395,8 @@ public class CreateRelationalHandler implements CommandHandler {
                 grantsSetAside = schema.qualifiedName(schema.getView(viewName).getName());
                 GrantNames.setAside(catalog, "VIEW", grantsSetAside);
             }
-            view.setOwner(FutureGrants.ownerOfNew(catalog, "VIEW", schema, viewName));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "VIEW", schema, viewName);
+            view.setOwner(grantsOfNew.owner());
             view.setLastDdlBy(catalog.currentUserForDdl());
             if (ctx.tagList() != null) {
                 InlineTags.apply(view, ctx.tagList(), queryExecutor);
@@ -451,6 +453,10 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
             schema.addView(view);
+            if (ctx.or_alter() == null || grantsSetAside == null) {
+                // A CREATE OR ALTER that found its view altered it: future grants are for new objects only.
+                grantsOfNew.apply();
+            }
             if (grantsSetAside != null) {
                 if (ctx.or_alter() != null || !ctx.copyGrants().isEmpty()) {
                     GrantNames.takeBack(catalog, "VIEW", grantsSetAside, ctx.or_alter() == null);
@@ -758,7 +764,9 @@ public class CreateRelationalHandler implements CommandHandler {
             }
 
             // The future grants of the schema or its database cover the new view (live-verified).
-            mv.setOwner(FutureGrants.ownerOfNew(catalog, "MATERIALIZED_VIEW", schema, mvName));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "MATERIALIZED_VIEW", schema,
+                mvName);
+            mv.setOwner(grantsOfNew.owner());
             mv.setLastDdlBy(catalog.currentUserForDdl());
             // Live POPULATES a materialized view at CREATE, as a CTAS fills its table. The body compiles,
             // its columns must be named, and then its rows are produced, so a value that faults refuses the
@@ -808,6 +816,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
             schema.addMaterializedView(mv);
+            grantsOfNew.apply();
             logger.trace("Created materialized view: {}", qualifiedName);
         } catch (final RuntimeException e) {
             if (e == bodyRefusal) {
@@ -927,7 +936,8 @@ public class CreateRelationalHandler implements CommandHandler {
             recordCreateText(ctx, dt);
 
             // The future grants of the schema or its database cover the new table (live-verified).
-            dt.setOwner(FutureGrants.ownerOfNew(catalog, "DYNAMIC_TABLE", schema, dtName));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "DYNAMIC_TABLE", schema, dtName);
+            dt.setOwner(grantsOfNew.owner());
             dt.setLastDdlBy(catalog.currentUserForDdl());
             // Live compiles a dynamic table's body at CREATE and, unless it is to INITIALIZE ON_SCHEDULE,
             // refreshes it there too. An existing table that is not being replaced is never rebuilt, and a
@@ -950,6 +960,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 try { schema.dropDynamicTable(dtName); } catch (final RuntimeException ignored) {}
             }
             schema.addDynamicTable(dt);
+            grantsOfNew.apply();
             logger.trace("Created dynamic table: {}", qualifiedName);
         } catch (final RuntimeException e) {
             if (e == bodyRefusal) {

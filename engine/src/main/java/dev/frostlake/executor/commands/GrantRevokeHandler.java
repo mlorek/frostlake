@@ -1075,14 +1075,15 @@ public class GrantRevokeHandler implements CommandHandler {
     }
 
     /**
-     * The privileges a network policy, a network rule, a password policy, a secret or an external volume takes; null
-     * for another kind.
+     * The privileges a network policy, a network rule, a password policy, a secret, an external volume or an
+     * integration takes; null for another kind.
      */
     private static List<String> securityObjectPrivileges(final String objectType) {
         switch (objectType) {
             case "NETWORK_POLICY":
             case "NETWORK_RULE":
             case "EXTERNAL_VOLUME":
+            case "INTEGRATION":
                 return List.of("USAGE");
             case "PASSWORD_POLICY":
                 return List.of("APPLY");
@@ -1163,6 +1164,7 @@ public class GrantRevokeHandler implements CommandHandler {
             case "PASSWORD_POLICY":
             case "SECRET":
             case "EXTERNAL_VOLUME":
+            case "INTEGRATION":
                 return securityObjectPrivileges(objectType);
             default:
                 return List.of("ALL");

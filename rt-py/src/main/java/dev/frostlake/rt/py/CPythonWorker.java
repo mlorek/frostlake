@@ -32,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
@@ -107,9 +108,13 @@ final class CPythonWorker {
      * @return the running worker
      */
     static CPythonWorker start(final String executable) {
-        final ProcessBuilder builder = new ProcessBuilder(executable, "-u", workerScript().toString());
+        // Isolated mode (-I): neither the script's directory nor the working directory goes on sys.path, and the
+        // PYTHON* variables and the user's site-packages are ignored, so no file a third party left in a directory
+        // the engine shares stands in for a standard-library module. The site-packages of the interpreter named
+        // (a venv's own, through its pyvenv.cfg) still load. Measured with a decimal.py planted in java.io.tmpdir:
+        // without -I the worker imported it at startup; with it the worker imports the standard library's.
+        final ProcessBuilder builder = new ProcessBuilder(executable, "-I", "-u", workerScript().toString());
         builder.environment().put("TZ", HOST_TIME_ZONE.getID());
-        builder.environment().put("PYTHONIOENCODING", "utf-8");
         final Process process;
         try {
             process = builder.start();
@@ -144,14 +149,20 @@ final class CPythonWorker {
         return worker;
     }
 
-    /** The worker script, copied out of the jar once per JVM so a plain interpreter can run it. */
+    /**
+     * The worker script, copied out of the jar once per JVM so a plain interpreter can run it. It goes into a
+     * directory of its own that only the engine's user may enter, not straight into {@code java.io.tmpdir}, which on
+     * Linux every local user can write to: nobody else can swap the script or place a module beside it.
+     */
     private static synchronized Path workerScript() {
         if (script == null) {
             try (InputStream in = CPythonWorker.class.getResourceAsStream("cpython_worker.py")) {
                 if (in == null) {
                     throw new IllegalStateException("cpython_worker.py resource not found");
                 }
-                final Path copy = Files.createTempFile("frostlake-cpython-worker", ".py");
+                final Path directory = privateDirectory();
+                directory.toFile().deleteOnExit();
+                final Path copy = directory.resolve("cpython_worker.py");
                 Files.copy(in, copy, StandardCopyOption.REPLACE_EXISTING);
                 copy.toFile().deleteOnExit();
                 script = copy;
@@ -160,6 +171,17 @@ final class CPythonWorker {
             }
         }
         return script;
+    }
+
+    /** A new temporary directory only its owner may read, write or enter, where the file system has such modes. */
+    private static Path privateDirectory() throws IOException {
+        try {
+            return Files.createTempDirectory("frostlake-cpython-",
+                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        } catch (final UnsupportedOperationException notPosix) {
+            // Windows: the temporary directory is the user's own already.
+            return Files.createTempDirectory("frostlake-cpython-");
+        }
     }
 
     private Thread startStderrPump() {

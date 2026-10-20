@@ -74,4 +74,26 @@ public final class TableLockGate {
             }
         }
     }
+
+    /**
+     * Refuses to let the running COPY load a file that another session's open transaction has loaded into the same
+     * table: the COPY is to wait for that transaction and run again (see {@link TableLockWait}), and then skips the
+     * file when the load committed and loads it when it rolled back. A COPY that may not wait goes on.
+     *
+     * @param transactions       the engine's transactions
+     * @param loader             the transaction whose load read the file
+     * @param ownSession         the number of the session the statement runs in, or null
+     * @param fullyQualifiedName the table's storage name
+     * @param tableName          the table's name as the refusal names it
+     */
+    public static void requireLoadFree(final TransactionManager transactions, final Transaction loader,
+                                       final Long ownSession, final String fullyQualifiedName,
+                                       final String tableName) {
+        if (RELEASES.get() == null || ownSession == null || loader.getSessionNumber() == null
+                || ownSession.equals(loader.getSessionNumber())
+                || !transactions.getActiveTransactions().contains(loader)) {
+            return;
+        }
+        throw new TableLockWait(loader, fullyQualifiedName, tableName);
+    }
 }

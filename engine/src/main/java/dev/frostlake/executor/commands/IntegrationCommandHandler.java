@@ -22,18 +22,21 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.IntegrationRegistry;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.IntegrationKind;
 import dev.frostlake.metastore.model.PropertyValue;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.PropertyValueKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObject;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -52,6 +55,12 @@ import java.util.Map;
  * describe. Every kind
  * shares one namespace, the ENABLED flag and the comment; the rest of an integration's properties are kept as written
  * and checked against its kind's property set ({@link IntegrationRules}). Secrets are write-only: DESCRIBE masks them.
+ *
+ * <p>An integration is an account object with an owner: CREATE takes CREATE INTEGRATION on the account, ALTER, DROP
+ * and a CREATE OR REPLACE over one take its OWNERSHIP, and SHOW and DESCRIBE answer for an integration only to a role
+ * that holds some privilege on it, or MANAGE GRANTS; to any other it is not there (documented: each statement's access
+ * control table, and SHOW lists "only objects for which the current role has been granted at least one access
+ * privilege"). Every role could create, widen, disable and drop every integration (FL-430).
  */
 public final class IntegrationCommandHandler {
 
@@ -86,8 +95,11 @@ public final class IntegrationCommandHandler {
                 }
                 throw missing(name);
             }
+            requireOwnership(integration);
             refuseWhileReferenced(integration);
             registry().remove(name);
+            // Its privileges go with it: an integration created later under the name starts with none.
+            GrantNames.created(catalog, "INTEGRATION", integration.getName());
             return StatusResults.dropped(name);
         }
         if (integration == null) {
@@ -96,6 +108,7 @@ public final class IntegrationCommandHandler {
             }
             throw missing(name);
         }
+        requireOwnership(integration);
         alter(integration, ctx.integrationAction());
         return StatusResults.of(StatusResults.EXECUTED);
     }
@@ -110,7 +123,11 @@ public final class IntegrationCommandHandler {
         if (kind == IntegrationKind.EXTERNAL_ACCESS) {
             resolveExternalAccess(properties);
         }
+        AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.CREATE_INTEGRATION);
         final Integration standing = registry().find(name);
+        if (standing != null && ctx.or_replace() != null) {
+            requireOwnership(standing);
+        }
         if (standing != null && ctx.or_replace() == null) {
             if (ctx.if_not_exists() != null) {
                 return StatusResults.alreadyExists(name);
@@ -124,6 +141,8 @@ public final class IntegrationCommandHandler {
         integration.setEnabled(true);
         apply(integration, properties);
         registry().put(integration);
+        // A replaced integration's privileges are not the new one's.
+        GrantNames.created(catalog, "INTEGRATION", integration.getName());
         return StatusResults.created("Integration", name);
     }
 
@@ -277,10 +296,25 @@ public final class IntegrationCommandHandler {
      */
     private Integration find(final String name, final IntegrationKind kind) {
         final Integration integration = registry().find(name);
-        if (integration != null && kind != null && integration.getKind() != kind) {
+        if (integration == null || !sees(integration)) {
+            // One the role holds no privilege on is not there for it, of whatever kind.
+            return null;
+        }
+        if (kind != null && integration.getKind() != kind) {
             throw new RuntimeException("Integration " + name + " is not a " + kind.getWords() + " integration.");
         }
         return integration;
+    }
+
+    /** Whether the session holds some privilege on an integration, or MANAGE GRANTS, so that it is told about it. */
+    private boolean sees(final Integration integration) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        return security == null || security.sees("INTEGRATION", integration.getName(), integration.getOwner());
+    }
+
+    /** Refuses changing or dropping an integration the session does not own. */
+    private void requireOwnership(final Integration integration) {
+        queryExecutor.requireOwnership("INTEGRATION", new String[] {integration.getName()}, null);
     }
 
     private static RuntimeException missing(final String name) {
@@ -303,7 +337,7 @@ public final class IntegrationCommandHandler {
         }
         final List<Row> rows = new ArrayList<>();
         for (final Integration integration : registry().all()) {
-            if (kind != null && integration.getKind() != kind) {
+            if (kind != null && integration.getKind() != kind || !sees(integration)) {
                 continue;
             }
             final List<Object> values = new ArrayList<>(Arrays.asList((Object) integration.getName(),

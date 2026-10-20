@@ -1596,7 +1596,15 @@ public class DatabaseEngine {
         final String defaults = user == null || !user.isDefaultSecondaryRolesWritten() ? null
             : user.getDefaultSecondaryRoles();
         if (defaults != null) {
+            // The primary role is still the previous user's here: the embedder names the new user's with
+            // setCurrentRole next. useSecondaryRoles keeps the primary role active, so a role the new user may not
+            // activate is taken out again, or a user granted nothing but R1 would act with the former user's
+            // SYSADMIN (FL-428).
+            final String former = sessionContext.getCurrentRole();
             catalog.useSecondaryRoles(defaults.contains("\"ALL\"") ? null : Collections.singletonList("NONE"));
+            if (former != null && !catalog.mayActivate(former)) {
+                sessionContext.removeActiveRole(former);
+            }
         }
     }
 

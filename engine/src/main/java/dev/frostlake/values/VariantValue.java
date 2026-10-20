@@ -20,7 +20,12 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Runtime value of the SQL semi-structured family (VARIANT / OBJECT / ARRAY): canonical JSON text
@@ -43,6 +48,13 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
     private transient JsonNode node;
     private transient String comparisonKey;
 
+    /**
+     * Where the DECFLOATs the tree holds sit, as {@link DecfloatTextNode#placesIn} gives them: written by
+     * serialization alone, since the text spells a DECFLOAT as the string of its digits and the tree that knows it
+     * for one is not written. Null where none sits in it, and in a value written before the places were kept.
+     */
+    private Object[] decfloatPlaces;
+
     private VariantValue(final String text) {
         this.text = text;
     }
@@ -57,6 +69,31 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         final VariantValue v = new VariantValue(VariantText.canonical(node));
         v.node = node;
         return v;
+    }
+
+    /**
+     * Writes the text and, where the tree holds a DECFLOAT, the places they sit, so a checkpoint, a snapshot and a
+     * clone keep the members' type that a WAL replay, re-running the statements, keeps by itself.
+     */
+    private void writeObject(final ObjectOutputStream out) throws IOException {
+        final List<Object[]> places = node == null ? null : DecfloatTextNode.placesIn(node);
+        final ObjectOutputStream.PutField fields = out.putFields();
+        fields.put("text", text);
+        fields.put("decfloatPlaces", places == null || places.isEmpty() ? null : places.toArray());
+        out.writeFields();
+    }
+
+    /** Reads the text, the tree re-read at once with its DECFLOATs put back where any were written. */
+    private void readObject(final ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        if (decfloatPlaces != null) {
+            final List<Object[]> places = new ArrayList<>();
+            for (final Object place : decfloatPlaces) {
+                places.add((Object[]) place);
+            }
+            node = DecfloatTextNode.restoredIn(VariantUndefined.readTree(MAPPER, text), places);
+            decfloatPlaces = null;
+        }
     }
 
     /** The canonical JSON text. */

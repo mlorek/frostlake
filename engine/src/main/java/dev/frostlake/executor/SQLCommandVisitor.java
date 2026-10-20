@@ -213,7 +213,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         this.appObjectHandler = new AppObjectCommandHandler(catalog, queryExecutor, this);
         this.grantRevokeHandler = new GrantRevokeHandler(catalog, queryExecutor, this);
         this.accessControlHandler = new AccessControlHandler(catalog, queryExecutor, this);
-        this.beginEndBlockHandler = new BeginEndBlockHandler(catalog, queryExecutor, this, this.proceduralExecutor);
+        this.beginEndBlockHandler = new BeginEndBlockHandler(catalog, queryExecutor, this);
         this.columnParser = new ColumnDefinitionParser(catalog, queryExecutor);
         this.proceduralBlockBuilder = new ProceduralBlockBuilder(this);
         this.expressionBuilder = new VisitorExpressionBuilder(this, queryExecutor);
@@ -1972,6 +1972,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final SessionRole callerRole = SessionRole.pinned();
         final SecurityManager security = queryExecutor.getSecurityManager();
         final String callerOwner = security == null ? null : security.getSessionContext().getExecutableOwner();
+        final boolean callerRestricted = security != null && security.getSessionContext().isRestrictedCaller();
         // A procedure's body, in any language, is a transaction scope of its own: it adds to a transaction its
         // caller began and may not end it, and a transaction it begins is its own to end before it returns
         // (live-verified).
@@ -1989,6 +1990,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             leftOpen = transactions.exitScope();
             if (security != null) {
                 security.getSessionContext().setExecutableOwner(callerOwner);
+                security.getSessionContext().setRestrictedCaller(callerRestricted);
             }
             SessionRole.restore(callerRole);
         }
@@ -2428,6 +2430,16 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         if (!procedure.runsWithCallersRights() && procedure.getOwner() != null
                 && queryExecutor.getSecurityManager() != null) {
             queryExecutor.getSecurityManager().getSessionContext().setExecutableOwner(procedure.getOwner());
+        }
+        // A RESTRICTED CALLER body runs with none of its caller's privileges, as no caller grant lets it use one; an
+        // owner's-rights body runs with its owner's own, however it was called; a caller's-rights body runs with what
+        // its caller runs with (FL-434).
+        if (queryExecutor.getSecurityManager() != null) {
+            if (procedure.runsWithRestrictedCallersRights()) {
+                queryExecutor.getSecurityManager().getSessionContext().setRestrictedCaller(true);
+            } else if (!procedure.runsWithCallersRights()) {
+                queryExecutor.getSecurityManager().getSessionContext().setRestrictedCaller(false);
+            }
         }
         // A body that runs with its OWNER's rights runs where the procedure lives, whatever language it is in:
         // an unqualified or partially qualified name in it (UTILS.IS_VALID_TIER, a bare table) — in a SQL body's
@@ -3430,6 +3442,39 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     public ProceduralExecutor getProceduralExecutor() {
         return proceduralExecutor;
+    }
+
+    /**
+     * Sets the running request's procedural state aside and gives the engine a fresh one, for a statement that waits
+     * for another session's table lock: the wait gives the engine up, and the statements other sessions run meanwhile
+     * go through this same visitor. They kept the waiting request's block and procedure as their own, so another
+     * session's {@code RETURN} ended the waiting procedure with its value, and another session's top-level SET, USE
+     * or SYSTEM$ABORT_TRANSACTION was refused as if it ran in the waiting owner's-rights procedure. Only the request
+     * that holds the engine runs here, so what is set aside is that request's alone, and it takes it back with
+     * {@link #resumeProceduralState} once it holds the engine again.
+     *
+     * @return the state set aside
+     */
+    SuspendedProceduralState suspendProceduralState() {
+        final SuspendedProceduralState suspended =
+            new SuspendedProceduralState(proceduralExecutor, procedureDepth, dynamicStatement);
+        proceduralExecutor = new ProceduralExecutor();
+        proceduralExecutor.setQueryExecutor(queryExecutor);
+        procedureDepth = 0;
+        dynamicStatement = null;
+        return suspended;
+    }
+
+    /**
+     * Gives the request back the procedural state {@link #suspendProceduralState} set aside, once it holds the engine
+     * again. What the other sessions left behind is theirs and is dropped.
+     *
+     * @param suspended what {@link #suspendProceduralState} answered
+     */
+    void resumeProceduralState(final SuspendedProceduralState suspended) {
+        proceduralExecutor = suspended.executor();
+        procedureDepth = suspended.procedureDepth();
+        dynamicStatement = suspended.dynamicStatement();
     }
 
     /**

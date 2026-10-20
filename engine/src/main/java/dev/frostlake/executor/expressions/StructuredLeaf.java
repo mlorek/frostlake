@@ -25,6 +25,11 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.values.DecfloatTextNode;
+import dev.frostlake.values.Decfloats;
+import dev.frostlake.values.VariantValue;
+
+import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -208,8 +213,9 @@ public final class StructuredLeaf {
     }
 
     /**
-     * A value read from a structured value as its declared type holds it: an exact number at the type's scale, an
-     * approximate one as a double, a DATE, a TIME or a timestamp as the temporal value, a BOOLEAN as a boolean. A
+     * A value read from a structured value as its declared type holds it: an exact number at the type's scale, whether
+     * it was read as a number or as the VARIANT of a whole one, a DECFLOAT at its own digits, an approximate number as
+     * a double, a DATE, a TIME or a timestamp as the temporal value, a BOOLEAN as a boolean. A
      * nested structured value, a text and anything else stay as they were read.
      *
      * @param value the value read
@@ -220,18 +226,71 @@ public final class StructuredLeaf {
         if (value == null || leaf == null) {
             return value;
         }
-        if (leaf instanceof NumericType && value instanceof Number) {
+        if (NumericType.isDecfloat(leaf)) {
+            return decfloatLeaf(value);
+        }
+        final Object number = leaf instanceof NumericType ? numberHeld(value) : value;
+        if (leaf instanceof NumericType && number instanceof Number) {
             if (NumericType.isApproximate(leaf)) {
-                return Double.valueOf(((Number) value).doubleValue());
+                return Double.valueOf(((Number) number).doubleValue());
             }
-            final BigDecimal exact = value instanceof BigDecimal ? (BigDecimal) value
-                : new BigDecimal(value.toString());
+            final BigDecimal exact = number instanceof BigDecimal ? (BigDecimal) number
+                : new BigDecimal(number.toString());
             final int scale = ((NumericType) leaf).getScale();
             return scale >= 0 && exact.scale() != scale ? exact.setScale(scale, RoundingMode.HALF_UP) : exact;
         }
         if (leaf instanceof DateTimeType || leaf instanceof BinaryType
                 || (leaf instanceof BooleanType && !(value instanceof Boolean))) {
             return ValueCaster.castValue(value, leaf.toString());
+        }
+        return value;
+    }
+
+    /**
+     * The number a VARIANT read from a structured value holds, or the value itself. A whole element of a scaled
+     * NUMBER is read as the VARIANT that remembers it came from one (a {@code DecimalOriginNode}), since a
+     * semi-structured read needs that kind; a structured read has the declared type instead, so
+     * {@code [1.5, 2]::ARRAY(NUMBER(10,2))[1]} is the NUMBER 2.00, exactly as its neighbour 1.5 is 1.50, and its
+     * arithmetic stays fixed-point.
+     */
+    private static Object numberHeld(final Object value) {
+        if (value instanceof VariantValue) {
+            final JsonNode node = ((VariantValue) value).node();
+            if (node != null && node.isNumber()) {
+                return node.isFloatingPointNumber() && !node.isBigDecimal() ? (Object) node.doubleValue()
+                    : node.decimalValue();
+            }
+        }
+        return value;
+    }
+
+    /**
+     * A DECFLOAT element as a DECFLOAT holds it, the decimal of its own digits: the member that kept its type, its text
+     * once the value was read back from storage, or a number. Its nominal scale is no scale it is held to, so it is
+     * never rounded to the scale 0 the type carries.
+     */
+    private static Object decfloatLeaf(final Object value) {
+        if (value instanceof VariantValue) {
+            final JsonNode node = ((VariantValue) value).node();
+            final BigDecimal held = DecfloatTextNode.valueOf(node);
+            if (held != null) {
+                return held;
+            }
+            if (node != null && (node.isNumber() || node.isTextual())) {
+                return Decfloats.of(node.isNumber() ? node.decimalValue() : new BigDecimal(node.asText().trim()),
+                    "TO_DECFLOAT");
+            }
+            return value;
+        }
+        if (value instanceof Number) {
+            return Decfloats.of((Number) value, "TO_DECFLOAT");
+        }
+        if (value instanceof String) {
+            try {
+                return Decfloats.held(new BigDecimal(((String) value).trim()));
+            } catch (final NumberFormatException notNumber) {
+                return value;
+            }
         }
         return value;
     }

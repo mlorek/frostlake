@@ -193,4 +193,67 @@ public class DecfloatRoutineTest extends MeasuredCellsTestSupport {
                 "6.6666666666666666666666666666666666667e-1 DECFLOAT(38)[DECFLOAT18]"},
         });
     }
+
+    /**
+     * A SQL table function's DECFLOAT parameter is the DECFLOAT its argument is, every digit kept, as a scalar
+     * function's is: its plain digits made the body read a NUMBER, a FLOAT past 38 of them, and refused 1.5e300 as an
+     * integer literal out of range.
+     */
+    @Test
+    public void aTableFunctionReadsADecfloatArgumentAsTheDecfloatItIs() {
+        engine.execute("CREATE OR REPLACE FUNCTION df_st2(x DECFLOAT) RETURNS TABLE (y VARCHAR, t VARCHAR) AS "
+            + "'SELECT x::VARCHAR, SYSTEM$TYPEOF(x)'");
+        engine.execute("CREATE OR REPLACE FUNCTION df_st3(x DECFLOAT) RETURNS TABLE (y DECFLOAT) AS 'SELECT x / 3'");
+        engine.execute("CREATE OR REPLACE FUNCTION df_sc2(x DECFLOAT) RETURNS VARCHAR AS "
+            + "'x::VARCHAR || SYSTEM$TYPEOF(x)'");
+        engine.execute("CREATE OR REPLACE TABLE df_args (d DECFLOAT)");
+        engine.execute("INSERT INTO df_args SELECT DECFLOAT '1.2345678901234567890123456789012345678e-20'");
+        assertCells(new String[][] {
+            {"SELECT * FROM TABLE(df_st2(DECFLOAT '1.5'))", "1.5|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT * FROM TABLE(df_st2(DECFLOAT '-1.5'))", "-1.5|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT * FROM TABLE(df_st2(DECFLOAT '1' / 3))",
+                "3.3333333333333333333333333333333333333e-1|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT * FROM TABLE(df_st2(DECFLOAT '1.5e300'))", "1.5e300|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT * FROM TABLE(df_st2(DECFLOAT '1e-50'))", "1e-50|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT y::VARCHAR FROM TABLE(df_st3(DECFLOAT '1'))", "3.3333333333333333333333333333333333333e-1"},
+            {"SELECT t.* FROM df_args, TABLE(df_st2(df_args.d)) t",
+                "1.2345678901234567890123456789012345678e-20|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT df_sc2(DECFLOAT '1.5')", "1.5DECFLOAT(38)[DECFLOAT18]"},
+        });
+    }
+
+    /**
+     * A DECFLOAT argument to a SQL function's VARIANT parameter is a DECFLOAT member, every digit kept, as
+     * {@code TO_VARIANT} of it is: it was the VARIANT of its plain digits, a DOUBLE past 38 of them, a DECIMAL
+     * otherwise, and 1e300 refused. A table function's VARIANT parameter takes a VARIANT only, a DECFLOAT refused as a
+     * NUMBER is (see TableFunctionSignatures), and keeps the DECFLOAT inside the VARIANT it is given.
+     */
+    @Test
+    public void aVariantParameterHoldsADecfloatArgumentAsADecfloat() {
+        engine.execute("CREATE OR REPLACE FUNCTION df_sv(v VARIANT) RETURNS VARCHAR AS 'TYPEOF(v) || '' '' || "
+            + "TO_JSON(v)'");
+        engine.execute("CREATE OR REPLACE FUNCTION df_sw(v VARIANT) RETURNS VARIANT AS 'v'");
+        engine.execute("CREATE OR REPLACE FUNCTION df_tv(v VARIANT) RETURNS TABLE (t VARCHAR, j VARCHAR) AS "
+            + "'SELECT TYPEOF(v), TO_JSON(v)'");
+        engine.execute("CREATE OR REPLACE TABLE df_vargs (d DECFLOAT)");
+        engine.execute("INSERT INTO df_vargs SELECT DECFLOAT '-1.2345678901234567890123456789012345678e-20'");
+        assertCells(new String[][] {
+            {"SELECT df_sv(DECFLOAT '1' / 3), df_sv(DECFLOAT '1.5'), "
+                + "df_sv(DECFLOAT '1.2345678901234567890123456789012345678e-20')",
+                "DECFLOAT \"3.3333333333333333333333333333333333333e-1\"|DECFLOAT \"1.5\"|"
+                + "DECFLOAT \"1.2345678901234567890123456789012345678e-20\""},
+            {"SELECT df_sv(DECFLOAT '1e300')", "DECFLOAT \"1e300\""},
+            {"SELECT df_sv(d) FROM df_vargs", "DECFLOAT \"-1.2345678901234567890123456789012345678e-20\""},
+            {"SELECT df_sv(1.5), df_sv(NULL::DECFLOAT)", "DECIMAL 1.5|null"},
+            {"SELECT df_sw(DECFLOAT '1.2345678901234567890123456789012345678e-20')::VARCHAR",
+                "1.2345678901234567890123456789012345678e-20"},
+            {"SELECT * FROM TABLE(df_tv(DECFLOAT '1e-50'))",
+                "REFUSED SQL compilation error: error line 1 at position 20 | Invalid argument types for function "
+                + "'DF_TV': (DECFLOAT(38))"},
+            {"SELECT * FROM TABLE(df_tv(1))",
+                "REFUSED SQL compilation error: error line 1 at position 20 | Invalid argument types for function "
+                + "'DF_TV': (NUMBER(1,0))"},
+            {"SELECT * FROM TABLE(df_tv(TO_VARIANT(DECFLOAT '1e-50')))", "DECFLOAT|\"1e-50\""},
+        });
+    }
 }

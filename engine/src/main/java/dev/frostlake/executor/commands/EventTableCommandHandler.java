@@ -22,6 +22,7 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
@@ -172,13 +173,16 @@ final class EventTableCommandHandler {
         }
         final Table table = new Table(tableName, columns(), false, false);
         // The grants ON FUTURE EVENT TABLES cover it, held as a table's (live-verified).
-        table.setOwner(FutureGrants.ownerOfNew(catalog, "EVENT_TABLE", "TABLE", schema, tableName));
+        final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "EVENT_TABLE", "TABLE", schema,
+            tableName);
+        table.setOwner(grantsOfNew.owner());
         table.setEventTable(true);
         if (source != null) {
             table.setComment(source.getComment());
         }
         tables.applyTailProperties(ctx, table);
         schema.addTable(table);
+        grantsOfNew.apply();
         queryExecutor.getStorageEngine().createTable(key, table);
         queryExecutor.resetInternalTableStageDir(key);
         queryExecutor.resetCopyLoadHistory(key);

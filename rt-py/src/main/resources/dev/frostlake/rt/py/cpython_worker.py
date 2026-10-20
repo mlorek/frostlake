@@ -33,6 +33,10 @@ import sys as _sys
 import traceback as _traceback
 import types as _types
 
+# The worker's functions and classes take their module from this name, which marks them the runtime's own (see
+# _owned); routines run under "__main__" in a namespace of their own (_GLOBALS).
+__name__ = "__frostlake_worker"
+
 _IN = _os.fdopen(_os.dup(0), "r", encoding="utf-8", newline="\n")
 _OUT = _os.fdopen(_os.dup(1), "w", encoding="utf-8", newline="\n")
 _os.dup2(2, 1)
@@ -40,6 +44,8 @@ _devnull = _os.open(_os.devnull, _os.O_RDONLY)
 _os.dup2(_devnull, 0)
 _sys.stdin = open(_os.devnull, "r")
 _sys.stdout = _os.fdopen(1, "w", encoding="utf-8", buffering=1)
+# The engine starts the worker isolated (-I), which ignores PYTHONIOENCODING, so stderr is made UTF-8 here.
+_sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 _GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
 # The names a routine's namespace starts with; each call runs in a namespace of its own (op "enter"), and what
@@ -50,24 +56,74 @@ _FRAMES = []
 _MODULES = {}
 # What routines share between calls, as it stood when the worker started (op "restore" puts it back after each
 # outermost statement, as PythonRuntime.RUNTIME_SOURCE does on GraalPy): the built-in names, the environment, the
-# modules a helper module installed on sys.modules, and the members of the helper modules and their classes.
+# modules a helper module installed on sys.modules, and what the runtime's own code is made of - the helper modules,
+# this worker's module, every class and function they define (nested ones too) and their members.
 import builtins as _builtins
 _BUILTINS_BASE = dict(_builtins.__dict__)
 _ENVIRON_BASE = dict(_os.environ)
 _INSTALLED = {}
+# (holder, kind, members, bases) per guarded module or class, and (function, code, defaults, kwdefaults, cells) per
+# guarded function; _GUARDED_IDS keeps each guarded once (what it names stays alive in these lists).
 _GUARDED = []
+_FUNCTIONS = []
+_GUARDED_IDS = set()
 _MISSING = object()
 
 
+def _owned(value):
+    # What the runtime's sources define: they run as modules named __frostlake_..., and so does this worker.
+    return str(getattr(value, "__module__", "")).startswith("__frostlake")
+
+
 def _guard(holder):
-    for kept, _ in _GUARDED:
-        if kept is holder:
+    if id(holder) in _GUARDED_IDS:
+        return
+    _GUARDED_IDS.add(id(holder))
+    _GUARDED.append((holder, type(holder), dict(holder.__dict__), getattr(holder, "__bases__", None)))
+    for value in list(holder.__dict__.values()):
+        _guard_member(value)
+
+
+def _guard_member(value):
+    if isinstance(value, (staticmethod, classmethod)):
+        value = value.__func__
+    if isinstance(value, property):
+        for part in (value.fget, value.fset, value.fdel):
+            _guard_member(part)
+    elif isinstance(value, type):
+        if _owned(value):
+            _guard(value)
+    elif isinstance(value, _types.FunctionType) and _owned(value):
+        if id(value) in _GUARDED_IDS:
             return
-    _GUARDED.append((holder, dict(holder.__dict__)))
-    if isinstance(holder, _types.ModuleType):
-        for value in list(holder.__dict__.values()):
-            if isinstance(value, type) and str(getattr(value, "__module__", "")).startswith("__frostlake"):
-                _guard(value)
+        _GUARDED_IDS.add(id(value))
+        cells = [_cell(cell) for cell in value.__closure__ or ()]
+        _FUNCTIONS.append((value, value.__code__, value.__defaults__, value.__kwdefaults__, cells))
+        # A class defined inside a function (the snowpark emulation's install function defines them all) is
+        # reachable only through the closures of the functions that use it.
+        for held in cells:
+            _guard_member(held)
+
+
+def _cell(cell):
+    try:
+        return cell.cell_contents
+    except ValueError:
+        return _MISSING
+
+
+def _guard_classes():
+    # Every class the runtime's sources define, wherever it lives: a routine finds them all through
+    # object.__subclasses__(), not only those a guarded module or closure holds.
+    seen = set()
+    pending = [object]
+    while pending:
+        for sub in type.__subclasses__(pending.pop()):
+            if id(sub) not in seen:
+                seen.add(id(sub))
+                pending.append(sub)
+                if _owned(sub):
+                    _guard(sub)
 
 
 def _put_back_members(current, pristine):
@@ -76,10 +132,34 @@ def _put_back_members(current, pristine):
             current[key] = value
 
 
-def _put_back_class(holder, pristine):
+def _put_back(holder, kind, pristine, bases):
+    # A member a routine added goes, as one it replaced or deleted comes back: an added Session.__getattribute__
+    # would otherwise answer for session.sql in every later statement.
+    if type(holder) is not kind:
+        holder.__class__ = kind
+    current = holder.__dict__
+    for key in [k for k in current if k not in pristine]:
+        delattr(holder, key)
     for key, value in pristine.items():
-        if holder.__dict__.get(key, _MISSING) is not value:
+        if current.get(key, _MISSING) is not value:
             setattr(holder, key, value)
+    if bases is not None and holder.__bases__ != bases:
+        holder.__bases__ = bases
+
+
+def _put_back_function(function, code, defaults, kwdefaults, cells):
+    if function.__code__ is not code:
+        function.__code__ = code
+    if function.__defaults__ is not defaults:
+        function.__defaults__ = defaults
+    if function.__kwdefaults__ is not kwdefaults:
+        function.__kwdefaults__ = kwdefaults
+    for cell, value in zip(function.__closure__ or (), cells):
+        if _cell(cell) is not value:
+            if value is _MISSING:
+                del cell.cell_contents
+            else:
+                cell.cell_contents = value
 
 
 def _restore():
@@ -96,11 +176,10 @@ def _restore():
     for key, installed in _INSTALLED.items():
         if _sys.modules.get(key) is not installed:
             _sys.modules[key] = installed
-    for holder, pristine in _GUARDED:
-        if isinstance(holder, type):
-            _put_back_class(holder, pristine)
-        else:
-            _put_back_members(holder.__dict__, pristine)
+    for holder, kind, pristine, bases in _GUARDED:
+        _put_back(holder, kind, pristine, bases)
+    for guarded in _FUNCTIONS:
+        _put_back_function(*guarded)
 _CODE = {}
 
 
@@ -332,6 +411,7 @@ def _handle(message):
                     _INSTALLED[key] = installed
                     _guard(installed)
             _INSTALLED[name] = made
+            _guard_classes()
         return {"re": 1, "ok": True}
     if op == "restore":
         _restore()
@@ -364,6 +444,9 @@ def _serve(until_reply=False):
             _send({"re": 1, "error": _error(unencodable)})
 
 
+# This worker's own module, under which its functions and classes (_JavaObject, _call, ...) run, is a module
+# routines reach (sys.modules["__main__"]) and so is guarded too.
+_guard(_sys.modules["__main__"])
 _send({"hello": {"version": _platform.python_version(), "major": _sys.version_info[0],
                  "minor": _sys.version_info[1], "implementation": _platform.python_implementation(),
                  "executable": _sys.executable}})

@@ -52,22 +52,26 @@ public final class FutureGrants {
     }
 
     /**
-     * The owner a newly created schema-level object takes, applying every other future grant that
-     * covers it.
+     * The future grants that cover a schema-level object about to be created, and the owner they give it. Working
+     * this out changes nothing: the handler sets the owner on the object it builds and calls {@link CreationGrants#apply}
+     * once the object is in its schema. A statement that adds nothing, as CREATE ... IF NOT EXISTS over an object
+     * that is there, CREATE OR ALTER over one, or a CREATE refused after this was asked, leaves every grant on the
+     * name as it was: the privileges on the existing object stay, and future grants apply only to objects created
+     * afterwards (documented, FL-435).
      *
      * @param catalog    the catalog holding the roles
      * @param objectKind the object's kind, singular and upper-case (TABLE, VIEW, SEQUENCE, ...)
      * @param schema     the schema the object is created in
      * @param objectName the object's own name, unqualified
-     * @return the role that owns the object: a future OWNERSHIP grant's holder, else the current role
+     * @return the new object's owner and the grants to apply once it is added
      */
-    public static String ownerOfNew(final Catalog catalog, final String objectKind,
-                                    final Schema schema, final String objectName) {
-        return ownerOfNew(catalog, objectKind, objectKind, schema, objectName);
+    public static CreationGrants ofNew(final Catalog catalog, final String objectKind, final Schema schema,
+                                 final String objectName) {
+        return ofNew(catalog, objectKind, objectKind, schema, objectName);
     }
 
     /**
-     * {@link #ownerOfNew} for an object the future grants of one kind cover whose privileges are recorded under
+     * {@link #ofNew} for an object the future grants of one kind cover whose privileges are recorded under
      * another: an event table takes the grants ON FUTURE EVENT TABLES and holds them as a table's.
      *
      * @param catalog      the catalog holding the roles
@@ -75,17 +79,17 @@ public final class FutureGrants {
      * @param recordedKind the kind its privileges are recorded under (TABLE, ...)
      * @param schema       the schema the object is created in
      * @param objectName   the object's own name, unqualified
-     * @return the role that owns the object
+     * @return the new object's owner and the grants to apply once it is added
      */
-    public static String ownerOfNew(final Catalog catalog, final String futureKind, final String recordedKind,
-                                    final Schema schema, final String objectName) {
+    public static CreationGrants ofNew(final Catalog catalog, final String futureKind, final String recordedKind,
+                                 final Schema schema, final String objectName) {
         final String databaseName = schema == null ? null : schema.getDatabaseName();
-        return ownerOfNewNamed(catalog, futureKind, recordedKind, schema, objectName,
+        return ofNewNamed(catalog, futureKind, recordedKind, schema, objectName,
             databaseName == null ? null : QualifiedName.join(databaseName, schema.getName(), objectName));
     }
 
     /**
-     * {@link #ownerOfNew} for one overload of a routine, whose privileges are recorded under its signature
+     * {@link #ofNew} for one overload of a routine, whose privileges are recorded under its signature
      * ({@link GrantNames#routine}): the overload starts with none of a dropped same-signature overload's privileges,
      * and its future grants are its own.
      *
@@ -94,23 +98,23 @@ public final class FutureGrants {
      * @param schema      the schema the routine is created in
      * @param routineName the routine's name
      * @param parameters  the overload's parameters
-     * @return the role that owns the overload
+     * @return the overload's owner and the grants to apply once it is added
      */
-    public static String ownerOfNewRoutine(final Catalog catalog, final String objectKind, final Schema schema,
-                                           final String routineName, final List<Parameter> parameters) {
+    public static CreationGrants ofNewRoutine(final Catalog catalog, final String objectKind, final Schema schema,
+                                        final String routineName, final List<Parameter> parameters) {
         final String databaseName = schema == null ? null : schema.getDatabaseName();
-        return ownerOfNewNamed(catalog, objectKind, objectKind, schema, routineName,
+        return ofNewNamed(catalog, objectKind, objectKind, schema, routineName,
             databaseName == null ? null : GrantNames.routine(schema, routineName, parameters));
     }
 
-    private static String ownerOfNewNamed(final Catalog catalog, final String futureKind, final String objectKind,
-                                          final Schema schema, final String objectName, final String qualified) {
-        if (qualified == null) {
-            return catalog.currentRoleForOwner();
-        }
-        final String databaseName = schema.getDatabaseName();
+    private static CreationGrants ofNewNamed(final Catalog catalog, final String futureKind, final String objectKind,
+                                       final Schema schema, final String objectName, final String qualified) {
         final List<Role> holders = new ArrayList<>();
         final List<FutureGrant> covering = new ArrayList<>();
+        if (qualified == null) {
+            return new CreationGrants(catalog, objectKind, null, false, holders, covering);
+        }
+        final String databaseName = schema.getDatabaseName();
         collect(catalog, futureKind, "SCHEMA", QualifiedName.join(databaseName, schema.getName()),
             holders, covering);
         if (covering.isEmpty()) {
@@ -118,25 +122,28 @@ public final class FutureGrants {
         }
         // The privileges a dropped object of this name held are not the new object's (GrantNames). A temporary
         // table that takes a permanent one's name only hides it, and the permanent table keeps its privileges.
-        if (!("TABLE".equals(objectKind) && schema.shadowedTable(objectName) != null)) {
-            GrantNames.created(catalog, objectKind, qualified);
-        }
-        return apply(catalog, objectKind, qualified, holders, covering);
+        final boolean takesName = !("TABLE".equals(objectKind) && schema.shadowedTable(objectName) != null);
+        return new CreationGrants(catalog, objectKind, qualified, takesName, holders, covering);
     }
 
-    /**
-     * Records the grants a set of future grants makes on one new object, and answers its owner. A
-     * future OWNERSHIP names the owner; every other privilege is granted to its holder IN THAT
-     * OWNER'S NAME, which is what SHOW GRANTS on the object reads back as granted_by.
-     */
-    private static String apply(final Catalog catalog, final String objectKind, final String qualified,
-                                final List<Role> holders, final List<FutureGrant> covering) {
+    /** The owner a set of future grants gives a new object: a future OWNERSHIP's holder, else the current role. */
+    static String ownerAmong(final Catalog catalog, final List<Role> holders, final List<FutureGrant> covering) {
         String owner = catalog.currentRoleForOwner();
         for (int i = 0; i < covering.size(); i++) {
             if (Privilege.OWNERSHIP.name().equals(covering.get(i).getPrivilege())) {
                 owner = nameOf(holders.get(i));
             }
         }
+        return owner;
+    }
+
+    /**
+     * Records the grants a set of future grants makes on one new object. A future OWNERSHIP names the owner; every
+     * other privilege is granted to its holder IN THAT OWNER'S NAME, which is what SHOW GRANTS on the object reads
+     * back as granted_by.
+     */
+    static void apply(final Catalog catalog, final String objectKind, final String qualified,
+                      final String owner, final List<Role> holders, final List<FutureGrant> covering) {
         for (int i = 0; i < covering.size(); i++) {
             final FutureGrant grant = covering.get(i);
             final Privilege privilege = privilegeOf(grant.getPrivilege());
@@ -148,12 +155,12 @@ public final class FutureGrants {
                 holders.get(i).setGrantOption(objectKind, qualified, privilege, true);
             }
         }
-        return owner;
     }
 
     /**
      * The owner a newly created DATABASE-level object takes — a schema, whose narrowest future-grant
-     * scope is the database itself — applying every other future grant that covers it.
+     * scope is the database itself — applying every other future grant that covers it. The handlers ask it once the
+     * schema is added, so a schema that is there already keeps its grants.
      *
      * @param catalog      the catalog holding the roles
      * @param objectKind   the object's kind, singular and upper-case
@@ -171,7 +178,9 @@ public final class FutureGrants {
         collect(catalog, objectKind, "DATABASE", databaseName, holders, covering);
         final String qualified = QualifiedName.join(databaseName, objectName);
         GrantNames.created(catalog, objectKind, qualified);
-        return apply(catalog, objectKind, qualified, holders, covering);
+        final String owner = ownerAmong(catalog, holders, covering);
+        apply(catalog, objectKind, qualified, owner, holders, covering);
+        return owner;
     }
 
     /** Every future grant on that kind in that one scope, with the role holding each. */

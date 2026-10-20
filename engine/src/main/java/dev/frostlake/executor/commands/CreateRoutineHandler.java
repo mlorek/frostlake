@@ -26,6 +26,7 @@ import dev.frostlake.executor.udf.JavaScriptIdentifiers;
 import dev.frostlake.executor.udf.RoutineImports;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
@@ -184,7 +185,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 }
             }
         }
-        final String integrationName = ExternalFunctions.requireFunctionIntegration(catalog, integration);
+        final String integrationName = ExternalFunctions.requireFunctionIntegration(catalog,
+            queryExecutor.getSecurityManager(), integration);
         if (ctx.STRING_LITERAL() == null) {
             throw new RuntimeException(SqlCompilationError.of("Missing option(s): [AS]"));
         }
@@ -207,9 +209,11 @@ public class CreateRoutineHandler implements CommandHandler {
                 logger.trace("No existing function with matching signature to replace: {}", qualifiedName);
             }
         }
-        function.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "FUNCTION", schema, function.getName(),
-            function.getParameters()));
+        final CreationGrants grantsOfNew = FutureGrants.ofNewRoutine(catalog, "FUNCTION", schema,
+            function.getName(), function.getParameters());
+        function.setOwner(grantsOfNew.owner());
         schema.addFunction(function);
+        grantsOfNew.apply();
         logger.trace("Created external function: {}", qualifiedName);
         return null;
     }
@@ -438,9 +442,11 @@ public class CreateRoutineHandler implements CommandHandler {
                     logger.trace("No existing function with matching signature to replace: {}", qualifiedName);
                 }
             }
-            function.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "FUNCTION", schema, function.getName(),
-                function.getParameters()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNewRoutine(catalog, "FUNCTION", schema,
+                function.getName(), function.getParameters());
+            function.setOwner(grantsOfNew.owner());
             schema.addFunction(function);
+            grantsOfNew.apply();
             if (function.isAggregate()) {
                 catalog.noteAggregateFunction(function.getName());
             }
@@ -719,9 +725,11 @@ public class CreateRoutineHandler implements CommandHandler {
                     logger.trace("No existing procedure with matching signature to replace: {}", qualifiedName);
                 }
             }
-            procedure.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "PROCEDURE", schema, procedure.getName(),
-                procedure.getParameters()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNewRoutine(catalog, "PROCEDURE", schema,
+                procedure.getName(), procedure.getParameters());
+            procedure.setOwner(grantsOfNew.owner());
             schema.addProcedure(procedure);
+            grantsOfNew.apply();
             keepHandlerClasses(environments, ctx, handler, body, runtimeVersion);
             if (grantsKept != null) {
                 GrantNames.takeBack(catalog, "PROCEDURE", grantsKept, true);

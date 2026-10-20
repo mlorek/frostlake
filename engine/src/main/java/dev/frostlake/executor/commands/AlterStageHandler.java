@@ -255,7 +255,8 @@ final class AlterStageHandler {
 
     /** STORAGE_INTEGRATION names an integration that exists. */
     private void requireIntegration(final FrostlakeParser.StageSettingContext setting) {
-        StorageIntegrationReference.require(catalog, setting.copyOptionValue());
+        StorageIntegrationReference.require(catalog, queryExecutor.getSecurityManager(),
+            setting.copyOptionValue());
     }
 
     /**

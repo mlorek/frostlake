@@ -24,6 +24,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
@@ -130,11 +131,13 @@ public final class AlertCommandHandler {
             schema.dropAlert(name);
         }
         // The future grants on the schema's or the database's alerts are the new alert's (documented).
-        alert.setOwner(FutureGrants.ownerOfNew(catalog, "ALERT", schema, name));
+        final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "ALERT", schema, name);
+        alert.setOwner(grantsOfNew.owner());
         if (definition.tagList() != null) {
             InlineTags.apply(alert, definition.tagList(), queryExecutor);
         }
         schema.addAlert(alert);
+        grantsOfNew.apply();
         return null;
     }
 

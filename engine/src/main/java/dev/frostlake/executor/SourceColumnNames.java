@@ -16,6 +16,10 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.TableFunction;
+import dev.frostlake.functions.table.Flatten;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
@@ -26,6 +30,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -35,8 +40,9 @@ import java.util.Set;
 /**
  * The column names a FROM source brings into a query's scope, read from the statement and the catalog alone — no
  * query is planned or run to learn them: a table's or a view's columns, a common table expression's column list or
- * the names its body's select list gives, and a derived table's alias list or the names its select list gives, a
- * star standing for every name of the relations it covers. A name is canonical, as a reference resolves it.
+ * the names its body's select list gives, a derived table's alias list or the names its select list gives, a
+ * star standing for every name of the relations it covers, a VALUES list's COLUMN1 to COLUMNn and a table function's
+ * output columns. A name is canonical, as a reference resolves it.
  */
 final class SourceColumnNames {
 
@@ -79,6 +85,12 @@ final class SourceColumnNames {
         if (source.selectStatement() != null) {
             return projectedBy(source.selectStatement(), visiting);
         }
+        if (source.VALUES() != null) {
+            return valuesNames(source);
+        }
+        if (source.FLATTEN() != null || source.tableFunctionExpr() != null || source.TABLE() != null) {
+            return tableFunctionNames(source);
+        }
         if (source.tableQualifiedName() == null) {
             return null;
         }
@@ -91,6 +103,95 @@ final class SourceColumnNames {
             return enclosing;
         }
         return storedNames(source);
+    }
+
+    /**
+     * The names a VALUES list gives: the column list its parenthesized alias writes, else COLUMN1 to COLUMNn, one
+     * for each value of its first row.
+     */
+    private static Set<String> valuesNames(final FrostlakeParser.TableSourceContext source) {
+        final Set<String> names = new HashSet<>();
+        if (source.columnListOptional() != null) {
+            for (final FrostlakeParser.NamePartContext part : source.columnListOptional().namePart()) {
+                names.add(ParseTreeText.namePartText(part));
+            }
+            return names;
+        }
+        final int width = source.valueTupleList().valueTuple(0).valueList().booleanExpr().size();
+        for (int i = 1; i <= width; i++) {
+            names.add("COLUMN" + i);
+        }
+        return names;
+    }
+
+    /**
+     * The names a table function's call gives: FLATTEN's six, the columns a built-in function answers whatever its
+     * arguments, or the RETURNS TABLE columns every user-defined overload the name reaches shares. Null where the
+     * call's columns depend on its arguments, or the name reaches no table function.
+     */
+    private Set<String> tableFunctionNames(final FrostlakeParser.TableSourceContext source) {
+        final List<ResultSetColumn> columns;
+        if (source.FLATTEN() != null) {
+            columns = Flatten.columns();
+        } else {
+            final FrostlakeParser.FunctionNameContext called = calledName(source);
+            if (called == null) {
+                return null;
+            }
+            final String[] parts = ParseTreeText.functionNameParts(called);
+            final TableFunction builtIn = parts == null || parts.length != 1 ? null
+                : executor.getFunctionRegistry().getTableFunction(parts[0]);
+            if (builtIn == null) {
+                return udtfNames(called);
+            }
+            try {
+                columns = builtIn.outputColumns(new HashMap<String, Object>());
+            } catch (final RuntimeException dependsOnArguments) {
+                return null;
+            }
+        }
+        if (columns == null) {
+            return null;
+        }
+        final Set<String> names = new HashSet<>();
+        for (final ResultSetColumn column : columns) {
+            names.add(column.getName());
+        }
+        return names;
+    }
+
+    /** The RETURNS TABLE column names every user-defined table function a name reaches shares; null for none. */
+    private Set<String> udtfNames(final FrostlakeParser.FunctionNameContext called) {
+        Set<String> shared = null;
+        for (final Function overload : executor.udtfOverloads(called)) {
+            final Set<String> names = new HashSet<>();
+            for (final Parameter column : overload.getReturnColumns()) {
+                names.add(SqlIdentifiers.canonicalText(column.getName()));
+            }
+            if (shared != null && !shared.equals(names)) {
+                return null;
+            }
+            shared = names;
+        }
+        return shared;
+    }
+
+    /** The name a table function's call writes, inside TABLE( … ) or bare; null for any other shape. */
+    private static FrostlakeParser.FunctionNameContext calledName(final FrostlakeParser.TableSourceContext source) {
+        if (source.tableFunctionExpr() != null) {
+            return source.tableFunctionExpr().functionName();
+        }
+        final FrostlakeParser.ExpressionContext call = source.expression();
+        if (call instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ((FrostlakeParser.FunctionCallExprContext) call).functionName();
+        }
+        if (call instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallNamedArgsExprContext) call).functionName();
+        }
+        if (call instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallMixedArgsExprContext) call).functionName();
+        }
+        return null;
     }
 
     /** The names a common table expression gives: its column list's, else its body's select list's. */

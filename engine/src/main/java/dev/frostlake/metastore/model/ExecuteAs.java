@@ -18,8 +18,11 @@ package dev.frostlake.metastore.model;
 
 /**
  * A stored procedure's caller-rights mode: {@link #OWNER} (the default — runs with the owner's privileges),
- * {@link #CALLER} (runs with the caller's privileges) or {@link #RESTRICTED_CALLER}, which runs with the
- * caller's too and is told as {@code RESTRICTED CALLER}.
+ * {@link #CALLER} (runs with the caller's privileges) or {@link #RESTRICTED_CALLER}, told as
+ * {@code RESTRICTED CALLER}, which runs as its caller with only those of the caller's privileges a caller grant
+ * names (documented: "an executable cannot run with a specific privilege unless an administrator expressly allows
+ * it"). This engine models no caller grant ({@code GRANT CALLER …}), so such a procedure runs with none of its
+ * caller's privileges at all (FL-434).
  */
 public enum ExecuteAs {
     OWNER("OWNER"), CALLER("CALLER"), RESTRICTED_CALLER("RESTRICTED CALLER");
@@ -35,9 +38,17 @@ public enum ExecuteAs {
         return sqlText;
     }
 
-    /** Whether a procedure of this mode runs with its caller's privileges. */
+    /**
+     * Whether a procedure of this mode runs as its caller, where it lives and creates: CALLER and RESTRICTED CALLER
+     * alike. Which of the caller's privileges a RESTRICTED CALLER body may use is {@link #isRestricted}'s to say.
+     */
     public boolean isCallersRights() {
         return this != OWNER;
+    }
+
+    /** Whether a procedure of this mode runs with none of its caller's privileges but those caller grants name. */
+    public boolean isRestricted() {
+        return this == RESTRICTED_CALLER;
     }
 
     /** Parse an {@code EXECUTE AS} value case-insensitively; null/unrecognized → the default {@link #OWNER}. */

@@ -79,6 +79,8 @@ public class SessionContext {
     private final ThreadLocal<SessionSettings> boundSettings = new ThreadLocal<SessionSettings>();
     /** The owner of the owner's-rights procedure running on this thread (see {@link #getExecutableOwner}). */
     private final ThreadLocal<String> executableOwner = new ThreadLocal<String>();
+    /** Whether a RESTRICTED CALLER procedure's body runs on this thread, which holds none of the caller's rights. */
+    private final ThreadLocal<Boolean> restrictedCaller = new ThreadLocal<Boolean>();
 
     /** The owners of the views and functions whose bodies run on this thread, innermost last; "" for none. */
     private final ThreadLocal<List<String>> bodyOwners = new ThreadLocal<List<String>>();
@@ -232,6 +234,30 @@ public class SessionContext {
     }
 
     /**
+     * Whether a procedure that runs with restricted caller's rights runs on this thread: its statements hold none of
+     * the caller's privileges, since this engine models no caller grant that would let them use one (FL-434).
+     *
+     * @return true inside such a body, and inside a caller's-rights body it calls
+     */
+    public boolean isRestrictedCaller() {
+        return Boolean.TRUE.equals(restrictedCaller.get());
+    }
+
+    /**
+     * Enter or leave a restricted caller's-rights body on this thread; a caller puts back what
+     * {@link #isRestrictedCaller} answered before the call.
+     *
+     * @param restricted whether the body that runs now is restricted
+     */
+    public void setRestrictedCaller(final boolean restricted) {
+        if (restricted) {
+            restrictedCaller.set(Boolean.TRUE);
+        } else {
+            restrictedCaller.remove();
+        }
+    }
+
+    /**
      * Enter the body of a view or a function on this thread, which runs as its owner's: {@link #getInvokerOwner}
      * answers that owner until the matching {@link #leaveBodyOwner}.
      *
@@ -290,6 +316,17 @@ public class SessionContext {
     public void addActiveRole(final String role) {
         if (role != null) {
             ownedRoles().activeRoles().add(role);
+        }
+    }
+
+    /**
+     * Takes a role out of the roles the session acts with; PUBLIC stays.
+     *
+     * @param role the role's own name, as the catalog keeps it
+     */
+    public void removeActiveRole(final String role) {
+        if (role != null && !"PUBLIC".equals(role)) {
+            ownedRoles().activeRoles().remove(role);
         }
     }
 

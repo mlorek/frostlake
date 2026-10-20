@@ -22,6 +22,7 @@ import dev.frostlake.metastore.model.IntegrationKind;
 import dev.frostlake.metastore.model.PropertyValue;
 import dev.frostlake.metastore.model.PropertyValueKind;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 
 import org.antlr.v4.runtime.Token;
 
@@ -40,13 +41,15 @@ public final class StorageIntegrationReference {
     }
 
     /**
-     * Refuses a value that names no storage integration.
+     * Refuses a value that names no storage integration, or one the session may not use ({@link IntegrationUsage}).
      *
      * @param catalog the catalog
+     * @param security the session's rights, or null when nothing is checked
      * @param value the property's value as written
      * @return the integration it names, or null when no value is written
      */
-    public static Integration require(final Catalog catalog, final FrostlakeParser.CopyOptionValueContext value) {
+    public static Integration require(final Catalog catalog, final SecurityManager security,
+                                      final FrostlakeParser.CopyOptionValueContext value) {
         if (value == null) {
             return null;
         }
@@ -63,6 +66,7 @@ public final class StorageIntegrationReference {
         if (integration == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Integration", name));
         }
+        IntegrationUsage.require(security, integration, name);
         if (integration.getKind() != IntegrationKind.STORAGE) {
             throw new RuntimeException(SqlCompilationError.of("Integration '"
                 + SqlIdentifiers.spellCanonical(integration.getName())

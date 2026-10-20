@@ -129,6 +129,20 @@ public final class NumericRangeRefusal {
         return mantissa + formatted.substring(e);
     }
 
+    /**
+     * A non-finite FLOAT as the sentence prints it, every word lower case: {@code nan}, {@code inf},
+     * {@code -inf} (live-verified for the cast; see NonFiniteCastRefusal).
+     *
+     * @param value a NaN or an infinity
+     * @return its word
+     */
+    public static String nonFiniteWord(final double value) {
+        if (Double.isNaN(value)) {
+            return "nan";
+        }
+        return value > 0 ? "inf" : "-inf";
+    }
+
     /** The sentence a VARIANT source gets: the family alone, with neither class nor width. */
     public static String untyped(final BigDecimal value) {
         return LEAD + ", value " + valueText(value);

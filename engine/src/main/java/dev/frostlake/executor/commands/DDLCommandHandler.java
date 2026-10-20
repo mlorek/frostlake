@@ -30,6 +30,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
@@ -630,8 +631,10 @@ public class DDLCommandHandler implements CommandHandler {
                     schema.dropStream(streamName);
                 }
             }
-            stream.setOwner(FutureGrants.ownerOfNew(catalog, "STREAM", schema, stream.getName()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "STREAM", schema, stream.getName());
+            stream.setOwner(grantsOfNew.owner());
             schema.addStream(stream);
+            grantsOfNew.apply();
 
             logger.trace("Created stream: {} on {} {}", streamName, sourceType, sourceName);
         } catch (final RuntimeException e) {

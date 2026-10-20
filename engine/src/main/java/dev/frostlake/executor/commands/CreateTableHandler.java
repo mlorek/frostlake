@@ -35,6 +35,7 @@ import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.CloneReferences;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.HybridKeys;
@@ -403,7 +404,9 @@ public class CreateTableHandler implements CommandHandler {
                 if (!table.getClusterKeys().isEmpty()) {
                     table.setReclusterSuspended(true);
                 }
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
@@ -415,6 +418,7 @@ public class CreateTableHandler implements CommandHandler {
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
@@ -451,7 +455,9 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
@@ -463,6 +469,7 @@ public class CreateTableHandler implements CommandHandler {
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
@@ -536,7 +543,9 @@ public class CreateTableHandler implements CommandHandler {
                     table.setClusterKeys(clusterKeys, clusterByText(ctx));
                 }
 
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
@@ -548,6 +557,7 @@ public class CreateTableHandler implements CommandHandler {
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
@@ -627,7 +637,9 @@ public class CreateTableHandler implements CommandHandler {
                     table.setClusterKeys(clusterKeys, clusterByText(ctx));
                 }
 
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
@@ -641,6 +653,7 @@ public class CreateTableHandler implements CommandHandler {
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);

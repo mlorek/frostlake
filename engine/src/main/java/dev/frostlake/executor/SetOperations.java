@@ -408,7 +408,7 @@ public final class SetOperations {
                 return value;
             }
             if (value instanceof CharSequence) {
-                return fixedText(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
+                return fixedTextAt(value.toString(), numeric);
             }
             if (value instanceof Double || value instanceof Float) {
                 return value;
@@ -565,6 +565,28 @@ public final class SetOperations {
             throw new RuntimeException(refusal);
         }
         return parsed;
+    }
+
+    /**
+     * A string read as a NUMBER beside one and then held at the unified type, refused as a cast of the text to that
+     * type refuses it when its digits do not fit: under a NUMBER(38,1) a text of thirty-eight integer digits is past
+     * the thirty-seven the type has room for, though it is below the 10^38 {@link #fixedText} measures. It used to
+     * be kept, so a CTAS stored thirty-nine digits in a NUMBER(38,1) and the next arithmetic over it was refused.
+     * Shared with GREATEST and LEAST, whose text arguments meet their folded NUMBER the same way.
+     *
+     * @param text    the branch's text
+     * @param unified the exact NUMBER type the text is held at
+     * @return the number at the unified scale
+     */
+    public static BigDecimal fixedTextAt(final String text, final NumericType unified) {
+        final BigDecimal parsed = fixedText(text);
+        if (unified.getPrecision() > 0
+                && NumericRangeRefusal.exceeds(parsed, unified.getPrecision(), unified.getScale())) {
+            final String trimmed = text.trim();
+            throw new RuntimeException(NumericRangeRefusal.pastEveryNumber(parsed, unified.getScale())
+                ? NumericRangeRefusal.unreadableText(trimmed) : NumericRangeRefusal.unconvertibleText(trimmed));
+        }
+        return parsed.setScale(unified.getScale(), RoundingMode.HALF_UP);
     }
 
     private static Object toTimestampBranchValue(final String text) {

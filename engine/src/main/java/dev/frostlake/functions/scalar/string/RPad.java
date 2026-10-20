@@ -17,11 +17,14 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.LobSize;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 
@@ -47,36 +50,46 @@ public class RPad extends TextArgumentFunction {
             return padBytes((BinaryValue) args.get(0), args);
         }
         final String str = SharedFunctionHelpers.textOf(args.get(0));
-        final int targetLength = wholeNumber(args.get(1));
+        final long targetLength = WholeNumbers.wholeLong(args.get(1));
         final String padStr = args.size() > 2 && args.get(2) != null ? SharedFunctionHelpers.textOf(args.get(2)) : " ";
 
         // Live-verified: an input longer than the target length is TRUNCATED to it (RPAD('world', 3, '*')
         // is 'wor'), not returned unchanged.
         // Lengths count characters, a supplementary one included: RPAD('😀', 3, 'x') is 😀xx.
         final int characters = CodePointText.length(str);
-        if (characters >= targetLength) return CodePointText.slice(str, 0, Math.max(targetLength, 0));
+        if (characters >= targetLength) return CodePointText.slice(str, 0, (int) Math.max(targetLength, 0));
         if (padStr.isEmpty()) return str;
-        return str + CodePointText.repeatTo(padStr, targetLength - characters);
+        // The size is judged before the pad is built: past the largest text the call is refused (see LobSize).
+        LobSize.requireText(saturatedSum(str.getBytes(StandardCharsets.UTF_8).length,
+            CodePointText.repeatedUtf8Length(padStr, targetLength - characters)));
+        return str + CodePointText.repeatTo(padStr, (int) (targetLength - characters));
     }
 
     /** The BINARY form: pad bytes on the right, truncating to the leading bytes when already longer. */
     private Object padBytes(final BinaryValue value, final List<Object> args) {
         final byte[] bytes = value.bytes();
-        final int targetLength = wholeNumber(args.get(1));
-        if (bytes.length >= targetLength) {
-            return BinaryValue.of(Arrays.copyOfRange(bytes, 0, Math.max(targetLength, 0)));
+        final long wanted = WholeNumbers.wholeLong(args.get(1));
+        if (bytes.length >= wanted) {
+            return BinaryValue.of(Arrays.copyOfRange(bytes, 0, (int) Math.max(wanted, 0)));
         }
         final byte[] pad = args.size() > 2 && args.get(2) != null
             ? SharedFunctionHelpers.toUtf8(args.get(2)) : new byte[] { (byte) ' ' };
         if (pad.length == 0) {
             return value;
         }
+        LobSize.requireBinary(wanted);
+        final int targetLength = (int) wanted;
         final byte[] padded = new byte[targetLength];
         System.arraycopy(bytes, 0, padded, 0, bytes.length);
         for (int i = bytes.length; i < targetLength; i++) {
             padded[i] = pad[(i - bytes.length) % pad.length];
         }
         return BinaryValue.of(padded);
+    }
+
+    /** Two sizes added, held to Long.MAX_VALUE. */
+    private static long saturatedSum(final long a, final long b) {
+        return b > Long.MAX_VALUE - a ? Long.MAX_VALUE : a + b;
     }
 
     @Override

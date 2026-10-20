@@ -15,6 +15,7 @@
  */
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
@@ -70,7 +71,7 @@ final class NonFiniteCastRefusal {
             return null;
         }
         return new RuntimeException(LEAD + "[SB16](38,0){not null}, value "
-            + floatWord(((Number) value).doubleValue()));
+            + NumericRangeRefusal.nonFiniteWord(((Number) value).doubleValue()));
     }
 
     /** A VARIANT source's spelling: NaN keeps its camel case here, unlike the FLOAT one. */
@@ -79,13 +80,5 @@ final class NonFiniteCastRefusal {
             return "NaN";
         }
         return Double.isInfinite(value) ? (value > 0 ? "inf" : "-inf") : null;
-    }
-
-    /** A FLOAT source's spelling: every word lower case. */
-    private static String floatWord(final double value) {
-        if (Double.isNaN(value)) {
-            return "nan";
-        }
-        return value > 0 ? "inf" : "-inf";
     }
 }

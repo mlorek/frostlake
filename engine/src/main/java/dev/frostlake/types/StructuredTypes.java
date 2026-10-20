@@ -201,6 +201,11 @@ public final class StructuredTypes {
             final int maxLength = ((StringType) type).getMaxLength();
             return "VARCHAR(" + (maxLength > 0 ? maxLength : DEFAULT_VARCHAR_LENGTH) + ")";
         }
+        if (NumericType.isDecfloat(type)) {
+            // DECFLOAT is a type of its own, which a test for "FLOAT" in its name used to take for one: an
+            // ARRAY(DECFLOAT) read ARRAY(FLOAT), as the argument-type list spells a bare one DECFLOAT(38).
+            return "DECFLOAT(38)";
+        }
         if (type instanceof NumericType) {
             final NumericType numeric = (NumericType) type;
             final String name = numeric.getName().toUpperCase(Locale.ROOT);

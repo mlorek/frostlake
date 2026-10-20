@@ -100,7 +100,7 @@ public final class ValueCaster {
             case INTEGER:
                 // INTEGER/INT/BIGINT are aliases of NUMBER(38,0); a fractional value is rounded
                 // HALF_AWAY_FROM_ZERO (2.5->3, -2.5->-3, 3.9->4) to match Snowflake, not truncated.
-                return toIntegerCast(value);
+                return toIntegerCast(value, nullableSource);
 
             case FLOAT:
                 if (value instanceof Number) {
@@ -245,8 +245,11 @@ public final class ValueCaster {
         final int open = targetType.indexOf('(');
         final int close = targetType.indexOf(')');
         if (open < 0 || close <= open) {
-            // A bare NUMBER is NUMBER(38,0): a text past it is refused as that one would refuse it.
-            if (source instanceof CharSequence && NumericRangeRefusal.exceeds(number, MAX_NUMBER_PRECISION, 0)) {
+            // A bare NUMBER is NUMBER(38,0), and a value past it is refused as that one would refuse it —
+            // from EVERY source, each in its own sentence: a FLOAT, a VARIANT number or a DECFLOAT of 10^38
+            // used to pass unchecked, so a NUMBER(38,0) held thirty-nine digits that the next arithmetic
+            // then refused.
+            if (NumericRangeRefusal.exceeds(number, MAX_NUMBER_PRECISION, 0)) {
                 throw new RuntimeException(rangeRefusal(number, source, MAX_NUMBER_PRECISION, 0, nullableSource));
             }
             return number.setScale(0, RoundingMode.HALF_UP);
@@ -333,12 +336,18 @@ public final class ValueCaster {
      * ({@code 2.5::INT}=3, {@code -2.5::INT}=-3, {@code 3.9::INT}=4) — rather than truncated toward
      * zero as {@code Number.longValue()} would. Parsed via {@code BigDecimal(String)} to avoid binary
      * floating-point drift, consistent with the NUMBER cast above.
+     *
+     * <p>Being NUMBER(38,0), the cast keeps all thirty-eight digits and refuses past them exactly as a bare
+     * NUMBER does: a value that fits 64 bits stays a {@code Long}, a wider one is the whole BigDecimal.
+     * {@code longValue()} used to keep only the low 64 bits, so {@code 99999999999999999999::INT} was
+     * 7766279631452241919 and {@code 9223372036854775808::INT} came back negative.
      */
-    private static long toIntegerCast(final Object value) {
+    private static Object toIntegerCast(final Object value, final boolean nullableSource) {
         final BigDecimal decimal = value instanceof BigDecimal
             ? (BigDecimal) value
             : toBigDecimalCast(value, "FIXED");
-        return decimal.setScale(0, RoundingMode.HALF_UP).longValue();
+        final BigDecimal whole = applyNumberScaleAndPrecision(decimal, "NUMBER", value, nullableSource);
+        return whole.unscaledValue().bitLength() < Long.SIZE ? (Object) whole.longValueExact() : whole;
     }
 
     /**

@@ -18,9 +18,11 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.LobSize;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -40,10 +42,12 @@ public class Repeat extends TextArgumentFunction {
         final String s = SharedFunctionHelpers.textOf(args.get(0));
         // The count multiplies the text's length, and the product is what rounds: REPEAT('ab', 2.5) is five
         // characters, ababa, and REPEAT('ab', 0.25) one (live-verified). A text count is read as its number.
-        final int characters = wholeNumber(
+        final long characters = WholeNumbers.wholeLong(
             decimalOf(args.get(1)).multiply(BigDecimal.valueOf(CodePointText.length(s))));
         if (characters <= 0 || s.isEmpty()) return "";
-        return CodePointText.repeatTo(s, characters);
+        // The size is judged before a character is built: past the largest text the call is refused (see LobSize).
+        LobSize.requireText(CodePointText.repeatedUtf8Length(s, characters));
+        return CodePointText.repeatTo(s, (int) characters);
     }
 
     @Override

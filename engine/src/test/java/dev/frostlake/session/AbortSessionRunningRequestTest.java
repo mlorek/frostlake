@@ -121,4 +121,38 @@ public class AbortSessionRunningRequestTest {
         assertEquals("session [" + session + "] terminated.", say(other, "SELECT SYSTEM$ABORT_SESSION($s)"));
         assertEquals("1|1", say(other, "SELECT id, v FROM u"));
     }
+
+    /**
+     * FL-453: an aborted session runs nothing more, whoever keeps its context: every later request is refused as the
+     * account refuses a terminated session's (error 390111), COMMIT included, where its COMMIT answered success for
+     * the transaction the abort had rolled back and its writes and DDL ran and committed.
+     */
+    @Test
+    public void anAbortedSessionRunsNothingMoreItsCommitIncluded() {
+        final String session = say(waiter, "SELECT CURRENT_SESSION()");
+        say(waiter, "BEGIN");
+        say(waiter, "INSERT INTO u VALUES (2, 2)");
+        assertEquals("session [" + session + "] terminated.",
+            say(other, "SELECT SYSTEM$ABORT_SESSION(" + session + ")"));
+        final String gone = "REFUSED Session no longer exists.  New login required to access the service.";
+        for (final String sql : new String[] {
+            "COMMIT", "INSERT INTO u VALUES (3, 3)", "CREATE TABLE u3 (v INT)", "SET x = 1", "BEGIN",
+            "DROP TABLE u", "ROLLBACK", "SELECT 1",
+        }) {
+            assertEquals(gone, say(waiter, sql), sql);
+        }
+        assertEquals("1|1", say(other, "SELECT id, v FROM u"));
+        assertEquals("0", say(other, "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'U3'"));
+    }
+
+    /** FL-453: a session that aborts itself gets the function's answer, and is gone after it like any other. */
+    @Test
+    public void aSessionThatAbortedItselfRunsNothingMore() {
+        final String session = say(waiter, "SELECT CURRENT_SESSION()");
+        assertEquals("session [" + session + "] terminated.",
+            say(waiter, "SELECT SYSTEM$ABORT_SESSION(CURRENT_SESSION())"));
+        assertEquals("REFUSED Session no longer exists.  New login required to access the service.",
+            say(waiter, "INSERT INTO u VALUES (4, 4)"));
+        assertEquals("1", say(other, "SELECT COUNT(*) FROM u"));
+    }
 }

@@ -131,12 +131,19 @@ final class CPythonBackend implements PythonBackend {
         worker().module(name, source);
     }
 
-    /** Only a worker that ran a request since the last statement ended has anything to put back. */
+    /**
+     * Only a worker that ran a request since the last statement ended has anything to put back; one that cannot put
+     * it back is thrown away, as the GraalPy path discards its context, so the next statement starts a clean one.
+     */
     @Override
     public void restoreShared() {
         final CPythonWorker worker = workers.get();
         if (worker != null && worker.isAlive() && worker.ranSinceRestore()) {
-            worker.restore();
+            try {
+                worker.restore();
+            } catch (final RuntimeException unrestorable) {
+                discard();
+            }
         }
     }
 

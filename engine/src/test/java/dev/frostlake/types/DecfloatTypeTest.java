@@ -315,4 +315,43 @@ public class DecfloatTypeTest extends MeasuredCellsTestSupport {
                 "1|3.3333333333333333333333333333333333333e-1 ;; 2|1.5"},
         });
     }
+
+    /**
+     * MEDIAN and PERCENTILE_CONT over a DECFLOAT interpolate to 38 significant digits, no NUMBER scale applying: the
+     * input scale plus three refused a middle value of 1 beside 1e-50 as FIXED(38,53), refused 5e99 and a sixth past
+     * 38 digits, and cut an interpolation to 3 decimals. The same holds grouped, ordered downwards and as a window.
+     */
+    @Test
+    public void theInterpolatingPercentilesKeep38Digits() {
+        engine.execute("CREATE OR REPLACE TABLE df_pc (g INT, x DECFLOAT)");
+        engine.execute("INSERT INTO df_pc VALUES (1, DECFLOAT '0'), (1, DECFLOAT '1'), (2, DECFLOAT '1e100'), "
+            + "(2, DECFLOAT '2'), (2, NULL)");
+        assertCells(new String[][] {
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT DECFLOAT '1' x UNION ALL SELECT DECFLOAT '2' UNION ALL "
+                + "SELECT DECFLOAT '1e-50')", "1"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT DECFLOAT '1e100' x UNION ALL SELECT DECFLOAT '2')", "5e99"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT DECFLOAT '0' x UNION ALL SELECT DECFLOAT '1' / 3)",
+                "1.6666666666666666666666666666666666667e-1"},
+            {"SELECT PERCENTILE_CONT(0.123456) WITHIN GROUP (ORDER BY x)::VARCHAR, "
+                + "SYSTEM$TYPEOF(PERCENTILE_CONT(0.123456) WITHIN GROUP (ORDER BY x)) FROM "
+                + "(SELECT DECFLOAT '0' x UNION ALL SELECT DECFLOAT '1')",
+                "0.123456|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY x)::VARCHAR FROM (SELECT DECFLOAT '0' x UNION ALL "
+                + "SELECT DECFLOAT '1' UNION ALL SELECT DECFLOAT '2' UNION ALL SELECT DECFLOAT '3')", "0.3"},
+            {"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) OVER ()::VARCHAR FROM "
+                + "(SELECT DECFLOAT '1e100' x UNION ALL SELECT DECFLOAT '2')", "5e99 ;; 5e99"},
+            {"SELECT MEDIAN(x)::VARCHAR, PERCENTILE_CONT(0) WITHIN GROUP (ORDER BY x)::VARCHAR, "
+                + "PERCENTILE_CONT(1) WITHIN GROUP (ORDER BY x)::VARCHAR FROM "
+                + "(SELECT DECFLOAT '1e-16383' x UNION ALL SELECT DECFLOAT '1e16384')",
+                "5e16383|1e-16383|1e16384"},
+            {"SELECT g, MEDIAN(x)::VARCHAR, PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY x DESC)::VARCHAR, "
+                + "SYSTEM$TYPEOF(MEDIAN(x)) FROM df_pc GROUP BY g ORDER BY g",
+                "1|0.5|0.75|DECFLOAT(38)[DECFLOAT18] ;; 2|5e99|7.5e99|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT DISTINCT g, MEDIAN(x) OVER (PARTITION BY g)::VARCHAR, "
+                + "PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY x) OVER (PARTITION BY g)::VARCHAR FROM df_pc ORDER BY g",
+                "1|0.5|0.1 ;; 2|5e99|1e99"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT NULL::DECFLOAT x)", "null"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT 1.5 x UNION ALL SELECT 2.25)", "1.87500"},
+        });
+    }
 }

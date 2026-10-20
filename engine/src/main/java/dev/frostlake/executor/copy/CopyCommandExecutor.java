@@ -56,6 +56,7 @@ import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionOutcome;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
@@ -81,8 +82,11 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -142,6 +146,18 @@ public final class CopyCommandExecutor {
     // here, which ends with its session.
     private final Map<String, Set<String>> temporaryLoadHistory = new HashMap<>();
 
+    // The files the loads of transactions still open have read, one entry per COPY statement, by transaction. The
+    // load history holds committed loads alone: a file another transaction loaded is not loaded yet, so a COPY that
+    // meets it waits for that transaction rather than skip it, and loads it once that one rolls back. Kept in the
+    // shared history straight away, another session's COPY answered "0 files processed" for a file whose load then
+    // rolled back, and nothing loaded it. Read and written under the engine's write lock, as every COPY into a table
+    // runs.
+    private final Map<Transaction, List<UncommittedLoad>> uncommittedLoads = new IdentityHashMap<>();
+
+    // Set while ALTER PIPE … REFRESH runs its COPY, which loads in a session of its own inside the refreshing
+    // statement and so does not wait for another session's transaction (see executeCopyRefresh).
+    private boolean refreshing;
+
     /** How a load key names a file under the engine's internal stage root, which a copy of the engine moves. */
     private static final String INTERNAL_ROOT = "@internal/";
 
@@ -153,6 +169,20 @@ public final class CopyCommandExecutor {
      */
     public void forgetLoadHistory(final String fullyQualifiedTableName, final boolean temporary) {
         loadHistory(temporary).remove(fullyQualifiedTableName);
+        final String history = historyKey(fullyQualifiedTableName, temporary);
+        final Iterator<List<UncommittedLoad>> open = uncommittedLoads.values().iterator();
+        while (open.hasNext()) {
+            final List<UncommittedLoad> loads = open.next();
+            final Iterator<UncommittedLoad> each = loads.iterator();
+            while (each.hasNext()) {
+                if (each.next().history().equals(history)) {
+                    each.remove();
+                }
+            }
+            if (loads.isEmpty()) {
+                open.remove();
+            }
+        }
         executor.getCatalog().getLoadHistory().forget(fullyQualifiedTableName, temporary);
     }
 
@@ -181,6 +211,67 @@ public final class CopyCommandExecutor {
             followed.add(key.startsWith(from) ? to + key.substring(from.length()) : key);
         }
         histories.put(newTable, followed);
+    }
+
+    /** A table's key in {@link #uncommittedLoads}: a temporary table's history is apart from a permanent one's. */
+    private static String historyKey(final String fullyQualifiedTableName, final boolean temporary) {
+        return (temporary ? "TEMPORARY " : "") + fullyQualifiedTableName;
+    }
+
+    /**
+     * Whether a transaction's loads into a table have read a file, which then counts as loaded for its own later COPY.
+     *
+     * @param transaction the transaction
+     * @param history     the table's {@link #historyKey}
+     * @param fileKey     the file's load key
+     * @return whether one did
+     */
+    private boolean loadedUncommitted(final Transaction transaction, final String history, final String fileKey) {
+        final List<UncommittedLoad> loads = uncommittedLoads.get(transaction);
+        if (loads != null) {
+            for (final UncommittedLoad load : loads) {
+                if (load.history().equals(history) && load.keys().contains(fileKey)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The open transaction other than the running one whose load into a table has read a file, or null.
+     *
+     * @param own     the running statement's transaction
+     * @param history the table's {@link #historyKey}
+     * @param fileKey the file's load key
+     * @return that transaction, or null
+     */
+    private Transaction otherLoaderOf(final Transaction own, final String history, final String fileKey) {
+        for (final Transaction other : uncommittedLoads.keySet()) {
+            if (other != own && loadedUncommitted(other, history, fileKey)) {
+                return other;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Ends a COPY statement's uncommitted load as its transaction ends, or as the statement fails inside it.
+     *
+     * @param transaction the statement's transaction
+     * @param load        the load
+     * @return whether the load was still there: a TRUNCATE or a DROP of the table since forgot it
+     */
+    private boolean endUncommittedLoad(final Transaction transaction, final UncommittedLoad load) {
+        final List<UncommittedLoad> loads = uncommittedLoads.get(transaction);
+        if (loads == null) {
+            return false;
+        }
+        final boolean held = loads.remove(load);
+        if (loads.isEmpty()) {
+            uncommittedLoads.remove(transaction);
+        }
+        return held;
     }
 
     /** The load histories of the tables of one persistence, each under its table's qualified name. */
@@ -607,11 +698,12 @@ public final class CopyCommandExecutor {
             CheckpointDebt.owe();
 
             final Map<String, Set<String>> histories = loadHistory(table.isTemporary());
-            Set<String> loadedKeys = histories.get(fullyQualifiedTableName);
-            if (loadedKeys == null) {
-                loadedKeys = new HashSet<>();
-                histories.put(fullyQualifiedTableName, loadedKeys);
-            }
+            final Set<String> committedKeys = histories.get(fullyQualifiedTableName);
+            final Set<String> loadedKeys = committedKeys == null ? Collections.<String>emptySet() : committedKeys;
+            // The transaction's own loads count as done for it; another open transaction's are not done yet. An
+            // autocommit statement's transaction begins with its first write, so it has none of its own yet.
+            final Transaction running = executor.getTransactionManager().getCurrentTransaction();
+            final String history = historyKey(fullyQualifiedTableName, table.isTemporary());
 
             // Rows are buffered and inserted only after every file is parsed + validated, so an
             // ABORT_STATEMENT failure leaves the table unchanged (atomic), matching Snowflake.
@@ -619,8 +711,8 @@ public final class CopyCommandExecutor {
             // PURGE = TRUE: the staged files to delete once the load is committed. Only files this
             // statement actually consumed land here — see purgeLoadedFiles for the exact rule.
             final List<Path> purgeCandidates = new ArrayList<>();
-            // The files this statement added to the table's loaded files, which a ROLLBACK takes back.
-            final List<String> addedKeys = new ArrayList<>();
+            // The files this statement loaded that the table had not, which count as loaded once it commits.
+            final Set<String> addedKeys = new LinkedHashSet<>();
             // The files read, for the load history once the whole COPY has run (an aborted one records none).
             final List<LoadRecord> completedLoads = new ArrayList<>();
             final Schema owningSchema = executor.getCatalog().resolveOwningSchema(tableName);
@@ -641,7 +733,8 @@ public final class CopyCommandExecutor {
                 }
                 final String fileKey = copyFileKey(file);
                 // Snowflake skips already-loaded files unless FORCE = TRUE; keeps a re-COPY / pipe REFRESH idempotent.
-                if (!force && loadedKeys.contains(fileKey)) {
+                if (!force && (loadedKeys.contains(fileKey) || loadedUncommitted(running, history, fileKey)
+                        || addedKeys.contains(fileKey))) {
                     // A skipped file is reported only when the statement named it in FILES = (…); one merely
                     // found by listing the stage (or picked by PATTERN) leaves no trace in the result.
                     // Its counters are NOT zeros: the account reports a NULL error_limit (no budget was ever
@@ -655,6 +748,14 @@ public final class CopyCommandExecutor {
                             ALREADY_LOADED_ERROR, null, null, null)));
                     }
                     continue;
+                }
+                final Transaction loader = force ? null : otherLoaderOf(running, history, fileKey);
+                if (loader != null && !refreshing) {
+                    // Another session's open transaction loaded the file: the COPY waits for it, as a writer waits
+                    // for a table's holder, and runs again over what it left (see TableLockGate). Raised before
+                    // anything is read or kept. Where the statement may not wait it loads the file itself, since the
+                    // other load is not done until it commits.
+                    executor.requireLoadUnheld(loader, fullyQualifiedTableName, table.getName());
                 }
                 final List<Row> fileRows = new ArrayList<>();
                 int parsed = 0;
@@ -788,7 +889,7 @@ public final class CopyCommandExecutor {
                 // including a LOADED file that held no records at all. Live-verified: a re-COPY
                 // reported LOAD_FAILED a second time for the same file, but answered "0 files processed"
                 // for a partially loaded one and for a header-only one.
-                if (!loadFailed && loadedKeys.add(fileKey)) {
+                if (!loadFailed && !loadedKeys.contains(fileKey) && !loadedUncommitted(running, history, fileKey)) {
                     addedKeys.add(fileKey);
                 }
                 // A file counts as loaded — and so as purgeable — unless it is LOAD_FAILED. A clean file
@@ -818,20 +919,38 @@ public final class CopyCommandExecutor {
             }
 
             // A load is DML (documented): its rows belong to the statement's transaction, seen by other sessions
-            // once it commits and gone when it rolls back; the load history and the purge wait for the commit too,
-            // and a rollback forgets the files the load marked as loaded, so the next COPY loads them again.
+            // once it commits and gone when it rolls back. The files it loaded, the load history and the purge wait
+            // for the commit too: until then the files count as loaded for the transaction alone, and a rollback
+            // forgets them, so the next COPY loads them again.
             executor.storeLoadedRows(table, fullyQualifiedTableName, pending);
-            final Set<String> marked = loadedKeys;
-            executor.getTransactionManager().getCurrentTransaction().onOutcome(new TransactionOutcome() {
+            final Transaction own = executor.getTransactionManager().getCurrentTransaction();
+            final boolean temporary = table.isTemporary();
+            final UncommittedLoad load = new UncommittedLoad(history, addedKeys);
+            List<UncommittedLoad> ownLoads = uncommittedLoads.get(own);
+            if (ownLoads == null) {
+                ownLoads = new ArrayList<>();
+                uncommittedLoads.put(own, ownLoads);
+            }
+            ownLoads.add(load);
+            own.onOutcome(new TransactionOutcome() {
                 @Override
                 public void committed() {
+                    if (endUncommittedLoad(own, load)) {
+                        final Map<String, Set<String>> committed = loadHistory(temporary);
+                        Set<String> keys = committed.get(fullyQualifiedTableName);
+                        if (keys == null) {
+                            keys = new HashSet<>();
+                            committed.put(fullyQualifiedTableName, keys);
+                        }
+                        keys.addAll(addedKeys);
+                    }
                     executor.getCatalog().getLoadHistory().add(completedLoads);
                     purgeLoadedFiles(purgeCandidates);
                 }
 
                 @Override
                 public void rolledBack() {
-                    marked.removeAll(addedKeys);
+                    endUncommittedLoad(own, load);
                 }
             });
         }
@@ -1233,6 +1352,7 @@ public final class CopyCommandExecutor {
     public Object executeCopyRefresh(final String copyStatement, final String prefix, final String modifiedAfter) {
         this.copyRefreshPrefix = prefix;
         this.copyRefreshModifiedAfter = modifiedAfter != null ? parseRefreshTimestamp(modifiedAfter) : null;
+        this.refreshing = true;
         try {
             // Snowpipe loads serverlessly: the load is no statement of the caller's session. It runs in a session
             // of its own, outside the caller's transaction, takes no query ID and commits by itself.
@@ -1246,6 +1366,7 @@ public final class CopyCommandExecutor {
             });
             return loaded[0];
         } finally {
+            this.refreshing = false;
             this.copyRefreshPrefix = null;
             this.copyRefreshModifiedAfter = null;
         }
@@ -1809,7 +1930,7 @@ public final class CopyCommandExecutor {
                 requireEncryptionParameters(clause.parenOptionList());
             }
         }
-        StorageIntegrationReference.require(executor.getCatalog(), named);
+        StorageIntegrationReference.require(executor.getCatalog(), executor.getSecurityManager(), named);
     }
 
     /**

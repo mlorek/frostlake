@@ -21,6 +21,7 @@ import dev.frostlake.ExecutionResult;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.AbortableSession;
 import dev.frostlake.security.SessionContext;
+import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.security.SessionSettings;
 import dev.frostlake.transaction.TransactionManager;
 
@@ -96,7 +97,7 @@ public class DirectConnection implements Connection, AbortableSession {
     private final SessionSettings sessionSettings;
 
     /** What a statement gets once SYSTEM$ABORT_SESSION ended this connection's session, as the account words it. */
-    static final String SESSION_GONE = "Session no longer exists.  New login required to access the service.";
+    static final String SESSION_GONE = SessionDirectory.SESSION_GONE;
 
     /** Set once another statement aborted this connection's session; every later statement is refused. */
     private volatile boolean aborted;

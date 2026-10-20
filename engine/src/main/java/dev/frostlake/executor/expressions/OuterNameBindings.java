@@ -35,7 +35,7 @@ import java.util.Set;
  * also records the outer columns that carry a collation under the keys their values are bound by, so a comparison
  * inside the subquery reads an outer column under the column's collation, as a comparison beside it does.
  */
-final class OuterNameBindings {
+public final class OuterNameBindings {
 
     /** The value a bare name is bound to when two relations of the outer row carry it. */
     static final Object AMBIGUOUS = new Object() {
@@ -73,7 +73,7 @@ final class OuterNameBindings {
      * @param collated this row's collated columns, by the keys their values are bound by
      * @param bound    every key this row binds, or null where no row further out recorded a collated column
      */
-    static void recordCollations(final Map<String, Object> bindings, final Map<String, TableColumn> collated,
+    public static void recordCollations(final Map<String, Object> bindings, final Map<String, TableColumn> collated,
                                  final Set<String> bound) {
         final Object earlier = bindings.get(COLLATED);
         if (!(earlier instanceof Map) && collated.isEmpty()) {

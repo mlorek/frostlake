@@ -2268,6 +2268,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return text.toString();
     }
 
+    /**
+     * Whether the result context holds an expression's value under its canonical form: a grouping key or a
+     * select-list output that a HAVING or a QUALIFY reads, or a dimension a super-group row rolled up and reads as
+     * NULL - a unary operation, a CASE, a cast and a path access are matched as an operation and a call are.
+     */
+    private boolean resultHolds(final Expression expr) {
+        return resultContext != null && resultContext.containsKey(canonicalPrintOf(expr));
+    }
+
     public Object visitBinaryOperation(final BinaryOperationExpression expr) {
         // HAVING/QUALIFY: an operation that matches a grouping key or a SELECT-list output resolves to that
         // value, as a function call does, rather than being recomputed from columns the grouped row lacks.
@@ -2563,9 +2572,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private final Map<FunctionCallExpression, Boolean> decfloatMathCalls =
         new IdentityHashMap<FunctionCallExpression, Boolean>();
 
-    /** Whether a call is SQRT, CBRT, LN, LOG, EXP, POWER or SQUARE with a DECFLOAT argument. */
+    /** Whether a call is SQRT, CBRT, LN, LOG, EXP, POWER, SQUARE, DIV0 or DIV0NULL with a DECFLOAT argument. */
     private boolean isDecfloatMathCall(final String funcName, final FunctionCallExpression expr) {
-        if (!TypeInferencer.DECFLOAT_MATH.contains(funcName)) {
+        if (!TypeInferencer.DECFLOAT_MATH.contains(funcName)
+                && !(DECFLOAT_DIVISIONS.contains(funcName) && expr.getArguments().size() == 2)) {
             return false;
         }
         Boolean decfloat = decfloatMathCalls.get(expr);
@@ -2586,6 +2596,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * answer NULL.
      */
     private static Object decfloatMath(final String funcName, final List<Object> args) {
+        if (DECFLOAT_DIVISIONS.contains(funcName)) {
+            return decfloatDiv0("DIV0NULL".equals(funcName), args.get(0), args.get(1));
+        }
         for (final Object arg : args) {
             if (arg == null) {
                 return null;
@@ -2608,6 +2621,26 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             default:
                 return DecfloatMath.power(first, decfloatOperand(args.get(1)));
         }
+    }
+
+    /** The divisions that answer 0 for a zero divisor, DECFLOATs over a DECFLOAT operand (see decfloatDiv0). */
+    private static final Set<String> DECFLOAT_DIVISIONS = new HashSet<String>(Arrays.asList("DIV0", "DIV0NULL"));
+
+    /**
+     * DIV0 or DIV0NULL over a DECFLOAT, in DECFLOAT's terms: the quotient of {@code /} to 38 significant digits, so
+     * {@code DIV0(DECFLOAT '1', 3)} is 3.3333333333333333333333333333333333333e-1 as {@code DECFLOAT '1' / 3} is,
+     * and a zero divisor answers a plain 0, a DECFLOAT having no scale to pad it to. A NULL dividend is NULL; a NULL
+     * divisor is NULL to DIV0 and 0 to DIV0NULL, as over a NUMBER (see Div0).
+     */
+    private static Object decfloatDiv0(final boolean nullDivisorToZero, final Object dividend, final Object divisor) {
+        if (dividend == null) {
+            return null;
+        }
+        if (divisor == null) {
+            return nullDivisorToZero ? BigDecimal.ZERO : null;
+        }
+        final BigDecimal right = decfloatOperand(divisor);
+        return right.signum() == 0 ? BigDecimal.ZERO : Decfloats.divide(decfloatOperand(dividend), right);
     }
 
     /** The operators that keep a DECFLOAT operand's type. */
@@ -2844,6 +2877,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // is evaluated without the plan-time walk, and -IFF(TRUE, TRUE, FALSE) must still be the
         // positioned compile-time sentence there rather than a row-time complaint.
         rejectUnaryOperandFamilies(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         switch (expr.getOperator()) {
             case NOT:
                 final Object operand = expr.getOperand().accept(this);
@@ -3473,9 +3509,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 && ((CastExpression) value).getDeclaredTarget() == field.getDataType()) {
             return null;
         }
+        // The cast names the field's type in full, its precision and length with it. The bare name put 12345 into a
+        // NUMBER(3,0) field, 'toolong' into a VARCHAR(2) one and the 41 digits of 1e40 into an INT one, each of which
+        // the cast to the structured type refuses, as does a write of the result to a column of that type.
+        final DataType fieldType = field.getDataType();
+        final String targetText = fieldType instanceof NumericType
+            || fieldType instanceof StringType && !(fieldType instanceof UuidType)
+            ? SqlTypeNames.canonical(fieldType) : fieldType.toString();
         final List<Expression> rewritten = new ArrayList<>(arguments);
-        rewritten.set(2, new CastExpression(value, field.getDataType().toString(), false, field.getDataType(),
-            CastFieldsModifier.NONE));
+        rewritten.set(2, new CastExpression(value, targetText, false, fieldType, CastFieldsModifier.NONE));
         final FunctionCallExpression coerced = new FunctionCallExpression(call.getFunctionName(), rewritten);
         coerced.setPosition(call.getPosition());
         return coerced;
@@ -3810,6 +3852,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 textTemporalArguments(argValues);
             }
             decfloatTextArguments(funcName, func, expr, argValues);
+            if (ORDERING_CONDITIONALS.contains(funcName)) {
+                rejectOrderedTextPastFold(expr, argValues);
+            }
             if ("WIDTH_BUCKET".equals(funcName)) {
                 decfloatWholeArguments(expr, argValues);
             }
@@ -5361,6 +5406,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     @Override
     public Object visitCaseExpression(final CaseExpression expr) {
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         // The chosen branch is converted to the branches' folded type, the same exit the short-circuit
         // conditionals take — a CASE is one of them, written as a clause rather than a call.
         for (final WhenClause when : expr.getWhenClauses()) {
@@ -5392,6 +5440,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         rejectNonObjectCastSource(expr);
         rejectIntervalCastSource(expr);
         rejectIllegalStructuredCast(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         return castEvaluated(expr, expr.getExpression().accept(this));
     }
 
@@ -5577,8 +5628,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         try {
             // A structured element is converted to its type as a cast converts it (see StructuredElementRule).
-            argValues.set(position, target == null ? StructuredCast.forColumn(argValues.get(position), elementType)
-                : castValue(argValues.get(position), target));
+            final Object element = target == null ? StructuredCast.forColumn(argValues.get(position), elementType)
+                : castValue(argValues.get(position), target);
+            if (element instanceof String) {
+                // A text is held to the element's declared length, as the cast to the array's type holds it.
+                StructuredCast.requireWithinWidth((String) element, elementType);
+            }
+            // A DECFLOAT is added as the member that keeps its type, as ARRAY_CONSTRUCT adds one.
+            argValues.set(position, NumericType.isDecfloat(elementType) && element instanceof BigDecimal
+                ? DecfloatTextNode.variantOf((BigDecimal) element) : element);
         } catch (final StructuredElementRefusal refused) {
             throw refused;
         } catch (final RuntimeException refused) {
@@ -12831,6 +12889,37 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
     }
 
+    /**
+     * A text argument of GREATEST or LEAST that does not fit the exact NUMBER the call folds to, refused as a set
+     * operation's text branch is refused at its unified type (see SetOperations#fixedTextAt): the NUMBER(38,1) that
+     * {@code GREATEST(id, '99999999999999999999999999999999999999.5')} folds to holds thirty-seven integer digits, not
+     * thirty-eight. The comparison's own 10^38 check let it through, and a CTAS stored the thirty-nine digits. A
+     * text that fits is left as it is, for the ordering to convert; one that spells no number is the ordering's to
+     * refuse.
+     */
+    private void rejectOrderedTextPastFold(final FunctionCallExpression expr, final List<Object> argValues) {
+        final DataType folded = inferStaticType(expr);
+        if (!(folded instanceof NumericType) || NumericType.isApproximate(folded)
+                || NumericType.isDecfloat(folded)) {
+            return;
+        }
+        for (final Object value : argValues) {
+            if (value instanceof CharSequence && isDecimalText(value.toString())) {
+                SetOperations.fixedTextAt(value.toString(), (NumericType) folded);
+            }
+        }
+    }
+
+    /** Whether a text is a plain decimal number, the only spelling whose digits can overflow a fold. */
+    private static boolean isDecimalText(final String text) {
+        try {
+            new BigDecimal(text.trim());
+            return true;
+        } catch (final NumberFormatException notADecimal) {
+            return false;
+        }
+    }
+
     /** The conditionals that order their arguments, and so evaluate a predicate beside a text as a BOOLEAN. */
     private static final Set<String> ORDERING_CONDITIONALS = Set.of(
         "GREATEST", "LEAST", "GREATEST_IGNORE_NULLS", "LEAST_IGNORE_NULLS");
@@ -16642,6 +16731,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     @Override
     public Object visitObjectAccess(final ObjectAccessExpression expr) {
         rejectStringBaseInPathAccess(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         final Object baseValue = expr.getBase().accept(this);
 
         if (baseValue == null) {
@@ -16702,6 +16794,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     @Override
     public Object visitArrayAccess(final ArrayAccessExpression expr) {
         rejectStringBaseInSubscript(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         final Object arrayValue = expr.getArray().accept(this);
         final Object indexValue = expr.getIndex().accept(this);
 

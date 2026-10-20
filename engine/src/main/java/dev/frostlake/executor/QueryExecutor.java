@@ -46,6 +46,7 @@ import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.MultiColumnScalarSubqueryException;
 import dev.frostlake.executor.expressions.NamedCallRewrite;
+import dev.frostlake.executor.expressions.OuterNameBindings;
 import dev.frostlake.executor.expressions.PlannedCorrelations;
 import dev.frostlake.executor.expressions.PolicyOnlyCallRefusal;
 import dev.frostlake.executor.expressions.QualifyWithoutWindow;
@@ -170,6 +171,7 @@ import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.DynamicTableRefresh;
 import dev.frostlake.metastore.model.ExternalVolume;
+import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.JoinPolicy;
@@ -297,6 +299,7 @@ import dev.frostlake.values.CodePointText;
 import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.ExactValues;
 import dev.frostlake.values.GeoValue;
+import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.ValueRange;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
@@ -2198,6 +2201,21 @@ public class QueryExecutor implements ImportLocalizer {
     }
 
     /**
+     * Refuses to let the running COPY load a file another session's open transaction has loaded into the table: the
+     * COPY is to wait for that transaction and run again (see {@link TableLockGate#requireLoadFree}). Nothing when the
+     * statement may not wait, or the loader is of its own session.
+     *
+     * @param loader             the transaction whose load read the file
+     * @param fullyQualifiedName the table's storage name
+     * @param tableName          the table's name as a refusal names it
+     */
+    public void requireLoadUnheld(final Transaction loader, final String fullyQualifiedName, final String tableName) {
+        final Long session = securityManager != null && securityManager.getSessionContext() != null
+            ? Long.valueOf(securityManager.getSessionContext().getSessionNumber()) : null;
+        TableLockGate.requireLoadFree(transactionManager, loader, session, fullyQualifiedName, tableName);
+    }
+
+    /**
      * Waits for the transaction a statement met holding its table, for as long as the session's LOCK_TIMEOUT allows
      * from when the statement first waited (see {@link TableLockWait}).
      *
@@ -2205,6 +2223,21 @@ public class QueryExecutor implements ImportLocalizer {
      * @param waitingSince when the statement first waited ({@link System#nanoTime()})
      */
     public void awaitTableLock(final TableLockWait held, final long waitingSince) {
+        // The wait gives the engine up, and the statements other sessions run meanwhile share this executor: the
+        // waiting request's block or procedure and its statement's start are set aside, so that those statements run
+        // as their own and the request finds its own again when it holds the engine once more.
+        final SuspendedProceduralState procedural = visitor.suspendProceduralState();
+        final Instant statementStart = lastStatementInstant;
+        try {
+            awaitHolder(held, waitingSince);
+        } finally {
+            visitor.resumeProceduralState(procedural);
+            lastStatementInstant = statementStart;
+        }
+    }
+
+    /** {@link #awaitTableLock}'s wait, with the request's own state set aside. */
+    private void awaitHolder(final TableLockWait held, final long waitingSince) {
         held.await(transactionManager, lockTimeoutSeconds(), waitingSince, new LockWaitStop() {
             @Override
             public void check() {
@@ -7343,6 +7376,14 @@ public class QueryExecutor implements ImportLocalizer {
         if (type.getScale() < 0 || !isFixedPointNumeric(type.getName())) {
             return;
         }
+        if (value instanceof Number && NonFiniteDoubles.isNonFinite((Number) value)) {
+            // A NaN or an infinity has no fixed-point form at all, so it is past every column's range, in the
+            // sentence the cast prints it with. It used to fall through the parse below and be stored as the
+            // Double it was, so an INT column held NaN and its SUM answered NaN.
+            throw new RuntimeException(NumericRangeRefusal.typedText(
+                SignedStorageWidth.tagOfPrecision(type.getPrecision()), type.getPrecision(), type.getScale(),
+                column.isNullable(), NumericRangeRefusal.nonFiniteWord(((Number) value).doubleValue())));
+        }
         final BigDecimal exact;
         try {
             exact = value instanceof BigDecimal ? (BigDecimal) value
@@ -10535,15 +10576,20 @@ public class QueryExecutor implements ImportLocalizer {
     /**
      * The kinds whose miss live words in a way of its own: a file format, a tag and a stream by the name as written, a
      * masking, row access or session policy by its full name, an integration and a resource monitor by theirs. This
-     * engine holds no integration, resource monitor or session policy, so each of those is always a miss; a kind not
-     * named here is not looked up (live-verified).
+     * engine holds no resource monitor or session policy, so each of those is always a miss; an integration is looked
+     * up among the account's, so its privileges can be granted, revoked and listed (FL-431); a kind not named here is
+     * not looked up (live-verified).
      */
     private void requireSecurableMember(final String objectType, final String[] parts) {
         final String written = QualifiedName.join(parts);
         final String name = parts[parts.length - 1];
         switch (objectType) {
             case "INTEGRATION":
-                throw new RuntimeException(SqlCompilationError.doesNotExist("Integration", written));
+                // An account object, named without a database or schema.
+                if (catalog.getIntegrations().find(name) == null) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Integration", written));
+                }
+                return;
             case "RESOURCE_MONITOR":
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Resource monitor", written));
             case "FILE_FORMAT":
@@ -10909,6 +10955,11 @@ public class QueryExecutor implements ImportLocalizer {
                 return volume == null ? null : new GrantedObject("EXTERNAL_VOLUME", volume.getName(),
                     volume.getOwner(), volume.getCreatedTime(), spellings(volume.getName()));
             }
+            case "INTEGRATION": {
+                final Integration integration = catalog.getIntegrations().find(parts[parts.length - 1]);
+                return integration == null ? null : new GrantedObject("INTEGRATION", integration.getName(),
+                    integration.getOwner(), integration.getCreatedTime(), spellings(integration.getName()));
+            }
             case "NETWORK_RULE":
             case "PASSWORD_POLICY":
             case "SESSION_POLICY":
@@ -11032,6 +11083,9 @@ public class QueryExecutor implements ImportLocalizer {
                 return true;
             case "EXTERNAL_VOLUME":
                 catalog.getExternalVolumes().find(parts[parts.length - 1]).setOwner(owner);
+                return true;
+            case "INTEGRATION":
+                catalog.getIntegrations().find(parts[parts.length - 1]).setOwner(owner);
                 return true;
             case "NETWORK_RULE":
             case "PASSWORD_POLICY":
@@ -16952,7 +17006,7 @@ public class QueryExecutor implements ImportLocalizer {
     }
 
     /** The user table function a call names: in its own schema when qualified, else the current one. */
-    private List<Function> udtfOverloads(final FrostlakeParser.FunctionNameContext nameCtx) {
+    List<Function> udtfOverloads(final FrostlakeParser.FunctionNameContext nameCtx) {
         final List<Function> tabular = new ArrayList<>();
         for (final Function overload : functionOverloads(nameCtx)) {
             if (overload.isTableFunction()) {
@@ -17175,10 +17229,7 @@ public class QueryExecutor implements ImportLocalizer {
             if (!(parsed instanceof FunctionCallExpression)) {
                 return true;
             }
-            final ExpressionEvaluator evaluator = new ExpressionEvaluator(table, functionRegistry, catalog, this);
-            if (aliases != null && aliases.size() > 1) {
-                evaluator.setMultiTableContext(aliases, new ArrayList<Table>(aliases.values()));
-            }
+            final ExpressionEvaluator evaluator = argumentTypingEvaluator(table, aliases);
             final Function chosen = evaluator.resolvedUserFunction((FunctionCallExpression) parsed);
             return chosen == null || chosen.isAggregate();
         } catch (final RuntimeException untyped) {
@@ -17205,15 +17256,34 @@ public class QueryExecutor implements ImportLocalizer {
             if (!(parsed instanceof FunctionCallExpression)) {
                 return aggregate;
             }
-            final ExpressionEvaluator evaluator = new ExpressionEvaluator(table, functionRegistry, catalog, this);
-            if (aliases != null && aliases.size() > 1) {
-                evaluator.setMultiTableContext(aliases, new ArrayList<Table>(aliases.values()));
-            }
+            final ExpressionEvaluator evaluator = argumentTypingEvaluator(table, aliases);
             final Function chosen = evaluator.resolvedUserFunction((FunctionCallExpression) parsed);
             return chosen != null && aggregate.holds(chosen) ? aggregate.pinnedTo(chosen) : aggregate;
         } catch (final RuntimeException untyped) {
             return aggregate;
         }
+    }
+
+    /**
+     * The evaluator a user function call's arguments are typed by, over the clause's relations: every one of them by
+     * its alias, a lone one included, so an argument the alias qualifies is typed as a bare one is. Over a lone
+     * {@code FROM t t2}, {@code mix(t2.v)} is typed INT and runs the scalar overload, and {@code pa(t2.s)} keeps the
+     * VARCHAR aggregate for an all-NULL group, as {@code mix(v)} and {@code pa(s)} do (live-verified for the bare
+     * forms); typed over the relation's own name alone, the qualified argument found no column, and the call fell
+     * back to the aggregate and to each group's values.
+     */
+    private ExpressionEvaluator argumentTypingEvaluator(final Table table, final Map<String, Table> aliases) {
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        if (aliases != null && !aliases.isEmpty()) {
+            final List<Table> relations = new ArrayList<>();
+            for (final Table relation : aliases.values()) {
+                if (!relations.contains(relation)) {
+                    relations.add(relation);
+                }
+            }
+            evaluator.setMultiTableContext(aliases, relations);
+        }
+        return evaluator;
     }
 
     /**
@@ -20570,8 +20640,10 @@ public class QueryExecutor implements ImportLocalizer {
             final List<JoinedViewRow> after = before == null ? null
                 : joinViewRowsAt(viewHome, branch, null, view.getOwner());
             if (after != null) {
+                // An APPEND_ONLY stream keeps the rows inserted alone, as CHANGES (INFORMATION => APPEND_ONLY) from
+                // its offset does: the update pairs and the deletes are a standard stream's only.
                 return new TableData(virtual, viewPolicyKept(view, virtual, identifiedViewChanges(before, after,
-                    false)), alias);
+                    stream.getStreamType() == StreamType.APPEND_ONLY)), alias);
             }
         }
 
@@ -20645,7 +20717,13 @@ public class QueryExecutor implements ImportLocalizer {
         for (final StreamRecord record : netRecords) {
             allUpdates = allUpdates && record.isUpdate();
         }
-        if (allUpdates && !removed.isEmpty() && removed.size() == added.size()) {
+        if (stream.getStreamType() == StreamType.APPEND_ONLY) {
+            // Its records are the appends alone, so the rows the diff finds added are the ones they made; a row an
+            // outer join pads that an append completed is no delete of an append-only stream's.
+            for (final Row fresh : added) {
+                rows.add(streamOutputRow(fresh, ChangeType.INSERT, false, joinRowId(fresh, spelled)));
+            }
+        } else if (allUpdates && !removed.isEmpty() && removed.size() == added.size()) {
             final boolean[] taken = new boolean[added.size()];
             for (final Row gone : removed) {
                 int best = -1;
@@ -24457,30 +24535,55 @@ public class QueryExecutor implements ImportLocalizer {
      * after `f INNER JOIN a` got some other column (usually NULL) and expanded to nothing. Two passes: the
      * upper-cased keys first, each keeping the FIRST column that folds to it, so a reference matches whatever
      * case its alias and column were written in; then every column's EXACT spelling, which overrides them — of
-     * "x" and "X" beside each other, a.x and a."x" must read two different columns.
+     * "x" and "X" beside each other, a.x and a."x" must read two different columns. The collated columns are
+     * recorded under the exact keys too, so a comparison inside the item reads a column to its left under the
+     * column's collation, as a correlated subquery's does: {@code FROM o, LATERAL (SELECT s FROM i WHERE i.s = o.s)}
+     * over an 'en-ci' o.s matches 'ABC' to 'abc', as the JOIN ON over the same pair does.
      */
     private static Map<String, Object> lateralContextOf(final Row leftRow, final Map<String, Table> scope,
                                                         final List<Table> scopeTables) {
         final Map<String, Object> lateralContext = new HashMap<>();
+        final Map<String, TableColumn> collated = new HashMap<>();
         for (int pass = 0; pass < 2; pass++) {
             int offset = 0;
             for (final Table t : scopeTables) {
                 for (int i = 0; i < t.getColumns().size() && offset + i < leftRow.getValues().size(); i++) {
-                    final String colName = t.getColumns().get(i).getName();
+                    final TableColumn column = t.getColumns().get(i);
+                    final String colName = column.getName();
                     final Object value = leftRow.getValue(offset + i);
                     bindLateral(lateralContext, colName, value, pass);
                     // Also add with table prefix and every alias prefix that names this table
                     bindLateral(lateralContext, t.getName() + "." + colName, value, pass);
+                    noteLateralCollation(collated, colName, column, pass);
+                    noteLateralCollation(collated, t.getName() + "." + colName, column, pass);
                     for (final Map.Entry<String, Table> entry : scope.entrySet()) {
                         if (entry.getValue() == t) {
                             bindLateral(lateralContext, entry.getKey() + "." + colName, value, pass);
+                            noteLateralCollation(collated, entry.getKey() + "." + colName, column, pass);
                         }
                     }
                 }
                 offset += t.getColumns().size();
             }
         }
+        OuterNameBindings.recordCollations(lateralContext, collated, null);
         return lateralContext;
+    }
+
+    /**
+     * Note under an exact key the collation of the column {@link #bindLateral}'s second pass binds the key's value
+     * from: the key's last column, whose binding replaces any earlier one's, its collation included.
+     */
+    private static void noteLateralCollation(final Map<String, TableColumn> collated, final String key,
+                                             final TableColumn column, final int pass) {
+        if (pass == 0) {
+            return;
+        }
+        if (column.getCollation() != null) {
+            collated.put(key, column);
+        } else {
+            collated.remove(key);
+        }
     }
 
     /** Whether a FROM item names a column anywhere outside the queries nested in it. */

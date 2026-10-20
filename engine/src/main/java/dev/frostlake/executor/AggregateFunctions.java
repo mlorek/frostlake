@@ -20,6 +20,7 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.functions.aggregate.ApproximateAwareAccumulator;
 import dev.frostlake.functions.aggregate.CoercedNumericArgumentAccumulator;
+import dev.frostlake.functions.aggregate.DecfloatAwareAccumulator;
 import dev.frostlake.functions.aggregate.PercentileContAccumulator;
 import dev.frostlake.functions.aggregate.PercentileDiscAccumulator;
 import dev.frostlake.parser.FrostlakeParser;
@@ -83,12 +84,13 @@ public final class AggregateFunctions {
      *                      for everything but a bare unqualified column
      * @param approximateKey whether the key's declared type is FLOAT / DOUBLE / REAL
      * @param coercedKey whether that key is declared VARCHAR or VARIANT, converted value by value
+     * @param decfloatKey whether that key is declared DECFLOAT, interpolated to 38 digits
      * @return the continuous (interpolated) or discrete percentile of the group's values, or null for
      *         an empty group
      */
     public static Object evaluatePercentile(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                       final List<Object> orderedValues, final boolean approximateKey,
-                                      final boolean coercedKey) {
+                                      final boolean coercedKey, final boolean decfloatKey) {
         final FrostlakeParser.OrderByClauseContext withinGroup = withinGroupOrderBy(funcCtx);
         if (withinGroup == null || withinGroup.orderItem().isEmpty()) {
             throw new RuntimeException(
@@ -119,6 +121,9 @@ public final class AggregateFunctions {
         }
         if (acc instanceof CoercedNumericArgumentAccumulator) {
             ((CoercedNumericArgumentAccumulator) acc).setCoercedNumericArgument(coercedKey);
+        }
+        if (acc instanceof DecfloatAwareAccumulator) {
+            ((DecfloatAwareAccumulator) acc).setDecfloatArgument(decfloatKey);
         }
         for (final Object v : orderedValues) {
             acc.accumulate(v);

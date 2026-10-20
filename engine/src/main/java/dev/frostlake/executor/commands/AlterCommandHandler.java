@@ -28,6 +28,7 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SessionParameterCatalog;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -86,6 +87,7 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -1221,6 +1223,7 @@ public class AlterCommandHandler implements CommandHandler {
                         final String policyName = visitor.getText(ctx.tableAction().qualifiedName());
                         final List<String> cols = rowAccessPolicyColumns(ctx.tableAction().identifierList(),
                             table, table.getName(), policyName, table.hasRowAccessPolicy());
+                        requireApplyRowAccessPolicy(policyName);
                         // Recorded in full, as every policy attachment is, so a query from another schema
                         // still finds it (see PolicyReferences).
                         table.setRowAccessPolicyName(catalog.qualifiedExactName(policyName));
@@ -1233,6 +1236,9 @@ public class AlterCommandHandler implements CommandHandler {
                             requireRowAccessPolicyAttached(
                                 visitor.getText(ctx.tableAction().qualifiedName()),
                                 table.getName(), table.getRowAccessPolicyName());
+                        }
+                        if (table.getRowAccessPolicyName() != null) {
+                            requireApplyRowAccessPolicy(table.getRowAccessPolicyName());
                         }
                         table.setRowAccessPolicyName(null);
                         table.setRowAccessPolicyColumns(new ArrayList<>());
@@ -1496,6 +1502,7 @@ public class AlterCommandHandler implements CommandHandler {
                     final String policyName = visitor.getText(ctx.viewAction().qualifiedName());
                     final List<String> cols = rowAccessPolicyColumns(ctx.viewAction().identifierList(),
                         null, view.getName(), policyName, view.hasRowAccessPolicy());
+                    requireApplyRowAccessPolicy(policyName);
                     view.setRowAccessPolicyName(catalog.qualifiedExactName(policyName));
                     view.setRowAccessPolicyColumns(cols);
                     logger.trace("Added row access policy {} to view {}", policyName, viewName);
@@ -1503,6 +1510,9 @@ public class AlterCommandHandler implements CommandHandler {
                     if (ctx.viewAction().ALL() == null) {
                         requireRowAccessPolicyAttached(visitor.getText(ctx.viewAction().qualifiedName()),
                             view.getName(), view.getRowAccessPolicyName());
+                    }
+                    if (view.getRowAccessPolicyName() != null) {
+                        requireApplyRowAccessPolicy(view.getRowAccessPolicyName());
                     }
                     view.setRowAccessPolicyName(null);
                     view.setRowAccessPolicyColumns(new ArrayList<>());
@@ -3215,6 +3225,9 @@ public class AlterCommandHandler implements CommandHandler {
         final User user = catalog.getUserExact(userName);
         if (action.tagSet() == null && action.tagUnset() == null) {
             AccountPrivileges.requireOnUser(queryExecutor, user, action);
+        } else {
+            requireApplyTags(user,
+                action.tagSet() != null ? tagNames(action.tagSet()) : action.tagUnset().qualifiedName());
         }
         if (parameters != null) {
             parameters.requireTaken(catalog);
@@ -3251,6 +3264,40 @@ public class AlterCommandHandler implements CommandHandler {
         } else if (action.COMMENT() != null) {
             user.setComment(visitor.extractStringLiteral(action.STRING_LITERAL()));
             logger.trace("Set comment on user: {}", userName);
+        }
+    }
+
+    /** The tags a SET TAG names, in the order written. */
+    private static List<FrostlakeParser.QualifiedNameContext> tagNames(final FrostlakeParser.TagSetContext set) {
+        final List<FrostlakeParser.QualifiedNameContext> names = new ArrayList<>();
+        for (final FrostlakeParser.TagAssignContext assign : set.tagAssign()) {
+            names.add(assign.qualifiedName());
+        }
+        return names;
+    }
+
+    /**
+     * Refuses an ALTER USER … SET TAG or UNSET TAG the session may not make. MODIFY on the user is not what it asks:
+     * setting or unsetting a tag on an object takes APPLY TAG on the account, or APPLY on the tag and OWNERSHIP of
+     * the object (documented, "Tag privileges"). A role with neither was let tag and untag any user (FL-441).
+     *
+     * @param user the user tagged
+     * @param tags the tags named, each one there
+     */
+    private void requireApplyTags(final User user, final List<FrostlakeParser.QualifiedNameContext> tags) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null || security.holdsAccountPrivilege(Privilege.APPLY_TAG)) {
+            return;
+        }
+        for (final FrostlakeParser.QualifiedNameContext name : tags) {
+            final Tag tag = referencedTag(name);
+            ApplyPrivileges.require(queryExecutor, Privilege.APPLY_TAG, "TAG",
+                catalog.qualifiedExactName(visitor.getText(name)), tag.getOwner());
+        }
+        if (!security.holdsPrivilege(Privilege.OWNERSHIP, "USER", user.getName(), user.getOwner())) {
+            throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("USER", user.getName(),
+                security.getSessionContext().getCurrentRole(), security.getSessionContext().isSecondaryRolesInUse(),
+                "OWNERSHIP", user.getName()));
         }
     }
 
@@ -3712,6 +3759,9 @@ public class AlterCommandHandler implements CommandHandler {
         final TableColumn col = target.getColumn(colName);
         if (policyName == null) {
             // Detaching what is not attached is a no-op, not an error — the opposite of the row access policy's DROP.
+            if (col.getMaskingPolicyName() != null) {
+                requireApplyMaskingPolicy(col.getMaskingPolicyName());
+            }
             col.setMaskingPolicyName(null);
             col.setMaskingPolicyArguments(null);
             return;
@@ -3738,9 +3788,54 @@ public class AlterCommandHandler implements CommandHandler {
             }
         }
         MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicyExact(policyName), col);
+        requireApplyMaskingPolicy(policyName);
+        if (col.getMaskingPolicyName() != null && !sameMaskingPolicy(col.getMaskingPolicyName(), policyName)) {
+            // FORCE replaces the policy there, which detaches it.
+            requireApplyMaskingPolicy(col.getMaskingPolicyName());
+        }
         col.setMaskingPolicyName(policyName);
         // A conditional policy reads its further arguments from the columns USING names, in order.
         col.setMaskingPolicyArguments(arguments);
+    }
+
+    /**
+     * Refuses attaching or detaching a masking policy the session may not apply: it needs APPLY MASKING POLICY on the
+     * account, or APPLY on the policy (see {@link ApplyPrivileges}).
+     *
+     * @param policyName the policy's name in full, as an attachment records it
+     */
+    private void requireApplyMaskingPolicy(final String policyName) {
+        MaskingPolicy policy;
+        try {
+            policy = catalog.findMaskingPolicyExact(policyName);
+        } catch (final RuntimeException gone) {
+            policy = null;
+        }
+        ApplyPrivileges.require(queryExecutor, Privilege.APPLY_MASKING_POLICY, "MASKING_POLICY", policyName,
+            policy == null ? null : policy.getOwner());
+    }
+
+    /**
+     * Refuses adding or dropping a row access policy the session may not apply: it needs APPLY ROW ACCESS POLICY on
+     * the account, or APPLY on the policy (see {@link ApplyPrivileges}).
+     *
+     * @param policyName the policy's name, as written or as the attachment records it
+     */
+    private void requireApplyRowAccessPolicy(final String policyName) {
+        RowAccessPolicy policy;
+        try {
+            policy = catalog.findRowAccessPolicyExact(policyName);
+        } catch (final RuntimeException gone) {
+            policy = null;
+        }
+        String fullName;
+        try {
+            fullName = catalog.qualifiedExactName(policyName);
+        } catch (final RuntimeException unresolved) {
+            fullName = policyName;
+        }
+        ApplyPrivileges.require(queryExecutor, Privilege.APPLY_ROW_ACCESS_POLICY, "ROW_ACCESS_POLICY", fullName,
+            policy == null ? null : policy.getOwner());
     }
 
     /** A view's columns as a relation whose columns are the view's own, so a policy set on one stays with the view. */

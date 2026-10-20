@@ -180,6 +180,14 @@ public class Procedure extends SqlObject implements Routine {
     }
 
     /**
+     * Whether the procedure runs with restricted caller's rights: as its caller, with none of the caller's privileges
+     * but those a caller grant names, and this engine models none (see {@link ExecuteAs}).
+     */
+    public boolean runsWithRestrictedCallersRights() {
+        return executeAs.isRestricted();
+    }
+
+    /**
      * The declared null handling, as a function's is spelled: {@code STRICT} is RETURNS NULL ON NULL INPUT. A call
      * with a NULL argument of a procedure that declares it runs no body (see the CALL).
      */

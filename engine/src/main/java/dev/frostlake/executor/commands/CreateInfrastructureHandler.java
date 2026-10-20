@@ -29,6 +29,7 @@ import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.InstanceFamilies;
@@ -128,7 +129,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final TaskProperties properties = new TaskProperties(catalog, schema);
             properties.compile(settings);
             final Task task = new Task(taskName, null, null, sqlText, null);
-            task.setOwner(FutureGrants.ownerOfNew(catalog, "TASK", schema, task.getName()));
+            // The owner is worked out here, for the checks that read it; the future grants apply only once the
+            // task is added, so CREATE OR ALTER and a refused CREATE OR REPLACE leave the grants on the task that
+            // stays as they were (FL-436).
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TASK", schema, task.getName());
+            task.setOwner(grantsOfNew.owner());
             String runAs = null;
             if (ctx.taskExecuteAs() != null) {
                 runAs = TaskProperties.runAsUser(ctx.taskExecuteAs(), queryExecutor);
@@ -202,6 +207,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 schema.dropTask(taskName);
             }
             schema.addTask(task);
+            grantsOfNew.apply();
             logger.trace("Created task: {}", taskQualifiedName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
@@ -334,8 +340,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 pipe.setComment(comment);
             }
 
-            pipe.setOwner(FutureGrants.ownerOfNew(catalog, "PIPE", pipeSchema, pipe.getName()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "PIPE", pipeSchema, pipe.getName());
+            pipe.setOwner(grantsOfNew.owner());
             pipeSchema.addPipe(pipe);
+            grantsOfNew.apply();
             logger.trace("Created pipe: {}", pipeName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
@@ -570,8 +578,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             final Schema schema = sequenceSchema;
             schema.requireCreatable(Privilege.CREATE_SEQUENCE);
-            sequence.setOwner(FutureGrants.ownerOfNew(catalog, "SEQUENCE", schema, sequence.getName()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "SEQUENCE", schema,
+                sequence.getName());
+            sequence.setOwner(grantsOfNew.owner());
             schema.addSequence(sequence);
+            grantsOfNew.apply();
             logger.trace("Created sequence: {} with START={}, INCREMENT={}", sequenceQualifiedName, startValue, increment);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
@@ -968,7 +979,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         if ("STORAGE_INTEGRATION".equals(key)) {
                             // The integration is looked up before the stage's own shape is judged.
                             storageIntegration = StorageIntegrationReference.require(catalog,
-                                option.copyOptionValue());
+                                queryExecutor.getSecurityManager(), option.copyOptionValue());
                         }
                         if ("CREDENTIALS".equals(key) || "STORAGE_INTEGRATION".equals(key)) {
                             sawCloudAccessOption = true;
@@ -1160,9 +1171,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 fileFormat.markTemporary(StatementSession.current());
             }
             // The future grants of the schema or its database cover the new format (live-verified).
-            fileFormat.setOwner(TemporaryObjectStatements.isTemporary(ctx) ? catalog.currentRoleForOwner()
-                : FutureGrants.ownerOfNew(catalog, "FILE_FORMAT", catalog.requireOwningSchema(
-                    QualifiedName.of(nameParts)), simpleName));
+            final CreationGrants grantsOfNew = TemporaryObjectStatements.isTemporary(ctx) ? null
+                : FutureGrants.ofNew(catalog, "FILE_FORMAT", catalog.requireOwningSchema(QualifiedName.of(nameParts)),
+                    simpleName);
+            fileFormat.setOwner(grantsOfNew == null ? catalog.currentRoleForOwner() : grantsOfNew.owner());
             final FileFormatClause written = FileFormatClause.read(ctx.copyFormatOption(), fileFormat, true, false);
             if (written.comment() != null) {
                 fileFormat.setComment(written.comment());
@@ -1187,6 +1199,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     + SqlIdentifiers.spellCanonical(catalog.getFileFormat(name).getName()) + "' already exists."));
             }
             catalog.addFileFormat(name, fileFormat);
+            if (grantsOfNew != null) {
+                grantsOfNew.apply();
+            }
             logger.trace("Created file format: {}", simpleName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));

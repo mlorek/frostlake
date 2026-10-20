@@ -1270,15 +1270,29 @@ public class Catalog {
      * @param role the role named, upper-cased
      */
     private void requireAssigned(final String role) {
+        if (!mayActivate(role)) {
+            throw new RuntimeException(SqlAccessControlError.roleNotAssigned(role));
+        }
+    }
+
+    /**
+     * Whether the session's user may activate a role, as {@link #requireAssigned} decides it: granted to the user,
+     * or to a role the user may activate, or PUBLIC. A session whose user this catalog does not hold may activate
+     * any role.
+     *
+     * @param role the role named, upper-cased
+     * @return true when USE ROLE would accept the role for the session's user
+     */
+    public boolean mayActivate(final String role) {
         if (sessionContext == null || "PUBLIC".equals(role)) {
-            return;
+            return true;
         }
         // The engine's own session runs as SYSTEM on behalf of the user CURRENT_USER() names.
         final String securityUser = sessionContext.getCurrentUser();
         final String executing = "SYSTEM".equals(securityUser) ? sessionContext.getDisplayUser() : securityUser;
         final User user = executing == null ? null : users.get(NameKeys.keyFor(users, executing));
         if (user == null) {
-            return;
+            return true;
         }
         final Set<String> reached = new HashSet<String>();
         final List<String> pending = new ArrayList<String>(user.getGrantedRoles());
@@ -1289,9 +1303,7 @@ public class Catalog {
                 pending.addAll(held.getGrantedRoles());
             }
         }
-        if (!reached.contains(role)) {
-            throw new RuntimeException(SqlAccessControlError.roleNotAssigned(role));
-        }
+        return reached.contains(role);
     }
 
     /**
@@ -1483,8 +1495,10 @@ public class Catalog {
             throw new NameTakenException(alreadyExists(objName));
         }
         final Stage stage = new Stage(objName, type, url, "CSV", false, null, s3PathResolver);
-        stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
+        final CreationGrants grantsOfNew = FutureGrants.ofNew(this, "STAGE", schema, objName);
+        stage.setOwner(grantsOfNew.owner());
         schema.addStage(stage);
+        grantsOfNew.apply();
     }
 
     public void createStage(final String name, final StageType type, final String url,
@@ -1495,8 +1509,10 @@ public class Catalog {
             throw new NameTakenException(alreadyExists(objName));
         }
         final Stage stage = new Stage(objName, type, url, fileFormat, encryption, comment, s3PathResolver);
-        stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
+        final CreationGrants grantsOfNew = FutureGrants.ofNew(this, "STAGE", schema, objName);
+        stage.setOwner(grantsOfNew.owner());
         schema.addStage(stage);
+        grantsOfNew.apply();
     }
 
     public void dropStage(final String name) {

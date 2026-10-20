@@ -23,6 +23,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.UUID;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -130,5 +137,70 @@ public class CPythonRuntimeTest {
             + "    return x * 2\n$$");
 
         assertEquals("42", String.valueOf(cell("SELECT noisy(21)")));
+    }
+
+    /**
+     * #2383: the worker runs isolated from a directory only the engine's user may enter, so a module someone left in
+     * the shared temporary directory is not importable, let alone imported in place of the standard library's, and
+     * what a routine prints still reaches the log as UTF-8 although isolation ignores PYTHONIOENCODING.
+     */
+    @Test
+    public void aModuleLeftInTheTemporaryDirectoryIsNotImported() throws IOException {
+        final String name = "fl_planted_" + UUID.randomUUID().toString().replace("-", "");
+        final Path planted = Paths.get(System.getProperty("java.io.tmpdir"), name + ".py");
+        Files.write(planted, "PLANTED = True\n".getBytes(StandardCharsets.UTF_8));
+        try {
+            engine.execute("CREATE FUNCTION isolation(m VARCHAR) RETURNS VARCHAR LANGUAGE PYTHON"
+                + " RUNTIME_VERSION = '3.12' HANDLER = 'f' AS $$\n"
+                + "import importlib, os, stat, sys\n"
+                + "def f(m):\n"
+                + "    print('za\u017c\u00f3\u0142\u0107')\n"
+                + "    try:\n"
+                + "        importlib.import_module(m)\n"
+                + "        found = 'imported'\n"
+                + "    except ImportError:\n"
+                + "        found = 'not found'\n"
+                + "    home = os.path.dirname(os.path.abspath(sys.argv[0]))\n"
+                + "    on_path = [p for p in sys.path if p in ('', home, os.getcwd())]\n"
+                + "    return ' '.join([found, str(sys.flags.isolated), oct(stat.S_IMODE(os.stat(home).st_mode)),"
+                + " str(on_path)])\n"
+                + "$$");
+
+            assertEquals("not found 1 0o700 []", String.valueOf(cell("SELECT isolation('" + name + "')")));
+        } finally {
+            Files.deleteIfExists(planted);
+        }
+    }
+
+    /**
+     * #2386: the worker's own module and classes - what encodes a result, what calls the engine - are guarded as the
+     * runtime's helper modules are, so a routine that replaces them through {@code sys.modules['__main__']} or
+     * {@code object.__subclasses__()} reaches no later statement.
+     */
+    @Test
+    public void whatARoutineChangesInTheWorkerItselfIsGoneInTheNextStatement() {
+        engine.execute("CREATE FUNCTION tamper_worker() RETURNS VARCHAR LANGUAGE PYTHON RUNTIME_VERSION = '3.12'"
+            + " HANDLER = 'f' AS $$\n"
+            + "import sys\n"
+            + "def f():\n"
+            + "    worker = sys.modules['__main__']\n"
+            + "    worker.__dict__['_decode'] = lambda value: 'decoded-hijacked'\n"
+            + "    worker.__dict__['_ADDED'] = 'added'\n"
+            + "    for kind in object.__subclasses__():\n"
+            + "        if kind.__name__ == '_JavaObject':\n"
+            + "            kind.__getattr__ = lambda self, name: (lambda *a: 'host-hijacked')\n"
+            + "    return 'tampered'\n"
+            + "$$");
+        engine.execute("CREATE FUNCTION add_two(x NUMBER) RETURNS NUMBER LANGUAGE PYTHON RUNTIME_VERSION = '3.12'"
+            + " HANDLER = 'f' AS $$\nimport sys\ndef f(x):\n"
+            + "    return x + (1 if hasattr(sys.modules['__main__'], '_ADDED') else 2)\n$$");
+        engine.execute("CREATE PROCEDURE seven() RETURNS NUMBER LANGUAGE PYTHON RUNTIME_VERSION = '3.12'"
+            + " PACKAGES = ('snowflake-snowpark-python') HANDLER = 'run' AS $$\n"
+            + "def run(session):\n"
+            + "    return session.sql('SELECT 7 AS v').collect()[0][0]\n$$");
+
+        assertEquals("tampered", String.valueOf(cell("SELECT tamper_worker()")));
+        assertEquals("42", String.valueOf(cell("SELECT add_two(40)")));
+        assertEquals("7", String.valueOf(cell("CALL seven()")));
     }
 }

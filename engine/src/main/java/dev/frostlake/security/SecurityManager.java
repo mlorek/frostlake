@@ -64,8 +64,8 @@ public class SecurityManager {
             return; // Security checks disabled
         }
         final String currentUser = sessionContext.getCurrentUser();
-        // SYSTEM user always has all permissions
-        if ("SYSTEM".equals(currentUser)) {
+        // SYSTEM user always has all permissions, but inside a RESTRICTED CALLER body (see restricted)
+        if ("SYSTEM".equals(currentUser) && !restricted()) {
             return;
         }
         if (holdsPrivilege(requiredPrivilege, objectType, objectName,
@@ -181,7 +181,8 @@ public class SecurityManager {
 
     /** Whether the session decides every grant: the SYSTEM user, an administrative role, or MANAGE GRANTS. */
     private boolean decidesGrants() {
-        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+        if (!sessionContext.isSecurityEnabled()
+                || "SYSTEM".equals(sessionContext.getCurrentUser()) && !restricted()) {
             return true;
         }
         final Set<String> roles = sessionRights();
@@ -415,12 +416,24 @@ public class SecurityManager {
      */
     private Set<String> reachingRoles() {
         final String executableOwner = sessionContext.getExecutableOwner();
-        if (executableOwner == null) {
+        if (executableOwner == null || restricted()) {
             return askedRoles();
         }
         final Set<String> roles = rolesUnder(catalog.resolveRoleName(executableOwner));
         roles.add("PUBLIC");
         return roles;
+    }
+
+    /**
+     * Whether a RESTRICTED CALLER procedure's body runs on this thread. Restricted caller's rights let a body use only
+     * those of its caller's privileges a caller grant names ("every privilege required by the executable must be
+     * specified in one or more caller grants", documented), and this engine models no caller grant: such a body holds
+     * no privilege at all, PUBLIC's and the SYSTEM user's included, and a statement that needs one is refused. It ran
+     * with every privilege of its caller, so a procedure an untrusted role owns read whatever its caller could
+     * (FL-434).
+     */
+    private boolean restricted() {
+        return sessionContext.isRestrictedCaller();
     }
 
     /** Whether one of the roles holds MANAGE GRANTS: ACCOUNTADMIN and SECURITYADMIN, or a role it was granted to. */
@@ -456,7 +469,9 @@ public class SecurityManager {
      */
     private Set<String> askedRoles() {
         final Set<String> roles = sessionRights();
-        roles.add("PUBLIC");
+        if (!restricted()) {
+            roles.add("PUBLIC");
+        }
         final String rightsOwner = ownerRights.get();
         if (rightsOwner != null) {
             roles.addAll(rolesUnder(rightsOwner));
@@ -467,9 +482,13 @@ public class SecurityManager {
     /**
      * The roles the session's rights come from: the session's own (see {@link #getEffectiveRoles}), or inside a
      * stored procedure that runs with owner's rights the owner's alone, with PUBLIC: such a procedure runs with its
-     * owner's privileges and none of its caller's (documented).
+     * owner's privileges and none of its caller's (documented). Inside a RESTRICTED CALLER body there are none (see
+     * {@link #restricted}).
      */
     private Set<String> sessionRights() {
+        if (restricted()) {
+            return new HashSet<>();
+        }
         final String executableOwner = sessionContext.getExecutableOwner();
         if (executableOwner == null) {
             return getEffectiveRoles();
@@ -489,7 +508,13 @@ public class SecurityManager {
      * @return whether the statement may go on
      */
     public boolean holdsAccountPrivilege(final Privilege privilege) {
-        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return true;
+        }
+        if (restricted()) {
+            return false;
+        }
+        if ("SYSTEM".equals(sessionContext.getCurrentUser())) {
             return true;
         }
         final Set<String> roles = sessionRights();
@@ -514,7 +539,13 @@ public class SecurityManager {
      * @return whether one of the session's roles may alter the user
      */
     public boolean mayModifyUser(final String userName, final String owner) {
-        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return true;
+        }
+        if (restricted()) {
+            return false;
+        }
+        if ("SYSTEM".equals(sessionContext.getCurrentUser())) {
             return true;
         }
         final Set<String> roles = sessionRights();
@@ -562,6 +593,9 @@ public class SecurityManager {
                                final String owner) {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
+        }
+        if (restricted()) {
+            return false;
         }
         final String ownerRole = catalog.resolveRoleName(owner);
         final String rightsOwner = ownerRights.get();

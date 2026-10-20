@@ -50,6 +50,9 @@ final class AbortableHttpSession implements AbortableSession {
 
     @Override
     public void endAborted() {
+        // A session that aborted itself was not marked while its request ran; it is now, so that its context, kept by
+        // a client, runs nothing more either (see ConcurrentDatabaseEngine#execute).
+        session.getSettings().markAborted();
         engine.endSession(session);
     }
 }

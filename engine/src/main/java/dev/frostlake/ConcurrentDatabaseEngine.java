@@ -24,6 +24,7 @@ import dev.frostlake.http.ExpiredSessionListener;
 import dev.frostlake.http.SessionContext;
 import dev.frostlake.http.SessionManager;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.transaction.EngineLockRelease;
 import dev.frostlake.transaction.TableLockGate;
@@ -110,9 +111,11 @@ public class ConcurrentDatabaseEngine {
         if (session == null) {
             throw new IllegalArgumentException("Session context is required");
         }
+        // Refused before it is registered again: an aborted session that registered anew could be aborted anew.
+        requireLiveSession(session);
         registerForAbort(session);
         try {
-            return executeInSession(sql, session, clientAutoCommit);
+            return executeInSession(sql, session, clientAutoCommit, false);
         } finally {
             // A session this request aborted — its own included — ends now that the request holds no lock.
             engine.getSessionDirectory().endAborted();
@@ -133,8 +136,32 @@ public class ConcurrentDatabaseEngine {
         }
     }
 
+    /**
+     * Refuses every request of a session SYSTEM$ABORT_SESSION ended, COMMIT and ROLLBACK included, as the account
+     * refuses the requests of a terminated session (error 390111): the session no longer exists, so nothing it sends
+     * runs. A client that keeps the session's context after the abort sent its writes and DDL on, and they ran and
+     * committed; its COMMIT answered success although the abort had rolled the transaction back.
+     *
+     * @param session the session a request runs in
+     */
+    private static void requireLiveSession(final SessionContext session) {
+        if (session.getSettings().isAborted()) {
+            throw new RuntimeException(SessionDirectory.SESSION_GONE);
+        }
+    }
+
+    /**
+     * Runs a request in a session.
+     *
+     * @param sql              the statement text
+     * @param session          the session to run in
+     * @param clientAutoCommit the request's autocommit mode, or null when it declares none
+     * @param ending           whether the request is the rollback that ends the session, which runs although the
+     *                         session was aborted
+     * @return the statement's result
+     */
     private ExecutionResult executeInSession(final String sql, final SessionContext session,
-                                             final Boolean clientAutoCommit) {
+                                             final Boolean clientAutoCommit, final boolean ending) {
         session.touch();
 
         // Synchronize on session to prevent concurrent modifications to same session
@@ -170,6 +197,11 @@ public class ConcurrentDatabaseEngine {
                 }
 
                 try {
+                    if (!ending) {
+                        // Judged again under the engine's lock: an abort that another request carried out while this
+                        // one waited for the engine must still stop it before it runs.
+                        requireLiveSession(session);
+                    }
                     // Apply session context before execution (inside lock for thread safety)
                     applySessionContext(session);
                     if (!readOnly) {
@@ -414,9 +446,9 @@ public class ConcurrentDatabaseEngine {
     private void endSessionNow(final SessionContext session) {
         if (session.isInTransaction()) {
             try {
-                // Through execute(), under the engine's lock like any request: the idle sweep's thread is not
-                // a request thread.
-                execute("ROLLBACK", session);
+                // Under the engine's lock like any request: the idle sweep's thread is not a request thread. It
+                // runs although the session was aborted, since it is what ends the session.
+                executeInSession("ROLLBACK", session, null, true);
             } catch (final RuntimeException failed) {
                 // The session goes regardless; its transaction's writes were never committed.
                 logger.warn("Rolling back ended session {} failed: {}", session.getSessionId(), failed.getMessage());

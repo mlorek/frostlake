@@ -29,7 +29,7 @@ import java.util.List;
  * ({@link CoercedNumericArgumentAccumulator}) and takes live's whole-number rule instead.
  */
 public class PercentileContAccumulator implements AggregateFunction.Accumulator, ApproximateAwareAccumulator,
-    CoercedNumericArgumentAccumulator {
+    CoercedNumericArgumentAccumulator, DecfloatAwareAccumulator {
     private final List<Object> values = new ArrayList<>();
     private boolean approximateArgument;
     private boolean coercedArgument;
@@ -60,6 +60,14 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
         this.coercedArgument = coerced;
     }
 
+    /** Whether the argument is declared DECFLOAT, interpolated to 38 digits (see DecfloatAggregates). */
+    private boolean decfloatArgument;
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloatArgument = decfloat;
+    }
+
     /** The JSON nulls of a VARIANT argument, each sorting after every number (see AggregateNumerics). */
     private int jsonNulls;
 
@@ -80,6 +88,9 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
     public Object getResult() {
         // Interpolation reads the same from either end: a fraction counted downwards is its complement upwards.
         final double upwards = descending ? 1 - percentile : percentile;
+        if (decfloatArgument) {
+            return DecfloatAggregates.percentileCont(values, upwards);
+        }
         return coercedArgument
             ? AggregateNumerics.percentileContOverCoerced(values, upwards, descending ? 0 : jsonNulls)
             : AggregateNumerics.percentileCont(values, upwards, approximateArgument, descending ? 0 : jsonNulls);

@@ -146,10 +146,16 @@ public final class PythonRuntime {
      * {@code module} makes a helper module of the runtime's from its source. A namespace keeps only the names the
      * interpreter itself defines in it, the dunder ones. {@code restore} puts back what the interpreter shares
      * between calls as it stood when the runtime was made, or a helper module once it was made: the built-in names
-     * and the environment whole, and the modules the runtime made - a helper module and those it installed on
-     * {@code sys.modules}, which no file holds - under their names there, each member a routine replaced or deleted
-     * put back, and so for the classes they define. A member a routine added to a module is left: the import system
-     * itself adds a package's submodules as members.
+     * and the environment whole, the modules the runtime made - a helper module and those it installed on
+     * {@code sys.modules}, which no file holds - under their names there, and what the runtime's own code is made
+     * of. That is each module the runtime made (this one included) and every class and function its sources define,
+     * whether a module holds it, a closure does (the snowpark emulation defines its classes inside a function, so
+     * {@code GroupedFrame} lives in no module) or only {@code object.__subclasses__()} finds it: a member a routine
+     * replaced or deleted is put back and one it added is removed - an added {@code Session.__getattribute__} would
+     * otherwise answer for {@code session.sql} in every later statement - and so for a class's bases, a module's
+     * class and a function's code, defaults and closure cells. The cpython worker ({@code cpython_worker.py}) does
+     * the same, function for function. The standard library's modules are not guarded: the import system and the
+     * modules themselves change their members as they run.
      */
     private static final String RUNTIME_SOURCE = """
         import types as _types
@@ -162,13 +168,16 @@ public final class PythonRuntime {
         _environ_base = None
         _installed = {}
         _guarded = []
+        _functions = []
+        _guarded_ids = set()
         _missing = object()
-        def bind(namespace):
+        def bind(namespace, runtime):
             global _namespace, _base, _builtins_base, _environ_base
             _namespace = namespace
             _base = dict((k, v) for k, v in namespace.items() if k.startswith('__') and k.endswith('__'))
             _builtins_base = dict(_builtins.__dict__)
             _environ_base = dict(_os.environ)
+            _guard(runtime)
         def enter():
             saved = dict(_namespace)
             _namespace.clear()
@@ -177,15 +186,47 @@ public final class PythonRuntime {
         def leave(saved):
             _namespace.clear()
             _namespace.update(saved)
+        def _owned(value):
+            return str(getattr(value, '__module__', '')).startswith('__frostlake')
         def _guard(holder):
-            for kept, _ in _guarded:
-                if kept is holder:
+            if id(holder) in _guarded_ids:
+                return
+            _guarded_ids.add(id(holder))
+            _guarded.append((holder, type(holder), dict(holder.__dict__), getattr(holder, '__bases__', None)))
+            for value in list(holder.__dict__.values()):
+                _guard_member(value)
+        def _guard_member(value):
+            if isinstance(value, (staticmethod, classmethod)):
+                value = value.__func__
+            if isinstance(value, property):
+                for part in (value.fget, value.fset, value.fdel):
+                    _guard_member(part)
+            elif isinstance(value, type):
+                if _owned(value):
+                    _guard(value)
+            elif isinstance(value, _types.FunctionType) and _owned(value):
+                if id(value) in _guarded_ids:
                     return
-            _guarded.append((holder, dict(holder.__dict__)))
-            if isinstance(holder, _types.ModuleType):
-                for value in list(holder.__dict__.values()):
-                    if isinstance(value, type) and str(getattr(value, '__module__', '')).startswith('__frostlake'):
-                        _guard(value)
+                _guarded_ids.add(id(value))
+                cells = [_cell(cell) for cell in value.__closure__ or ()]
+                _functions.append((value, value.__code__, value.__defaults__, value.__kwdefaults__, cells))
+                for held in cells:
+                    _guard_member(held)
+        def _cell(cell):
+            try:
+                return cell.cell_contents
+            except ValueError:
+                return _missing
+        def _guard_classes():
+            seen = set()
+            pending = [object]
+            while pending:
+                for sub in type.__subclasses__(pending.pop()):
+                    if id(sub) not in seen:
+                        seen.add(id(sub))
+                        pending.append(sub)
+                        if _owned(sub):
+                            _guard(sub)
         def module(name, source):
             before = set(_sys.modules)
             made = _types.ModuleType(name)
@@ -196,15 +237,36 @@ public final class PythonRuntime {
                 if isinstance(installed, _types.ModuleType) and getattr(installed, '__spec__', None) is None:
                     _installed[key] = installed
                     _guard(installed)
+            _guard_classes()
             return made
         def _put_back_members(current, pristine):
             for key, value in pristine.items():
                 if current.get(key, _missing) is not value:
                     current[key] = value
-        def _put_back_class(holder, pristine):
+        def _put_back(holder, kind, pristine, bases):
+            if type(holder) is not kind:
+                holder.__class__ = kind
+            current = holder.__dict__
+            for key in [k for k in current if k not in pristine]:
+                delattr(holder, key)
             for key, value in pristine.items():
-                if holder.__dict__.get(key, _missing) is not value:
+                if current.get(key, _missing) is not value:
                     setattr(holder, key, value)
+            if bases is not None and holder.__bases__ != bases:
+                holder.__bases__ = bases
+        def _put_back_function(function, code, defaults, kwdefaults, cells):
+            if function.__code__ is not code:
+                function.__code__ = code
+            if function.__defaults__ is not defaults:
+                function.__defaults__ = defaults
+            if function.__kwdefaults__ is not kwdefaults:
+                function.__kwdefaults__ = kwdefaults
+            for cell, value in zip(function.__closure__ or (), cells):
+                if _cell(cell) is not value:
+                    if value is _missing:
+                        del cell.cell_contents
+                    else:
+                        cell.cell_contents = value
         def restore():
             current = _builtins.__dict__
             for key in [k for k in current if k not in _builtins_base]:
@@ -219,11 +281,10 @@ public final class PythonRuntime {
             for key, installed in _installed.items():
                 if _sys.modules.get(key) is not installed:
                     _sys.modules[key] = installed
-            for holder, pristine in _guarded:
-                if isinstance(holder, type):
-                    _put_back_class(holder, pristine)
-                else:
-                    _put_back_members(holder.__dict__, pristine)
+            for holder, kind, pristine, bases in _guarded:
+                _put_back(holder, kind, pristine, bases)
+            for guarded in _functions:
+                _put_back_function(*guarded)
         """;
 
     /** Makes {@link #RUNTIME_SOURCE} a module bound to the namespace it runs in, leaving no name of its own there. */
@@ -232,7 +293,7 @@ public final class PythonRuntime {
         __fl_runtime = __fl_types.ModuleType('__frostlake_runtime')
         exec(compile(__fl_runtime_source, '<frostlake>', 'exec'), __fl_runtime.__dict__)
         del __fl_types, __fl_runtime_source
-        __fl_runtime.bind(globals())
+        __fl_runtime.bind(globals(), __fl_runtime)
         """;
 
     /** A new interpreter, with the runtime's own module made on it. */
