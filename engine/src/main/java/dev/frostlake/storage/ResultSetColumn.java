@@ -177,6 +177,18 @@ public class ResultSetColumn {
     }
 
     /**
+     * This column under another name.
+     *
+     * @param renamed the name
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withName(final String renamed) {
+        return new ResultSetColumn(renamed, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, derivedNullable);
+    }
+
+    /**
      * This column carrying whether its expression can answer NULL (see {@link #getDerivedNullable}).
      *
      * @param derived whether it can

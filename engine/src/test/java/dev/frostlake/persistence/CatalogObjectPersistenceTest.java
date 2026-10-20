@@ -613,6 +613,40 @@ public class CatalogObjectPersistenceTest {
     }
 
     /**
+     * A pipe's refresh loads in a session of its own, as a task's run does, and the stage files it read owe the
+     * checkpoint that follows it: a WAL restart reads the table as the refresh left it, and does not load the stage
+     * again as it stands then.
+     */
+    @Test
+    public void aPipeRefreshIsNotLoadedAgainByAWalRestart() throws IOException {
+        final Path files = Files.createDirectories(dir.resolve("pipe-refresh-files"));
+        Files.writeString(files.resolve("a.csv"), "1\n2\n");
+        final Path wal = dir.resolve("pipe-refresh").resolve("wal.log");
+        final EngineConfig config = walConfig(wal);
+        config.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
+        final DatabaseEngine first = new DatabaseEngine(config);
+        first.execute("CREATE DATABASE d1");
+        first.execute("CREATE SCHEMA d1.s1");
+        first.execute("USE SCHEMA d1.s1");
+        first.execute("CREATE TABLE loaded (a INT)");
+        first.execute("CREATE STAGE st URL='file://" + files + "'");
+        first.execute("CREATE PIPE pp AS COPY INTO loaded FROM @st FILE_FORMAT = (TYPE = 'CSV')");
+        first.execute("ALTER PIPE pp REFRESH");
+        final List<String> listings = Arrays.asList("SELECT a FROM d1.s1.loaded ORDER BY a");
+        final List<String> before = readings(first, listings, true);
+        assertTrue(before.get(0).endsWith("| 1 | 2"), before.get(0));
+        // A file staged after the refresh is no part of what it loaded.
+        Files.writeString(files.resolve("b.csv"), "3\n");
+        first.shutdown();
+
+        final EngineConfig again = walConfig(wal);
+        again.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
+        final DatabaseEngine second = new DatabaseEngine(again);
+        assertSameReadings(before, readings(second, listings, true), "after a WAL restart");
+        second.shutdown();
+    }
+
+    /**
      * A warehouse keeps when it last changed state across a snapshot restart, as it keeps when it was created:
      * SHOW WAREHOUSES reads the same resumed_on and updated_on afterwards.
      */
@@ -783,11 +817,16 @@ public class CatalogObjectPersistenceTest {
     }
 
     private DatabaseEngine walEngine(final Path walFile) {
+        return new DatabaseEngine(walConfig(walFile));
+    }
+
+    /** A configuration that keeps a write-ahead log in the given file and checkpoints only when a run asks. */
+    private static EngineConfig walConfig(final Path walFile) {
         final EngineConfig config = new EngineConfig();
         config.setProperty(EngineConfig.PROP_DURABILITY_WAL_ENABLED, "true");
         config.setProperty(EngineConfig.PROP_DURABILITY_WAL_FILE, walFile.toString());
         config.setProperty(EngineConfig.PROP_DURABILITY_CHECKPOINT_INTERVAL, "0");
-        return new DatabaseEngine(config);
+        return config;
     }
 
     // ------------------------------------------------------------------ readings

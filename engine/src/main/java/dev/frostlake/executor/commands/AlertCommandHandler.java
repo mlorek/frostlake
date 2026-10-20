@@ -24,6 +24,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Alert;
@@ -128,7 +129,8 @@ public final class AlertCommandHandler {
             }
             schema.dropAlert(name);
         }
-        alert.setOwner(catalog.currentRoleForOwner());
+        // The future grants on the schema's or the database's alerts are the new alert's (documented).
+        alert.setOwner(FutureGrants.ownerOfNew(catalog, "ALERT", schema, name));
         if (definition.tagList() != null) {
             InlineTags.apply(alert, definition.tagList(), queryExecutor);
         }
@@ -238,13 +240,38 @@ public final class AlertCommandHandler {
                 alert.setState(AlertState.SUSPENDED);
             }
         } else if (action.SET() != null) {
+            final List<FrostlakeParser.AlertPropertyContext> properties = new ArrayList<>();
+            final List<FrostlakeParser.AlertSettingContext> parameters = new ArrayList<>();
+            final List<String> names = new ArrayList<>();
+            for (final FrostlakeParser.AlertSettingContext setting : action.alertSetting()) {
+                if (setting.alertProperty() != null) {
+                    properties.add(setting.alertProperty());
+                } else {
+                    parameters.add(setting);
+                    names.add(setting.identifier().getText());
+                }
+            }
+            judgeParameters(names, alert);
             final String schedule = alert.getSchedule();
-            applyProperties(catalog, alert.copy(alert.getName()), action.alertProperty());
-            applyProperties(catalog, alert, action.alertProperty());
+            applyProperties(catalog, alert.copy(alert.getName()), properties);
+            applyProperties(catalog, alert, properties);
+            for (final FrostlakeParser.AlertSettingContext parameter : parameters) {
+                alert.getParameters().put(ParameterRegistry.canonical(parameter.identifier().getText()),
+                    TaskPropertyValue.of(parameter.taskPropertyValue()).text());
+            }
             rescheduleIfChanged(schema, alert, schedule);
         } else if (action.UNSET() != null) {
+            final List<String> names = new ArrayList<>();
             for (final FrostlakeParser.AlertParameterContext parameter : action.alertParameter()) {
-                if (parameter.WAREHOUSE() != null) {
+                if (parameter.identifier() != null) {
+                    names.add(parameter.identifier().getText());
+                }
+            }
+            judgeParameters(names, alert);
+            for (final FrostlakeParser.AlertParameterContext parameter : action.alertParameter()) {
+                if (parameter.identifier() != null) {
+                    alert.getParameters().remove(ParameterRegistry.canonical(parameter.identifier().getText()));
+                } else if (parameter.WAREHOUSE() != null) {
                     alert.setWarehouse(null);
                 } else if (parameter.COMMENT() != null) {
                     alert.setComment(null);
@@ -261,6 +288,20 @@ public final class AlertCommandHandler {
         } else if (action.ACTION() != null) {
             alert.setAction(ParseTreeText.taskBodyText(action.taskBody()));
         }
+    }
+
+    /**
+     * Judges the parameters an ALTER ALERT … SET or UNSET names before any is applied (live-verified): a session
+     * parameter or an alert's own LOG_LEVEL and its kin is taken; a few parameters are refused at the alert's level,
+     * {@code cannot set parameter 'NETWORK_POLICY' at 'ALERT'}; any other parameter for want of access, "Insufficient
+     * privileges to operate on alert 'A'."; and a name no parameter has as an invalid property of an alert.
+     */
+    private static void judgeParameters(final List<String> names, final Alert alert) {
+        final List<Boolean> taken = new ArrayList<>();
+        for (final String name : names) {
+            taken.add(Boolean.valueOf(ParameterRegistry.isAlertParameter(ParameterRegistry.canonical(name))));
+        }
+        ParameterLevels.judgeAlter(names, taken, "ALERT", "alert", alert.getName());
     }
 
     private void rescheduleIfChanged(final Schema schema, final Alert alert, final String previousSchedule) {

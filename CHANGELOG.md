@@ -8,6 +8,275 @@ fix, not a regression**: SQL that Snowflake rejects and Frostlake accepted was a
 closing it can break code that relied on the leniency. Those changes are listed first in every release
 for exactly that reason.
 
+## 0.3.1 — unreleased
+
+Changes since 0.3.0 accumulate here as they land.
+
+### Now refused (SQL that earlier versions accepted)
+
+- **A routine's EXTERNAL_ACCESS_INTEGRATIONS names external access integrations only**: an API, catalog,
+  notification or security integration there is `Integration 'X' is not an external access integration.`, where any
+  integration was taken (documented).
+- **A SQL procedure whose block value is a query in parentheses that does not parse is refused as it is created**
+  (live-verified): `LET c := (SELECT 1 FROM x y z)`, `c := 1 + (SELECT …)` and `RETURN (SELECT …)` are refused at
+  the query's SELECT and then at the query's own first fault, as the same block is refused when it runs; the
+  procedure was created and failed at each CALL.
+- **A correlated subquery over a derived relation of a shape of its own is refused before any row** (live-verified):
+  one that computes over (`id + 0`, a cast, a call), groups, unites or joins its table, or that stands beside another
+  relation in the FROM, as a pass-through relation already was - unless the column it reads is a constant, the
+  statistics of what the column computes settle the correlation (`-id` never meets the inner ids), or the relation is
+  pruned (its own `FALSE`, a condition its statistics rule out, its own constant `WHERE 1 = 0` over a derived relation
+  of its own, or the statement's constant `WHERE 1 = 0` over one that does not group). It answered no rows.
+- **`LATERAL TABLE( … )` over a user-defined table function** is a syntax error at `TABLE`, as it is over a built-in
+  one (live-verified); a handler function's call was taken.
+- **A JavaScript table function called with an OVER clause and joined with an ON** is refused as any lateral table
+  function with a join predicate is (`Unsupported feature 'lateral table function called with OUTER JOIN syntax or a
+  join predicate (ON clause)'.`), where it was refused as a window function.
+- **A Java procedure whose handler is no static method is made an instance of as it is created**, as a Java
+  function's is (live-verified): a class whose constructor raises is refused with the handler's report
+  (`java.lang.ArithmeticException: / by zero` at `function_handler_0//H.<init>(InlineCode.java:1)`), and one with no
+  public zero-argument constructor as a function's is; the procedure was created and failed at each CALL.
+- **A dotted name over a block's variable is refused** (live-verified): `RETURN x.a` over a variable a LET gives a
+  value, or a DECLARE gives a VARIANT or an OBJECT, is `invalid identifier 'X'` at the variable, as over a DECLAREd
+  number already; it answered NULL.
+- **SHOW, DESCRIBE and GET_DDL answer a schema's object only to a role that uses its database and schema**
+  (documented: a role needs USAGE on the database and the schema to reach an object in it): a role holding SELECT on
+  a table but no USAGE on its containers no longer finds it listed by SHOW … IN ACCOUNT or answered by DESCRIBE and
+  GET_DDL, as SELECT and INFORMATION_SCHEMA already refused it.
+- **DESCRIBE SEQUENCE, DESCRIBE TASK and DESCRIBE STREAM refuse an object the role does not see** as a missing one,
+  as GET_DDL does: they answered the sequence and the task in full, and the stream with no row.
+- **OBJECT_INSERT over a structured OBJECT keeps to its declared fields** (live-verified): with the update flag, a
+  field the type does not declare is `Function OBJECT_INSERT: expected structured object to contain field c but it
+  did not.`, a NULL value is `Cannot set NULL value for structured object field` and a value the field's type does
+  not read is that cast's refusal (`Numeric value 'zz' is not recognized`); the field was added, removed and stored
+  as text.
+- **A path, a subscript or a GET to a field a structured OBJECT does not declare is refused as the statement
+  compiles** (live-verified): `Function GET: expected structured object to contain field nosuch but it did not.` over
+  an empty table, a NULL object, a filter that keeps no row and in a CREATE VIEW alike, where only a non-NULL row
+  reaching it was refused and the view was created. GET over a structured OBJECT takes its key as a string literal
+  alone (`Argument number 1 for function 'GET' needs to be a string literal.`); a computed key read the field.
+- **A VECTOR is refused by the statistics, the boolean aggregates and the percentiles' window forms**
+  (live-verified): CORR, COVAR_POP, COVAR_SAMP and the REGR_ family in the DOUBLE conversion's words (`invalid type
+  [TO_DOUBLE(…)] for parameter 'TO_DOUBLE'`), BOOLAND_AGG, BOOLOR_AGG and BOOLXOR_AGG in TO_BOOLEAN's, and
+  PERCENTILE_CONT and PERCENTILE_DISC with OVER as without it; they answered NULL, 0.0, FALSE or a vector, or failed
+  with a number reader's message. REGR_COUNT still counts the rows.
+- **A MAP is read by a key of its own key type alone, judged as the statement compiles** (live-verified): over a
+  NUMBER-keyed map a text, a FLOAT, a VARIANT, a BOOLEAN, NULL and a number with a fraction are `Function GET cannot be
+  used with arguments of types MAP(NUMBER(38,0), VARCHAR(16777216)) and VARCHAR(1)`, by a subscript, GET, a path and
+  MAP_CONTAINS_KEY (which names the key first) alike, and a text-keyed map refuses a number the same way; they
+  answered NULL or read the member the text named.
+- **A FLOAT amount of DATEADD, TIMEADD, TIMESTAMPADD and ADD_MONTHS that rounds to a billion, or to 10^18 for a
+  minute or finer, is refused in the fixed-point cast's words** (live-verified): `Number out of representable range:
+  type FIXED[SB4](9,0){not null}, value 1.5e+09`, the amount as C's `%g` prints it and the argument's nullability
+  spelled in; it was shifted.
+- **TIME_SLICE refuses a slice length that is no whole number of one at least** (live-verified): a FLOAT, a VARIANT
+  and a fixed-point number with a scale by their type as the statement compiles (`invalid type [FLOAT] for parameter
+  'slice-length'`), a length written out that is not positive by its value, read as a 32-bit integer (`invalid value
+  [-1,294,967,296] …` for 3000000000), and a row's as the row is read (`Invalid parameter value: 0. Reason:
+  non-positive slice length`); they sliced or divided by zero.
+- **REGR_SXY, REGR_R2, REGR_VALX and REGR_VALY refuse a VECTOR** (live-verified): REGR_SXY and REGR_R2 in the
+  product's words, `Invalid argument types for function '*': (VECTOR(FLOAT, 2), NUMBER(38,0))`, REGR_VALX and
+  REGR_VALY in the DOUBLE conversion's where they return it; they answered, or failed with a number reader's message.
+- **SYSTEM$ABORT_TRANSACTION of an autocommit statement's own transaction answers `Could not abort txn: <id>`**
+  (live-verified), and the statement runs on; it was aborted, and the statement failed with an internal message.
+- **ALTER TABLE … SET and UNSET refuse each parameter in the account's class for it** (live-verified, every parameter
+  the account lists): LOG_LEVEL, TRACE_LEVEL, ROW_TIMESTAMP_DEFAULT and the other task, alert, logging and pipe
+  parameters are `cannot set parameter 'LOG_LEVEL' at 'TABLE'`, where they were refused for want of access or set;
+  BASE_LOCATION is `Unsupported feature 'BASE_LOCATION'.`, and a name no parameter has is an invalid property before
+  the table is looked for; an Iceberg table's parameters over a plain table — CATALOG, EXTERNAL_VOLUME,
+  TARGET_FILE_SIZE, STORAGE_SERIALIZATION_POLICY, PURGE_ON_DROP_TABLE, REPLACE_INVALID_CHARACTERS,
+  VENDED_CREDENTIAL_STORAGE_REGION and a named CATALOG_SYNC — are refused in CREATE's words, where they were set;
+  CREATE TABLE refuses VENDED_CREDENTIAL_STORAGE_REGION too.
+- **ALTER ALERT … SET refuses a parameter an alert takes no value of** (live-verified): a few at the alert's level
+  (`cannot set parameter 'NETWORK_POLICY' at 'ALERT'`), any other for want of access (`Insufficient privileges to
+  operate on alert 'A'.`), and a name no parameter has as an invalid property.
+- **A table function called by a name of more than three parts is a syntax error** (live-verified):
+  `TABLE(a.b.c.flatten(…))` and `LATERAL a.b.c.flatten(…)` are refused at the dot that opens the fourth part, then at
+  the first token after the call that closes no bracket (after a join's alias, its ON as well); the built-in ran.
+- **COUNT(DISTINCT a, b) over a window that orders its rows is refused at its OVER** (live-verified):
+  `too many arguments for function [Window function COUNT(DISTINCT ...)] expected 1, got 2`; it counted.
+
+### Added
+
+- **External access integrations** (documented): `CREATE [OR REPLACE] EXTERNAL ACCESS INTEGRATION` with
+  `ALLOWED_NETWORK_RULES` (egress network rules that exist; required), `ALLOWED_API_AUTHENTICATION_INTEGRATIONS`
+  (API_AUTHENTICATION security integrations, or NONE), `ALLOWED_AUTHENTICATION_SECRETS` (secrets that exist, ALL or
+  NONE), `ENABLED` (required) and `COMMENT`; ALTER sets each of them and unsets all but ENABLED; DESCRIBE lists them
+  by full name; SHOW INTEGRATIONS calls the kind `EXTERNAL_ACCESS` in category `SECURITY`. Frostlake never calls out.
+- **CREATE OR ALTER TASK** (live-verified): a task that is not there is created; one that is becomes what the
+  statement writes — a schedule, comment, predecessor, condition or parameter left out is unset — and keeps its
+  state, its runs and its tags (`Statement executed successfully.`). A warehouse that does not exist is refused and
+  the task left as it was; a running root task is refused (`Unable to update graph with root task … since that root
+  task is not suspended.`); IF NOT EXISTS and tags are no part of the statement.
+- **TASK_HISTORY, COMPLETE_TASK_GRAPHS and CURRENT_TASK_GRAPHS tell a run's query and scheduler** (live-verified): a
+  run that ran tells `QUERY_ID` (the query QUERY_HISTORY lists for the task's statement), `ERROR_CODE` /
+  `FIRST_ERROR_CODE` (`100051` for a division by zero), `QUERY_HASH` and `QUERY_PARAMETERIZED_HASH` (QUERY_HISTORY's,
+  versions 2 and 1) and `SCHEDULED_BY_USER` (who ran EXECUTE TASK); a scheduled run tells who resumed the task and
+  `NEXT_SCHEDULED_TIME`, the fire after its own. They were NULL.
+- **INFORMATION_SCHEMA.SERVERLESS_TASK_HISTORY**: the account's four columns, and no row, since the engine bills no
+  credits.
+- **A bare table function call after LATERAL takes an OVER clause**, as one inside `TABLE( … )` does (live-verified):
+  `FROM ev, LATERAL f(ev.v) OVER (PARTITION BY ev.g) f`; FLATTEN takes the clause and reads no partitions.
+- **A session of a user starts from the user's DEFAULT_SECONDARY_ROLES** when it sets them: `('ALL')` puts every role
+  granted to the user in use, `()` none (documented).
+
+- **Storage integrations** (live-verified for S3, documented otherwise): `CREATE [OR REPLACE] STORAGE INTEGRATION …
+  TYPE = EXTERNAL_STAGE` (or `POSTGRES_EXTERNAL_STORAGE`) with `STORAGE_PROVIDER` `'S3'`, `'S3CHINA'` or `'S3GOV'`
+  and `STORAGE_AWS_ROLE_ARN`, `'GCS'`, or `'AZURE'` and `AZURE_TENANT_ID`, `STORAGE_ALLOWED_LOCATIONS` and `ENABLED`
+  (required), `STORAGE_BLOCKED_LOCATIONS` and `COMMENT`; SHOW INTEGRATIONS tells `EXTERNAL_STAGE` in category
+  `STORAGE`; DESCRIBE lists the provider, the locations and the identity the account reaches the cloud as; ALTER sets
+  all but the type and the provider and unsets ENABLED, STORAGE_BLOCKED_LOCATIONS and COMMENT. A stage that names one
+  is refused for a location outside its allowed ones or inside a blocked one (`Location 's3://…' is not allowed by
+  integration SI. Please use DESC INTEGRATION to check out allowed and blocked locations.`). It was a syntax error.
+- **Snowflake OAuth, External OAuth, SAML2 and SCIM security integrations** (documented; the listing of a custom OAuth
+  client live-verified): each takes the properties its page documents and requires its own, its variant-choosing
+  values judged; SHOW tells `OAUTH - CUSTOM`, `EXTERNAL_OAUTH - OKTA`, `SAML2` and `SCIM - OKTA`, and DESCRIBE lists
+  ENABLED and what the integration was written with. They were `Unsupported feature 'SECURITY INTEGRATION of type
+  OAUTH'.`.
+- **GRANT and REVOKE ON DYNAMIC TABLE and ON EVENT TABLE** (documented), recorded where SHOW GRANTS ON reads them;
+  GRANT ALL on a dynamic table is MONITOR, OPERATE and SELECT. They were syntax errors.
+- **A COPY's transformation query takes a staged-file query's arguments** (live-verified): `COPY INTO t FROM (SELECT
+  $1 FROM @st (FILE_FORMAT => ff))`, judged as the query's are (a format written as a list is no constant); the
+  format and the pattern they give read the files where the COPY writes no FILE_FORMAT or PATTERN of its own. It was
+  a syntax error.
+- **A block's variable named by DEFAULT, CONSTRAINT, JOIN, INNER, CROSS, CAST, CASE or WHEN in a DECLARE section, and
+  an assignment to one** (live-verified): `DECLARE join INT DEFAULT 4`, `DECLARE join CURSOR FOR …`, `DECLARE join
+  EXCEPTION (…)` and `inner := inner + 1` are taken, where they were syntax errors; a statement that begins with one
+  of the words elsewhere is refused where it was.
+- **FETCH … INTO a variable named by CASE, WHEN, CAST, DEFAULT, CONSTRAINT, JOIN, INNER or CROSS** (live-verified):
+  `FETCH c INTO join` fills the variable, as `SELECT … INTO :join` does. It was a syntax error.
+- **ALTER DYNAMIC TABLE names its table by IDENTIFIER()** (live-verified), as ALTER TABLE does, for every action:
+  `ALTER DYNAMIC TABLE IDENTIFIER('dt') RENAME TO dt7`, a SUSPEND, a RESUME, a SET, a qualified name in the string and
+  IF EXISTS alike. It was a syntax error.
+
+### Fixed
+
+- **A Java or Scala procedure's handler that raises reads as its report** (live-verified), as a function's
+  handler's does: `User Error Report:`, `Java Stack Trace:`, the exception, its frames in `InlineCode.java` or
+  `ScalaUDF` (an object's method under its forwarder) and its cause, then ` in function P with handler H.run`, which
+  a block's handler reads as SQLCODE `100315` and SQLSTATE `P0000`. The procedure failed with the exception's message
+  alone, and SQLCODE `100351`.
+- **A statement a Java or Scala handler runs through its Snowpark session that fails is the driver's exception**
+  (live-verified): a checked `java.sql.SQLException` printed `net.snowflake.client.jdbc.SnowflakeSQLException: ` and
+  the statement's refusal, with the code and state a block reads for it (`2003` / `42S02` for a missing table) and
+  frames from the session's `collect` down to the handler. So is the driver's refusal of a whole number no Long holds.
+  It was an unchecked exception of the engine's own.
+- **A NullPointerException a Java handler of RUNTIME_VERSION 17 or later raises keeps its sentence** in the report
+  (`Cannot invoke "String.length()" because "<local3>" is null`), as the account's Java 17 composes it; a handler of
+  Java 11 is named without it, as before (live-verified).
+- **A Scala handler class the body does not hold is refused at CREATE as the class loader reports it**
+  (live-verified): `java.lang.ClassNotFoundException: G` and the Java 11 class loader's three frames, for a function,
+  a procedure and a table function alike; it was `Failed to compile Scala routine F: G`, or the exception alone.
+- **What a Scala handler's object holds lasts as a Java handler's static fields do** (live-verified): a function's for
+  the statement and the place in it that calls the function, so `SELECT f(1)` twice answers 1 and 1 and
+  `SELECT f(1), f(1)` 1|1, and a procedure's for its CALL. It lasted for as long as the engine ran.
+- **A JavaScript handler that makes an `Error` answers under a Python procedure as it does on its own**: a procedure or
+  a function the Python procedure's statement calls failed with a NullPointerException as the script engine walked
+  the Python handler's frames for the error's stack.
+- **A JavaScript function whose body does not parse is refused in the account's words** (live-verified):
+  `JavaScript compilation error: Uncaught SyntaxError: Unexpected token ';' in F at 'return (;' position 8`, with no
+  stack lines - a token the parser did not expect named by its kind (`Unexpected number`, `Unexpected string`,
+  `Unexpected identifier 'B'`, `Unexpected end of input`), a text, a number or a character no token starts as
+  `Invalid or unexpected token` where it starts, and a fault past the body's end quoted on the closing brace's line;
+  a table function's body is quoted inside its parentheses. It was `JavaScript execution error:` in the script
+  engine's own words.
+- **A JavaScript table function's handler object reads as the account's** (live-verified): an error a member raises
+  lists the object's own functions after `stackstrace: `, each at its line counted from 0 (`processRow line: 0`),
+  with no frame for the routine; a member that is no function is `Uncaught TypeError: udtfObject.initialize is not a
+  function`, quoting the account's own line calling it; a body whose value is no object is `User Defined Table
+  Function not an object`; `argumentInfo` tells a constant number argument by `isConst: true` and its `constValue`;
+  and the object is made once for the statement's call, so what it keeps carries from one partition to the next. A
+  name no function carries in a lateral `TABLE( … )` is an unknown table function before the select list's names.
+- **Inside an aggregate's argument, an IN list's element the subject never equals and a COALESCE's or an NVL's
+  argument after one that holds no NULL correlate nothing**, in a value's subquery and an IN's alike, and a settled
+  condition folds in an IN's subquery as in a value's (live-verified): `(SELECT MAX(IFF(tt.id IN (fz.id, 1), 'x',
+  value)) FROM tt)` and `id IN (SELECT MAX(IFF(tt.id = fz.id, 5, 7)) FROM tt)` are answered where they were refused.
+  A text column none of whose rows is NULL holds no NULL for the rule.
+- **A block's binds read as the account reads them** (live-verified): a RESULTSET's unaliased column is named by the
+  query as the block wrote it (`:S`, `UPPER(:S)`), an argument-count refusal echoes a variable holding NULL as
+  written (`[FO(:s, 1)]`, where it was `[FO((null :: VARCHAR(10)), 1)]`), and `LIMIT ?` bound to NULL through
+  EXECUTE IMMEDIATE's USING limits nothing, where it was refused.
+- **A bare table function in a common table expression's query is refused with the account's lines**
+  (live-verified): its parenthesis, its first argument's name and the token after that argument's value.
+- **GRANT OWNERSHIP ON MATERIALIZED VIEW moves the view to the role**, and **a secure materialized view's text is its
+  owner's** (documented): SHOW MATERIALIZED VIEWS and SHOW VIEWS show a role that does not own it an empty `text`,
+  as for a secure view. The grant recorded an OWNERSHIP privilege and left the owner as it was.
+- **A grant ON TABLE or ON VIEW over a materialized view or a dynamic table is that relation's**: it is recorded under
+  the relation's own kind, where SHOW GRANTS ON and the privilege views read it. It was recorded under TABLE, and a
+  dynamic table was not found.
+- **INFORMATION_SCHEMA's privilege views list only the objects the current role reaches** (documented): those it owns
+  or holds a privilege on. They listed every grant in the database.
+- **ALTER SECRET … SET OAUTH_SCOPES is judged against the secret's integration**, as CREATE SECRET is: a scope the
+  integration does not allow is `invalid value '[c]' for property 'OAUTH_SCOPES'`.
+- **A staged-file query's argument list that does not parse is refused with the account's lines** (live-verified):
+  a token after a whole argument is refused alone, `(FILE_FORMAT => ())` at the inner `)` alone, a `=>` inside a value
+  in parentheses and then the list's own `)`, `@st (,)` at the comma and `@st (=> ff)` at the `=>` and then where the
+  name's own `=>` was due.
+- **A sequence never hands a value out twice across a restart** (documented): a value drawn through a view or a SQL
+  function, one drawn inside a transaction that rolled back and one drawn by a statement that failed are kept by a
+  checkpoint, since no record of the write-ahead log carries them; a restart handed them out again.
+- **A correlated scalar subquery whose item reads the outer row through a derived table or a common table expression
+  of its own is typed from the item** (live-verified): `(SELECT c + o.k FROM (SELECT 1 AS c))` declares NUMBER(38,0),
+  where it declared VARCHAR(16777216) and RESULT_SCAN read its values as text.
+- **GET_DDL of a hybrid table writes `create or replace HYBRID TABLE`** (documented), so the DDL run back makes a
+  hybrid table that holds its keys again; it made a standard one.
+- **ARRAY_INTERSECTION, ARRAY_UNION_AGG and MAP_INSERT, MAP_DELETE, MAP_CAT and MAP_PICK keep a structured type**
+  (live-verified): ARRAY_INTERSECTION answers the elements' common type (`ARRAY(NUMBER(38,2))` over an ARRAY(INT) and
+  an ARRAY(NUMBER(10,2))), ARRAY_UNION_AGG its argument's with the element NOT NULL, and the MAP functions the map's,
+  so an element read from them keeps its exact digits; they answered ARRAY or MAP(VARCHAR, VARIANT), and arithmetic
+  on an element fell back to FLOAT.
+- **OBJECT_INSERT with the update flag casts the value to the structured field's declared type and keeps the type**
+  (live-verified): `'5'` into a NUMBER(38,0) field is 5, 2.7 is 3 and 5 into a VARCHAR field is `"5"`, and a table
+  built over the call stores the declared type; the field took the value's type. Without the flag a field the type
+  declares is refused in the account's words.
+- **A table built over a structured OBJECT stores an unsized VARCHAR field at VARCHAR(16777216)** (live-verified),
+  where it stored VARCHAR(134217728).
+- **A NUMBER-keyed MAP is read by the number a key names** (live-verified): `m[1]`, `m[2.0]`, `m[i]` and
+  `GET(m, 1.0)` read the member, where a subscript answered NULL and a join or a filter on it found nothing; MAP_KEYS
+  answers the keys as the map declares them, `[1,2]` typed `ARRAY(NUMBER(38,0) NOT NULL)`, where it answered
+  `["1","2"]` typed `ARRAY(VARIANT)`.
+- **A NaN or infinite FLOAT amount of DATEADD, TIMEADD, TIMESTAMPADD and ADD_MONTHS is refused in the account's
+  words** (live-verified), `Number out of representable range: type FIXED[SB4](9,0){not null}, value nan`, and a
+  VARIANT holding NaN as the VARIANT's cast, `… type FIXED, value NaN`, where Java's number parser spoke.
+- **REGR_VALX and REGR_VALY answer a DOUBLE** (live-verified): `REGR_VALX(g, g)` over an INT is `1.0`, typed
+  `FLOAT`, where it answered the INT.
+- **A statement waiting for another session's table lock ends at once when its own transaction is aborted**
+  (live-verified): `Transaction '<name>', id '<id>', was aborted by user '<user>'. SQL   execution canceled.`, the
+  session then holding the transaction as aborted; it waited for the holder, then reported a row written into the
+  aborted transaction.
+- **SYSTEM$ABORT_SESSION ends a request the session is running** at its statement's next checkpoint, its open
+  transaction rolled back, when the abort names the session by a number written out: the abort is carried out as
+  its request is read, where it waited for the other request, which ran on and committed.
+- **ALTER ALERT … SET and UNSET take a session parameter, LOG_LEVEL and their kin** (live-verified), several in one
+  SET, and SHOW PARAMETERS IN ALERT lists what an alert sets at level ALERT; it was a syntax error at the name.
+  SHOW GRANTS ON ALERT lists an alert's grants, and the future grants on a schema's alerts are a new alert's.
+- **A refusal names an unknown property as written** (live-verified): `invalid property 'foo' for 'TABLE'`, `'Foo'`,
+  and a quoted name with its quotes, for tables, schemas, views and sequences, where an unquoted name was upper-folded.
+- **SHOW PARAMETERS lists the parameters the system sets at level SYSTEM** (live-verified): ENABLE_USE_STABLE_PATH
+  reads `true` there, its default `false`, where it read its default with no level.
+- **A bound java.sql.Time keeps its milliseconds** (live-verified), at the clock its moment shows in UTC, through
+  setTime, setTime with a Calendar, setObject and setObject as Types.TIME alike; setObject as Types.TIME bound the
+  local clock, and every setter dropped the fraction.
+- **A policy's body is judged against its RETURNS first** (live-verified): a masking policy whose body is of another
+  type than it declares is `Declared return type 'NUMBER(38,0)' is incompatible with actual return type
+  'VARCHAR(134217728)'`, before its argument and return types are compared, where the generic mismatch was answered;
+  a row access policy may declare any type after RETURNS and is refused for it by name, `Row access policy return
+  type 'VARCHAR(134217728)' is not BOOLEAN.`, where any type but BOOLEAN was a syntax error.
+- **CREATE MASKING POLICY and CREATE ROW ACCESS POLICY compile before IF NOT EXISTS or OR REPLACE look at the name**
+  (live-verified): IF NOT EXISTS over a policy of the name refuses a body or a RETURNS the policy could not have, and
+  OR REPLACE whose body is refused leaves the policy it would replace as it was, as it does a policy of another kind;
+  the first answered that the policy exists, and the second dropped it.
+- **A manual refresh of a dynamic table whose query reads a relation that is gone is a failed refresh**
+  (live-verified): `Failed to refresh dynamic table with refresh_trigger MANUAL at data_timestamp … because of the
+  error: SQL compilation error: Target table failed to refresh: …`, the query expanded as a view's body under the
+  table's name, the missing object named in full and the role the table runs as noted; the missing object's own
+  sentence was answered.
+- **An arity sentence echoes a shift's unit and a DISTINCT as written** (live-verified): `DATEADD(day, 0.0000001)`
+  is `not enough arguments for function [DATEADD('DAY', 0.0000001)], expected 3, got 2`, and `SUM(DISTINCT 1, 2)
+  OVER ()` keeps its DISTINCT in the echo.
+- **A whole number of a scaled NUMBER cast to VARIANT keeps no trailing zeros** (live-verified):
+  `TO_JSON(100::NUMBER(10,2)::VARIANT)` and its VARCHAR are `100`, as TO_VARIANT gives them; they read `100.00`.
+
 ## 0.3.0 — unreleased
 
 Changes since 0.2.0 accumulate here as they land.

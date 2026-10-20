@@ -327,6 +327,7 @@ final class RestCatalogSnapshots {
             saved.config = alert.getConfig();
             saved.runbook = alert.getRunbook();
             saved.suspendAfterNumFailures = alert.getSuspendAfterNumFailures();
+            saved.parameters = new LinkedHashMap<>(alert.getParameters());
             saved.state = alert.getState() == null ? null : alert.getState().name();
             saved.wasAutoSuspended = alert.getWasAutoSuspended();
             saved.tags = new HashMap<>(alert.getTagValues());
@@ -408,6 +409,9 @@ final class RestCatalogSnapshots {
                 alert.setConfig(saved.config);
                 alert.setRunbook(saved.runbook);
                 alert.setSuspendAfterNumFailures(saved.suspendAfterNumFailures);
+                if (saved.parameters != null) {
+                    alert.getParameters().putAll(saved.parameters);
+                }
                 if (saved.state != null) {
                     alert.setState(AlertState.valueOf(saved.state));
                 }

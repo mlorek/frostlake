@@ -290,8 +290,8 @@ public class QueryHistoryFunction extends TableFunction {
         }
     }
 
-    /** A statement text's hash: the hex MD5 of the text as written. */
-    private static String textHash(final String text) {
+    /** A statement text's hash: the hex MD5 of the text as written, as TASK_HISTORY also reports a run's. */
+    static String textHash(final String text) {
         if (text == null) {
             return null;
         }

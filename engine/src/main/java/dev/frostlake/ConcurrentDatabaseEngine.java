@@ -18,6 +18,7 @@ package dev.frostlake;
 
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.executor.ReadOnlyRequest;
+import dev.frostlake.executor.RequestSessionAborts;
 import dev.frostlake.functions.scalar.file.NamedStage;
 import dev.frostlake.http.ExpiredSessionListener;
 import dev.frostlake.http.SessionContext;
@@ -156,6 +157,12 @@ public class ConcurrentDatabaseEngine {
                 // Read lock for read-only scripts, write lock for anything that mutates — decided
                 // ONCE per request from the parse tree (the unlock below must mirror the decision).
                 final boolean readOnly = isReadOnlyQuery(sql);
+                if (!readOnly) {
+                    // An abort of another session is carried out as the request is read, before it waits for the
+                    // engine: that session ends what it runs now rather than running on to its end and committing.
+                    RequestSessionAborts.carryOut(sql, session.getSettings().getSessionNumber(),
+                        engine.getSessionDirectory());
+                }
                 if (readOnly) {
                     engineLock.readLock().lock();
                 } else {

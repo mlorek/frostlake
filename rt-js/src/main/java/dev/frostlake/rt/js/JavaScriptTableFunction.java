@@ -17,6 +17,9 @@
 package dev.frostlake.rt.js;
 
 import dev.frostlake.executor.SessionZone;
+import dev.frostlake.executor.udf.ConstantTableArguments;
+import dev.frostlake.executor.udf.HandlerStateFactory;
+import dev.frostlake.executor.udf.StatementHandlerStates;
 import dev.frostlake.executor.udf.TablePartitionRows;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Function;
@@ -27,6 +30,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import tools.jackson.databind.JsonNode;
 
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import javax.script.ScriptEngine;
@@ -41,6 +45,15 @@ import javax.script.ScriptException;
  * processRow}, as is a declared column of an exact NUMBER type.
  */
 final class JavaScriptTableFunction {
+
+    /** The account's lines that call a handler object's members. */
+    private static final String INITIALIZE_CALL = "            udtfObject.initialize(argInfo, context);";
+    private static final String PROCESS_ROW_CALL =
+        "    var keepGoing = udtfObject.processRow(row, rowWriter, context);";
+    private static final String FINALIZE_CALL = "        udtfObject.finalize(rowWriter, context);";
+
+    /** What a table function's world is kept under among its function's states, before the session's zone. */
+    private static final String TABLE_WORLD = "table-world:";
 
     private static final int BEGIN = 0;
     private static final int ROW = 1;
@@ -70,34 +83,84 @@ final class JavaScriptTableFunction {
                     + function.getName());
             }
         }
-        final String source = JavaScriptHandler.tableSource(parameters, columns, function.getBody());
-        final JavaScriptWorld world = new JavaScriptWorld(SessionZone.current());
+        // A constant argument's value is every row's; the handler is told it as the account tells it.
+        final List<Object> constants = new ArrayList<>();
+        for (int i = 0; i < parameters.size(); i++) {
+            constants.add(ConstantTableArguments.isConstant(i) && !rows.isEmpty() && i < rows.get(0).size()
+                ? rows.get(0).get(i) : JavaScriptHandler.NOT_CONSTANT);
+        }
+        final String source = JavaScriptHandler.tableSource(parameters, columns, function.getBody(), constants);
+        // One world for the statement's call: its handler object, made once, reads every partition in turn, so what
+        // it keeps in itself carries from one partition to the next (live-verified). A call outside any statement
+        // has a world of its own.
+        final ZoneId zone = SessionZone.current();
+        final AutoCloseable kept = StatementHandlerStates.state(function, TABLE_WORLD + zone.getId(),
+            new HandlerStateFactory() {
+                @Override
+                public AutoCloseable create() {
+                    return new JavaScriptWorld(zone);
+                }
+            });
+        final JavaScriptWorld world = kept != null ? (JavaScriptWorld) kept : new JavaScriptWorld(zone);
         final ScriptEngine engine = world.engine();
+        Object driver = null;
         try {
-            final Object driver = world.invoker(source);
+            driver = world.invoker(source);
             final Object begun = JavaScriptHandler.invokeTable(engine, driver, BEGIN, function.getName(), parameters,
                 null);
             if (begun == null) {
                 throw new RuntimeException("User Defined Table Function object is missing property processRow");
             }
+            refuseMember(begun, function.getName());
             final List<List<Row>> written = new ArrayList<>();
             for (final List<Object> arguments : rows) {
-                written.add(rowsOf(JavaScriptHandler.invokeTable(engine, driver, ROW, function.getName(),
-                    parameters, arguments), columns));
+                final Object read = JavaScriptHandler.invokeTable(engine, driver, ROW, function.getName(), parameters,
+                    arguments);
+                refuseMember(read, function.getName());
+                written.add(rowsOf(read, columns));
             }
-            final List<Row> atEnd = rowsOf(JavaScriptHandler.invokeTable(engine, driver, END, function.getName(),
-                parameters, null), columns);
+            final Object ended = JavaScriptHandler.invokeTable(engine, driver, END, function.getName(), parameters,
+                null);
+            refuseMember(ended, function.getName());
+            final List<Row> atEnd = rowsOf(ended, columns);
             return new TablePartitionRows(written, atEnd);
         } catch (final ScriptException e) {
+            // A body that does not parse is refused as the account refuses it, before any of it runs.
+            final String unparsed = driver == null
+                ? JavaScriptSyntaxWording.of(engine, function.getName(), parameters, function.getBody(), true) : null;
+            if (unparsed != null) {
+                throw new RuntimeException(unparsed, e);
+            }
             throw new RuntimeException(JavaScriptErrorText.of(e, function.getName(), "(" + function.getBody() + ")",
                 JavaScriptHandler.BODY_FIRST_LINE, source, GraalJsEngine.hostOf(engine),
-                "Error executing JavaScript function " + function.getName() + ": " + e.getMessage()), e);
+                "Error executing JavaScript function " + function.getName() + ": " + e.getMessage(), true), e);
         } catch (final NoSuchMethodException e) {
             throw new RuntimeException("Error executing JavaScript function " + function.getName() + ": "
                 + e.getMessage(), e);
         } finally {
-            world.close();
+            if (kept == null) {
+                world.close();
+            }
         }
+    }
+
+    /**
+     * The account's refusal of a handler object that is no object, or of a member it calls that is no function,
+     * when the driver reports one (see {@link JavaScriptHandler#tableSource}): the latter quotes the account's own
+     * line calling the member, at the member's name (live-verified).
+     */
+    private static void refuseMember(final Object answered, final String name) {
+        if (!(answered instanceof String) || !((String) answered).startsWith(JavaScriptHandler.NO_MEMBER)) {
+            return;
+        }
+        final String member = ((String) answered).substring(JavaScriptHandler.NO_MEMBER.length());
+        final String calling = "initialize".equals(member) ? INITIALIZE_CALL
+            : "finalize".equals(member) ? FINALIZE_CALL : "processRow".equals(member) ? PROCESS_ROW_CALL : null;
+        if (calling == null) {
+            throw new RuntimeException("User Defined Table Function not an object");
+        }
+        throw new RuntimeException("JavaScript execution error: Uncaught TypeError: udtfObject." + member
+            + " is not a function in " + name + " at '" + calling + "' position " + calling.indexOf(member));
     }
 
     /** The rows a driver operation answered: each cell's tagged text as its declared column's value. */

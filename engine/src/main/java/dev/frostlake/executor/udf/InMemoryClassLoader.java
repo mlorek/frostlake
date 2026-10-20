@@ -51,6 +51,15 @@ public class InMemoryClassLoader extends ClassLoader {
         return classes.containsKey(name);
     }
 
+    /**
+     * @param name a class's binary name
+     * @return the major version of the class file the compilation produced for it, 0 when it produced none
+     */
+    public int classFileVersion(final String name) {
+        final byte[] bytes = classes.get(name);
+        return bytes == null || bytes.length < 8 ? 0 : (bytes[6] & 0xFF) << 8 | bytes[7] & 0xFF;
+    }
+
     @Override
     protected Class<?> findClass(final String name) throws ClassNotFoundException {
         final byte[] bytes = classes.get(name);

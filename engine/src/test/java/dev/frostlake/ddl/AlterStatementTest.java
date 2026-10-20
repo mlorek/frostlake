@@ -372,7 +372,10 @@ public class AlterStatementTest extends BaseDatabaseTest {
         Assumptions.assumeFalse(isLiveSnowflake(),
             "works as a role it creates, which the shared live session is not switched to");
         engine.execute("CREATE ROLE data_owner");
-        // A role creates a table only where it holds CREATE TABLE on the schema.
+        // A role creates a table only where it holds CREATE TABLE on the schema, and reaches the schema only with
+        // USAGE on it and on its database.
+        engine.execute("GRANT USAGE ON DATABASE test_db TO ROLE data_owner");
+        engine.execute("GRANT USAGE ON SCHEMA test_schema TO ROLE data_owner");
         engine.execute("GRANT CREATE TABLE ON SCHEMA test_schema TO ROLE data_owner");
         engine.execute("GRANT ROLE data_owner TO ROLE SYSADMIN");
         engine.execute("USE ROLE data_owner");

@@ -135,7 +135,7 @@ public class IntegrationStatementsTest extends BaseDatabaseTest {
             + " NOTIFICATION_PROVIDER = GCP_PUBSUB ENABLED = TRUE"
             + " GCP_PUBSUB_TOPIC_NAME = 'projects/project-1/topics/topic1'",
             "invalid value 'OUTBOUND' for property 'Direction'");
-        refused("CREATE STORAGE INTEGRATION it_bad TYPE = EXTERNAL_STAGE", "syntax error");
+        refused("CREATE STORAGE INTEGRATION it_bad TYPE = EXTERNAL_STAGE", "Missing option(s): STORAGE_PROVIDER");
     }
 
     @Test

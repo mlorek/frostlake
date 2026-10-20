@@ -66,10 +66,28 @@ final class ParameterLevels {
                            final String privilegeKind, final String objectName) {
         final List<Integer> order = rejectUnknown(names, taken, kind);
         for (final Integer i : order) {
+            final String canonical = ParameterRegistry.canonical(names.get(i));
+            if (ParameterRegistry.isUnsettable(kind, canonical)) {
+                // A table or an alert refuses a few parameters at its own level, in CREATE's words (live-verified).
+                throw new RuntimeException(SqlCompilationError.of("cannot set parameter '" + canonical
+                    + "' at '" + kind + "'"));
+            }
             if (!taken.get(i).booleanValue()) {
                 throw new RuntimeException(SqlAccessControlError.insufficientPrivileges(privilegeKind, objectName));
             }
         }
+    }
+
+    /**
+     * Refuses the first name, in the hashed order, that is neither taken nor any parameter, before the object is
+     * looked for: ALTER TABLE nosuch SET foo = 1 names the property, not the table (live-verified).
+     *
+     * @param names the names as written
+     * @param taken per name, whether the object's kind takes it
+     * @param kind  the object's kind as an invalid property names it
+     */
+    static void rejectUnknownNames(final List<String> names, final List<Boolean> taken, final String kind) {
+        rejectUnknown(names, taken, kind);
     }
 
     /**

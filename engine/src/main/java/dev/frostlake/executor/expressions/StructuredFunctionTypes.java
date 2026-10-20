@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.MapType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
@@ -34,10 +35,15 @@ import java.util.Locale;
  *
  * <pre>
  *   ARRAY_CAT(ARRAY(NUMBER), ARRAY(NUMBER(2,1)))           ARRAY(NUMBER(38,1))    the elements' common type
+ *   ARRAY_INTERSECTION(ARRAY(INT), ARRAY(NUMBER(10,2)))    ARRAY(NUMBER(38,2))    the same
  *   ARRAY_APPEND, ARRAY_PREPEND, ARRAY_INSERT,             the first array's type
  *   ARRAY_SLICE, ARRAY_COMPACT, ARRAY_EXCEPT
+ *   ARRAY_UNION_AGG(ARRAY(INT))                            ARRAY(NUMBER(38,0) NOT NULL)
+ *   MAP_INSERT, MAP_DELETE, MAP_CAT, MAP_PICK              the first map's type
+ *   MAP_KEYS(MAP(NUMBER(38,0), VARCHAR))                   ARRAY(NUMBER(38,0) NOT NULL)
  *   OBJECT_DELETE(o, 'city')                               o without the field
  *   OBJECT_INSERT(o, 'zip', v, FALSE)                      o and the new field, typed as v
+ *   OBJECT_INSERT(o, 'zip', v, TRUE)                       o, the value cast to the field's type
  *   OBJECT_PICK(o, 'state', 'city')                        the picked fields, in the order picked
  *   OBJECT_KEYS(o)                                         ARRAY(VARCHAR)
  * </pre>
@@ -65,7 +71,21 @@ final class StructuredFunctionTypes {
         final DataType first = inferencer.infer(args.get(0));
         switch (funcName) {
             case "ARRAY_CAT":
+            case "ARRAY_INTERSECTION":
                 return args.size() == 2 ? concatenated(first, inferencer.infer(args.get(1))) : null;
+            case "ARRAY_UNION_AGG":
+                // What the union holds is never NULL: ARRAY(NUMBER(38,0) NOT NULL) over an ARRAY(INT) (live-verified).
+                return first instanceof StructuredArrayType
+                    ? new StructuredArrayType(((StructuredArrayType) first).getElementType(), true) : null;
+            case "MAP_INSERT":
+            case "MAP_DELETE":
+            case "MAP_CAT":
+            case "MAP_PICK":
+                return first instanceof MapType && ((MapType) first).getValueType() != null ? first : null;
+            case "MAP_KEYS":
+                // The keys, never NULL, as the map declares them: ARRAY(NUMBER(38,0) NOT NULL) (live-verified).
+                return first instanceof MapType && ((MapType) first).getKeyType() != null
+                    ? new StructuredArrayType(((MapType) first).getKeyType(), true) : null;
             case "ARRAY_APPEND":
             case "ARRAY_PREPEND":
             case "ARRAY_INSERT":
@@ -135,6 +155,10 @@ final class StructuredFunctionTypes {
         if (!(key instanceof String)) {
             return null;
         }
+        if (updates(args) && object.field((String) key) != null) {
+            // An update keeps the field's type: the value is cast to it (live-verified).
+            return object;
+        }
         final DataType valueType = inferencer.infer(args.get(2));
         if (valueType == null) {
             return null;
@@ -160,6 +184,15 @@ final class StructuredFunctionTypes {
             fields.add(added);
         }
         return new StructuredObjectType(fields);
+    }
+
+    /** Whether an OBJECT_INSERT writes its update flag as TRUE. */
+    static boolean updates(final List<Expression> args) {
+        if (args.size() < 4 || !(args.get(3) instanceof LiteralExpression)) {
+            return false;
+        }
+        final Object flag = ((LiteralExpression) args.get(3)).getValue();
+        return flag != null && Boolean.parseBoolean(String.valueOf(flag));
     }
 
     /** Whether a value is written as a constant that is not NULL: a literal, or a cast of one. */

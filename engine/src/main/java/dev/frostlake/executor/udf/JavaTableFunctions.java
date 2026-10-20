@@ -143,17 +143,6 @@ public final class JavaTableFunctions {
         }
     }
 
-    /**
-     * The report of a class a Scala table function's body does not hold, which names the class and no frame.
-     *
-     * @param className a handler's class
-     * @param where     the end of the report's sentence
-     * @return the report of a class the body does not hold
-     */
-    public static String missingClass(final String className, final String where) {
-        return JavaHandlerFailure.report("java.lang.ClassNotFoundException: " + className, where);
-    }
-
     /** The handler's members, or the refusal of a class that cannot be a table function's. */
     private static JavaTableHandler handlerOf(final Function function, final Class<?> handled) {
         final String where = where(function);

@@ -273,7 +273,8 @@ public class GrantRevokeHandler implements CommandHandler {
                 // A table or a view the current schema does not hold is looked for along the session's
                 // SEARCH_PATH, and the grant is recorded on the one found there (live-verified).
                 final boolean relation = "TABLE".equals(writtenType) || "VIEW".equals(writtenType)
-                    || "MATERIALIZED_VIEW".equals(writtenType);
+                    || "MATERIALIZED_VIEW".equals(writtenType) || "DYNAMIC_TABLE".equals(writtenType)
+                    || "EVENT_TABLE".equals(writtenType);
                 // A grantee written as a reference is read before the object's own reference (live-verified).
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
                     : granteeName(ctx);
@@ -995,11 +996,25 @@ public class GrantRevokeHandler implements CommandHandler {
      * The kind a grant is recorded under. A relation's grant belongs to the relation itself, whichever of
      * TABLE or VIEW the statement wrote: GRANT … ON VIEW t for a table t is the table's grant, listed by
      * SHOW GRANTS ON TABLE t and taken back by REVOKE … ON TABLE t, and a grant ON TABLE v for a view v
-     * is the view's (live-verified). Every other kind is recorded as written.
+     * is the view's (live-verified). A grant ON TABLE or ON VIEW over a materialized view or a dynamic table is
+     * recorded under that kind, where SHOW GRANTS ON and the privilege views read it; an event table's is the
+     * table's, which SHOW GRANTS ON lists under its own kind. Every other kind is recorded as written.
      */
     private String grantedKind(final String writtenType, final String[] parts) {
+        if ("EVENT_TABLE".equals(writtenType)) {
+            return "TABLE";
+        }
+        if ("DYNAMIC_TABLE".equals(writtenType)) {
+            return writtenType;
+        }
         if (!"TABLE".equals(writtenType) && !"VIEW".equals(writtenType) && !"MATERIALIZED_VIEW".equals(writtenType)) {
             return writtenType;
+        }
+        if (!"MATERIALIZED_VIEW".equals(writtenType)) {
+            final GrantedObject materializedOrDynamic = queryExecutor.materializedOrDynamic(parts);
+            if (materializedOrDynamic != null) {
+                return materializedOrDynamic.getKind();
+            }
         }
         final GrantedObject granted = queryExecutor.grantedObject(writtenType, parts, null);
         return granted != null ? granted.getKind() : writtenType;
@@ -1090,6 +1105,8 @@ public class GrantRevokeHandler implements CommandHandler {
             case "MATERIALIZED_VIEW":
                 return List.of("APPLYBUDGET", "DELETE", "DELETE_ERROR_TABLE", "EVOLVE_SCHEMA", "INSERT", "REBUILD",
                     "REFERENCES", "SELECT", "SELECT_ERROR_TABLE", "TRUNCATE", "UPDATE");
+            case "DYNAMIC_TABLE":
+                return List.of("MONITOR", "OPERATE", "SELECT");
             case "VIEW":
                 return List.of("APPLYBUDGET", "DELETE", "DELETE_ERROR_TABLE", "EVOLVE_SCHEMA", "INSERT", "REBUILD",
                     "REFERENCES", "SELECT", "SELECT_ERROR_TABLE", "TRUNCATE", "UPDATE",

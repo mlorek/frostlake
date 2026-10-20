@@ -20,9 +20,9 @@ import com.snowflake.snowpark_java.Session;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Procedure;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.List;
 
 /**
@@ -92,10 +92,11 @@ public final class JavaProcedureExecutor {
 
         // The handler class does not have to be public — Snowflake accepts a package-private one, and a
         // body written as a bare "class H { … }" is the common shape in its own examples. Reflection from
-        // this package cannot touch such a class's members without being told to.
-        final Constructor<?> constructor = clazz.getDeclaredConstructor();
-        constructor.setAccessible(true);
-        final Object instance = constructor.newInstance();
+        // this package cannot touch such a class's members without being told to. A static handler is
+        // called on no instance; any other on one made as a function's handler's is.
+        final String where = " in function " + procedure.getName() + " with handler " + procedure.getHandler();
+        final Object instance = Modifier.isStatic(target.getModifiers()) ? null
+            : JavaHandlerInstances.create(clazz, where);
         target.setAccessible(true);
         // Each argument as the class the handler declares for it; one the class cannot hold is refused before
         // the handler runs.
@@ -105,14 +106,10 @@ public final class JavaProcedureExecutor {
         try {
             return target.invoke(instance, adapted);
         } catch (final InvocationTargetException e) {
-            final Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException re) {
-                throw re;
-            }
-            if (cause != null) {
-                throw new RuntimeException(cause.getMessage(), cause);
-            }
-            throw e;
+            // What the handler raised reaches SQL as its report, as a function's handler's does (live-verified),
+            // a statement it ran through its session that failed included.
+            final Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new RuntimeException(JavaHandlerFailure.report(cause, clazz, where), cause);
         } finally {
             UdfConsoleCapture.exit();
         }

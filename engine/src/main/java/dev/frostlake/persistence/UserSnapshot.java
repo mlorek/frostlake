@@ -61,6 +61,8 @@ public class UserSnapshot implements Serializable {
     public String defaultWarehouse;
     public String defaultNamespace;
     public String defaultSecondaryRoles;
+    /** Whether a statement wrote DEFAULT_SECONDARY_ROLES; null on snapshots that predate it, which restore as not. */
+    public Boolean defaultSecondaryRolesWritten;
     public boolean mustChangePassword;
     public String userType;
     // The countdowns' end instants and the public keys. Null on snapshots that predate them, which restore as none.

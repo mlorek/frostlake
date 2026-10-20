@@ -566,28 +566,28 @@ public class AlterCommandHandler implements CommandHandler {
             } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null && ctx.dynamicTableAction().RENAME() != null) {
                 // IF EXISTS forgives only the table's absence: a taken new name still refuses (live-verified).
                 branchHandlesIfExists = true;
-                final String[] renamedParts = qualifiedNameParts(ctx.qualifiedName());
+                final String[] renamedParts = queryExecutor.alterTargetNameParts(ctx);
                 final String[] newParts =
                     queryExecutor.resolveWholeObjectNameParts(ctx.dynamicTableAction().wholeObjectName());
                 if (ddlHandler.findDynamicTable(renamedParts) != null) {
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, visitor.getText(ctx.qualifiedName()));
+                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
                     ddlHandler.renameDynamicTable(renamedParts, newParts);
                 } else if (viewUnder(renamedParts) != null) {
                     // A view under the name is renamed by this statement too (live-verified).
-                    checkAlter(SecurableObjectType.VIEW, visitor.getText(ctx.qualifiedName()));
+                    checkAlter(SecurableObjectType.VIEW, queryExecutor.alterTargetName(ctx));
                     renameViewAsOtherKind(renamedParts, newParts);
                 } else if (alterTargetTableExists(renamedParts)) {
                     // The statement renames whatever table the name finds: a plain one as ALTER TABLE does.
-                    final String plainName = visitor.getText(ctx.qualifiedName());
+                    final String plainName = queryExecutor.alterTargetName(ctx);
                     final Table plain = catalog.resolveTable(QualifiedName.of(renamedParts));
                     checkAlter(SecurableObjectType.TABLE, plainName);
                     renameTable(plainName, renamedParts, plain, newParts);
                 } else if (!ifExists) {
-                    ddlHandler.resolveDynamicTable(ctx.qualifiedName());
+                    ddlHandler.resolveDynamicTable(renamedParts);
                 }
             } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
                 final FrostlakeParser.DynamicTableActionContext dynamicAction = ctx.dynamicTableAction();
-                final String[] alteredParts = qualifiedNameParts(ctx.qualifiedName());
+                final String[] alteredParts = queryExecutor.alterTargetNameParts(ctx);
                 if (ddlHandler.findDynamicTable(alteredParts) == null && viewUnder(alteredParts) != null) {
                     // A view under the name: a suspension asks for ALTER VIEW, anything else is refused by the
                     // view's kind (live-verified).
@@ -597,11 +597,11 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     throw new RuntimeException(SqlCompilationError.objectOfOtherType("VIEW", "DYNAMIC_TABLE"));
                 }
-                checkAlter(SecurableObjectType.DYNAMIC_TABLE, visitor.getText(ctx.qualifiedName()));
+                checkAlter(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
                 if (dynamicAction.tagSet() != null) {
-                    applyTagSet(ddlHandler.resolveDynamicTable(ctx.qualifiedName()), dynamicAction.tagSet());
+                    applyTagSet(ddlHandler.resolveDynamicTable(alteredParts), dynamicAction.tagSet());
                 } else if (dynamicAction.tagUnset() != null) {
-                    applyTagUnset(ddlHandler.resolveDynamicTable(ctx.qualifiedName()), dynamicAction.tagUnset());
+                    applyTagUnset(ddlHandler.resolveDynamicTable(alteredParts), dynamicAction.tagUnset());
                 } else {
                     return ddlHandler.handleAlterStatement(ctx);
                 }
@@ -689,6 +689,10 @@ public class AlterCommandHandler implements CommandHandler {
                 }
                 final String[] tableParts = queryExecutor.alterTargetNameParts(ctx);
                 InformationSchemaGuard.refuseWrite(catalog, tableParts);
+                if (ctx.tableAction() != null && ctx.tableAction().SET() != null
+                        && !ctx.tableAction().tableSetProperty().isEmpty()) {
+                    rejectUnknownTableNames(ctx.tableAction().tableSetProperty());
+                }
                 if (ctx.tableAction() != null && ctx.tableAction().RENAME() != null
                         && ctx.tableAction().COLUMN() == null && ctx.tableAction().CONSTRAINT() == null
                         && !alterTargetTableExists(tableParts) && ddlHandler.findDynamicTable(tableParts) != null) {
@@ -1287,6 +1291,11 @@ public class AlterCommandHandler implements CommandHandler {
                         for (final FrostlakeParser.TableSetPropertyContext property
                                 : ctx.tableAction().tableSetProperty()) {
                             final String rawKey = property.optionKey().getText();
+                            if (table.getIcebergMetadata() == null) {
+                                CreatedObjectProperties.refuseOtherTableKindParameter(
+                                    ParameterRegistry.canonical(rawKey), property.copyOptionValue(), table.getName(),
+                                    true);
+                            }
                             requireLegalRetention(rawKey, property.copyOptionValue());
                             requireAccountRetention(rawKey, property.copyOptionValue());
                             // A transient table keeps a day at most, as its transient containers do.
@@ -4115,17 +4124,46 @@ public class AlterCommandHandler implements CommandHandler {
         final List<String> names = new ArrayList<>();
         final List<Boolean> taken = new ArrayList<>();
         for (final FrostlakeParser.TableSetPropertyContext property : properties) {
-            final String raw = property.optionKey().getText();
-            names.add(raw);
-            taken.add(Boolean.valueOf("CHANGE_TRACKING".equalsIgnoreCase(raw)
-                || "DATA_METRIC_SCHEDULE".equalsIgnoreCase(raw) || "ENABLE_SCHEMA_EVOLUTION".equalsIgnoreCase(raw)
-                || "COMMENT".equalsIgnoreCase(raw)
-                || "STAGE_COPY_OPTIONS".equalsIgnoreCase(raw) && property.parenOptionList() != null
-                || ParameterRegistry.isTableParameter(ParameterRegistry.canonical(raw))));
+            names.add(property.optionKey().getText());
+            taken.add(Boolean.valueOf(tableTakes(property)));
         }
         // A parameter of another level is no table's to set (see ParameterLevels).
         ParameterLevels.judgeAlter(names, taken, "TABLE", privilegeKind(table), table.getName());
     }
+
+    /** Whether an ALTER TABLE … SET's property is one a table takes: its own, or a parameter of its level. */
+    private static boolean tableTakes(final FrostlakeParser.TableSetPropertyContext property) {
+        final String raw = property.optionKey().getText();
+        return "CHANGE_TRACKING".equalsIgnoreCase(raw) || "DATA_METRIC_SCHEDULE".equalsIgnoreCase(raw)
+            || "ENABLE_SCHEMA_EVOLUTION".equalsIgnoreCase(raw) || "COMMENT".equalsIgnoreCase(raw)
+            || "STAGE_COPY_OPTIONS".equalsIgnoreCase(raw) && property.parenOptionList() != null
+            || ParameterRegistry.isTableParameter(ParameterRegistry.canonical(raw));
+    }
+
+    /**
+     * Refuses what an ALTER TABLE … SET names that no table takes before the table is looked for (live-verified): an
+     * unknown name as an invalid property, the name as written, and BASE_LOCATION, which only an Iceberg table's
+     * CREATE writes, as an unsupported feature.
+     */
+    private static void rejectUnknownTableNames(final List<FrostlakeParser.TableSetPropertyContext> properties) {
+        final List<String> names = new ArrayList<>();
+        final List<Boolean> taken = new ArrayList<>();
+        boolean baseLocation = false;
+        for (final FrostlakeParser.TableSetPropertyContext property : properties) {
+            final boolean isBaseLocation = BASE_LOCATION.equals(
+                ParameterRegistry.canonical(property.optionKey().getText()));
+            baseLocation |= isBaseLocation;
+            names.add(property.optionKey().getText());
+            taken.add(Boolean.valueOf(isBaseLocation || tableTakes(property)));
+        }
+        ParameterLevels.rejectUnknownNames(names, taken, "TABLE");
+        if (baseLocation) {
+            throw new RuntimeException("Unsupported feature '" + BASE_LOCATION + "'.");
+        }
+    }
+
+    /** The location an Iceberg table's CREATE writes, which ALTER TABLE … SET does not take. */
+    private static final String BASE_LOCATION = "BASE_LOCATION";
 
     /** The noun a refusal for want of access names a table by: an Iceberg table is an iceberg_table (live-verified). */
     private static String privilegeKind(final Table table) {

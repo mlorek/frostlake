@@ -175,6 +175,7 @@ final class CatalogSnapshotWriter {
             userSnapshot.defaultWarehouse = user.getDefaultWarehouse();
             userSnapshot.defaultNamespace = user.getDefaultNamespace();
             userSnapshot.defaultSecondaryRoles = user.getDefaultSecondaryRoles();
+            userSnapshot.defaultSecondaryRolesWritten = Boolean.valueOf(user.isDefaultSecondaryRolesWritten());
             userSnapshot.mustChangePassword = user.isMustChangePassword();
             userSnapshot.userType = user.getUserType();
             userSnapshot.expiresAt = user.getExpiresAt();
@@ -485,6 +486,7 @@ final class CatalogSnapshotWriter {
             taskSnapshot.tags = SnapshotTags.of(task);
             taskSnapshot.id = task.getId();
             taskSnapshot.createdByUser = task.getCreatedByUser();
+            taskSnapshot.resumedBy = task.getResumedBy();
             taskSnapshot.explicitParameters = new ArrayList<>(task.getExplicitParameters());
             taskSnapshot.schedule = task.getSchedule();
             taskSnapshot.scheduleType = task.getScheduleType() != null ? task.getScheduleType().name() : null;
@@ -524,6 +526,9 @@ final class CatalogSnapshotWriter {
                 run.rowsAffected = execution.getRowsAffected();
                 run.scheduledFrom = execution.getScheduledFrom();
                 run.attempt = Integer.valueOf(execution.getAttempt());
+                run.queryId = execution.getQueryId();
+                run.errorCode = execution.getErrorCode();
+                run.scheduledByUser = execution.getScheduledByUser();
                 taskSnapshot.history.add(run);
             }
             schemaSnapshot.tasks.add(taskSnapshot);

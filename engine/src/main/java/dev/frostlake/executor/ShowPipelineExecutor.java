@@ -588,6 +588,11 @@ final class ShowPipelineExecutor {
                 written.isQualified() ? written.fullName() : streamName));
         }
         final Stream stream = schema.getStream(streamName);
+        if (!seen("STREAM", schema, stream.getName(), stream.getOwner())) {
+            // A stream the session does not see is refused as a missing one is, not answered as no row.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream",
+                written.isQualified() ? written.fullName() : streamName));
+        }
 
         final ResultSet listed = showStreams(written.database().getName(), schema.getName());
         final List<Row> rows = new ArrayList<>();
@@ -604,6 +609,10 @@ final class ShowPipelineExecutor {
         final Schema schema = written.schema();
         // Named exactly: a quoted name in another case is another task, which is not there (live-verified).
         final Task task = schema.getTaskExact(written.name());
+        // One the session does not see is refused as a missing one is, as GET_DDL refuses it (documented).
+        if (!seen("TASK", schema, task.getName(), task.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", schema.qualifiedName(task.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(taskRow(task, written.database().getName(), schema.getName()));
         return new ResultSet(taskColumns(), rows);
@@ -646,6 +655,11 @@ final class ShowPipelineExecutor {
         final String dbName = written.database().getName();
         final String scName = written.schema().getName();
         final Sequence sequence = written.schema().getSequenceExact(written.name());
+        // One the session does not see is refused as a missing one is, as GET_DDL refuses it (documented).
+        if (!seen("SEQUENCE", written.schema(), sequence.getName(), sequence.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence",
+                written.schema().qualifiedName(sequence.getName())));
+        }
 
         final List<Row> rows = new ArrayList<>();
         // The same ten cells SHOW SEQUENCES prints for the one sequence — the creation instant and

@@ -358,7 +358,8 @@ public class SecurityManager {
 
     /**
      * Whether the rights a statement runs with reach an object, which is what lists it in INFORMATION_SCHEMA:
-     * they own it, or hold whatever privilege on it. Inside a stored procedure that runs with owner's rights
+     * they own it, or hold whatever privilege on it, and use its database and schema (see usesContainers). Inside a
+     * stored procedure that runs with owner's rights
      * these are the owner's rights alone - what the caller holds lists nothing there (live-verified). An object
      * with no recorded owner is reached, as is everything while security checks are off.
      *
@@ -371,7 +372,8 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        return holdAny(reachingRoles(), objectType, objectName, owner);
+        final Set<String> roles = reachingRoles();
+        return holdAny(roles, objectType, objectName, owner) && usesContainers(roles, objectType, objectName);
     }
 
     /**
@@ -389,7 +391,22 @@ public class SecurityManager {
             return true;
         }
         final Set<String> roles = reachingRoles();
-        return holdAny(roles, objectType, objectName, owner) || managesGrants(roles);
+        return holdAny(roles, objectType, objectName, owner) && usesContainers(roles, objectType, objectName)
+            || managesGrants(roles);
+    }
+
+    /**
+     * Whether the roles use an object's containers, which reaching it takes beside a privilege on the object itself:
+     * USAGE on the database and the schema of a schema's object, on the database of a schema (documented: "To access
+     * a specific object within a schema, a role must have USAGE on the database and schema"). Owning a container, ALL
+     * and OWNERSHIP grants count as USAGE.
+     */
+    private boolean usesContainers(final Set<String> roles, final String objectType, final String objectName) {
+        final String[] containers = GrantNames.containers(objectType, objectName);
+        if (containers.length > 0 && !uses(roles, "DATABASE", containers[0])) {
+            return false;
+        }
+        return containers.length < 2 || uses(roles, "SCHEMA", containers[0] + "." + containers[1]);
     }
 
     /**

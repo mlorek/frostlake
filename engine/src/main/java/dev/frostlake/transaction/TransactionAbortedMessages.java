@@ -32,6 +32,19 @@ public final class TransactionAbortedMessages {
     }
 
     /**
+     * The refusal of a statement that was waiting for another session's lock when its own transaction was aborted:
+     * it ends at once, naming the transaction and the user who aborted it, with the account's three spaces after
+     * "SQL" (live-verified).
+     *
+     * @param aborted the transaction
+     * @return the sentence
+     */
+    public static String canceledWhileWaiting(final Transaction aborted) {
+        return "Transaction '" + aborted.getName() + "', id '" + aborted.getPublicId() + "', was aborted by user '"
+            + aborted.getAbortedBy() + "'. SQL   execution canceled.";
+    }
+
+    /**
      * The failure of the COMMIT that acknowledges an aborted transaction.
      *
      * @param aborted the transaction

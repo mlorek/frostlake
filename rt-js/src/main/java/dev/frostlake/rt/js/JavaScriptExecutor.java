@@ -92,6 +92,7 @@ public final class JavaScriptExecutor {
         } else {
             source = world.source();
         }
+        Object invoker = null;
         try {
             if (logger.isDebugEnabled()) {
                 for (int i = 0; i < parameters.size(); i++) {
@@ -102,11 +103,18 @@ public final class JavaScriptExecutor {
                         argVal == null ? "-" : argVal.getClass().getName());
                 }
             }
-            final Object result = JavaScriptHandler.invoke(engine, world.invoker(source), null,
-                function.getName(), parameters, arguments);
+            invoker = world.invoker(source);
+            final Object result = JavaScriptHandler.invoke(engine, invoker, null, function.getName(), parameters,
+                arguments);
             logger.debug("JavaScript function {} executed successfully", function.getName());
             return JavaScriptReturn.toSql(result, returns, false);
         } catch (final ScriptException e) {
+            // A body that does not parse is refused as the account refuses it, before any of it runs.
+            final String unparsed = invoker == null
+                ? JavaScriptSyntaxWording.of(engine, function.getName(), parameters, function.getBody(), false) : null;
+            if (unparsed != null) {
+                throw new RuntimeException(unparsed, e);
+            }
             logger.error("Error executing JavaScript function: {}", function.getName(), e);
             throw new RuntimeException(JavaScriptErrorText.of(e, function.getName(), function.getBody(),
                 JavaScriptHandler.BODY_FIRST_LINE, source, GraalJsEngine.hostOf(engine),

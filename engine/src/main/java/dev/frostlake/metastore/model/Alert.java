@@ -20,6 +20,7 @@ import dev.frostlake.metastore.SqlObject;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -45,6 +46,8 @@ public class Alert extends SqlObject {
     private int consecutiveFailures;
     private Instant nextScheduledTime;
     private final List<AlertExecution> history = new ArrayList<>();
+    /** The parameters ALTER ALERT … SET gave the alert itself — session parameters, LOG_LEVEL and its kin — by name. */
+    private final Map<String, String> parameters = new LinkedHashMap<>();
 
     /**
      * @param name the alert's name
@@ -82,6 +85,7 @@ public class Alert extends SqlObject {
         copy.config = config;
         copy.runbook = runbook;
         copy.suspendAfterNumFailures = suspendAfterNumFailures;
+        copy.parameters.putAll(parameters);
         copy.setComment(getComment());
         for (final Map.Entry<String, String> tag : getTagValues().entrySet()) {
             copy.setTag(tag.getKey(), tag.getValue());
@@ -117,6 +121,11 @@ public class Alert extends SqlObject {
     /** Sets the configuration string; null unsets it. */
     public void setConfig(final String config) {
         this.config = config;
+    }
+
+    /** The parameters set on the alert itself, by canonical name, in the order they were first set. */
+    public Map<String, String> getParameters() {
+        return parameters;
     }
 
     /** The runbook reference, or null. */

@@ -511,6 +511,9 @@ public final class CorrelatedSubqueryRule {
                                      final boolean semiJoin, final String subject, final boolean negated) {
         final boolean judgingBefore = judging;
         final boolean negatedBefore = negatedMembership;
+        final boolean foldingBefore = foldingInAggregates;
+        // An IN's subquery folds a settled condition of an aggregate's argument as a value's does (live-verified).
+        foldingInAggregates = in;
         negatedMembership = in && negated;
         final boolean semiJoinBefore = this.semiJoin;
         final String subjectBefore = inSubject;
@@ -532,6 +535,7 @@ public final class CorrelatedSubqueryRule {
                 && (deepestOuterRead > 1 || refusesMembershipStatement(subquery, in));
         } finally {
             judging = judgingBefore;
+            foldingInAggregates = foldingBefore;
             negatedMembership = negatedBefore;
             this.semiJoin = semiJoinBefore;
             inSubject = subjectBefore;
@@ -635,6 +639,34 @@ public final class CorrelatedSubqueryRule {
     }
 
     /**
+     * An IN's subquery as it is run: each condition the statistics settle inside an aggregate's argument written as
+     * its value, as a value's subquery writes it (see {@link #statisticsBodyText}); the aggregate computes over the
+     * subquery's own rows, which do not carry the outer row.
+     *
+     * @param subquery the IN's subquery
+     * @return the text to run, or null where nothing in it is settled
+     */
+    public String settledBodyText(final FrostlakeParser.SelectStatementContext subquery) {
+        final boolean judgingBefore = judging;
+        final boolean foldingBefore = foldingInAggregates;
+        judging = true;
+        foldingInAggregates = true;
+        final Map<ParserRuleContext, String> written = new LinkedHashMap<>();
+        try {
+            judgeableWithDepth(subquery);
+            filterFold = null;
+            collectSettledInAggregates(subquery, false, new HashSet<ParserRuleContext>(), written);
+        } finally {
+            judging = judgingBefore;
+            foldingInAggregates = foldingBefore;
+        }
+        if (written.isEmpty() || subquery.getStart() == null || subquery.getStart().getInputStream() == null) {
+            return null;
+        }
+        return rewritten(subquery, written);
+    }
+
+    /**
      * Collects what a value's subquery writes in place of each condition the statistics settle inside an
      * aggregate's argument: an IFF it decides is the branch it takes, and any other condition its value. An
      * aggregate the statistics answer whole is written elsewhere, and a nested query is left as it is.
@@ -660,10 +692,45 @@ public final class CorrelatedSubqueryRule {
                 return;
             }
         }
+        if (inAggregate && node instanceof FrostlakeParser.InListExprContext) {
+            final String kept = keptList((FrostlakeParser.InListExprContext) node);
+            if (kept != null) {
+                into.put((ParserRuleContext) node, kept);
+                return;
+            }
+        }
         final boolean within = inAggregate || isAggregateCall(node);
         for (int i = 0; i < node.getChildCount(); i++) {
             collectSettledInAggregates(node.getChild(i), within, answered, into);
         }
+    }
+
+    /**
+     * An IN list as the body runs it once the elements its subject never equals are dropped, in parentheses: the
+     * rest of the list, or the membership's value where nothing is left; null where none is dropped.
+     */
+    private String keptList(final FrostlakeParser.InListExprContext list) {
+        if (list.expression() == null || list.expressionList() == null) {
+            return null;
+        }
+        final List<String> kept = new ArrayList<>();
+        boolean dropped = false;
+        for (final FrostlakeParser.ExpressionContext element : list.expressionList().expression()) {
+            if (neverListed(list, element)) {
+                dropped = true;
+            } else {
+                kept.add(ParseTreeText.getOriginalText(element));
+            }
+        }
+        if (!dropped) {
+            return null;
+        }
+        final boolean negated = list.NOT() != null;
+        if (kept.isEmpty()) {
+            return negated ? "(TRUE)" : "(FALSE)";
+        }
+        return "(" + ParseTreeText.getOriginalText(list.expression()) + (negated ? " NOT IN (" : " IN (")
+            + String.join(", ", kept) + "))";
     }
 
     /** The branch an IFF takes when the statistics settle its condition, in parentheses; null for any other call. */
@@ -2795,8 +2862,9 @@ public final class CorrelatedSubqueryRule {
                     && child == ((FrostlakeParser.InListExprContext) at).expressionList()
                     && below instanceof ParserRuleContext
                     && neverListed((FrostlakeParser.InListExprContext) at, (ParserRuleContext) below)
-                    && foldsWhereItStands(at) && !insideAggregateCall(at)) {
-                // An element dropped from a list inside an aggregate's argument is not written out of the body.
+                    && foldsWhereItStands(at) && (foldingInAggregates || !insideAggregateCall(at))) {
+                // An element dropped from a list inside an aggregate's argument is written out of the body the
+                // subquery runs (see collectSettledInAggregates).
                 return true;
             }
             if (at instanceof FrostlakeParser.FunctionArgContext) {
@@ -2932,10 +3000,46 @@ public final class CorrelatedSubqueryRule {
         }
     }
 
-    /** Whether the statistics prove an expression never answers NULL. */
+    /**
+     * Whether the statistics prove an expression never answers NULL: its interval, or for a column of a family the
+     * interval channel does not model, a stored column none of whose rows is NULL.
+     */
     private boolean holdsNoNull(final ParserRuleContext expression) {
         final ValueRange range = fold().rangeOf(ParseTreeText.getOriginalText(expression));
-        return range != null && !range.isNullable();
+        if (range != null) {
+            return !range.isNullable();
+        }
+        ParseTree bare = expression;
+        while (!(bare instanceof FrostlakeParser.QualifiedNameExprContext) && bare.getChildCount() == 1) {
+            bare = bare.getChild(0);
+        }
+        if (!(bare instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return false;
+        }
+        final List<String> parts = partsOf(((FrostlakeParser.QualifiedNameExprContext) bare).qualifiedName());
+        final String column = parts.get(parts.size() - 1);
+        final Table owner = parts.size() == 2 ? relationNamed(parts.get(0)) : relationCarrying(column);
+        return owner != null && Boolean.FALSE.equals(new StoredColumnValues(executor).holdsNull(owner, column));
+    }
+
+    /** The relation of the subquery's own or of the outer query a qualifier names, or null. */
+    private Table relationNamed(final String qualifier) {
+        final String key = qualifier.toUpperCase(Locale.ROOT);
+        return innerRelations.containsKey(key) ? innerRelations.get(key) : outerRelations.get(key);
+    }
+
+    /** The one relation of the subquery's own, else of the outer query, carrying a column; null where none or two. */
+    private Table relationCarrying(final String column) {
+        Table owner = null;
+        for (final Table relation : innerRelations.values()) {
+            if (relation.hasColumn(column) && relation != owner) {
+                if (owner != null) {
+                    return null;
+                }
+                owner = relation;
+            }
+        }
+        return owner;
     }
 
     /**

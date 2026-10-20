@@ -51,7 +51,8 @@ import java.util.Locale;
  * </pre>
  *
  * GRANTED_TO tells ROLE or DATABASE_ROLE, IS_GRANTABLE tells YES for the owner and for a privilege granted WITH
- * GRANT OPTION, and a future grant is no row.
+ * GRANT OPTION, and a future grant is no row. An object is listed only where the rights the statement runs with
+ * reach it - they own it or hold a privilege on it (documented).
  */
 final class PrivilegeViews {
 
@@ -199,7 +200,8 @@ final class PrivilegeViews {
 
     /** SHOW GRANTS ON's rows for an object: when, privilege, kind, name, granted to, grantee, option, grantor. */
     private List<Row> grantsOn(final GrantedObject granted) {
-        if (granted == null) {
+        if (granted == null || executor.getSecurityManager() != null
+                && !executor.getSecurityManager().reaches(granted.getKind(), granted.getName(), granted.getOwner())) {
             return new ArrayList<>();
         }
         // The listing also tells the USAGE each database role holds on its own database, which no one granted;

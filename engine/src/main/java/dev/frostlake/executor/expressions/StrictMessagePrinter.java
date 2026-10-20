@@ -260,11 +260,29 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (isVariableRead(call) && call.getArguments().size() != 1) {
             return infixVariableRead(call.getArguments());
         }
-        final String written = super.visitFunctionCall(call);
+        String written = super.visitFunctionCall(call);
+        final int open = written.indexOf('(');
+        if (open > 0 && call.getNameExpression() == null && !call.getArguments().isEmpty()) {
+            final Expression first = call.getArguments().get(0);
+            if (SHIFT_FUNCTIONS.contains(call.getFunctionName().toUpperCase(Locale.ROOT))
+                    && first instanceof ColumnReferenceExpression
+                    && ((ColumnReferenceExpression) first).getTableName() == null) {
+                // A shift's unit word is echoed as the text the plan made of it: DATEADD('DAY', 0.0000001).
+                final String printed = first.accept(this);
+                if (written.startsWith(printed, open + 1)) {
+                    final String unit = ((ColumnReferenceExpression) first).getColumnName().toUpperCase(Locale.ROOT);
+                    written = written.substring(0, open + 1) + "'" + unit + "'"
+                        + written.substring(open + 1 + printed.length());
+                }
+            }
+        }
         // The account knows GROUPING as GROUPING_ID wherever it echoes the call (live-verified).
         return call.getNameExpression() == null && "GROUPING".equalsIgnoreCase(call.getFunctionName())
             && written.regionMatches(true, 0, "GROUPING(", 0, 9) ? "GROUPING_ID(" + written.substring(9) : written;
     }
+
+    /** The shifts whose unit an arity sentence echoes as a quoted, upper-cased text (live-verified). */
+    private static final Set<String> SHIFT_FUNCTIONS = Set.of("DATEADD", "TIMEADD", "TIMESTAMPADD");
 
     /**
      * Whether a call is GETVARIABLE, which the plan holds as an OPERATOR rather than a call: its one argument

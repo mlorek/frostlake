@@ -42,6 +42,8 @@ import dev.frostlake.metastore.StatementDraws;
 import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.persistence.CatalogSnapshot;
 import dev.frostlake.persistence.CheckpointDebt;
@@ -188,6 +190,16 @@ public class DatabaseEngine {
                     transactionManager.autocommitStatementEnd();
                     return results;
                 }
+            }
+
+            @Override
+            public QueryHistory lastRecordedQuery() {
+                return queryExecutor.getQueryHistoryTracker().getLastQuery();
+            }
+
+            @Override
+            public String currentUser() {
+                return sessionContext.getDisplayUser();
             }
 
             @Override
@@ -748,6 +760,28 @@ public class DatabaseEngine {
     }
 
     /**
+     * A sequence never hands a value out twice, and a value it handed out stays drawn whatever becomes of the
+     * statement that drew it: a ROLLBACK and a statement's failure undo none (documented). A draw no record of the log
+     * carries for certain owes a checkpoint, which keeps the sequences as they stand: one of a statement that failed,
+     * one of a statement the log leaves out though it drew - a read of a view or a function that draws - and one of a
+     * statement kept inside a transaction that may yet roll back.
+     *
+     * @param drawn  what the statement drew
+     * @param logged whether the log keeps the statement
+     */
+    private void oweCheckpointForUnloggedDraws(final List<CounterDraw> drawn, final boolean logged) {
+        if (wal == null || replaying || logged && !transactionManager.isLastingTransaction()) {
+            return;
+        }
+        for (final CounterDraw draw : drawn) {
+            if (draw.getCounter().startsWith(Sequence.COUNTER_PREFIX)) {
+                runCheckpointDue.set(Boolean.TRUE);
+                return;
+            }
+        }
+    }
+
+    /**
      * The checkpoint a statement owes for a run it started. While its session holds a transaction open the debt waits
      * for the statement that ends the transaction: the transaction's own writes are not the checkpoint's yet, and a
      * checkpoint skipped would leave the run's statement in the log for a restart to run again.
@@ -790,7 +824,7 @@ public class DatabaseEngine {
     /** Lets go of what {@link #beginWalStatement} noted, once the outermost statement is over. */
     private void endWalStatement() {
         walStatementStart.remove();
-        StatementDraws.endRecording();
+        oweCheckpointForUnloggedDraws(StatementDraws.endRecording(), false);
         StatementResults.endRecording(false);
         StatementAnswers.endRecording();
         runsLoggedApart.remove();
@@ -847,6 +881,7 @@ public class DatabaseEngine {
             ? StatementAnswers.endRecording() : Collections.<String, List<String>>emptyMap();
         final boolean apart = Boolean.TRUE.equals(runsLoggedApart.get());
         runsLoggedApart.remove();
+        oweCheckpointForUnloggedDraws(drawn, logged);
         if (started != null) {
             walStatementStart.remove();
         }
@@ -1127,6 +1162,7 @@ public class DatabaseEngine {
 
             @Override
             public void fail(final RuntimeException cause) {
+                oweCheckpointForUnloggedDraws(StatementDraws.endRecording(), false);
                 rollbackFailedStatement(statementSavepoint[0], cause);
                 statementSavepoint[0] = null;
             }
@@ -1547,8 +1583,21 @@ public class DatabaseEngine {
         return sessionContext;
     }
 
+    /**
+     * Makes a user the one the engine's sessions run as. A session of the user starts with the secondary roles its
+     * DEFAULT_SECONDARY_ROLES names, when a statement wrote it: ('ALL') puts every role granted to the user in use,
+     * () none (documented). A user whose roles were never written leaves the secondary roles as they are.
+     *
+     * @param username the user's name
+     */
     public void setCurrentUser(final String username) {
         sessionContext.setCurrentUser(username);
+        final User user = username == null || !catalog.hasUser(username) ? null : catalog.getUser(username);
+        final String defaults = user == null || !user.isDefaultSecondaryRolesWritten() ? null
+            : user.getDefaultSecondaryRoles();
+        if (defaults != null) {
+            catalog.useSecondaryRoles(defaults.contains("\"ALL\"") ? null : Collections.singletonList("NONE"));
+        }
     }
 
     /**

@@ -337,6 +337,38 @@ public class User implements Taggable {
         this.defaultSecondaryRoles = defaultSecondaryRoles;
     }
 
+    /** Whether a statement wrote the user's DEFAULT_SECONDARY_ROLES, which a session of the user then starts from. */
+    private boolean defaultSecondaryRolesWritten;
+
+    /**
+     * Records the secondary roles a statement writes for the user's sessions to start from.
+     *
+     * @param defaultSecondaryRoles the roles as the JSON array live reports
+     */
+    public void writeDefaultSecondaryRoles(final String defaultSecondaryRoles) {
+        this.defaultSecondaryRoles = defaultSecondaryRoles;
+        this.defaultSecondaryRolesWritten = true;
+    }
+
+    /**
+     * Whether a statement wrote the user's DEFAULT_SECONDARY_ROLES; the account's default it starts with is not
+     * applied to a session.
+     *
+     * @return whether one did
+     */
+    public boolean isDefaultSecondaryRolesWritten() {
+        return defaultSecondaryRolesWritten;
+    }
+
+    /**
+     * Restores whether a statement wrote the user's DEFAULT_SECONDARY_ROLES.
+     *
+     * @param written whether one did
+     */
+    public void restoreDefaultSecondaryRolesWritten(final boolean written) {
+        this.defaultSecondaryRolesWritten = written;
+    }
+
     public boolean isMustChangePassword() {
         return mustChangePassword;
     }

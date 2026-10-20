@@ -71,6 +71,7 @@ import dev.frostlake.functions.scalar.context.CarriedRoleName;
 import dev.frostlake.functions.scalar.context.GetDdl;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.functions.scalar.datetime.DateDifferenceWidths;
+import dev.frostlake.functions.scalar.datetime.DateShiftAmount;
 import dev.frostlake.functions.scalar.datetime.DateUnitVocabulary;
 import dev.frostlake.functions.scalar.datetime.LastDay;
 import dev.frostlake.functions.scalar.datetime.PlannedDateAdd;
@@ -697,6 +698,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // A date column carries its least and greatest day, which is no interval of the subquery's value.
             if (carried != null && (carried.isEmpty() || !(columns.get(0).getStaticType() instanceof DateTimeType))) {
                 subqueryRanges.put(expr, carried);
+            }
+            if (columns.get(0).getStaticType() == null) {
+                // An item the shape cannot type may read the outer row through a derived table or a common table
+                // expression of the subquery's own, (SELECT c + o.k FROM (SELECT 1 AS c)): it is typed with the outer
+                // names in scope, as live types it (live-verified).
+                final DataType correlated = correlatedSubqueryType(expr);
+                if (correlated != null) {
+                    return correlated;
+                }
             }
             return columns.get(0).getStaticType();
         } catch (final MultiColumnScalarSubqueryException refused) {
@@ -3338,7 +3348,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (written instanceof RowExpression || written.getNameExpression() != null) {
             return result;
         }
-        return inDeclaredOrder(written, typedStructuredGet(written, result));
+        return inDeclaredOrder(written, typedMapKeys(written, typedStructuredGet(written, result)));
     }
 
     /**
@@ -3442,6 +3452,35 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return StructuredLeaf.typed(result, typeInferencer.structuredGetType(funcName, call));
     }
 
+    /**
+     * An OBJECT_INSERT that updates a structured OBJECT's field casts its value to the field's declared type, as the
+     * account does: '5' into a NUMBER field is 5, 'zz' is refused as no number, 2.7 is 3, and 5 into a VARCHAR field
+     * is '5' (live-verified). Null for any other call, and for one whose value is already that cast.
+     */
+    private FunctionCallExpression coercedStructuredInsert(final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        if (!StructuredFunctionTypes.updates(arguments)) {
+            return null;
+        }
+        final DataType objectType = typeInferencer.infer(arguments.get(0));
+        final Object key = TypeInferencer.constantKey(arguments.get(1));
+        if (!(objectType instanceof StructuredObjectType) || !(key instanceof String)) {
+            return null;
+        }
+        final StructuredField field = ((StructuredObjectType) objectType).field((String) key);
+        final Expression value = arguments.get(2);
+        if (field == null || value instanceof CastExpression
+                && ((CastExpression) value).getDeclaredTarget() == field.getDataType()) {
+            return null;
+        }
+        final List<Expression> rewritten = new ArrayList<>(arguments);
+        rewritten.set(2, new CastExpression(value, field.getDataType().toString(), false, field.getDataType(),
+            CastFieldsModifier.NONE));
+        final FunctionCallExpression coerced = new FunctionCallExpression(call.getFunctionName(), rewritten);
+        coerced.setPosition(call.getPosition());
+        return coerced;
+    }
+
     private Object evaluateFunctionCall(final FunctionCallExpression written) {
         if (written instanceof RowExpression && !(written instanceof ArgumentRowExpression)) {
             // A ROW value reaches evaluation only where a function reads its values one by one, as an array.
@@ -3456,6 +3495,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         String funcName = expr.getFunctionName().toUpperCase(Locale.ROOT);
         if (REDRAWN_PER_ROW.contains(funcName)) {
             ROW_DRAWS.get()[0]++;
+        }
+        if ("OBJECT_INSERT".equals(funcName) && expr.getNameExpression() == null) {
+            final FunctionCallExpression coerced = coercedStructuredInsert(expr);
+            if (coerced != null) {
+                return coerced.accept(this);
+            }
         }
         if (SysConnectByPath.NAME.equals(funcName) && expr.getNameExpression() == null && holdsConnectByPaths()) {
             return connectByPath(expr);
@@ -3797,8 +3842,22 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (DATE_SHIFT_NAMES.contains(funcName) && argValues.size() == 3 && expr.getArguments().size() == 3) {
                 convertVariantShiftArgument(expr, argValues);
             }
+            if ((DATE_SHIFT_NAMES.contains(funcName) && argValues.size() == 3
+                    || "ADD_MONTHS".equals(funcName) && argValues.size() == 2)
+                    && expr.getArguments().size() == argValues.size()) {
+                requireFixedShiftAmount(funcName, expr, argValues);
+            }
             if ("OBJECT_PICK".equals(funcName) && argValues.size() == 2 && expr.getArguments().size() == 2) {
                 pickKeysByType(expr, argValues);
+            }
+            if (("GET".equals(funcName) || "MAP_CONTAINS_KEY".equals(funcName)) && argValues.size() == 2
+                    && expr.getArguments().size() == 2) {
+                // A NUMBER key reads the member its number names, whatever scale it was written with.
+                final int map = "GET".equals(funcName) ? 0 : 1;
+                if (typeInferencer.infer(expr.getArguments().get(map)) instanceof MapType
+                        && argValues.get(1 - map) instanceof Number) {
+                    argValues.set(1 - map, mapKeyText((Number) argValues.get(1 - map)));
+                }
             }
             if (StructuredElementRule.elementPosition(funcName) >= 0) {
                 castStructuredElement(funcName, expr, argValues);
@@ -5571,6 +5630,85 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * The amount of DATEADD and its aliases, or ADD_MONTHS's count of months, read as the fixed-point count its unit
+     * takes (live-verified): a FLOAT no such count holds is refused in the cast's words, its nullability read from
+     * the argument (see {@link DateShiftAmount#requireFixedCount}), and a VARIANT holding NaN or an infinity in the
+     * VARIANT's cast's, the value as the VARIANT prints it: "Number out of representable range: type FIXED, value
+     * NaN".
+     *
+     * @param funcName  the call's name, upper-cased
+     * @param call      the call
+     * @param argValues its evaluated arguments, the amount second
+     */
+    private void requireFixedShiftAmount(final String funcName, final FunctionCallExpression call,
+                                         final List<Object> argValues) {
+        final Object amount = argValues.get(1);
+        if (amount instanceof VariantValue) {
+            final JsonNode held = ((VariantValue) amount).node();
+            if (held.isNumber() && !Double.isFinite(held.doubleValue())) {
+                throw new RuntimeException("Number out of representable range: type FIXED, value "
+                    + Double.toString(held.doubleValue()));
+            }
+            return;
+        }
+        if (!(amount instanceof Double || amount instanceof Float)) {
+            return;
+        }
+        final IntervalUnit unit = "ADD_MONTHS".equals(funcName) ? IntervalUnit.MONTH
+            : DateUnitVocabulary.intervalUnit(argValues.get(0));
+        if (unit != null) {
+            DateShiftAmount.requireFixedCount(((Number) amount).doubleValue(), unit,
+                mayBeNull(call.getArguments().get(1)));
+        }
+    }
+
+    /**
+     * Whether an argument may be NULL, as a refusal's type spells it, {@code {nullable}} or {@code {not null}}: a
+     * literal other than NULL and a column declared NOT NULL may not, a cast or a sign may as what it reads does, an
+     * arithmetic operation as either operand does, and COALESCE, NVL and IFNULL only as every argument does; anything
+     * else may (live-verified for a cast literal, the columns, an addition and COALESCE).
+     *
+     * @param argument the argument
+     * @return whether it may be NULL
+     */
+    private boolean mayBeNull(final Expression argument) {
+        if (argument instanceof LiteralExpression) {
+            return ((LiteralExpression) argument).getType() == LiteralType.NULL;
+        }
+        if (argument instanceof ColumnReferenceExpression) {
+            final TableColumn declared = resolveDeclaredColumn((ColumnReferenceExpression) argument);
+            return declared == null || declared.isNullable();
+        }
+        if (argument instanceof CastExpression) {
+            return ((CastExpression) argument).isTryMode() || mayBeNull(((CastExpression) argument).getExpression());
+        }
+        if (argument instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) argument;
+            return unary.getOperator() != UnaryOperator.NEGATE && unary.getOperator() != UnaryOperator.PLUS
+                || mayBeNull(unary.getOperand());
+        }
+        if (argument instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) argument;
+            final BinaryOperator operator = binary.getOperator();
+            final boolean arithmetic = operator == BinaryOperator.ADD || operator == BinaryOperator.SUBTRACT
+                || operator == BinaryOperator.MULTIPLY || operator == BinaryOperator.DIVIDE
+                || operator == BinaryOperator.MODULO;
+            return !arithmetic || mayBeNull(binary.getLeft()) || mayBeNull(binary.getRight());
+        }
+        if (argument instanceof FunctionCallExpression) {
+            final String name = ((FunctionCallExpression) argument).getFunctionName().toUpperCase(Locale.ROOT);
+            if ("COALESCE".equals(name) || "NVL".equals(name) || "IFNULL".equals(name)) {
+                for (final Expression each : ((FunctionCallExpression) argument).getArguments()) {
+                    if (!mayBeNull(each)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
      * A VARIANT value of a date difference converts to the OTHER value's declared type as the row arrives
      * (live-verified): beside a DATE it is a DATE, so a JSON number fails "Failed to cast variant value 2 to
      * DATE" where a date's text reads; beside a TIMESTAMP_LTZ or a TIMESTAMP_TZ it takes that flavour; beside
@@ -5744,6 +5882,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 && isDecfloatTyped(expr.getExpression())) {
             // A DECFLOAT cast to VARIANT is TO_VARIANT of it, the string of its text (see rememberDecfloatMembers).
             return applyStructuredTarget(expr, DecfloatTextNode.variantOf((BigDecimal) value));
+        }
+        if (value instanceof BigDecimal && "VARIANT".equalsIgnoreCase(String.valueOf(expr.getTargetType()).trim())
+                && ((BigDecimal) value).scale() > 0 && ((BigDecimal) value).stripTrailingZeros().scale() <= 0
+                && functionRegistry != null && functionRegistry.getFunction("TO_VARIANT") != null) {
+            // A whole number out of a scaled NUMBER cast to VARIANT is TO_VARIANT of it: its text drops the zeros of
+            // its scale, 100 out of a NUMBER(10,2), where its kind keeps them, DECIMAL (live-verified).
+            return applyStructuredTarget(expr,
+                functionRegistry.getFunction("TO_VARIANT").evaluate(Collections.singletonList(value)));
         }
         if ((value instanceof Double || value instanceof Float)
                 && "VARIANT".equalsIgnoreCase(String.valueOf(expr.getTargetType()).trim())) {
@@ -6876,7 +7022,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 if (windowedAggregate != null
                         && functionRegistry.getFunction(window.getFunctionName()) == null) {
                     final FunctionCallExpression proxy = new FunctionCallExpression(
-                        window.getFunctionName(), window.getArguments());
+                        window.getFunctionName(), window.getArguments(), window.isDistinct(), false);
                     proxy.setPosition(window.getPosition());
                     // A windowed star — SUM(*) OVER (), COUNT(t.* EXCLUDE (a)) OVER () — expands
                     // exactly as the plain one, qualifier and filters included; only a LONE star does
@@ -7179,18 +7325,39 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         if (expr instanceof ObjectAccessExpression) {
             // Colon path access is GET sugar: a declared-VARCHAR base is a compile error even when
-            // the input has zero rows, so the plan-time walk enforces it too.
-            rejectStringBaseInPathAccess((ObjectAccessExpression) expr);
-            validateStrictArguments(((ObjectAccessExpression) expr).getBase());
+            // the input has zero rows, so the plan-time walk enforces it too. So is a path to a field a
+            // structured OBJECT does not declare, whatever rows the statement reads (live-verified).
+            final ObjectAccessExpression path = (ObjectAccessExpression) expr;
+            rejectStringBaseInPathAccess(path);
+            validateStrictArguments(path.getBase());
+            final DataType pathBase = typeInferencer.infer(path.getBase());
+            requireDeclaredFields(pathBase, path.getPathParts());
+            if (pathBase instanceof MapType && ((MapType) pathBase).getKeyType() instanceof NumericType
+                    && !path.getPathParts().isEmpty()) {
+                // A path names a NUMBER-keyed MAP's key as text, which such a map does not take (live-verified).
+                throw new RuntimeException(SqlCompilationError.of("Function GET cannot be used with arguments of types "
+                    + strictArgTypeText(path.getBase()) + " and VARCHAR(" + path.getPathParts().get(0).length() + ")"));
+            }
             return;
         }
         if (expr instanceof ArrayAccessExpression) {
-            // A subscript is GET sugar too, refused over the same bases.
-            rejectStringBaseInSubscript((ArrayAccessExpression) expr);
-            validateStrictArguments(((ArrayAccessExpression) expr).getArray());
-            validateStrictArguments(((ArrayAccessExpression) expr).getIndex());
-            rejectNullIndexOfArray(((ArrayAccessExpression) expr).getArray(),
-                ((ArrayAccessExpression) expr).getIndex());
+            // A subscript is GET sugar too, refused over the same bases, and a field name a structured
+            // OBJECT does not declare is refused whatever rows the statement reads (live-verified).
+            final ArrayAccessExpression subscript = (ArrayAccessExpression) expr;
+            rejectStringBaseInSubscript(subscript);
+            validateStrictArguments(subscript.getArray());
+            validateStrictArguments(subscript.getIndex());
+            rejectNullIndexOfArray(subscript.getArray(), subscript.getIndex());
+            final DataType baseType = typeInferencer.infer(subscript.getArray());
+            if (baseType instanceof StructuredObjectType && subscript.getIndex() instanceof LiteralExpression
+                    && ((LiteralExpression) subscript.getIndex()).getType() == LiteralType.STRING
+                    && ((LiteralExpression) subscript.getIndex()).getValue() != null) {
+                requireDeclaredFields(baseType, Collections.singletonList(
+                    String.valueOf(((LiteralExpression) subscript.getIndex()).getValue())));
+            }
+            if (baseType instanceof MapType) {
+                requireMapKey((MapType) baseType, subscript.getArray(), subscript.getIndex(), "GET", false);
+            }
             return;
         }
         if (expr instanceof LikeAnyAllExpression) {
@@ -10851,9 +11018,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 + strictText(call) + "], expected " + minimum + ", got " + argCount, call);
         }
         if (!orderedValue && argCount > aggregate.getMaxArgCount()) {
+            // DISTINCT is echoed where it was written: SUM(DISTINCT 1, 2) (live-verified).
+            final String echoed = strictText(call);
+            final int open = echoed.indexOf('(');
+            final boolean unechoed = call.isDistinct() && open > 0 && !echoed.startsWith("DISTINCT ", open + 1);
             throw arityMismatch("too many arguments for function ["
-                + strictText(call) + "] expected "
-                + aggregate.getMaxArgCount() + ", got " + argCount, call);
+                + (unechoed ? echoed.substring(0, open + 1) + "DISTINCT " + echoed.substring(open + 1) : echoed)
+                + "] expected " + aggregate.getMaxArgCount() + ", got " + argCount, call);
         }
     }
 
@@ -11241,6 +11412,22 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (func.namesStructuredKeysByLiteral() && count > 0) {
             judgeStructuredKeys(funcName, call);
         }
+        if (("GET".equals(funcName) || "GET_IGNORE_CASE".equals(funcName)) && count == 2) {
+            judgeStructuredGet(funcName, call);
+        }
+        if ("GET".equals(funcName) && count == 2
+                && typeInferencer.infer(call.getArguments().get(0)) instanceof MapType) {
+            requireMapKey((MapType) typeInferencer.infer(call.getArguments().get(0)), call.getArguments().get(0),
+                call.getArguments().get(1), funcName, false);
+        }
+        if ("MAP_CONTAINS_KEY".equals(funcName) && count == 2
+                && typeInferencer.infer(call.getArguments().get(1)) instanceof MapType) {
+            requireMapKey((MapType) typeInferencer.infer(call.getArguments().get(1)), call.getArguments().get(1),
+                call.getArguments().get(0), funcName, true);
+        }
+        if ("OBJECT_INSERT".equals(funcName) && count >= 3) {
+            judgeStructuredInsert(call);
+        }
         final String named = func.signatureName(count);
         if (named == null) {
             return;
@@ -11291,9 +11478,146 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 named = named || field.getName().equals(key);
             }
             if (!named) {
-                throw new RuntimeException("Function " + funcName + ": expected structured object to contain field "
+                throw new StructuredFieldRefusal("Function " + funcName + ": expected structured object to contain "
+                    + "field " + key + " but it did not.");
+            }
+        }
+    }
+
+    /**
+     * GET and GET_IGNORE_CASE read a structured OBJECT by a string literal alone, {@code GET(o, LOWER('A'))} being
+     * "Argument number 1 for function 'GET' needs to be a string literal.", and only a field it declares, whatever
+     * rows the statement reads: "Function GET: expected structured object to contain field nosuch but it did not."
+     * (live-verified).
+     */
+    private void judgeStructuredGet(final String funcName, final FunctionCallExpression call) {
+        final DataType objectType = typeInferencer.infer(call.getArguments().get(0));
+        if (!(objectType instanceof StructuredObjectType)) {
+            return;
+        }
+        final Expression key = call.getArguments().get(1);
+        if (!(key instanceof LiteralExpression) || ((LiteralExpression) key).getType() != LiteralType.STRING
+                || ((LiteralExpression) key).getValue() == null) {
+            throw new RuntimeException(SqlCompilationError.of("Argument number 1 for function '" + funcName
+                + "' needs to be a string literal."));
+        }
+        final String undeclared = StructuredLeaf.undeclaredField(objectType,
+            Collections.<Object>singletonList(String.valueOf(((LiteralExpression) key).getValue())),
+            "GET_IGNORE_CASE".equals(funcName));
+        if (undeclared != null) {
+            throw StructuredLeaf.missingField(undeclared);
+        }
+    }
+
+    /**
+     * A key a MAP is read by has the MAP's key type, judged whatever rows the statement reads (live-verified): a
+     * VARCHAR-keyed map takes a text alone, and a NUMBER-keyed one a fixed-point number of scale 0, or a number
+     * written out with a fraction of zero ({@code m[2.0]}); anything else, NULL included, is refused naming both
+     * types - "Function GET cannot be used with arguments of types MAP(NUMBER(38,0), VARCHAR(16777216)) and
+     * VARCHAR(1)", MAP_CONTAINS_KEY naming the key first. MAP_CONTAINS_KEY takes a NULL key, and answers NULL. A key
+     * of no known type is left to the row.
+     *
+     * @param map      the map's type
+     * @param mapArg   the map argument
+     * @param key      the key argument
+     * @param function the function as the refusal names it
+     * @param keyFirst whether the function takes the key before the map
+     */
+    private void requireMapKey(final MapType map, final Expression mapArg, final Expression key, final String function,
+                               final boolean keyFirst) {
+        final DataType declared = map.getKeyType();
+        final boolean nullKey = isNullLiteral(key);
+        final DataType written = nullKey ? null : typeInferencer.infer(key);
+        if (declared == null || !nullKey && written == null) {
+            return;
+        }
+        final boolean fits;
+        if (nullKey) {
+            fits = keyFirst;
+        } else if (declared instanceof StringType) {
+            fits = written instanceof StringType;
+        } else {
+            fits = written instanceof NumericType && !NumericType.isApproximate(written)
+                && (((NumericType) written).getScale() == 0 || wholeNumberWritten(key));
+        }
+        if (!fits) {
+            final String mapText = strictArgTypeText(mapArg);
+            final String keyText = nullKey ? "NULL" : strictArgTypeText(key);
+            throw new RuntimeException(SqlCompilationError.of("Function " + function
+                + " cannot be used with arguments of types " + (keyFirst ? keyText + " and " + mapText
+                : mapText + " and " + keyText)));
+        }
+    }
+
+    /** Whether an argument is a number written out, with a sign or not, whose fraction is zero. */
+    private static boolean wholeNumberWritten(final Expression argument) {
+        Expression written = argument;
+        while (written instanceof UnaryOperationExpression
+                && (((UnaryOperationExpression) written).getOperator() == UnaryOperator.NEGATE
+                    || ((UnaryOperationExpression) written).getOperator() == UnaryOperator.PLUS)) {
+            written = ((UnaryOperationExpression) written).getOperand();
+        }
+        if (!(written instanceof LiteralExpression) || ((LiteralExpression) written).getType() != LiteralType.INTEGER
+                && ((LiteralExpression) written).getType() != LiteralType.DECIMAL) {
+            return false;
+        }
+        return new BigDecimal(String.valueOf(((LiteralExpression) written).getValue())).stripTrailingZeros()
+            .scale() <= 0;
+    }
+
+    /**
+     * A NUMBER key as the member a MAP holds it under, whatever scale it was written with: 2.0 reads the key 2
+     * (live-verified).
+     */
+    private static String mapKeyText(final Number key) {
+        return new BigDecimal(key.toString()).stripTrailingZeros().toPlainString();
+    }
+
+    /**
+     * MAP_KEYS answers the keys as the map declares them, a NUMBER-keyed map's as numbers: {@code [1,2]}, typed
+     * {@code ARRAY(NUMBER(38,0) NOT NULL)} (live-verified). Any other call's value is handed back as it is.
+     *
+     * @param call   the call
+     * @param result its value
+     * @return the value, as its declared type holds it
+     */
+    private Object typedMapKeys(final FunctionCallExpression call, final Object result) {
+        if (result == null || !"MAP_KEYS".equalsIgnoreCase(call.getFunctionName()) || call.getArguments().size() != 1) {
+            return result;
+        }
+        final DataType keys = typeInferencer.infer(call);
+        return keys instanceof StructuredArrayType
+            && ((StructuredArrayType) keys).getElementType() instanceof NumericType
+            ? StructuredCast.forColumn(result, keys) : result;
+    }
+
+    /**
+     * OBJECT_INSERT over a structured OBJECT, whatever rows the statement reads (live-verified): with its update flag
+     * TRUE the key has to name a field the object declares, "Function OBJECT_INSERT: expected structured object to
+     * contain field c but it did not.", and the value may not be NULL, "Cannot set NULL value for structured object
+     * field"; without it the key may not name one, "Function OBJECT_INSERT: expected structured object to not contain
+     * field a but it did."
+     */
+    private void judgeStructuredInsert(final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        final DataType objectType = typeInferencer.infer(arguments.get(0));
+        final Object key = TypeInferencer.constantKey(arguments.get(1));
+        if (!(objectType instanceof StructuredObjectType) || !(key instanceof String)) {
+            return;
+        }
+        final boolean declared = ((StructuredObjectType) objectType).field((String) key) != null;
+        if (StructuredFunctionTypes.updates(arguments)) {
+            if (!declared) {
+                throw new StructuredFieldRefusal("Function OBJECT_INSERT: expected structured object to contain field "
                     + key + " but it did not.");
             }
+            if (arguments.get(2) instanceof LiteralExpression
+                    && ((LiteralExpression) arguments.get(2)).getType() == LiteralType.NULL) {
+                throw new StructuredFieldRefusal("Cannot set NULL value for structured object field");
+            }
+        } else if (declared) {
+            throw new StructuredFieldRefusal("Function OBJECT_INSERT: expected structured object to not contain field "
+                + key + " but it did.");
         }
     }
 
@@ -14313,6 +14637,45 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return strictArgTypeText(arg);
     }
 
+    /**
+     * TIME_SLICE's slice length, judged before the unit is read, over no rows as well (live-verified): one that is no
+     * whole number is refused by its type, "invalid type [FLOAT] for parameter 'slice-length'" - a text, a FLOAT, a
+     * VARIANT, a fixed-point number with a scale and a fraction written as one, 5.6 being NUMBER(2,1) where 5.0 is
+     * taken - and one written out that is not positive by its value, read as a 32-bit integer and spelled with
+     * thousands separators: "invalid value [-1,294,967,296] for parameter 'slice-length'" for 3000000000. A length a
+     * row gives is judged as the row is read.
+     *
+     * @param length the length argument
+     */
+    private void requireSliceLength(final Expression length) {
+        final DataType type = typeInferencer.infer(length);
+        final boolean scaled = type instanceof NumericType && !NumericType.isApproximate(type)
+            && ((NumericType) type).getScale() > 0 && !(length instanceof LiteralExpression);
+        if (type instanceof StringType || NumericType.isApproximate(type) || type instanceof VariantType || scaled
+                || fractionalLiteral(length) != null) {
+            throw new RuntimeException(SqlCompilationError.of("invalid type [" + strictArgTypeText(length)
+                + "] for parameter 'slice-length'"));
+        }
+        Expression written = length;
+        boolean negative = false;
+        while (written instanceof UnaryOperationExpression
+                && (((UnaryOperationExpression) written).getOperator() == UnaryOperator.NEGATE
+                    || ((UnaryOperationExpression) written).getOperator() == UnaryOperator.PLUS)) {
+            negative ^= ((UnaryOperationExpression) written).getOperator() == UnaryOperator.NEGATE;
+            written = ((UnaryOperationExpression) written).getOperand();
+        }
+        if (!(written instanceof LiteralExpression) || ((LiteralExpression) written).getType() != LiteralType.INTEGER
+                && ((LiteralExpression) written).getType() != LiteralType.DECIMAL) {
+            return;
+        }
+        final BigDecimal value = new BigDecimal(String.valueOf(((LiteralExpression) written).getValue()));
+        final int wrapped = (negative ? value.negate() : value).toBigInteger().intValue();
+        if (wrapped <= 0) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value [" + String.format(Locale.ROOT, "%,d",
+                wrapped) + "] for parameter 'slice-length'"));
+        }
+    }
+
     /** A number literal that carries a fraction, as written; null for a whole one or anything else. */
     private static String fractionalLiteral(final Expression arg) {
         if (!(arg instanceof LiteralExpression) || ((LiteralExpression) arg).getType() != LiteralType.DECIMAL) {
@@ -16350,9 +16713,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (baseType instanceof StructuredObjectType && !(indexValue instanceof Number)) {
             requireDeclaredFields(baseType, Collections.singletonList(indexValue.toString()));
         }
-        final Object read = readSubscript(arrayValue, indexValue);
-        final DataType leaf = StructuredLeaf.ofSubscript(baseType,
-            indexValue instanceof Number ? indexValue : indexValue.toString(), false);
+        // A MAP is read by its key, a NUMBER one as the number it is: m[1], m[2.0] and m[i] (live-verified).
+        final Object key = baseType instanceof MapType && indexValue instanceof Number
+            ? mapKeyText((Number) indexValue) : indexValue;
+        final Object read = readSubscript(arrayValue, key);
+        final DataType leaf = StructuredLeaf.ofSubscript(baseType, key instanceof Number ? key : key.toString(), false);
         return leaf != null ? StructuredLeaf.typed(read, leaf) : read;
     }
 
@@ -17757,12 +18122,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 known = word == null || LastDay.partOf(word) != null;
                 break;
             case "TIME_SLICE":
-                // A slice length that is no whole number is refused by its type before the unit is read: a text, and
-                // a fraction written as one - 5.6 is NUMBER(2,1), where 5.0 is taken (live-verified).
-                if (args.size() >= 2 && (typeInferencer.infer(args.get(1)) instanceof StringType
-                        || fractionalLiteral(args.get(1)) != null)) {
-                    throw new RuntimeException(SqlCompilationError.of("invalid type [" + strictArgTypeText(args.get(1))
-                        + "] for parameter 'slice-length'"));
+                if (args.size() >= 2) {
+                    requireSliceLength(args.get(1));
                 }
                 word = args.size() >= 3 && isStringLiteral(args.get(2))
                     ? String.valueOf(((LiteralExpression) args.get(2)).getValue()) : null;

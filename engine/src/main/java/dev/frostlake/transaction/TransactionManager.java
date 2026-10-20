@@ -106,6 +106,7 @@ public class TransactionManager {
         if (sessionContext != null) {
             txn.setSessionNumber(sessionContext.getSessionNumber());
         }
+        txn.setStatementScoped(isAutoCommit());
         activeTransactions.put(txnId, txn);
         currentTransaction.set(txn);
         return txn;
@@ -393,7 +394,8 @@ public class TransactionManager {
      * session's (live-verified): its writes are rolled back and its locks released at once. The session that held
      * it is left holding an aborted transaction, and each of its statements is refused until it issues a COMMIT,
      * which fails, or a ROLLBACK. A transaction a running block began and ends this way is simply over: the block
-     * goes on outside any transaction.
+     * goes on outside any transaction. An autocommit statement's own transaction is that statement's to end: SHOW
+     * TRANSACTIONS lists it, but it is not aborted (live-verified).
      *
      * @param publicId    the id CURRENT_TRANSACTION() answers inside the transaction
      * @param insideBlock whether a Snowflake Scripting block or a procedure is running the abort
@@ -407,9 +409,11 @@ public class TransactionManager {
                 break;
             }
         }
-        if (named == null) {
+        if (named == null || named.isStatementScoped()) {
             return false;
         }
+        // The user the refusal names is the one CURRENT_USER() names in the aborting session.
+        named.setAbortedBy(sessionContext != null ? sessionContext.getDisplayUser() : null);
         final boolean own = named == currentTransaction.get();
         try {
             named.rollback();
@@ -430,6 +434,22 @@ public class TransactionManager {
             abortedCurrent.set(named);
         }
         return true;
+    }
+
+    /**
+     * The transaction this thread's statement runs in, when SYSTEM$ABORT_TRANSACTION ended it while the statement
+     * waited for another session's lock: the thread then holds it as aborted, as the session's next statement does.
+     *
+     * @return the aborted transaction, or null while it is open or the statement runs in none
+     */
+    public Transaction abortedWhileWaiting() {
+        final Transaction txn = currentTransaction.get();
+        if (txn == null || abortedTransactions.get(txn.getId()) != txn) {
+            return null;
+        }
+        currentTransaction.remove();
+        abortedCurrent.set(txn);
+        return txn;
     }
 
     /** The transaction this thread's session holds although it was aborted, or null when it holds none. */

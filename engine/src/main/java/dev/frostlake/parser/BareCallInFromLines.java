@@ -37,6 +37,14 @@ import org.antlr.v4.runtime.Token;
  *
  * With its opening parenthesis refused the call's closing one closes the bracket around the call, so inside a
  * subquery it is that bracket's own closing parenthesis that is refused. Nothing after it is reported.
+ *
+ * <p>In a common table expression's query a call whose first argument is named reads on otherwise: the argument's
+ * name is refused, then the token after the argument's value (live-verified):
+ *
+ * <pre>
+ *   WITH c AS (SELECT * FROM FLATTEN(INPUT =&gt; PARSE_JSON('[1]'))) SELECT COUNT(*) FROM c    '(' at 32,
+ *                                                                    'INPUT' at 33, ')' at 59
+ * </pre>
  */
 final class BareCallInFromLines {
 
@@ -80,6 +88,11 @@ final class BareCallInFromLines {
                         || spoken.get(i + 2).getType() == FrostlakeLexer.RPAREN);
             }
         }
+        if (closer >= 0 && inCommonQuery(spoken, fault) && fault + 3 < spoken.size()
+                && StarModifierResync.isName(spoken.get(fault + 1))
+                && spoken.get(fault + 2).getType() == FrostlakeLexer.ARROW) {
+            return namedFirstArgumentLines(spoken, fault, closer);
+        }
         if (closer < 0 || arguments < 2 || !textsAfterFirst) {
             return null;
         }
@@ -101,5 +114,49 @@ final class BareCallInFromLines {
             }
         }
         return lines;
+    }
+
+    /** The call's parenthesis, its first argument's name, and the token after that argument's value. */
+    private static List<String> namedFirstArgumentLines(final List<Token> spoken, final int fault, final int closer) {
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault + 1)));
+        int depth = 0;
+        for (int i = fault + 3; i <= closer; i++) {
+            final int type = spoken.get(i).getType();
+            if (depth == 0 && (type == FrostlakeLexer.COMMA || type == FrostlakeLexer.RPAREN)) {
+                lines.add(SyntaxErrorListener.sentence(spoken.get(i)));
+                return lines;
+            }
+            depth += type == FrostlakeLexer.LPAREN ? 1 : type == FrostlakeLexer.RPAREN ? -1 : 0;
+        }
+        return lines;
+    }
+
+    /** Whether the call at {@code fault} stands in a common table expression's query: {@code WITH … AS ( … )}. */
+    private static boolean inCommonQuery(final List<Token> spoken, final int fault) {
+        int depth = 0;
+        for (int i = fault - 1; i >= 1; i--) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.RPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.LPAREN) {
+                if (depth == 0) {
+                    return spoken.get(i - 1).getType() == FrostlakeLexer.AS && withBefore(spoken, i - 1);
+                }
+                depth--;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a WITH opens the statement before the AS at {@code as}. */
+    private static boolean withBefore(final List<Token> spoken, final int as) {
+        for (int i = as - 1; i >= 0; i--) {
+            if (spoken.get(i).getType() == FrostlakeLexer.WITH) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -203,7 +203,7 @@ public final class StructuredLeaf {
      * @return the refusal
      */
     public static RuntimeException missingField(final String name) {
-        return new RuntimeException("Function GET: expected structured object to contain field " + name
+        return new StructuredFieldRefusal("Function GET: expected structured object to contain field " + name
             + " but it did not.");
     }
 

@@ -74,6 +74,9 @@ public class JavaHandlerClassStateTest extends MeasuredCellsTestSupport {
         assertAnswer(
             "1|1",
             "SELECT jfc(1), jfc(2)");
+        assertAnswer(
+            "1|1",
+            "SELECT jfc(1), jfc(1)");
     }
 
     @Test

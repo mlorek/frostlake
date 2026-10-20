@@ -49,6 +49,9 @@ public final class BoundText {
     /** A bind written out as a value cast to the variable's type, {@code (1)::NUMBER(38,0)}. */
     private static final Pattern WRITTEN_CAST = Pattern.compile("\\((.*)\\)::([A-Z_]+(?:\\(\\d+(?:,\\d+)?\\))?)");
 
+    /** A variable holding NULL written out as NULL cast to its type, {@code NULL::VARCHAR(10)}. */
+    private static final Pattern WRITTEN_NULL = Pattern.compile("NULL::([A-Z_]+(?:\\(\\d+(?:,\\d+)?\\))?)");
+
     /** A refusal placed in a statement's text: the line, then the position. */
     private static final Pattern PLACED = Pattern.compile(
         "^(SQL compilation error: error line )(\\d+)( at position )(-?\\d+)(?=\\n)");
@@ -154,9 +157,12 @@ public final class BoundText {
                 return refused;
             }
             final String value = ran.substring(ranAt, ranAt + bind[3]);
-            // A number is written out as (1)::NUMBER(38,0), which the echo spells as the cast it is.
+            // A number is written out as (1)::NUMBER(38,0), which the echo spells as the cast it is, and a NULL as
+            // NULL::VARCHAR(10), which it spells (null :: VARCHAR(10)).
             final Matcher cast = WRITTEN_CAST.matcher(value);
-            final String echoed = cast.matches() ? "CAST(" + cast.group(1) + " AS " + cast.group(2) + ")" : value;
+            final Matcher typedNull = WRITTEN_NULL.matcher(value);
+            final String echoed = cast.matches() ? "CAST(" + cast.group(1) + " AS " + cast.group(2) + ")"
+                : typedNull.matches() ? "(null :: " + typedNull.group(1) + ")" : value;
             final int found = spelled.indexOf(echoed, from);
             if (found < 0) {
                 continue;

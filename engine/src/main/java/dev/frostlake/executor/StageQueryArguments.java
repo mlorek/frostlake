@@ -55,7 +55,7 @@ import java.util.regex.PatternSyntaxException;
  * <p>Of an argument written twice the last counts. A PATTERN that is a text or a name is the pattern, refused
  * once the format is found when it is no regular expression; a number, a boolean and a NULL are none.
  */
-final class StageQueryArguments {
+public final class StageQueryArguments {
 
     private final FileFormat format;
     private final String pattern;
@@ -74,7 +74,8 @@ final class StageQueryArguments {
      * @param params   the list, or null where the stage is written without one
      * @return the arguments
      */
-    static StageQueryArguments read(final QueryExecutor executor, final FrostlakeParser.StageQueryParamsContext params) {
+    public static StageQueryArguments read(final QueryExecutor executor,
+                                           final FrostlakeParser.StageQueryParamsContext params) {
         if (params == null) {
             return new StageQueryArguments(null, null, false);
         }
@@ -122,7 +123,7 @@ final class StageQueryArguments {
     }
 
     /** The format the list names, or null where it names none. */
-    FileFormat format() {
+    public FileFormat format() {
         return format;
     }
 
@@ -130,12 +131,12 @@ final class StageQueryArguments {
      * Whether the list writes a FILE_FORMAT at all. One that names none — {@code FILE_FORMAT => NULL} — reads the
      * files by the default format; a list that writes none reads them by the format their stage keeps.
      */
-    boolean formatWritten() {
+    public boolean formatWritten() {
         return formatWritten;
     }
 
     /** The pattern the list gives, or null where it gives none. */
-    String pattern() {
+    public String pattern() {
         return pattern;
     }
 

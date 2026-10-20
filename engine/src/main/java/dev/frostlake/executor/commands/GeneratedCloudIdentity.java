@@ -41,9 +41,26 @@ final class GeneratedCloudIdentity {
     /** The Google Cloud service account every object of the account is reached as. */
     static final String SERVICE_ACCOUNT = "frostlake@frostlake.iam.gserviceaccount.com";
 
+    /** The application an Azure tenant consents to for every object of the account. */
+    static final String APPLICATION_NAME = "frostlake_snowflakepacint_0000000000";
+
+    /** The application's client id in the consent URL. */
+    private static final String APPLICATION_ID = "00000000-0000-0000-0000-000000000000";
+
     private static final String ACCOUNT = "FROSTLAKE";
 
     private GeneratedCloudIdentity() {
+    }
+
+    /**
+     * The URL an Azure tenant's administrator visits to consent to the account's application.
+     *
+     * @param tenant the tenant's id, as the integration was written with it
+     * @return the URL
+     */
+    static String consentUrl(final String tenant) {
+        return "https://login.microsoftonline.com/" + (tenant == null ? "" : tenant)
+            + "/oauth2/authorize?client_id=" + APPLICATION_ID + "&response_type=code";
     }
 
     /**

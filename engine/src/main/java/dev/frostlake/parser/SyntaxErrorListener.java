@@ -659,7 +659,9 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 }
             }
             // ★ A JOIN WITH NO TABLE AFTER IT is refused at the token where the table belongs — see JoinTableSyntax.
-            if (!openerRefused && !stackDecided && recognizer instanceof Parser) {
+            // A JOIN the parser names itself after a refused name stands for itself.
+            if (!openerRefused && !stackDecided && !(e instanceof FourthNamePartFault)
+                    && recognizer instanceof Parser) {
                 final Token tableMissing =
                     JoinTableSyntax.refusedInstead(((Parser) recognizer).getInputStream(), reported);
                 if (tableMissing != null) {
@@ -2305,6 +2307,15 @@ public class SyntaxErrorListener extends BaseErrorListener {
         final List<String> ilikeAll = spokenTokens == null ? null : IlikeAllSyntax.refusal(sql, spokenTokens);
         if (ilikeAll != null) {
             return ilikeAll;
+        }
+        final List<String> blockValue = spokenTokens == null ? null : BlockValueSubqueryLines.lines(sql, spokenTokens);
+        if (blockValue != null) {
+            return blockValue;
+        }
+        final List<String> stageArguments = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
+            ? null : StageArgumentLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
+        if (stageArguments != null) {
+            return stageArguments;
         }
         final List<String> subqueryAliasParen = spokenTokens == null ? null
             : SubqueryAliasParenLines.lines(sql, spokenTokens);

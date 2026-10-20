@@ -70,4 +70,10 @@ public class RegrR2 extends AggregateFunction {
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.MULTIPLY_OPERANDS;
     }
+
+    /** A VECTOR in either position is squared first too, listed twice (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+    }
 }

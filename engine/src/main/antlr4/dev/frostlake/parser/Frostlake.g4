@@ -342,6 +342,70 @@ import java.util.List;
 }
 
 @parser::members {
+    /** Whether a token is one of the words a script's variable may be named by beside a plain name (variableName). */
+    private static boolean variableWord(final int type) {
+        return type == CASE || type == WHEN || type == CAST || type == DEFAULT || type == CONSTRAINT || type == JOIN
+            || type == INNER || type == CROSS;
+    }
+
+    /**
+     * Reads one of those words as a name where a DECLARE section's item starts with it and something follows it, as
+     * live declares it: DECLARE join INT DEFAULT 4 declares JOIN (live-verified). The section is read ahead of the
+     * statement it opens, since the decision that the statement is a block looks into it: the first token of each
+     * item, up to the section's BEGIN, is read so, and the grammar's own decisions are left as they are.
+     */
+    private void nameDeclaredWords() {
+        if (_input.LA(1) != DECLARE) {
+            return;
+        }
+        int depth = 0;
+        boolean itemStart = true;
+        for (int i = 2; ; i++) {
+            final Token token = _input.LT(i);
+            final int type = token.getType();
+            if (type == Token.EOF || depth == 0 && type == BEGIN) {
+                return;
+            }
+            if (itemStart && token instanceof WritableToken && variableWord(type) && _input.LA(i + 1) != SEMI
+                    && _input.LA(i + 1) != Token.EOF) {
+                ((WritableToken) token).setType(IDENTIFIER);
+            }
+            if (type == LPAREN) {
+                depth++;
+            } else if (type == RPAREN && depth > 0) {
+                depth--;
+            }
+            itemStart = depth == 0 && type == SEMI;
+        }
+    }
+
+    /**
+     * Reads one of those words as a name where a statement starts with it and its := follows, as live assigns it:
+     * join := join + 1 (live-verified).
+     */
+    private void nameAssignedWord() {
+        final Token next = _input.LT(1);
+        if (next instanceof WritableToken && variableWord(next.getType()) && _input.LA(2) == COLON_EQ) {
+            ((WritableToken) next).setType(IDENTIFIER);
+        }
+    }
+
+    /**
+     * Reads those words as names where FETCH … INTO lists its targets: every target is a variable, so each word the
+     * list holds names one, FETCH c INTO join as SELECT … INTO :join does.
+     */
+    private void nameFetchedWords() {
+        for (int i = 1; ; i += 2) {
+            final Token target = _input.LT(i);
+            if (target instanceof WritableToken && variableWord(target.getType())) {
+                ((WritableToken) target).setType(IDENTIFIER);
+            }
+            if (_input.LA(i + 1) != COMMA) {
+                return;
+            }
+        }
+    }
+
     /** Whether a SYSTEM\$LOG / SYSTEM\$LOG_<level> call opens the statement: the one call Snowflake Scripting runs
      *  as a statement in its own right. */
     private boolean systemLogCallAhead() {
@@ -600,11 +664,21 @@ import java.util.List;
      * dollar-quoted string, a session variable or a bind spells, or a table function's call, and refuses
      * everything else where the reading stops: at the operator of {@code 'a' || 'b'}, at the first token of a
      * number, a NULL or a parenthesis, and at the ')' after a bare name — that one followed by a second line
-     * at the token after it, as live's recovery gives (live-verified).
+     * at the token after it, as live's recovery gives (live-verified). A name of more than three parts, called or
+     * bare, is refused at the dot that opens its fourth part, and the first token after the TABLE( … ) that closes
+     * no bracket is named on a second line (live-verified).
      */
     private void refuseUnreadableTableOperand(final TableSourceContext source) {
         final ExpressionContext operand = source.expression();
         if (operand == null || source.TABLE() == null) {
+            return;
+        }
+        final ParseTree named = operand instanceof QualifiedNameExprContext
+            ? ((QualifiedNameExprContext) operand).qualifiedName()
+            : operand.getChildCount() == 0 ? null : operand.getChild(0);
+        final Token fourth = named instanceof ParserRuleContext ? fourthPartDot((ParserRuleContext) named) : null;
+        if (fourth != null && (named instanceof QualifiedNameContext || named instanceof FunctionNameContext)) {
+            refuseFourthPart(source, fourth, pastClosers(_input.LT(-1)), null);
             return;
         }
         // A table function's arguments take no quantifier: TABLE(SPLIT_TO_TABLE(ALL 'a,b', ',')) and
@@ -644,12 +718,21 @@ import java.util.List;
      */
     private void refuseBareTableFunction(final TableSourceContext source) {
         final ParserRuleContext reference = source.getParent();
-        if (reference instanceof TableReferenceContext && ((TableReferenceContext) reference).LATERAL() != null) {
-            return;
-        }
         // A join writes its LATERAL before the reference it joins.
-        if (reference != null && reference.getParent() instanceof JoinClauseContext
+        if (reference instanceof TableReferenceContext && ((TableReferenceContext) reference).LATERAL() != null
+                || reference != null && reference.getParent() instanceof JoinClauseContext
                 && ((JoinClauseContext) reference.getParent()).LATERAL() != null) {
+            // A call named in more than three parts is refused at the dot that opens the fourth, and the first
+            // token after the call that closes no bracket on a second line; a join's alias there is followed by
+            // its ON on a third (live-verified).
+            final TableFunctionExprContext call = source.tableFunctionExpr();
+            final Token fourth = call == null ? null : fourthPartDot(call.functionName());
+            if (fourth != null) {
+                final Token after = pastClosers(call.getStop());
+                final Token next = after.getType() == EOF ? after : tokenAfter(after);
+                refuseFourthPart(source, fourth, after, reference.getParent() instanceof JoinClauseContext
+                    && after.getType() != ON && next.getType() == ON ? next : null);
+            }
             return;
         }
         final TerminalNode written = source.tableFunctionExpr() != null
@@ -686,6 +769,49 @@ import java.util.List;
             throw new ParseCancellationException(fault);
         }
         notifyErrorListeners(after, "unexpected '" + after.getText() + "'", fault);
+    }
+
+    /** The dot that opens a name's fourth part, or null when the name has three parts at most. */
+    private static Token fourthPartDot(final ParserRuleContext name) {
+        int dots = 0;
+        for (int i = 0; i < name.getChildCount(); i++) {
+            final ParseTree part = name.getChild(i);
+            if (part instanceof TerminalNode && ((TerminalNode) part).getSymbol().getType() == DOT && ++dots == 3) {
+                return ((TerminalNode) part).getSymbol();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The lines a name of more than three parts is refused with: its fourth part's dot, the token live's recovery
+     * stops at after it, and a third token when there is one.
+     */
+    private void refuseFourthPart(final TableSourceContext source, final Token fourth, final Token after,
+                                  final Token third) {
+        notifyErrorListeners(fourth, "unexpected '.'", new FourthNamePartFault(this, source, false));
+        notifyErrorListeners(after, "unexpected '" + after.getText() + "'",
+            new FourthNamePartFault(this, source, third == null));
+        if (third != null) {
+            notifyErrorListeners(third, "unexpected '" + third.getText() + "'",
+                new FourthNamePartFault(this, source, true));
+        }
+    }
+
+    /** The first token after a given one that closes no bracket, read on as far as it takes. */
+    private Token pastClosers(final Token last) {
+        Token at = tokenAfter(last);
+        while (at.getType() == RPAREN) {
+            at = tokenAfter(at);
+        }
+        return at;
+    }
+
+    /** The token after a given one, read on as far as it takes: the input holds only spoken tokens. */
+    private Token tokenAfter(final Token token) {
+        final int next = _input.LT(1).getTokenIndex();
+        final int index = token.getTokenIndex() + 1;
+        return index < next ? _input.get(index) : _input.LT(1 + index - next);
     }
 
     /** The DISTINCT or ALL a call operand is written with before its arguments, or null. */
@@ -1162,14 +1288,15 @@ import java.util.List;
 }
 
 // Parser Rules - Simplified for demonstration
+// A block's DECLARE section may name its items by words of variableName's (see nameDeclaredWords).
 sqlScript
-    : (flowChain SEMI?)+ EOF
+    : {nameDeclaredWords();} (flowChain SEMI? {nameDeclaredWords();})+ EOF
     ;
 
 // One statement chain and nothing after it: the syntax-error listener parses a statement's own text with it to learn
 // whether a word can continue that statement. No other rule refers to it.
 singleFlowChain
-    : flowChain EOF
+    : {nameDeclaredWords();} flowChain EOF
     ;
 
 // The flow operator: stmt ->> stmt ->> stmt. Each stage may read a PRIOR stage's result via a
@@ -1494,6 +1621,9 @@ createStatement
     | CREATE or_replace? STREAM if_not_exists? qualifiedName CLONE qualifiedName copyGrants? SEMI?
     // EXECUTE AS USER follows the options and the AFTER list and precedes WHEN (live-verified).
     | CREATE or_replace? TASK if_not_exists? qualifiedName tagList? taskContacts? warehouseClause? taskOptions? afterClause? commentClause? taskExecuteAs? (WHEN booleanExpr)? AS taskBody SEMI?
+    // CREATE OR ALTER makes the task, or changes it to what the statement writes; it takes no IF NOT EXISTS and no
+    // tags, and leaves the tags a task carries as they are (live-verified, documented).
+    | CREATE or_alter TASK qualifiedName taskContacts? warehouseClause? taskOptions? afterClause? commentClause? taskExecuteAs? (WHEN booleanExpr)? AS taskBody SEMI?
     | CREATE or_replace? PIPE if_not_exists? qualifiedName pipeOptions? AS copyStatement commentClause? SEMI?
     | CREATE or_replace? SEQUENCE if_not_exists? qualifiedName (CLONE qualifiedName | WITH? sequenceOptions? commentClause?) SEMI?
     | CREATE or_replace? WAREHOUSE if_not_exists? identifier warehouseProperties? commentClause? SEMI?
@@ -1534,8 +1664,9 @@ createStatement
     // CREATE OR ALTER makes the policy, or changes it to what the statement writes: its body, its COMMENT and its
     // EXEMPT_OTHER_POLICIES, never its signature. It takes no IF NOT EXISTS (live-verified).
     | CREATE or_alter MASKING POLICY qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
-    | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
-    | CREATE or_alter ROW ACCESS POLICY qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
+    // RETURNS reads any type: one other than BOOLEAN is refused by name once the body has compiled (live-verified).
+    | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
+    | CREATE or_alter ROW ACCESS POLICY qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? CONTACT if_not_exists? qualifiedName contactProperty* SEMI?
     | CREATE or_replace? PROJECTION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? AGGREGATION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
@@ -1543,7 +1674,7 @@ createStatement
     ;
 
 // Integrations: account objects holding a third-party service's configuration. Frostlake stores them and never
-// calls out. CREATE names one of the four kinds modelled; the other statements take any documented kind, or none.
+// calls out. CREATE names one of the five kinds modelled; the other statements take any documented kind, or none.
 integrationStatement
     : CREATE or_replace? createdIntegrationKind INTEGRATION if_not_exists? identifier objectProperty* SEMI?
     | ALTER integrationKind? INTEGRATION if_exists? identifier integrationAction SEMI?
@@ -1554,7 +1685,9 @@ createdIntegrationKind
     : API
     | CATALOG
     | NOTIFICATION
+    | STORAGE
     | SECURITY
+    | EXTERNAL ACCESS
     ;
 
 integrationKind
@@ -1943,7 +2076,7 @@ alterStatement
     | ALTER EXTERNAL TABLE if_exists? objectName externalTableAction SEMI?
     | ALTER VIEW if_exists? (objectName | openedIdentifierReference) viewAction SEMI?
     | ALTER MATERIALIZED VIEW if_exists? (objectName | openedIdentifierReference) materializedViewAction SEMI?
-    | ALTER DYNAMIC TABLE if_exists? qualifiedName dynamicTableAction SEMI?
+    | ALTER DYNAMIC TABLE if_exists? (objectName | openedIdentifierReference) dynamicTableAction SEMI?
     | ALTER STREAM if_exists? qualifiedName streamAction SEMI?
     | ALTER TASK if_exists? qualifiedName taskAction SEMI?
     | ALTER PIPE if_exists? qualifiedName pipeAction SEMI?
@@ -2372,8 +2505,11 @@ privilegeWord
 
 objectType
     : securableKind
-    // A materialized view is granted on as one (live-verified).
+    // A materialized view is granted on as one (live-verified); a dynamic table and an event table are granted on
+    // under their own kinds too (documented).
     | MATERIALIZED VIEW
+    | DYNAMIC TABLE
+    | EVENT TABLE
     // Live spells these kinds in words. The one-token spellings parse here only so that GRANT and REVOKE refuse them
     // in live's sentence (Object type or Class 'FILE_FORMAT' does not exist or not authorized.).
     | FILE_FORMAT
@@ -2408,6 +2544,7 @@ securableKind
     | PASSWORD POLICY
     | SECRET
     | EXTERNAL VOLUME
+    | ALERT
     ;
 
 // What SHOW GRANTS ON names: a kind and its object, or a bare name, which live reads as a table or a view. A kind word
@@ -2718,8 +2855,9 @@ copySource
 
 // COPY load transformation: a projection over the staged file's positional columns ($1, $2, …) FROM @stage.
 // Only the projection + stage source are modelled (no WHERE/JOIN/aggregates), matching Snowflake's COPY transform.
+// The stage may carry a staged-file query's arguments, judged as that query's are (live-verified).
 copyTransformation
-    : SELECT copyTransformItem (COMMA copyTransformItem)* FROM stageRef
+    : SELECT copyTransformItem (COMMA copyTransformItem)* FROM stageRef stageQueryParams?
     ;
 
 copyTransformItem
@@ -3497,10 +3635,18 @@ alertAction
     | SUSPEND
     | tagSet
     | tagUnset
-    | SET alertProperty+
+    | SET alertSetting (COMMA? alertSetting)*
     | UNSET alertParameter (COMMA alertParameter)*
     | MODIFY CONDITION EXISTS LPAREN alertCondition RPAREN
     | MODIFY ACTION taskBody
+    ;
+
+// What ALTER ALERT … SET takes: an alert's own property, or any other name, which the handler judges as the account
+// does - a session parameter, LOG_LEVEL and their kin are set on the alert, another parameter is refused, and so is a
+// name no parameter has (live-verified).
+alertSetting
+    : alertProperty
+    | identifier EQ taskPropertyValue
     ;
 
 alertParameter
@@ -3509,6 +3655,7 @@ alertParameter
     | CONFIG
     | RUNBOOK
     | SUSPEND_ALERT_AFTER_NUM_FAILURES
+    | identifier
     ;
 
 // What a policy takes after ALTER — a masking, row access, projection, aggregation or join policy alike
@@ -4367,7 +4514,9 @@ tableSource
     // ALL(*) re-derive FROM (VALUES (...), (...)) tuple lists as a parenthesized join; the cure was
     // to let the VALUES alternative be REACHED FIRST, below, rather than to leave the string out.
     | STRING_LITERAL stageQueryParams?
-    | FLATTEN LPAREN flattenArgList RPAREN {refuseBareTableFunction($ctx);}  // LATERAL FLATTEN(expr [, name => val ...])
+    // A bare call after LATERAL may be partitioned as a table function's call is inside TABLE( … ): LATERAL f(x) OVER
+    // (PARTITION BY …) (live-verified); FLATTEN takes the clause and reads no partitions.
+    | FLATTEN LPAREN flattenArgList RPAREN overClause? {refuseBareTableFunction($ctx);}  // LATERAL FLATTEN(expr [, name => val ...])
     | KW_IDENTIFIER_REF LPAREN identifierArgument RPAREN  // IDENTIFIER('<name>') — dynamic table name
     | openedIdentifierReference
     | POSITIONAL_PARAMETER              // $n — a prior flow-chain stage's result (n statements back)
@@ -4381,7 +4530,7 @@ tableSource
     // groups too — and never a comma: FROM (t a, t b) is a syntax error on the account.
     | LPAREN tableReference joinClause* RPAREN
     | VALUES valueTupleList                // Inline values
-    | tableFunctionExpr {refuseBareTableFunction($ctx);}   // LATERAL SPLIT_TO_TABLE(x, ',') — no TABLE() wrapper
+    | tableFunctionExpr overClause? {refuseBareTableFunction($ctx);}   // LATERAL SPLIT_TO_TABLE(x, ',') — no TABLE() wrapper
     ;
 
 // MATCH_RECOGNIZE ( … ) after a source and the alias it may take; the relation it answers takes an alias of its
@@ -5335,9 +5484,9 @@ letStatement
     ;
 
 // An assignment's target: a name, DEFAULT or CONSTRAINT (live: `default := default + 1` assigns). The other words a
-// variable may be named by are left out, though live assigns them too: a statement may begin with them as a join's,
-// an expression's or a CASE statement's word, and as an assignment's first word they move where the syntax errors of
-// such statements are reported.
+// variable may be named by are no alternative here, since a statement may begin with them as a join's, an
+// expression's or a CASE statement's word, and as an assignment's first word they would move where the syntax errors
+// of such statements are reported; statementList reads them as names before their := instead.
 assignedName
     : identifier
     | DEFAULT | CONSTRAINT
@@ -5427,8 +5576,9 @@ openStatement
     : OPEN variableName (USING LPAREN expressionList RPAREN)? SEMI?
     ;
 
+// A target may be a variable named by a word of variableName's (see nameFetchedWords).
 fetchStatement
-    : FETCH variableName INTO identifierList SEMI?
+    : FETCH variableName INTO {nameFetchedWords();} identifierList SEMI?
     ;
 
 closeStatement
@@ -5590,6 +5740,8 @@ blockEndWord
 // without one is a syntax error at the token that follows it, BEGIN included). Stray semicolons
 // AFTER a declaration are tolerated, as Snowflake tolerates them — real deployment scripts end
 // their DECLARE section with a lone `;` line before BEGIN — but the section may not OPEN with one.
+// An item may be named by a word of variableName's: the statement the section opens reads it so (see
+// nameDeclaredWords).
 declareSection
     : DECLARE ((declarationItem | untypedDeclarationItem) {_input.LT(-1).getType() == SEMI}? SEMI*)+
     ;
@@ -5663,7 +5815,10 @@ statementList
     // semicolon. Extra semicolons AFTER a statement are tolerated (`RETURN 1;;`, a lone `;` line
     // between two statements or before END), but a list may not START with one — live refuses
     // `THEN ; RETURN 1;` at the ';' itself.
-    : (statement {_input.LT(-1).getType() == SEMI}? SEMI*)+
+    // A statement may assign a variable named by a word of variableName's, and a nested block may declare one (see
+    // nameAssignedWord and nameDeclaredWords).
+    : {nameAssignedWord(); nameDeclaredWords();}
+        (statement {_input.LT(-1).getType() == SEMI}? SEMI* {nameAssignedWord(); nameDeclaredWords();})+
     ;
 
 // Boolean tier wrapping the value/predicate `expression` below. Currently a pass-through; the

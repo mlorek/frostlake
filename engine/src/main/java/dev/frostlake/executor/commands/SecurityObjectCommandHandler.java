@@ -908,6 +908,10 @@ public final class SecurityObjectCommandHandler {
             if (kind == SecurityObjectKind.NETWORK_RULE && properties.get("VALUE_LIST") != null) {
                 NetworkRuleChecks.requireValues(target.text("TYPE"), asStrings(properties.get("VALUE_LIST")));
             }
+            if (kind == SecurityObjectKind.SECRET && properties.get("OAUTH_SCOPES") != null) {
+                new IntegrationReferences(catalog).requireSecretScopes(target.text("API_AUTHENTICATION"),
+                    asStrings(properties.get("OAUTH_SCOPES")));
+            }
             apply(target, properties);
             return;
         }

@@ -20,6 +20,7 @@ import com.snowflake.snowpark_java.Row;
 import com.snowflake.snowpark_java.Session;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.executor.udf.SnowparkStatementFailure;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -145,7 +146,7 @@ public class StoredProcedureLimitationsTest extends BaseDatabaseTest {
     @Test
     public void ownersRightsRejectsNamedTemporaryObject() {
         final Session owner = new Session(engine, true);
-        final UnsupportedOperationException ex = assertThrows(UnsupportedOperationException.class,
+        final SnowparkStatementFailure ex = assertThrows(SnowparkStatementFailure.class,
             new Executable() {
                 @Override
                 public void execute() {

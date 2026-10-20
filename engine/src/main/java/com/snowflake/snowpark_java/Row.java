@@ -20,6 +20,7 @@ import com.snowflake.snowpark.SnowparkClientException;
 import com.snowflake.snowpark_java.types.Geography;
 import com.snowflake.snowpark_java.types.Geometry;
 import com.snowflake.snowpark_java.types.Variant;
+import dev.frostlake.executor.udf.SnowparkStatementFailure;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.GeoValue;
 import dev.frostlake.values.VariantValue;
@@ -329,19 +330,10 @@ public class Row {
         final BigInteger whole = cell instanceof BigDecimal ? ((BigDecimal) cell).toBigInteger()
             : cell instanceof BigInteger ? (BigInteger) cell : BigInteger.valueOf(cell.longValue());
         if (whole.compareTo(LONG_MIN) < 0 || whole.compareTo(LONG_MAX) > 0) {
-            throw Row.<RuntimeException>unchecked(new SQLException("Cannot convert value in the driver from "
-                + "type:FIXED(null,null) to type:Long, value=" + whole + ".", NOT_CONVERTED_STATE, NOT_CONVERTED_CODE));
+            throw SnowparkStatementFailure.raise("Cannot convert value in the driver from type:FIXED(null,null) to "
+                + "type:Long, value=" + whole + ".", NOT_CONVERTED_STATE, NOT_CONVERTED_CODE);
         }
         return Long.valueOf(whole.longValue());
-    }
-
-    /**
-     * Throws a checked exception where no method declares it, as the Scala code under Snowpark lets the driver's
-     * {@link SQLException} through {@code collect()}.
-     */
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> RuntimeException unchecked(final Throwable failure) throws T {
-        throw (T) failure;
     }
 
     private static Object handed(final Object cell) {

@@ -116,13 +116,13 @@ public class StructuredLeafWidthTest extends BaseDatabaseTest {
     @Test
     public void aStoredShapeOverACastKeepsItsSizedLeaves() {
         engine.execute("CREATE TABLE ct AS SELECT {'k': 'ab'}::MAP(VARCHAR, BINARY) m, {'a': 'x'}::OBJECT(a VARCHAR) o");
-        assertEquals("MAP(VARCHAR(134217728), BINARY(8388608))", describeCell("ct", "M", "type"));
-        assertEquals("OBJECT(a VARCHAR(134217728))", describeCell("ct", "O", "type"));
-        assertEquals("OBJECT(a VARCHAR(134217728))[LOB]", scalarText("SELECT SYSTEM$TYPEOF(o) FROM ct"));
+        assertEquals("MAP(VARCHAR(16777216), BINARY(8388608))", describeCell("ct", "M", "type"));
+        assertEquals("OBJECT(a VARCHAR(16777216))", describeCell("ct", "O", "type"));
+        assertEquals("OBJECT(a VARCHAR(16777216))[LOB]", scalarText("SELECT SYSTEM$TYPEOF(o) FROM ct"));
         engine.execute("CREATE VIEW cv AS SELECT {'k': 'ab'}::MAP(VARCHAR, BINARY) m, {'a': 'x'}::OBJECT(a VARCHAR) o");
         final ResultSet view = engine.executeQuery("DESCRIBE VIEW cv");
-        assertEquals("MAP(VARCHAR(134217728), BINARY(8388608))", cell(view, soleRowWhere(view, "name", "M"), "type"));
-        assertEquals("OBJECT(a VARCHAR(134217728))", cell(view, soleRowWhere(view, "name", "O"), "type"));
+        assertEquals("MAP(VARCHAR(16777216), BINARY(8388608))", cell(view, soleRowWhere(view, "name", "M"), "type"));
+        assertEquals("OBJECT(a VARCHAR(16777216))", cell(view, soleRowWhere(view, "name", "O"), "type"));
     }
 
     @Test

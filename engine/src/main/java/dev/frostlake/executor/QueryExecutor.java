@@ -57,6 +57,7 @@ import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.executor.expressions.StrayArguments;
 import dev.frostlake.executor.expressions.StructuredCast;
+import dev.frostlake.executor.expressions.StructuredFieldRefusal;
 import dev.frostlake.executor.expressions.StructuredLeaf;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryTypeRanking;
@@ -94,6 +95,7 @@ import dev.frostlake.executor.streaming.LimitRowStream;
 import dev.frostlake.executor.streaming.ListRowStream;
 import dev.frostlake.executor.streaming.RowPredicate;
 import dev.frostlake.executor.streaming.RowStream;
+import dev.frostlake.executor.udf.ConstantTableArguments;
 import dev.frostlake.executor.udf.HandlerStateScope;
 import dev.frostlake.executor.udf.ImportLocalizer;
 import dev.frostlake.executor.udf.JarHandlerLoader;
@@ -159,6 +161,7 @@ import dev.frostlake.metastore.StatementKind;
 import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.AggregationPolicy;
+import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Database;
@@ -262,6 +265,7 @@ import dev.frostlake.transaction.StreamReadScope;
 import dev.frostlake.transaction.TableLockGate;
 import dev.frostlake.transaction.TableLockWait;
 import dev.frostlake.transaction.Transaction;
+import dev.frostlake.transaction.TransactionAbortedMessages;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.transaction.TransactionWriteSet;
 import dev.frostlake.types.ArrayType;
@@ -901,7 +905,7 @@ public class QueryExecutor implements ImportLocalizer {
         reentryDepth[0]++;
         // The outermost statement's timeout and cancel are pinned with its clock (see StatementCancellation).
         final StatementCancellation displacedCancellation = outermost
-            ? StatementCancellation.begin(sessionTimeoutSeconds()) : null;
+            ? StatementCancellation.begin(sessionTimeoutSeconds(), boundSessionSettings()) : null;
         // Read the clock ONCE for this statement, and only for the outermost one: Snowflake's
         // CURRENT_TIMESTAMP is statement-stable, so every row and every nested call inside a procedural
         // block sees the same instant. See StatementClock.
@@ -2212,8 +2216,19 @@ public class QueryExecutor implements ImportLocalizer {
                 if ((session != null && session.isAborted()) || transactionManager.isShutDown()) {
                     throw StatementCanceledException.canceled();
                 }
+                // So does an abort of its own transaction, which the session then holds as aborted (live-verified).
+                final Transaction aborted = transactionManager.abortedWhileWaiting();
+                if (aborted != null) {
+                    throw new RuntimeException(TransactionAbortedMessages.canceledWhileWaiting(aborted));
+                }
             }
         });
+    }
+
+    /** The settings of the session this thread's statement runs in, or null when it runs in none. */
+    private SessionSettings boundSessionSettings() {
+        final SessionContext context = securityManager != null ? securityManager.getSessionContext() : null;
+        return context != null ? context.getBoundSettings() : null;
     }
 
     /** The session's LOCK_TIMEOUT, in seconds: 43200 unless it is set. */
@@ -5105,6 +5120,8 @@ public class QueryExecutor implements ImportLocalizer {
                     final boolean isLateral = rightTableRef.LATERAL() != null || isImplicitlyLateral(rightTableRef);
 
                     if (isLateral) {
+                        // LATERAL takes a bare call, never TABLE( … ), whichever function it names (live-verified).
+                        rejectLateralTableWrapper(rightTableRef.LATERAL() != null, rightTableRef.tableSource());
                         // LATERAL with comma syntax: evaluate right side for each left side row
                         subqueryRefusal = firstRefusal(subqueryRefusal,
                     compileLateralSubquery(rightTableRef, null, table, aliasToTable, allTables, lateralContext, ctx));
@@ -5535,6 +5552,11 @@ public class QueryExecutor implements ImportLocalizer {
             if (correlations == null && planTime && !hasPivotSource) {
                 correlations = CorrelationPlanJudgement.ofDerived(this, stmtCtx, ctx, aliasToTable, lateralContext,
                     cteResults == null ? null : cteResults.keySet());
+            }
+            if (correlations == null && planTime && !hasPivotSource && !qualifiesWithoutWindow(ctx)) {
+                // A derived relation of a shape of its own is judged as the query it is (DerivedRelationJudgement).
+                subqueryRefusal = firstRefusal(subqueryRefusal,
+                    DerivedRelationJudgement.refusal(this, stmtCtx, ctx, lateralContext));
             }
             if (correlations != null) {
                 final RuntimeException correlated = correlations.refusal();
@@ -10442,6 +10464,20 @@ public class QueryExecutor implements ImportLocalizer {
                 requireNamedRelation(QualifiedName.join(parts), "TABLE".equals(objectType) ? "Table"
                     : "VIEW".equals(objectType) ? "View" : "Materialized view");
                 return;
+            case "DYNAMIC_TABLE": {
+                final GrantedObject dynamic = materializedOrDynamic(parts);
+                if (dynamic == null || !"DYNAMIC_TABLE".equals(dynamic.getKind())) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table",
+                        catalog.requireOwningSchema(QualifiedName.of(parts)).qualifiedName(parts[parts.length - 1])));
+                }
+                return;
+            }
+            case "EVENT_TABLE":
+                if (!isEventTable(parts)) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Event table",
+                        catalog.requireOwningSchema(QualifiedName.of(parts)).qualifiedName(parts[parts.length - 1])));
+                }
+                return;
             case "SCHEMA":
                 catalog.resolveSchema(QualifiedName.of(parts));
                 return;
@@ -10484,6 +10520,9 @@ public class QueryExecutor implements ImportLocalizer {
                 return;
             case "TASK":
                 catalog.requireOwningSchema(QualifiedName.of(parts)).getTask(parts[parts.length - 1]);
+                return;
+            case "ALERT":
+                catalog.requireOwningSchema(QualifiedName.of(parts)).getAlert(parts[parts.length - 1]);
                 return;
             case "WAREHOUSE":
                 catalog.getWarehouseExact(parts[parts.length - 1]);
@@ -10743,6 +10782,16 @@ public class QueryExecutor implements ImportLocalizer {
                 return new GrantedObject("TABLE", schema.qualifiedName(table.getName()), table.getOwner(),
                     table.getCreatedTime(), memberSpellings(schema, table.getName()));
             }
+            case "MATERIALIZED_VIEW": {
+                final GrantedObject materialized = materializedOrDynamic(parts);
+                return materialized != null && "MATERIALIZED_VIEW".equals(materialized.getKind()) ? materialized : null;
+            }
+            case "DYNAMIC_TABLE": {
+                final GrantedObject dynamic = materializedOrDynamic(parts);
+                return dynamic != null && "DYNAMIC_TABLE".equals(dynamic.getKind()) ? dynamic : null;
+            }
+            case "EVENT_TABLE":
+                return grantedObject("TABLE", parts, arity, writtenTypes);
             case "SCHEMA": {
                 final Schema schema = catalog.resolveSchema(QualifiedName.of(parts));
                 final String full = QualifiedName.join(schema.getDatabaseName(), schema.getName());
@@ -10820,6 +10869,15 @@ public class QueryExecutor implements ImportLocalizer {
                 return new GrantedObject("TASK", schema.qualifiedName(task.getName()), task.getOwner(),
                     task.getCreatedAt().atZone(ZoneId.systemDefault()).toInstant(),
                     memberSpellings(schema, task.getName()));
+            }
+            case "ALERT": {
+                final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                if (!schema.hasAlert(parts[parts.length - 1])) {
+                    return null;
+                }
+                final Alert alert = schema.getAlert(parts[parts.length - 1]);
+                return new GrantedObject("ALERT", schema.qualifiedName(alert.getName()), alert.getOwner(),
+                    alert.getCreatedTime(), memberSpellings(schema, alert.getName()));
             }
             case "PIPE": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
@@ -10903,6 +10961,9 @@ public class QueryExecutor implements ImportLocalizer {
                 catalog.resolveTableAsWritten(written, "TABLE".equals(objectType) ? "Table" : "View").setOwner(owner);
                 return true;
             }
+            case "MATERIALIZED_VIEW":
+                resolveMaterializedView(QualifiedName.join(parts)).setOwner(owner);
+                return true;
             case "SCHEMA":
                 catalog.resolveSchema(QualifiedName.of(parts)).setOwner(owner);
                 return true;
@@ -11418,6 +11479,13 @@ public class QueryExecutor implements ImportLocalizer {
             }
         } catch (final RuntimeException notAMaterializedView) {
             // not a materialized view
+        }
+        try {
+            if (resolveDynamicTable(name) != null) {
+                return;
+            }
+        } catch (final RuntimeException notADynamicTable) {
+            // not a dynamic table
         }
         catalog.resolveTableAsWritten(name, kind);
     }
@@ -16885,6 +16953,17 @@ public class QueryExecutor implements ImportLocalizer {
 
     /** The user table function a call names: in its own schema when qualified, else the current one. */
     private List<Function> udtfOverloads(final FrostlakeParser.FunctionNameContext nameCtx) {
+        final List<Function> tabular = new ArrayList<>();
+        for (final Function overload : functionOverloads(nameCtx)) {
+            if (overload.isTableFunction()) {
+                tabular.add(overload);
+            }
+        }
+        return tabular;
+    }
+
+    /** Every user-defined function a call's name reaches, scalar and tabular, as {@link #udtfOverloads} finds them. */
+    private List<Function> functionOverloads(final FrostlakeParser.FunctionNameContext nameCtx) {
         final String[] parts = ParseTreeText.functionNameParts(nameCtx);
         if (parts == null || parts.length > 3) {
             return new ArrayList<>();
@@ -16908,13 +16987,7 @@ public class QueryExecutor implements ImportLocalizer {
                     }
                 }
             }
-            final List<Function> tabular = new ArrayList<>();
-            for (final Function overload : overloads) {
-                if (overload.isTableFunction()) {
-                    tabular.add(overload);
-                }
-            }
-            return tabular;
+            return overloads;
         } catch (final Exception e) {
             return new ArrayList<>();
         }
@@ -19870,7 +19943,16 @@ public class QueryExecutor implements ImportLocalizer {
     public DynamicTableRefreshOutcome refreshDynamicTableManually(final Schema home, final DynamicTable dynamicTable) {
         final Set<DynamicTable> refreshed = new LinkedHashSet<>();
         refreshUpstream(home, dynamicTable, refreshed);
-        final long[] changed = refreshDynamicTableNow(home, dynamicTable);
+        // The table's query is expanded as a view's body is: a relation it reads that is gone fails the refresh.
+        final boolean outerExpansion = ViewExpansion.begin();
+        final long[] changed;
+        try {
+            changed = refreshDynamicTableNow(home, dynamicTable);
+        } catch (final ViewExpansionException missing) {
+            throw DynamicTableRefreshFailure.manual(dynamicTable, missing);
+        } finally {
+            ViewExpansion.end(outerExpansion);
+        }
         return new DynamicTableRefreshOutcome(changed, changed == null ? 0 : refreshed.size() + 1);
     }
 
@@ -22808,7 +22890,24 @@ public class QueryExecutor implements ImportLocalizer {
             final List<Function> udtfs = udtfOverloads(called);
             if (!udtfs.isEmpty()) {
                 matchedUdtf(udtfs, called, writtenArguments(call));
+            } else if (namesNoRoutine(called)) {
+                // A name nothing carries is refused before the names the statement reads (live-verified).
+                throw unknownTableFunction(called);
             }
+        }
+    }
+
+    /** Whether a call's name reaches no function of any kind and no procedure. */
+    private boolean namesNoRoutine(final FrostlakeParser.FunctionNameContext called) {
+        final String name = functionSimpleName(called);
+        if (functionRegistry.hasFunction(name) || functionRegistry.hasAggregateFunction(name)
+                || !functionOverloads(called).isEmpty()) {
+            return false;
+        }
+        try {
+            return resolveProcedureByFunctionName(called) == null;
+        } catch (final RuntimeException unresolved) {
+            return true;
         }
     }
 
@@ -23293,6 +23392,7 @@ public class QueryExecutor implements ImportLocalizer {
             }
         }
         final List<ResultSetColumn> handlerColumns = declaredHandlerColumns(udtf);
+        final boolean[] constant = constantArguments(udtf, match, written);
         return new PlannedTableFunction(functionName, callText, new MemoizedResultSet(new ResultSetProvider() {
             @Override
             public ResultSet getResultSet() {
@@ -23300,7 +23400,13 @@ public class QueryExecutor implements ImportLocalizer {
                     // One call is one partition of one row: the rows written for it, then the partition's end.
                     final List<List<Object>> partition = new ArrayList<>();
                     partition.add(callArgs);
-                    final TablePartitionRows written = runHandlerPartition(udtf, partition);
+                    final boolean[] outer = ConstantTableArguments.enter(constant);
+                    final TablePartitionRows written;
+                    try {
+                        written = runHandlerPartition(udtf, partition);
+                    } finally {
+                        ConstantTableArguments.exit(outer);
+                    }
                     final List<Row> rows = new ArrayList<>(written.writtenFor(0));
                     rows.addAll(written.atEnd());
                     return new ResultSet(handlerColumns, rows);
@@ -23342,6 +23448,27 @@ public class QueryExecutor implements ImportLocalizer {
                 : arguments.get(i));
         }
         return declared;
+    }
+
+    /**
+     * For each parameter of a handler table function, whether the call writes a constant of the statement for it:
+     * nothing in it reads a row or draws a value (see {@link ConstantTableArguments}).
+     */
+    private boolean[] constantArguments(final Function udtf, final TableFunctionMatch match,
+                                        final List<WrittenArgument> written) {
+        final boolean[] constant = new boolean[udtf.getParameters().size()];
+        for (int i = 0; i < constant.length; i++) {
+            final int taken = match.argumentOf(i);
+            if (taken >= 0) {
+                try {
+                    constant[i] = ConstantHaving.isConstant(ExpressionEvaluator.parse(written.get(taken).getText()),
+                        functionRegistry);
+                } catch (final RuntimeException unparsable) {
+                    constant[i] = false;
+                }
+            }
+        }
+        return constant;
     }
 
     /** Runs a handler table function over one partition of its input, by its language's runtime. */
@@ -23410,7 +23537,7 @@ public class QueryExecutor implements ImportLocalizer {
             for (final FrostlakeParser.ExpressionContext argument : source.tableFunctionExpr().expression()) {
                 written.add(new WrittenArgument(null, getOriginalText(argument), argument));
             }
-            over = null;
+            over = source.overClause();
             callText = getOriginalText(source.tableFunctionExpr());
         } else {
             return null;
@@ -23442,6 +23569,7 @@ public class QueryExecutor implements ImportLocalizer {
             lateralArgumentTypes.end();
         }
         final TablePartitioning partitioning = TablePartitioning.of(over, scope, scopeTables);
+        final boolean[] constant = constantArguments(udtf, match, written);
         // The names the call and its partitioning read are judged while the statement compiles, with every
         // column to the left bound to NULL and no handler run.
         final Map<String, Object> nullRow = new HashMap<>();
@@ -23490,7 +23618,13 @@ public class QueryExecutor implements ImportLocalizer {
                     for (final TableFunctionInput input : partition) {
                         arguments.add(input.arguments());
                     }
-                    final TablePartitionRows out = runHandlerPartition(udtf, arguments);
+                    final boolean[] outer = ConstantTableArguments.enter(constant);
+                    final TablePartitionRows out;
+                    try {
+                        out = runHandlerPartition(udtf, arguments);
+                    } finally {
+                        ConstantTableArguments.exit(outer);
+                    }
                     for (int i = 0; i < partition.size(); i++) {
                         for (final Row row : out.writtenFor(i)) {
                             final List<Object> values = new ArrayList<>(partition.get(i).leftRow().getValues());
@@ -24730,9 +24864,11 @@ public class QueryExecutor implements ImportLocalizer {
             }
             return settled;
         } catch (final RuntimeException undetermined) {
-            // A call only a policy's body may make is refused with the statement that stores it.
+            // A call only a policy's body may make is refused with the statement that stores it, and so is a field a
+            // structured OBJECT does not declare.
             if (SqlCompilationError.isCompilationError(undetermined.getMessage())
-                    || undetermined instanceof PolicyOnlyCallRefusal) {
+                    || undetermined instanceof PolicyOnlyCallRefusal
+                    || undetermined instanceof StructuredFieldRefusal) {
                 throw undetermined;
             }
             logger.debug("View columns could not be resolved from its definition: {}",

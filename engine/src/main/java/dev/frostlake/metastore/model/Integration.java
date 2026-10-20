@@ -111,8 +111,9 @@ public class Integration extends SqlObject {
 
     /**
      * The type SHOW INTEGRATIONS reports: {@code EXTERNAL_API} for an API integration, {@code CATALOG} for a
-     * catalog integration, for a notification integration its TYPE, a queue's followed by its provider, and for a
-     * security integration its TYPE.
+     * catalog integration, for a notification integration its TYPE, a queue's followed by its provider, for a
+     * storage integration its TYPE, and for a security integration its TYPE, a Snowflake OAuth one's followed by its
+     * client, an External OAuth one's by its server and a SCIM one's by its client.
      */
     public String getType() {
         switch (kind) {
@@ -125,13 +126,22 @@ public class Integration extends SqlObject {
                 }
                 return type;
             case SECURITY:
-                return text("TYPE");
+                return securityType();
             case STORAGE:
-                return "EXTERNAL_STAGE";
+                return text("TYPE") != null ? text("TYPE") : "EXTERNAL_STAGE";
             case EXTERNAL_ACCESS:
                 return "EXTERNAL_ACCESS";
             default:
                 return kind.getWords();
         }
+    }
+
+    /** A security integration's type as SHOW tells it: {@code OAUTH - CUSTOM} for a custom OAuth client. */
+    private String securityType() {
+        final String type = text("TYPE");
+        final String variant = "OAUTH".equals(type) ? text("OAUTH_CLIENT")
+            : "EXTERNAL_OAUTH".equals(type) ? text("EXTERNAL_OAUTH_TYPE")
+            : "SCIM".equals(type) ? text("SCIM_CLIENT") : null;
+        return variant == null ? type : type + " - " + variant;
     }
 }
