@@ -47,6 +47,41 @@ public final class PythonTableFunctionExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(PythonTableFunctionExecutor.class);
 
+    /** The name of the module {@link #ROWS} is made into on a CPython worker. */
+    private static final String ROWS_MODULE = "__frostlake_rows";
+
+    /**
+     * Shapes what a handler call answered into rows on the CPython worker, as {@link #collectRows} reads them on
+     * GraalPy: a str is one value, any other iterable one row per element, anything else a single row; an item that
+     * is a tuple or a list is the row's cells, padded or trimmed to the declared width. Each cell is reported as
+     * {@code [outcome, text, value]}: {@code absent} for padding, {@link PythonReturn#CONVERT}'s pair for a declared
+     * column, and {@code pass} with the value itself for a column that takes it as the runtime holds it.
+     */
+    private static final String ROWS = """
+        import __frostlake_returns as _returns
+        def rows(result, kinds, scales, width):
+            if result is None:
+                return []
+            if isinstance(result, (str, bytes, bytearray)) or not hasattr(result, '__iter__'):
+                items = [result]
+            else:
+                items = list(result)
+            shaped = []
+            for item in items:
+                cells = list(item) if isinstance(item, (list, tuple)) else [item]
+                row = []
+                for i in range(width):
+                    if i >= len(cells):
+                        row.append(['absent', '', None])
+                    elif kinds[i] is None:
+                        row.append(['pass', '', cells[i]])
+                    else:
+                        outcome, text = _returns.__fl_converted(cells[i], kinds[i], scales[i])
+                        row.append([outcome, text, cells[i] if outcome == 'pass' else None])
+                shaped.append(row)
+            return shaped
+        """;
+
     /** The global a row's argument is bound to for its {@code process} call, numbered from 0. */
     private static final String TABLE_ARGUMENT = "__fl_table_argument";
 
@@ -99,60 +134,104 @@ public final class PythonTableFunctionExecutor {
         final List<List<Row>> writtenPerRow = new ArrayList<>();
         final List<Row> atEnd = new ArrayList<>();
 
-        PythonModuleFrame frame = null;
+        Object frame = null;
         try {
-            frame = PythonRuntime.enterModule();
-            PythonRuntime.eval(dedent(function.getBody()));
+            frame = PythonInterpreter.enterModule();
+            PythonInterpreter.eval(dedent(function.getBody()));
 
             // Instantiate the handler class; a dotted one is a module's attribute, imported as CREATE resolved it.
             if (PythonHandlerCheck.isDotted(handlerClassName)) {
-                PythonRuntime.bind("__fl_handler_name", handlerClassName);
-                PythonRuntime.eval(PythonHandlerCheck.RESOLVE_DOTTED + "__handler_instance = __fl_handler()");
+                PythonInterpreter.bind("__fl_handler_name", handlerClassName);
+                PythonInterpreter.eval(PythonHandlerCheck.RESOLVE_DOTTED + "__handler_instance = __fl_handler()");
             } else {
-                PythonRuntime.eval("__handler_instance = " + handlerClassName + "()");
+                PythonInterpreter.eval("__handler_instance = " + handlerClassName + "()");
             }
 
             // Call process() for each input row, each argument bound as the Python value its parameter's type maps
-            // to (see PythonRuntime.bindArgument).
+            // to (see PythonInterpreter.bindArgument).
             final List<Parameter> params = function.getParameters();
             for (final List<Object> rowArgs : rows) {
                 final StringBuilder call = new StringBuilder("__process_result = __handler_instance.process(");
                 final int count = Math.min(params.size(), rowArgs.size());
                 for (int i = 0; i < count; i++) {
-                    PythonRuntime.bindArgument(TABLE_ARGUMENT + i, rowArgs.get(i), params.get(i).getDataType());
+                    PythonInterpreter.bindArgument(params.get(i), TABLE_ARGUMENT + i, rowArgs.get(i));
                     call.append(i == 0 ? "" : ", ").append(TABLE_ARGUMENT).append(i);
                 }
-                PythonRuntime.eval(call.append(')').toString());
-                final List<Row> written = new ArrayList<>();
-                collectRows(PythonRuntime.global("__process_result"), function, outputColumns, declared, written);
-                writtenPerRow.add(written);
+                PythonInterpreter.eval(call.append(')').toString());
+                writtenPerRow.add(rowsOf("__process_result", function, outputColumns, declared));
             }
 
             // Call end_partition() if it exists
-            PythonRuntime.eval("__has_end_partition = hasattr(__handler_instance, 'end_partition')");
-            final Value hasEnd = PythonRuntime.global("__has_end_partition");
-            if (hasEnd != null && hasEnd.isBoolean() && hasEnd.asBoolean()) {
-                PythonRuntime.eval("__end_result = __handler_instance.end_partition()");
-                collectRows(PythonRuntime.global("__end_result"), function, outputColumns, declared, atEnd);
+            PythonInterpreter.eval("__has_end_partition = hasattr(__handler_instance, 'end_partition')");
+            if (Boolean.TRUE.equals(PythonInterpreter.global("__has_end_partition"))) {
+                PythonInterpreter.eval("__end_result = __handler_instance.end_partition()");
+                atEnd.addAll(rowsOf("__end_result", function, outputColumns, declared));
             }
 
         } catch (final PythonReturnRefusal refused) {
             // What the handler wrote does not fit its column's type; the refusal is worded already.
             throw refused;
         } catch (final Exception e) {
-            // Worded before the context is settled (see PythonRuntime.settleAfter).
+            // Worded before the context is settled (see PythonInterpreter.settleAfter).
             final String refusal = "Error executing Python table function " + function.getName() + ": "
                 + e.getMessage();
             logger.error("Error executing Python table function {}: {}", function.getName(), e.getMessage(), e);
-            if (!PythonRuntime.settleAfter(e)) {
+            if (!PythonInterpreter.settleAfter(e)) {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
         } finally {
-            PythonRuntime.leaveModule(frame);
+            PythonInterpreter.leaveModule(frame);
         }
 
         return new TablePartitionRows(writtenPerRow, atEnd);
+    }
+
+    /**
+     * The rows a handler call left in a global, on whichever backend runs. GraalPy's are read as polyglot values
+     * ({@link #collectRows}); the CPython worker shapes them itself ({@link #ROWS}), each declared cell converted by
+     * {@link PythonReturn#CONVERT} on its side and built into its SQL value here.
+     */
+    private static List<Row> rowsOf(final String global, final Function function,
+                                    final List<ResultSetColumn> columns, final boolean declared) {
+        final List<Row> rows = new ArrayList<>();
+        if (PythonInterpreter.holdsPolyglotValues()) {
+            collectRows(PythonRuntime.global(global), function, columns, declared, rows);
+            return rows;
+        }
+        final StringBuilder kinds = new StringBuilder("[");
+        final StringBuilder scales = new StringBuilder("[");
+        for (int i = 0; i < columns.size(); i++) {
+            final String kind = declared ? PythonReturn.kindOf(columns.get(i).getDataType()) : null;
+            kinds.append(i == 0 ? "" : ", ").append(kind == null ? "None" : "'" + kind + "'");
+            scales.append(i == 0 ? "" : ", ").append(declared ? PythonReturn.scaleOf(columns.get(i).getDataType()) : 0);
+        }
+        PythonReturn.installConvert();
+        PythonInterpreter.installModule(ROWS_MODULE, ROWS);
+        PythonInterpreter.eval("import " + ROWS_MODULE + " as __fl_rows_module\n__fl_rows = __fl_rows_module.rows("
+            + global + ", " + kinds.append(']') + ", " + scales.append(']') + ", " + columns.size() + ")\n");
+        final Object shaped = PythonInterpreter.global("__fl_rows");
+        if (!(shaped instanceof List)) {
+            return rows;
+        }
+        for (final Object row : (List<?>) shaped) {
+            final List<Object> values = new ArrayList<>(columns.size());
+            int i = 0;
+            for (final Object cell : (List<?>) row) {
+                final List<?> triple = (List<?>) cell;
+                final String outcome = String.valueOf(triple.get(0));
+                if ("absent".equals(outcome)) {
+                    values.add(null);
+                } else {
+                    final Object held = PythonReturn.fromPair(outcome, String.valueOf(triple.get(1)),
+                        columns.get(i).getDataType(), function.getName(), function.getHandler());
+                    values.add(held != PythonReturn.AS_IS ? held : triple.get(2));
+                }
+                i++;
+            }
+            rows.add(new Row(values));
+        }
+        return rows;
     }
 
     /**

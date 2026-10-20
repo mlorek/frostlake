@@ -718,34 +718,18 @@ public final class PythonRuntime {
         return value.toString();
     }
 
-    /** {@code str(datetime)} — {@code 2024-10-16 19:47:11.488000}; no fraction when the microsecond is 0. */
+    /** {@code str(datetime)}; see {@link PythonValueText#pythonDatetimeStr(LocalDateTime)}. */
     public static String pythonDatetimeStr(final LocalDateTime dt) {
-        return String.format("%04d-%02d-%02d %s",
-            dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(), pythonTimeStr(dt.toLocalTime()));
+        return PythonValueText.pythonDatetimeStr(dt);
     }
 
-    /** {@code str(time)} — {@code 19:47:11.488000}; no fraction when the microsecond is 0. */
+    /** {@code str(time)}; see {@link PythonValueText#pythonTimeStr}. */
     public static String pythonTimeStr(final LocalTime t) {
-        final int micro = t.getNano() / 1000;
-        final String base = String.format("%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
-        return micro == 0 ? base : base + String.format(".%06d", micro);
+        return PythonValueText.pythonTimeStr(t);
     }
 
-    /**
-     * A temporal nested INSIDE a returned container as the text Snowflake stores in a VARIANT: Python's
-     * {@code str()} of the value, with the naive fields verbatim. A top-level return keeps its
-     * {@code java.time} type instead — only container members are stringified.
-     */
+    /** See {@link PythonValueText#temporalInContainer}. */
     public static Object temporalInContainer(final Object value) {
-        if (value instanceof LocalDateTime) {
-            return pythonDatetimeStr((LocalDateTime) value);
-        }
-        if (value instanceof LocalTime) {
-            return pythonTimeStr((LocalTime) value);
-        }
-        if (value instanceof LocalDate) {
-            return value.toString();
-        }
-        return value;
+        return PythonValueText.temporalInContainer(value);
     }
 }

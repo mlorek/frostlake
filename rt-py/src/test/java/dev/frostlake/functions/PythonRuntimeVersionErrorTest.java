@@ -17,6 +17,7 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.rt.py.PythonInterpreter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -118,7 +119,7 @@ public class PythonRuntimeVersionErrorTest extends BaseDatabaseTest {
         });
         final String message = error.getMessage();
         assertTrue(message.contains("RUNTIME_VERSION '3.13'"), message);
-        assertTrue(message.contains("3.12 (GraalPy)"), message);
+        assertTrue(message.contains(PythonInterpreter.description()), message);
     }
 
     @Test

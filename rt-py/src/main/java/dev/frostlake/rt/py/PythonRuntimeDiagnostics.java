@@ -27,14 +27,10 @@ package dev.frostlake.rt.py;
  */
 public final class PythonRuntimeDiagnostics {
 
-    /** Python version implemented by the embedded interpreter. */
-    private static final String EMBEDDED_PYTHON = PythonRuntime.EMBEDDED_PYTHON;
 
     private PythonRuntimeDiagnostics() {
     }
 
-    /** Python version implemented by the embedded interpreter, as a minor number (3.x → x). */
-    private static final int EMBEDDED_MINOR = 12;
 
     /**
      * True when {@code runtimeVersion} names a Python NEWER than the embedded interpreter — the only
@@ -49,7 +45,7 @@ public final class PythonRuntimeDiagnostics {
             return false;
         }
         try {
-            return Integer.parseInt(trimmed.substring(2).split("\\.")[0]) > EMBEDDED_MINOR;
+            return Integer.parseInt(trimmed.substring(2).split("\\.")[0]) > PythonInterpreter.minorVersion();
         } catch (final NumberFormatException notANumber) {
             return false;
         }
@@ -160,13 +156,13 @@ public final class PythonRuntimeDiagnostics {
             return message.toString();
         }
         message.append(" — the ").append(kind).append(" declares RUNTIME_VERSION '").append(runtimeVersion)
-            .append("' but this engine embeds Python ").append(EMBEDDED_PYTHON)
+            .append("' but this engine runs Python ").append(PythonInterpreter.description())
             .append(", so syntax added after that version cannot be parsed");
         final String constructs = python3Constructs(body);
         if (constructs != null) {
             message.append(" (body uses ").append(constructs).append(')');
         }
-        message.append(". Rewrite the body using Python ").append(EMBEDDED_PYTHON)
+        message.append(". Rewrite the body using Python ").append(PythonInterpreter.description())
             .append("-compatible syntax, or run this object on Snowflake.");
         return message.toString();
     }

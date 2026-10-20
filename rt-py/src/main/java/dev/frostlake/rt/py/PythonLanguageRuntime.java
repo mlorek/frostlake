@@ -29,7 +29,10 @@ import dev.frostlake.storage.ResultSet;
 
 import java.util.List;
 
-/** The GraalPy-backed {@link UdfLanguageRuntime} provider for LANGUAGE PYTHON (UDF, UDTF, procedures). */
+/**
+ * The {@link UdfLanguageRuntime} provider for LANGUAGE PYTHON (UDF, UDTF, procedures), on GraalPy or CPython as
+ * {@code python.runtime} chooses (see {@link PythonInterpreter}).
+ */
 public final class PythonLanguageRuntime implements UdfLanguageRuntime {
 
     @Override
@@ -39,12 +42,12 @@ public final class PythonLanguageRuntime implements UdfLanguageRuntime {
 
     @Override
     public void configure(final EngineConfig config) {
-        PythonRuntime.configureVenv(config.getPythonVenv());
+        PythonInterpreter.configure(config);
     }
 
     @Override
     public void statementEnded() {
-        PythonRuntime.restoreShared();
+        PythonInterpreter.restoreShared();
     }
 
     @Override

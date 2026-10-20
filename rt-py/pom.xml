@@ -116,4 +116,29 @@
             </plugin>
         </plugins>
     </build>
+
+    <!-- `mvn -pl rt-py test -Pcpython` runs the whole suite on the CPython backend (python.runtime=cpython), with
+         python3 from the PATH unless -Dpython.executable=<venv>/bin/python names the interpreter. -->
+    <profiles>
+        <profile>
+            <id>cpython</id>
+            <properties>
+                <python.executable>python3</python.executable>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <python.runtime>cpython</python.runtime>
+                                <python.executable>${python.executable}</python.executable>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

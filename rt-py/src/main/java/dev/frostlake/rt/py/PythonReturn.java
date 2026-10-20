@@ -35,6 +35,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -57,7 +58,7 @@ final class PythonReturn {
     static final Object AS_IS = new Object();
 
     /** The name of the module {@link #CONVERT} is made into on each interpreter. */
-    private static final String MODULE = "__frostlake_returns";
+    static final String MODULE = "__frostlake_returns";
 
     /**
      * Defines {@code __fl_converted(value, kind, scale)}, answering a pair: what became of the value ({@code null},
@@ -199,8 +200,53 @@ final class PythonReturn {
         }
         final Value pair = PythonRuntime.module(MODULE, CONVERT)
             .invokeMember("__fl_converted", answer, kind, Integer.valueOf(scaleOf(declared)));
-        final String outcome = pair.getArrayElement(0).asString();
-        final String text = pair.getArrayElement(1).asString();
+        return fromPair(pair.getArrayElement(0).asString(), pair.getArrayElement(1).asString(), declared, name,
+            handler);
+    }
+
+    /**
+     * {@link #declared(Value, DataType, String, String)} for the global a handler left, on whichever backend runs: the
+     * CPython worker runs {@link #CONVERT} as a module of its own and hands back the pair.
+     *
+     * @param global   the global holding the answer
+     * @param declared the declared type
+     * @param name     the routine, for a refusal
+     * @param handler  the handler, for a refusal
+     * @return the value, or {@link #AS_IS}
+     */
+    static Object declaredGlobal(final String global, final DataType declared, final String name,
+                                 final String handler) {
+        if (PythonInterpreter.holdsPolyglotValues()) {
+            return declared(PythonRuntime.global(global), declared, name, handler);
+        }
+        final String kind = kindOf(declared);
+        if (kind == null) {
+            return AS_IS;
+        }
+        installConvert();
+        PythonInterpreter.eval("import " + MODULE + " as __fl_returns\n__fl_pair = __fl_returns.__fl_converted("
+            + global + ", '" + kind + "', " + scaleOf(declared) + ")\n");
+        final List<?> pair = (List<?>) PythonInterpreter.global("__fl_pair");
+        return fromPair(String.valueOf(pair.get(0)), String.valueOf(pair.get(1)), declared, name, handler);
+    }
+
+    /** Make {@link #CONVERT} a module of the runtime's on this thread's interpreter, importable as {@link #MODULE}. */
+    static void installConvert() {
+        PythonInterpreter.installModule(MODULE, CONVERT);
+    }
+
+    /**
+     * The SQL value for the pair {@link #CONVERT} reported, or {@link #AS_IS} for {@code pass}.
+     *
+     * @param outcome  what became of the value
+     * @param text     the value's text, or the refusal's sentence
+     * @param declared the declared type
+     * @param name     the routine, for a refusal
+     * @param handler  the handler, for a refusal
+     * @return the value, or {@link #AS_IS}
+     */
+    static Object fromPair(final String outcome, final String text, final DataType declared, final String name,
+                           final String handler) {
         if ("pass".equals(outcome)) {
             return AS_IS;
         }
