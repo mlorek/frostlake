@@ -57,7 +57,7 @@ public final class ConvertedValueType {
                 ((DateTimeType) declared).hasTimeZone());
         }
         // A DECFLOAT has no width for the rule to override: CAST(TRUE AS DECFLOAT) is the DECFLOAT 1, as
-        // TO_DECFLOAT(TRUE) is (FL-492).
+        // TO_DECFLOAT(TRUE) is.
         if (declared instanceof NumericType && !NumericType.isApproximate(declared)
                 && !NumericType.isDecfloat(declared) && source instanceof BooleanType) {
             return new NumericType("NUMBER", 2, 0);

@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore.model;
 
+import java.util.Locale;
+
 /**
  * Represents a file in a stage
  */
@@ -39,6 +41,6 @@ public class StageFile {
 
     @Override
     public String toString() {
-        return String.format("%-50s %10d %s %s", name, size, lastModified, md5);
+        return String.format(Locale.ROOT, "%-50s %10d %s %s", name, size, lastModified, md5);
     }
 }

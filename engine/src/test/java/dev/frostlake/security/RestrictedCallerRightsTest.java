@@ -30,9 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A procedure that runs with restricted caller's rights may use only those of its caller's privileges a caller grant
  * names (documented: "every privilege required by the executable must be specified in one or more caller grants").
- * This engine models no caller grant, so such a body runs with no privilege at all: what needs none still runs, and
- * whatever needs one is refused, the SYSTEM user's session too. It ran with all of its caller's privileges, so a
- * procedure an untrusted role wrote read whatever its caller could (FL-434). EXECUTE AS CALLER is unchanged. Engine
+ * Without a caller grant such a body runs with no privilege at all: what needs none still runs, and whatever needs one
+ * is refused, the SYSTEM user's session too (CallerGrantTest has the grants). EXECUTE AS CALLER is unchanged. Engine
  * only: the live account allows no CREATE ROLE or GRANT.
  */
 public class RestrictedCallerRightsTest {

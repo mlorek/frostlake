@@ -55,6 +55,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -741,10 +742,18 @@ public class DropCommandHandler implements CommandHandler {
                     queryExecutor.requireOwnership("TASK", dropNameParts(ctx), null);
                     // A quoted name in another case is another task, which is not there (live-verified).
                     schema.dropTaskExact(taskName);
-                    // A finalizer task of the dropped root finalizes nothing any more: it stands alone.
+                    // A finalizer task of the dropped root finalizes nothing any more: it stands alone. A task that
+                    // ran after the dropped one runs after it no more, a child of its other predecessors or, with
+                    // none left, standing alone (live-verified).
                     for (final Task remaining : schema.getTasks()) {
                         if (remaining.isFinalizer() && remaining.getFinalizedRootTask().equalsIgnoreCase(taskName)) {
                             remaining.setFinalizedRootTask(null);
+                        }
+                        final Iterator<String> predecessors = remaining.getPredecessors().iterator();
+                        while (predecessors.hasNext()) {
+                            if (QualifiedName.parse(predecessors.next()).last().equals(taskName)) {
+                                predecessors.remove();
+                            }
                         }
                     }
                     logger.trace("Dropped task: {}", taskName);

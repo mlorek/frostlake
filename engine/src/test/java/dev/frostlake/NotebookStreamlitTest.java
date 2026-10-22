@@ -72,6 +72,10 @@ public class NotebookStreamlitTest extends BaseDatabaseTest {
 
     @Test
     public void aNotebookIsCreatedShownAndDescribed() {
+        // A notebook created FROM a location copies its files, so the stage holds the main file first.
+        engine.execute("CREATE OR REPLACE STAGE stg");
+        engine.execute("COPY INTO @stg/nb/nb.ipynb FROM (SELECT '{}')"
+            + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE");
         assertEquals("Notebook NB1 successfully created.", engine.executeQuery("CREATE NOTEBOOK nb1 FROM '@stg/nb' "
             + "MAIN_FILE = 'nb.ipynb' QUERY_WAREHOUSE = fl_app_wh1 COMMENT = 'first' IDLE_AUTO_SHUTDOWN_TIME_SECONDS = 600")
             .getRows().get(0).getValue(0));

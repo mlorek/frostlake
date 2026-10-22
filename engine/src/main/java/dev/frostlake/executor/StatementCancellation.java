@@ -136,6 +136,16 @@ public final class StatementCancellation {
     }
 
     /**
+     * The query ID the pinned statement runs under.
+     *
+     * @return the ID, or null when no statement is pinned or it has none yet
+     */
+    static String runningQueryId() {
+        final StatementCancellation token = PINNED.get();
+        return token == null ? null : token.queryId;
+    }
+
+    /**
      * Cancel the running statement a query ID names.
      *
      * @param id the query ID

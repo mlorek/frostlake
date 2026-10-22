@@ -27,8 +27,8 @@ import org.antlr.v4.runtime.Token;
 
 /**
  * The line the account reports for a statement that is no query written in the parentheses a FROM clause reads a
- * query in. The statement's first word is a name there, and the parse stops at what follows it; the account names
- * the word itself, and nothing after it (live-verified):
+ * query in — after FROM or a JOIN, in one pair or more. The statement's first word is a name there, and the parse
+ * stops at what follows it; the account names the word itself, and nothing after it (live-verified):
  *
  * <pre>
  *   SELECT * FROM (DESCRIBE TABLE t)          'DESCRIBE'
@@ -38,6 +38,8 @@ import org.antlr.v4.runtime.Token;
  *   SELECT * FROM (CALL p())                  'CALL'
  *   SELECT * FROM (USE SCHEMA s)              'USE'
  *   SELECT * FROM (VALUES)                    'VALUES'
+ *   SELECT * FROM ((DESCRIBE TABLE t))        'DESCRIBE'
+ *   SELECT * FROM t JOIN (DESCRIBE TABLE t) d ON TRUE   'DESCRIBE'
  * </pre>
  *
  * A word that stands alone in the parentheses, or with one name after it, is the table it names:
@@ -83,8 +85,15 @@ final class StatementWordInFromLines {
                 }
             }
         }
-        if (open < 1 || open + 1 >= fault || spoken.get(open - 1).getType() != FrostlakeLexer.FROM
-                || !OPENERS.contains(Integer.valueOf(spoken.get(open + 1).getType()))) {
+        if (open < 1 || open + 1 >= fault || !OPENERS.contains(Integer.valueOf(spoken.get(open + 1).getType()))) {
+            return null;
+        }
+        int before = open - 1;
+        while (before > 0 && spoken.get(before).getType() == FrostlakeLexer.LPAREN) {
+            before--;
+        }
+        final int reads = spoken.get(before).getType();
+        if (reads != FrostlakeLexer.FROM && (reads != FrostlakeLexer.JOIN || before != open - 1)) {
             return null;
         }
         return Collections.singletonList(SyntaxErrorListener.sentence(spoken.get(open + 1)));

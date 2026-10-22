@@ -17,9 +17,12 @@
 package dev.frostlake.executor.copy;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.UncheckedIOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
@@ -171,6 +174,27 @@ public final class StagedFileIo {
         return text.toString();
     }
 
+    /**
+     * Bytes read as UTF-8, every byte that is no part of it kept as a mark of it, as {@link #readMarked} keeps them.
+     *
+     * @param bytes the bytes
+     * @return the text
+     */
+    public static String markedUtf8(final byte[] bytes) {
+        final StringBuilder text = new StringBuilder(bytes.length);
+        try (Reader reader = new UnreadableMarkingReader(new ByteArrayInputStream(bytes), StandardCharsets.UTF_8)) {
+            final char[] buffer = new char[1024];
+            int read = reader.read(buffer);
+            while (read >= 0) {
+                text.append(buffer, 0, read);
+                read = reader.read(buffer);
+            }
+        } catch (final IOException unread) {
+            throw new UncheckedIOException(unread);
+        }
+        return text.toString();
+    }
+
     /** Whether a character is the mark of a byte its file's encoding could not read. */
     public static boolean isUnreadable(final char c) {
         return c >= UNREADABLE_START && c < UNREADABLE_END;
@@ -218,6 +242,29 @@ public final class StagedFileIo {
             }
         }
         return shown.toString();
+    }
+
+    /**
+     * A record format's refusal of a file holding a byte that is no part of UTF-8, in the account's words: {@code Error
+     * parsing JSON: invalid UTF-8 sequence: 0xE9}, then the file, the line and the byte's character within it, and the
+     * row and column being read (live-verified, for JSON and XML).
+     *
+     * @param format     the format, as the refusal names it: JSON, XML
+     * @param marked     the file's text, each unreadable byte kept as its mark
+     * @param unreadable where the text holds the first mark
+     * @param shownName  the file, as the refusal names it
+     * @return the refusal
+     */
+    public static RuntimeException unreadableRefusal(final String format, final String marked, final int unreadable,
+                                                     final String shownName) {
+        final int lineStart = marked.lastIndexOf('\n', unreadable - 1) + 1;
+        int line = 1;
+        for (int i = 0; i < lineStart; i++) {
+            line += marked.charAt(i) == '\n' ? 1 : 0;
+        }
+        return new RuntimeException("Error parsing " + format + ": invalid UTF-8 sequence: "
+            + unreadableByte(marked.charAt(unreadable)) + "\n  File '" + shownName + "', line " + line
+            + ", character " + (unreadable - lineStart + 1) + "\n  Row 0, column $1");
     }
 
     /**

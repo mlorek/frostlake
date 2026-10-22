@@ -140,7 +140,7 @@ public class CPythonRuntimeTest {
     }
 
     /**
-     * #2383: the worker runs isolated from a directory only the engine's user may enter, so a module someone left in
+     * the worker runs isolated from a directory only the engine's user may enter, so a module someone left in
      * the shared temporary directory is not importable, let alone imported in place of the standard library's, and
      * what a routine prints still reaches the log as UTF-8 although isolation ignores PYTHONIOENCODING.
      */
@@ -173,7 +173,7 @@ public class CPythonRuntimeTest {
     }
 
     /**
-     * #2386: the worker's own module and classes - what encodes a result, what calls the engine - are guarded as the
+     * the worker's own module and classes - what encodes a result, what calls the engine - are guarded as the
      * runtime's helper modules are, so a routine that replaces them through {@code sys.modules['__main__']} or
      * {@code object.__subclasses__()} reaches no later statement.
      */

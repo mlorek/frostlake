@@ -422,9 +422,9 @@ final class CreatedObjectProperties {
         return order;
     }
 
-    /** Whether a name is a parameter the account knows, of any level. */
+    /** Whether a name is a parameter the account knows, of any level: in the account's list or in a level's. */
     static boolean isParameter(final String key) {
-        return PARAMETER_TYPES.containsKey(key);
+        return PARAMETER_TYPES.containsKey(key) || ParameterRegistry.isSomeLevelParameter(key);
     }
 
     /** A name that is neither a property nor a parameter is refused as it is written, as a table's. */

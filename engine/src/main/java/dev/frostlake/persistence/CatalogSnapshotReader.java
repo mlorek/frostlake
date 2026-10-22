@@ -19,6 +19,7 @@ package dev.frostlake.persistence;
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.LoadRecord;
 import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -153,6 +154,20 @@ final class CatalogSnapshotReader {
                 catalog.getCopyLoadedFiles().put(loaded.getKey(), new HashSet<>(loaded.getValue()));
             }
         }
+        // And what each load did, for LOAD_HISTORY and COPY_HISTORY.
+        final List<LoadRecord> loads = new ArrayList<>();
+        if (snapshot.loadHistory != null) {
+            for (final LoadRecordSnapshot load : snapshot.loadHistory) {
+                loads.add(load.toRecord());
+            }
+        }
+        catalog.getLoadHistory().restore(loads);
+        // And the statements a time-travel point may name by query ID, which a former engine ran.
+        if (snapshot.queryPoints != null && catalog.getQueryHistory() != null) {
+            for (final QueryPointSnapshot point : snapshot.queryPoints) {
+                catalog.getQueryHistory().anchor(point.queryId, point.toHistory());
+            }
+        }
         // Load databases and schemas
         for (final DatabaseSnapshot dbSnapshot : snapshot.databases) {
             // Skip system database (will be created automatically)
@@ -212,12 +227,18 @@ final class CatalogSnapshotReader {
 
         // Load users
         for (final UserSnapshot userSnapshot : snapshot.users) {
+            boolean created = false;
             try {
                 catalog.createUser(userSnapshot.name, userSnapshot.password, userSnapshot.defaultRole);
+                created = true;
             } catch (final RuntimeException e) {
                 // User already exists (e.g. default user created during init) — skip creation
             }
             final User user = catalog.getUserExact(userSnapshot.name);
+            if (created) {
+                // The default role comes back by its canonical name, a quoted one as it was written.
+                user.setDefaultRole(userSnapshot.defaultRole);
+            }
             user.setComment(userSnapshot.comment);
             // enabled is a nullable Boolean: null (a snapshot predating the field) means the user was never
             // disabled, so leave it enabled; only an explicit value flips it.
@@ -583,6 +604,8 @@ final class CatalogSnapshotReader {
                             ? viewSnapshot.rowAccessPolicyColumns : new ArrayList<>());
                     }
                     view.setResolvedColumns(derivedColumns(viewSnapshot.columns));
+                    DataMetricSnapshots.restore(viewSnapshot.dataMetrics, viewSnapshot.dataMetricSchedule,
+                        view.dataMetricAttachments());
                     SnapshotTags.restore(view, viewSnapshot.tags);
                     schema.addView(view);
                 }
@@ -644,6 +667,11 @@ final class CatalogSnapshotReader {
                     if (serviceSnapshot.tags != null) {
                         for (final Map.Entry<String, String> tag : serviceSnapshot.tags.entrySet()) {
                             service.setTag(tag.getKey(), tag.getValue());
+                        }
+                    }
+                    if (serviceSnapshot.scoringProfiles != null) {
+                        for (final Map.Entry<String, String> profile : serviceSnapshot.scoringProfiles.entrySet()) {
+                            service.addScoringProfile(profile.getKey(), profile.getValue());
                         }
                     }
                     schema.addCortexSearchService(service);
@@ -984,7 +1012,7 @@ final class CatalogSnapshotReader {
                     dt.restoreCreatedTime(dtSnapshot.createdAt);
                     dt.restoreLastDdlTime(dtSnapshot.lastDdlAt);
                     if (dtSnapshot.clusterKeys != null) {
-                        dt.setClusterKeys(dtSnapshot.clusterKeys);
+                        dt.setClusterKeys(dtSnapshot.clusterKeys, dtSnapshot.clusterByText);
                     }
                     if (dtSnapshot.refreshedRows != null) {
                         dt.setRefreshedRows(dtSnapshot.refreshedRows.longValue());
@@ -1017,6 +1045,7 @@ final class CatalogSnapshotReader {
                     dt.setTransient(dtSnapshot.transientTable);
                     // The settings the CREATE and ALTERs gave it, which it otherwise restored with their defaults:
                     // REFRESH_MODE AUTO, INITIALIZE ON_CREATE, running.
+                    dt.setFullRefreshReason(dtSnapshot.fullRefreshReason);
                     if (dtSnapshot.refreshMode != null) {
                         dt.setRefreshMode(RefreshMode.valueOf(dtSnapshot.refreshMode));
                     }

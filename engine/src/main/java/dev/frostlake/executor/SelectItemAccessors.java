@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.IntervalStringText;
 import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.parser.BracedReplaceLines;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import org.antlr.v4.runtime.CharStream;
@@ -67,7 +68,8 @@ public final class SelectItemAccessors {
      * there: the keyword is a syntax error and so is the token after it — {@code {* REPLACE (a + 1 AS a)}} is
      * "unexpected 'REPLACE'" then "unexpected '('", {@code {* RENAME a AS z}} "unexpected 'RENAME'" then
      * "unexpected 'a'" (live-verified), while {@code {* EXCLUDE (a)}} and {@code {* ILIKE 'a%'}} run. They
-     * stay legal on a plain {@code *}.
+     * stay legal on a plain {@code *}. In a derived table's or a CTE's item more is refused after them, see
+     * {@link BracedReplaceLines}.
      */
     private static void rejectProjectionRewritingModifiers(final FrostlakeParser.ObjectStarItemContext star) {
         for (final FrostlakeParser.StarModifierContext modifier : star.starModifier()) {
@@ -80,6 +82,9 @@ public final class SelectItemAccessors {
             final List<String> lines = new ArrayList<>();
             lines.add(unexpected(modifier.getStart()));
             lines.add(unexpected(next));
+            for (final Token later : BracedReplaceLines.after(star, modifier)) {
+                lines.add(unexpected(later));
+            }
             final CharStream text = modifier.getStart().getInputStream();
             throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines,
                 text.getText(Interval.of(0, text.size() - 1)));

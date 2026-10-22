@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.BoundedParseCache;
 import dev.frostlake.executor.IntegerLiteralRange;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SelectItemAccessors;
@@ -516,6 +517,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         throw CaretOperator.refusal();
     }
 
+    /** Nor is the bar (see {@link CaretOperator}). */
+    @Override
+    public Expression visitBarExpr(final FrostlakeParser.BarExprContext ctx) {
+        throw CaretOperator.barRefusal();
+    }
+
     /**
      * Two parenthesised lists compared. A list of one is a parenthesised SCALAR, not a row: two of them are an
      * ordinary comparison, and one opposite a row is the row-against-scalar refusal, as live reads
@@ -602,10 +609,27 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
      */
     @Override
     public Expression visitDoubledEqualsExpr(final FrostlakeParser.DoubledEqualsExprContext ctx) {
-        final Token sign = ctx.EQ_EQ().getSymbol();
+        return signCall(ctx.EQ_EQ().getSymbol(), ctx.expression(0), ctx.expression(1));
+    }
+
+    /** {@code a & b}: a call of a function named {@code "&"}, which resolves to nothing (live-verified). */
+    @Override
+    public Expression visitAmpExpr(final FrostlakeParser.AmpExprContext ctx) {
+        return signCall(ctx.AMP().getSymbol(), ctx.expression(0), ctx.expression(1));
+    }
+
+    /** {@code ~a}: a call of a function named {@code "~"}, which resolves to nothing (live-verified). */
+    @Override
+    public Expression visitTildeExpr(final FrostlakeParser.TildeExprContext ctx) {
+        return signCall(ctx.TILDE().getSymbol(), ctx.expression());
+    }
+
+    /** A call of the function an operator's sign names, over its operands, placed at the sign. */
+    private FunctionCallExpression signCall(final Token sign, final FrostlakeParser.ExpressionContext... operands) {
         final List<Expression> arguments = new ArrayList<>();
-        arguments.add(visit(ctx.expression(0)));
-        arguments.add(visit(ctx.expression(1)));
+        for (final FrostlakeParser.ExpressionContext operand : operands) {
+            arguments.add(visit(operand));
+        }
         final FunctionCallExpression call = new FunctionCallExpression(sign.getText(), arguments);
         final List<String> name = new ArrayList<>();
         name.add(sign.getText());
@@ -2494,10 +2518,23 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
      */
     private static DataType declaredTarget(final FrostlakeParser.DataTypeNameContext type,
                                            final FrostlakeParser.TypeParametersContext params) {
+        // A type read once as none of these is none again, written the same: a SQL function's every call writes its
+        // arguments out through such casts, and the type was parsed for each.
+        final String written = params == null ? type.getText() : type.getText() + params.getText();
+        if (PLAIN_TARGETS.get(written) != null) {
+            return null;
+        }
         final DataType parsed = DataTypeParser.parse(type, params, DataTypeParser.CAST_STRING_DEFAULT);
-        return StructuredTypes.isStructured(parsed) || parsed instanceof VectorType
-            || IntervalCasts.isIntervalType(parsed) ? parsed : null;
+        if (StructuredTypes.isStructured(parsed) || parsed instanceof VectorType
+                || IntervalCasts.isIntervalType(parsed)) {
+            return parsed;
+        }
+        PLAIN_TARGETS.put(written, Boolean.TRUE);
+        return null;
     }
+
+    /** The cast targets already read as no structured, VECTOR or INTERVAL type, by their written text. */
+    private static final BoundedParseCache<Boolean> PLAIN_TARGETS = new BoundedParseCache<Boolean>(512, 256);
 
     /**
      * FILE is a COLUMN type but not a CAST target: live, {@code NULL::FILE},

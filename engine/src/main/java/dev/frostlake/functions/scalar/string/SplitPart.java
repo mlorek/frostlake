@@ -19,9 +19,11 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -65,8 +67,15 @@ public class SplitPart extends TextArgumentFunction {
         return parts.get(idx);
     }
 
-    /** The part asked for: 0 is the first part, as 1 is (live-verified). */
+    /**
+     * The part asked for: 0 is the first part, as 1 is; a text spelling a number past 32 bits is refused as that
+     * number: "Numeric value '3000000000' is out of range" (live-verified).
+     */
     private static int partNumber(final Object written) {
+        if (written instanceof CharSequence && WholeNumbers.decimalOf(written).setScale(0, RoundingMode.HALF_UP)
+                .toBigInteger().bitLength() > 31) {
+            throw new RuntimeException("Numeric value '" + written.toString().trim() + "' is out of range");
+        }
         final int part = wholeNumber(written);
         return part == 0 ? 1 : part;
     }

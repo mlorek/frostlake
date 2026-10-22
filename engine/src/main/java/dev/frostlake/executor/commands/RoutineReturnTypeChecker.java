@@ -160,6 +160,21 @@ final class RoutineReturnTypeChecker {
     private static String rowValueType(final QueryExecutor queryExecutor, final Catalog catalog,
                                        final List<Parameter> parameters, final FrostlakeParser.ExpressionContext value,
                                        final Schema home) {
+        if (value instanceof FrostlakeParser.RowExprContext) {
+            // A list of values in the list is a ROW of its own: (1, 2), 3 is ROW(ROW(NUMBER(1,0), NUMBER(1,0)),
+            // NUMBER(1,0)) (live-verified).
+            final StringBuilder nested = new StringBuilder("ROW(");
+            String separator = "";
+            for (final FrostlakeParser.ExpressionContext member : ((FrostlakeParser.RowExprContext) value).rowValues) {
+                final String type = rowValueType(queryExecutor, catalog, parameters, member, home);
+                if (type == null) {
+                    return null;
+                }
+                nested.append(separator).append(type);
+                separator = ", ";
+            }
+            return nested.append(')').toString();
+        }
         final String text = value.getStart().getInputStream().getText(
             Interval.of(value.getStart().getStartIndex(), value.getStop().getStopIndex()));
         if (isUntypedNull(text)) {

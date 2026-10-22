@@ -238,8 +238,9 @@ public class SystemDatabaseSchemasTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | Object does not exist, or operation cannot be performed.",
                 "USE SCHEMA SNOWFLAKE.ORG_USAGE_LOCAL");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on schema "
-                    + "'ORG_USAGE_LOCAL'. Provider share does not have sufficient privileges.",
+                "REFUSED SQL compilation error: | Schema 'SNOWFLAKE.ORG_USAGE_LOCAL' does not exist or not authorized. "
+                    + "Your primary role <ROLE> must have USAGE or any other privilege granted on SCHEMA "
+                    + "SNOWFLAKE.ORG_USAGE_LOCAL.",
                 "DESCRIBE SCHEMA SNOWFLAKE.ORG_USAGE_LOCAL");
             assertAnswer(
                 "",
@@ -325,8 +326,9 @@ public class SystemDatabaseSchemasTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | Object does not exist, or operation cannot be performed.",
                 "USE SCHEMA SNOWFLAKE.TRUST_CENTER_INTERNAL");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on schema "
-                    + "'TRUST_CENTER_INTERNAL'. Provider share does not have sufficient privileges.",
+                "REFUSED SQL compilation error: | Schema 'SNOWFLAKE.TRUST_CENTER_INTERNAL' does not exist or not "
+                    + "authorized. Your primary role <ROLE> must have USAGE or any other privilege granted on SCHEMA "
+                    + "SNOWFLAKE.TRUST_CENTER_INTERNAL.",
                 "DESCRIBE SCHEMA SNOWFLAKE.TRUST_CENTER_INTERNAL");
             assertAnswer(
                 "",

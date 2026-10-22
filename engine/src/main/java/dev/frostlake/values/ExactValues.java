@@ -114,7 +114,9 @@ public final class ExactValues {
             if (Double.isNaN(approximate) || Double.isInfinite(approximate)) {
                 return null;
             }
-            return new BigDecimal(Double.toString(approximate));
+            // The double's exact binary value, as a cast reads it: a FLOAT 2.675 written into a NUMBER(10,2) column
+            // is 2.67, not its shortest spelling's 2.68 (live-verified).
+            return new BigDecimal(approximate);
         }
         return null;
     }

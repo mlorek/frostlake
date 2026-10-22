@@ -40,7 +40,30 @@ public class ToNumber extends BuiltInFunction {
     // Compiled once — this ran String.matches (a fresh Pattern compile) per CALL.
     private static final Pattern PLAIN_NUMBER =
         Pattern.compile("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-    public ToNumber() { super("TO_NUMBER", NumericType.NUMBER); }
+    /** The same conversion of a value from a source that can be NULL (see {@link #overNullableSource}). */
+    private static final ToNumber OVER_NULLABLE_SOURCE = new ToNumber(true);
+
+    /** Whether the converted value comes from a source that can be NULL, which a range refusal prints. */
+    private final boolean nullableSource;
+
+    public ToNumber() { this(false); }
+
+    private ToNumber(final boolean nullableSource) {
+        super("TO_NUMBER", NumericType.NUMBER);
+        this.nullableSource = nullableSource;
+    }
+
+    /**
+     * The same conversion of a value from a source that can be NULL, whose range refusals print the type
+     * {@code {nullable}}: {@code TO_NUMBER(f, 3)} over a nullable FLOAT column holding 1e10 is "Number out of
+     * representable range: type FIXED[SB2](3,0){nullable}, value 1e+10" (live-verified). Only the caller holding
+     * the argument's expression can tell.
+     *
+     * @return the conversion
+     */
+    public ToNumber overNullableSource() {
+        return OVER_NULLABLE_SOURCE;
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -52,9 +75,14 @@ public class ToNumber extends BuiltInFunction {
             return ((Boolean) args.get(0)).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
         }
         // A NaN or an infinity, a FLOAT's or a VARIANT's, has no NUMBER value: TO_NUMBER is the conversion the cast
-        // performs (documented), so it is refused in the cast's own sentence, "Number out of representable range:
-        // type FIXED[SB16](38,0){not null}, value nan" (FL-482), not in BigDecimal's.
-        final RuntimeException nonFinite = NonFiniteCastRefusal.refusalFor(args.get(0), "FIXED");
+        // performs (documented), so it is refused in the cast's own sentence naming the declared width,
+        // TO_NUMERIC('-inf'::FLOAT, 5, 2) being "Number out of representable range: type FIXED[SB4](5,2){not null},
+        // value -inf" (live-verified), not in BigDecimal's.
+        final Integer declaredPrecision = targetPrecision(args);
+        final Integer declaredScale = targetScale(args);
+        final RuntimeException nonFinite = NonFiniteCastRefusal.refusalFor(args.get(0), "FIXED",
+            declaredPrecision != null ? declaredPrecision.intValue() : DEFAULT_PRECISION,
+            declaredScale != null ? declaredScale.intValue() : 0, nullableSource);
         if (nonFinite != null) {
             throw nonFinite;
         }
@@ -117,8 +145,14 @@ public class ToNumber extends BuiltInFunction {
         if (args.get(0) instanceof CharSequence) {
             throw new RuntimeException(NumericRangeRefusal.unconvertibleText(args.get(0).toString().trim()));
         }
+        if (args.get(0) instanceof Double || args.get(0) instanceof Float) {
+            // A FLOAT is classed by the declared width and printed as a double: TO_DECIMAL(1e39::FLOAT, 10, 2) is
+            // FIXED[SB8](10,2) and value 1e+39 (live-verified).
+            throw new RuntimeException(NumericRangeRefusal.typedDouble(SignedStorageWidth.tagOfPrecision(precision),
+                precision, scale, nullableSource, value));
+        }
         throw new RuntimeException(NumericRangeRefusal.typed(SignedStorageWidth.tagOf(value, scale),
-            precision, scale, false, value));
+            precision, scale, nullableSource, value));
     }
 
     /**

@@ -102,6 +102,23 @@ public final class WindowedOperand {
         return new OperandRefusal(kindSentence(functionOf(value)), order, false);
     }
 
+    /**
+     * Whether a node is SYSTEM$GET_TAG written with OVER. The account answers the call while the statement compiles,
+     * and judges the window after the call's arguments, domain and tag: the operand is refused as the statement's
+     * expressions are read, not ahead of them (live-verified).
+     *
+     * @param node a node of the parsed statement
+     * @return true for such an operand
+     */
+    static boolean waitsForCompilation(final ParseTree node) {
+        if (!(node instanceof FrostlakeParser.WindowedOperandExprContext)) {
+            return false;
+        }
+        final ParseTree value = unwrapped(((FrostlakeParser.WindowedOperandExprContext) node).expression());
+        return value instanceof FrostlakeParser.SystemFuncExprContext && "SYSTEM$GET_TAG".equalsIgnoreCase(
+            ((FrostlakeParser.SystemFuncExprContext) value).SYSTEM_FUNC().getText());
+    }
+
     private static String kindSentence(final String function) {
         return "Invalid function type [" + function + "] for window function.";
     }

@@ -50,6 +50,7 @@ import dev.frostlake.functions.aggregate.DecfloatAwareAccumulator;
 import dev.frostlake.functions.aggregate.DeclaredArgumentAccumulator;
 import dev.frostlake.functions.aggregate.ListAggAccumulator;
 import dev.frostlake.functions.aggregate.MaxByMinByAccumulator;
+import dev.frostlake.functions.aggregate.MedianAccumulator;
 import dev.frostlake.functions.aggregate.ObjectAggAccumulator;
 import dev.frostlake.functions.aggregate.RegrAccumulator;
 import dev.frostlake.functions.aggregate.RegrKind;
@@ -2566,7 +2567,8 @@ final class GroupByAggregateEvaluator {
             resolved = pinned;
         }
         return evaluateGenericAggregate(resolved, funcName, funcCtx.DISTINCT() != null,
-            AggregateFunctions.withinGroupOrderBy(funcCtx), args, groupRows, table, aliasToTable, allTables);
+            AggregateFunctions.withinGroupOrderBy(funcCtx), args, groupRows, table, aliasToTable, allTables,
+            AggregateFunctions.isComputedPerGroup(funcCtx));
     }
 
     /**
@@ -2590,15 +2592,20 @@ final class GroupByAggregateEvaluator {
                                             final List<String> args, final List<Row> groupRows, final Table table,
                                             final Map<String, Table> aliasToTable, final List<Table> allTables) {
         return evaluateGenericAggregate(executor.getFunctionRegistry().getAggregateFunction(funcName), funcName,
-            distinct, withinGroupOrder, args, groupRows, table, aliasToTable, allTables);
+            distinct, withinGroupOrder, args, groupRows, table, aliasToTable, allTables, false);
     }
 
-    /** The same aggregate, the function that runs it already found (see the call-node form above). */
+    /**
+     * The same aggregate, the function that runs it already found (see the call-node form above).
+     *
+     * @param perGroup whether the call is computed group by group (see AggregateFunctions#isComputedPerGroup)
+     */
     private Object evaluateGenericAggregate(final AggregateFunction aggFunc, final String funcName,
                                             final boolean distinct,
                                             final FrostlakeParser.OrderByClauseContext withinGroupOrder,
                                             final List<String> args, final List<Row> groupRows, final Table table,
-                                            final Map<String, Table> aliasToTable, final List<Table> allTables) {
+                                            final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                            final boolean perGroup) {
         final FrostlakeParser.OrderByClauseContext withinGroup = withinGroupOrder;
         final List<Row> aggRows = withinGroup != null
             ? executor.sortRowsForWindow(groupRows, withinGroup, table) : groupRows;
@@ -2621,6 +2628,9 @@ final class GroupByAggregateEvaluator {
                 final DataType aggregatedType = "OBJECT_AGG".equals(funcName) && args.size() > 1
                     ? declaredTypeOf(args.get(1), table, aliasToTable, allTables) : declared;
                 ((DecfloatAwareAccumulator) acc).setDecfloatArgument(NumericType.isDecfloat(aggregatedType));
+            }
+            if (acc instanceof MedianAccumulator) {
+                ((MedianAccumulator) acc).setPerGroup(perGroup);
             }
             if (acc instanceof CoercedNumericArgumentAccumulator) {
                 ((CoercedNumericArgumentAccumulator) acc).setCoercedNumericArgument(

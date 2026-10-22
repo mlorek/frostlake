@@ -147,6 +147,10 @@ public final class ExplainedStatementChecks {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence",
                         QualifiedName.join(qualified)));
                 }
+            } else if (drop.STAGE() != null && !ifExists) {
+                requireNamed(executor, parts, "Stage", true);
+            } else if (drop.FILE() != null && drop.FORMAT() != null && !ifExists) {
+                requireNamed(executor, parts, "File format", false);
             } else if (drop.SCHEMA() != null && !ifExists) {
                 final Catalog catalog = executor.getCatalog();
                 final String[] named = catalog.withoutAccount(parts, 2);
@@ -163,6 +167,20 @@ public final class ExplainedStatementChecks {
                     .getFunctionOverloads(qualified[2]).isEmpty()) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Function", QualifiedName.join(qualified)));
             }
+        }
+    }
+
+    /**
+     * A stage or a file format a DROP names is there, refused in full with the privilege hint where it is not
+     * (live-verified: EXPLAIN DROP STAGE stx over no such stage).
+     */
+    private static void requireNamed(final QueryExecutor executor, final String[] parts, final String noun,
+                                     final boolean stage) {
+        final Schema schema = executor.getCatalog().requireOwningSchema(QualifiedName.of(parts));
+        final String[] qualified = qualified(executor.getCatalog(), parts);
+        final boolean held = stage ? schema.hasStageExact(qualified[2]) : schema.hasFileFormatExact(qualified[2]);
+        if (!held) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist(noun, QualifiedName.join(qualified)));
         }
     }
 

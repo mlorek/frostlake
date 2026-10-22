@@ -1,10 +1,10 @@
 grammar Frostlake;
 
 // The word IDENTIFIER leaves the lexer as one of three tokens, the word MATCH_RECOGNIZE as its clause's opener or
-// as a name, FINAL and RUNNING inside that clause as a call's prefix or as names, and the | and $ of a row
-// pattern as tokens there alone: see the lexer members below.
+// as a name, FINAL and RUNNING inside that clause as a call's prefix or as names, the | and & as tokens of one
+// character, and the $ of a row pattern as a token there alone: see the lexer members below.
 tokens {
-    KW_IDENTIFIER_REF, KW_IDENTIFIER_OPEN, MATCH_RECOGNIZE_OPEN, ROW_PATTERN_SEMANTICS, BAR, DOLLAR, TABLE_QUERY
+    KW_IDENTIFIER_REF, KW_IDENTIFIER_OPEN, MATCH_RECOGNIZE_OPEN, ROW_PATTERN_SEMANTICS, BAR, AMP, DOLLAR, TABLE_QUERY
 }
 
 @lexer::header {
@@ -56,7 +56,7 @@ import java.util.List;
             // or a signature: CREATE TABLE system\$t (a INT) creates the table and CREATE FUNCTION system\$f()
             // the function (live-verified).
             ((WritableToken) token).setType(IDENTIFIER);
-        } else if (type == CARET) {
+        } else if (type == CARET || type == FrostlakeParser.BAR) {
             caretRead = true;
         } else if (type == LPAREN) {
             parentheses++;
@@ -109,13 +109,14 @@ import java.util.List;
             && (statementOpener == INSERT || statementOpener == EXPLAIN || statementOpener == WITH);
     }
 
-    /** Whether the text holds a caret: the one token an expression may write as an operator and never use. */
+    /** Whether the text holds a caret or a bar: the tokens an expression may write as operators and never use. */
     private boolean caretRead;
 
     /**
-     * Whether a caret has been handed out, so that a statement of a text that holds none is not searched for one.
+     * Whether a caret or a bar has been handed out, so that a statement of a text that holds neither is not searched
+     * for one.
      *
-     * @return whether the text read so far holds a caret
+     * @return whether the text read so far holds a caret or a bar
      */
     public boolean hasReadCaret() {
         return caretRead;
@@ -224,11 +225,11 @@ import java.util.List;
     }
 
     /**
-     * The token a character no rule reads stands for inside a MATCH_RECOGNIZE clause: the bar or the dollar of its
-     * pattern. They have no rule of their own — outside a clause the bar stays the character the lexer cannot read,
-     * refused as it always was, and a rule with a condition would cost every other token its cached path. A
-     * dollar sign that opens nothing is the dollar token everywhere, and the caret is a token everywhere (see
-     * CARET).
+     * The token a character no rule reads stands for: the bar and the ampersand everywhere — operators of an
+     * expression, and the bar the alternation of a MATCH_RECOGNIZE clause's pattern — and the dollar inside such a
+     * clause, its pattern's end. They have no rule of their own, since a rule with a condition would cost every other
+     * token its cached path. A dollar sign that opens nothing is the dollar token everywhere, and the caret is a token
+     * everywhere (see CARET).
      */
     private int patternSymbolType(final LexerNoViableAltException unread) {
         final String symbol = _input.getText(Interval.of(unread.getStartIndex(), unread.getStartIndex()));
@@ -237,11 +238,16 @@ import java.util.List;
             // everywhere, which no rule outside a row pattern takes: SELECT $"PV" is refused at the '$'.
             return FrostlakeParser.DOLLAR;
         }
+        if ("|".equals(symbol)) {
+            return FrostlakeParser.BAR;
+        }
+        if ("&".equals(symbol)) {
+            return FrostlakeParser.AMP;
+        }
         if (rowPatternClauses.isEmpty()) {
             return Token.INVALID_TYPE;
         }
-        return "|".equals(symbol) ? FrostlakeParser.BAR : "$".equals(symbol) ? FrostlakeParser.DOLLAR
-            : Token.INVALID_TYPE;
+        return "$".equals(symbol) ? FrostlakeParser.DOLLAR : Token.INVALID_TYPE;
     }
 
     /** Whether the dollar sign at {@code index} opens a dollar-quoted string, a second one following it. */
@@ -430,6 +436,38 @@ import java.util.List;
     private boolean scopeObjectTakesSignature(final ShowStatementContext listing) {
         return listing.objectName() != null && ShowScopeWords.namesKind(listing.objectName().getStart(),
             listing.objectName().getStop());
+    }
+
+    /**
+     * Whether a type read here is a table column's: a column definition's or an ALTER COLUMN's new type, its own or a
+     * structured member's.
+     */
+    private boolean tableColumnType() {
+        for (ParserRuleContext at = _ctx; at != null; at = at.getParent()) {
+            if (at instanceof ColumnDefContext || at instanceof AlterColumnItemActionContext) {
+                return true;
+            }
+            if (!(at instanceof DataTypeNameContext || at instanceof StructuredFieldContext
+                    || at instanceof StructuredFieldListContext)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Refuses LONG where it reads as no type: outside a table column's type, at the word, and with parameters after
+     * it, at their parenthesis (live-verified).
+     */
+    private void refuseLongWord(final ParserRuleContext type, final Token word) {
+        if (!tableColumnType()) {
+            notifyErrorListeners(word, "unexpected '" + word.getText() + "'", new RefusedWordFault(this, type, true));
+            return;
+        }
+        final Token next = _input.LT(1);
+        if (next.getType() == LPAREN) {
+            notifyErrorListeners(next, "unexpected '('", new RefusedWordFault(this, type, true));
+        }
     }
 
     /** Whether the token ahead is the given word, which is no keyword of its own. */
@@ -839,7 +877,7 @@ import java.util.List;
                 || operand instanceof FunctionCallExprContext || operand instanceof FunctionCallStarExprContext
                 || operand instanceof FunctionCallMixedArgsExprContext
                 || operand instanceof FunctionCallNamedArgsExprContext
-                || operand instanceof SystemUserTaskCancelExprContext
+                || operand instanceof SystemUserTaskCancelExprContext || operand instanceof SystemFuncExprContext
                 || operand instanceof InstanceMethodCallExprContext) {
             return true;
         }
@@ -1580,14 +1618,17 @@ undropStatement
 createStatement
     // TRANSIENT is the only modifier a DATABASE takes: live-verified, `CREATE TEMPORARY DATABASE d` is
     // a syntax error ON THE WORD DATABASE, so TEMPORARY must NOT be accepted here.
-    : CREATE or_replace? TRANSIENT? DATABASE if_not_exists? identifier (CLONE identifier timeTravelClause?)? databaseProperty* SEMI?
+    : CREATE or_replace? TRANSIENT? DATABASE if_not_exists? identifier
+        (CLONE identifier (timeTravelClause cloneTimedOption* | cloneContentOption*))? databaseProperty* SEMI?
     // A SCHEMA takes MORE spellings than it supports, and the difference is the whole point: live
     // PARSES `CREATE TEMPORARY/TEMP/VOLATILE SCHEMA` and then refuses each with "Unsupported feature
     // '<WORD> SCHEMA'." — a message that can only exist if the word was read. LOCAL and GLOBAL are the
     // boundary: `CREATE LOCAL TEMPORARY SCHEMA` IS a syntax error, so the pair below is deliberately
     // not the (LOCAL | GLOBAL)? group the TABLE alternative uses.
     // A comma may stand between two properties, but not after WITH MANAGED ACCESS (refused in Java, at the comma).
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | VOLATILE)? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause?)? (schemaProperty (COMMA? schemaProperty)*)? SEMI?
+    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | VOLATILE)? SCHEMA if_not_exists? qualifiedName
+        (CLONE qualifiedName (timeTravelClause cloneTimedOption* | cloneContentOption*))?
+        (schemaProperty (COMMA? schemaProperty)*)? SEMI?
     // A table must say what its columns ARE: an explicit column list, CLONE, LIKE, or CTAS. A body-less
     // `CREATE TABLE t`, `CREATE TABLE t TAG (…)` or `CREATE TABLE t CLUSTER BY (…)` is a syntax error in
     // Snowflake (live-verified), so the shape group below is NOT optional.
@@ -2037,7 +2078,7 @@ unmodelledKind
     | SHARE
     | APPLICATION PACKAGE?
     | PACKAGES POLICY
-    | ORGANIZATION ({UnmodelledKindWords.is(_input.LT(1), "PROFILE")}? IDENTIFIER)?
+    | ORGANIZATION PROFILE?
     | STORAGE word=IDENTIFIER {refuseKindWord($ctx, $word, "LIFECYCLE");} POLICY
     | DBT word=IDENTIFIER {refuseKindWord($ctx, $word, "PROJECT");}
     | GIT REPOSITORY
@@ -2321,7 +2362,8 @@ taskExecuteAs
     ;
 
 grantStatement
-    : GRANT ROLE principalName TO (USER | ROLE) principalName SEMI?  // GRANT ROLE role_name TO USER/ROLE target_name
+    : grantCaller
+    | GRANT ROLE principalName TO (USER | ROLE) principalName SEMI?  // GRANT ROLE role_name TO USER/ROLE target_name
     // A privilege's grantee is a role unless it says USER: the ROLE keyword may be left out, where GRANT ROLE
     // itself requires it. An object named without its kind is a table or a view (live-verified).
     // An ACCOUNT-level privilege names its scope: live-verified 2026-08-02, `GRANT CREATE DATABASE TO
@@ -2340,6 +2382,52 @@ grantStatement
     | GRANT privilegeList ON ACCOUNT TO (USER | ROLE)? principalName withGrantOption? SEMI?  // GRANT privs ON ACCOUNT TO USER/ROLE target_name
     | GRANT privilegeList ON ALL bulkObjectType IN bulkScope TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON ALL <types> IN <scope>
     | GRANT privilegeList ON FUTURE bulkObjectType IN bulkScope TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON FUTURE <types> IN <scope>
+    ;
+
+// A caller grant: which of its caller's privileges an executable that runs with restricted caller's rights may use,
+// given to the executable's owner - on one object, or INHERITED on every object of a kind in the account, a database
+// or a schema - ALL CALLER PRIVILEGES standing for every privilege (documented).
+grantCaller
+    : GRANT (CALLER callerPrivilegeList | ALL CALLER PRIVILEGES) ON objectType grantedObjectName TO callerGrantee SEMI?
+    | GRANT (INHERITED CALLER callerPrivilegeList | ALL INHERITED CALLER PRIVILEGES)
+        ON ALL callerObjectKinds IN callerGrantScope TO callerGrantee SEMI?
+    ;
+
+revokeCaller
+    : REVOKE (CALLER callerPrivilegeList | ALL CALLER PRIVILEGES) ON objectType grantedObjectName
+        FROM callerRevokee SEMI?
+    | REVOKE (INHERITED CALLER callerPrivilegeList | ALL INHERITED CALLER PRIVILEGES)
+        ON ALL callerObjectKinds IN callerGrantScope FROM callerRevokee SEMI?
+    ;
+
+callerPrivilegeList
+    : privilege (COMMA privilege)*
+    ;
+
+// The kinds an inherited caller grant names, in the plural.
+callerObjectKinds
+    : bulkObjectType
+    | DATABASES
+    | WAREHOUSES
+    ;
+
+callerGrantScope
+    : ACCOUNT
+    | DATABASE referencedName
+    | SCHEMA referencedName
+    | APPLICATION PACKAGE principalName
+    | APPLICATION principalName
+    ;
+
+callerGrantee
+    : ROLE principalName
+    | DATABASE ROLE referencedName
+    | APPLICATION principalName
+    ;
+
+callerRevokee
+    : ROLE principalName
+    | DATABASE ROLE referencedName
     ;
 
 // What an ownership transfer does with the grants its object carries. COPY CURRENT GRANTS reads word by word;
@@ -2435,7 +2523,8 @@ principalName
     ;
 
 revokeStatement
-    : REVOKE ROLE principalName FROM (USER | ROLE) principalName revokeMode? SEMI?  // REVOKE ROLE role_name FROM USER/ROLE target_name
+    : revokeCaller
+    | REVOKE ROLE principalName FROM (USER | ROLE) principalName revokeMode? SEMI?  // REVOKE ROLE role_name FROM USER/ROLE target_name
     // Same ACCOUNT scoping as GRANT — live 2026-08-02: `REVOKE CREATE DATABASE FROM ROLE r` is a
     // syntax error ("unexpected 'FROM'"), `REVOKE CREATE DATABASE ON ACCOUNT FROM ROLE r` succeeds.
     | REVOKE grantOptionFor? globalPrivilegeList ON ACCOUNT FROM ROLE? principalName revokeMode? SEMI?  // REVOKE global_privs ON ACCOUNT FROM ROLE role_name
@@ -2470,6 +2559,7 @@ globalPrivilege
     | EXECUTE TASK
     | IMPORT SHARE
     | MANAGE GRANTS
+    | MANAGE CALLER GRANTS
     | MONITOR EXECUTION
     | MONITOR USAGE
     ;
@@ -2494,11 +2584,13 @@ privilegeWord
     : IDENTIFIER | ACCESS | ACCOUNT | ADD | AGGREGATION | ALERT | ALTER | ANY | APPLICATION | APPLY
     | APPLYBUDGET | ARTIFACT | AUTHENTICATION | AUTO | CLASS | CONTACT | CORTEX | CREATE | DATA | DATABASE | DBT
     | DELETE | DROP
-    | DYNAMIC | ERROR | EVENT | EVOLVE | EXECUTE | EXECUTION | EXTERNAL | FILE | FORMAT | FUNCTION | GIT | GRANTS
+    | DYNAMIC | ERROR | EVENT | EVOLVE | EXCHANGE | EXECUTE | EXECUTION | EXTERNAL | FILE | FORMAT | FUNCTION | GIT
+    | GRANTS
     | GROUP | HYBRID | ICEBERG | IMAGE | IMPORT | IMPORTED | INSERT | INTEGRATION | JOIN | MANAGE | MANAGED
     | MASKING | MATERIALIZED | METRIC | MODIFY | MONITOR | NETWORK | NOTEBOOK | OPERATE | OPTIMIZATION
-    | OWNERSHIP | PACKAGES | PASSWORD | PIPE | POLICY | PRIVACY | PRIVILEGES | PROCEDURE | PROJECTION | READ | REBUILD
-    | REFERENCES | REPOSITORY | RESOURCE | ROLE | ROW | RULE | SCHEMA | SEARCH | SECRET | SELECT | SEMANTIC | SEQUENCE
+    | OWNERSHIP | PACKAGES | PASSWORD | PIPE | POLICY | PRIVACY | PRIVILEGES | PROCEDURE | PROFILE | PROJECTION | READ
+    | REBUILD | REFERENCES | REPOSITORY | RESOURCE | ROLE | ROW | RULE | SCHEMA | SCORING | SEARCH | SECRET | SELECT
+    | SEMANTIC | SEQUENCE
     | SERVICE | SESSION | SET | SHARE | STAGE | STORAGE | STREAM | STREAMLIT | TABLE | TAG | TASK
     | TEMPORARY | TRUNCATE | TYPE | UPDATE | USAGE | USE | USER | VIEW | WAREHOUSE | WRITE
     ;
@@ -3274,6 +3366,9 @@ cortexSearchAction
     | tagUnset
     // SUSPEND / RESUME without a target act on both layers.
     | (SUSPEND | RESUME) (INDEXING | SERVING)?
+    // A named scoring profile, its body a JSON text (documented; the forms live-verified).
+    | ADD SCORING PROFILE if_not_exists? identifier (STRING_LITERAL | DOLLAR_QUOTED_STRING)
+    | DROP SCORING PROFILE if_exists? identifier
     ;
 
 // A property an ALTER sets. The ones that are no words of the grammar — FULL_INDEX_BUILD_INTERVAL_DAYS,
@@ -3440,6 +3535,10 @@ viewAction
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
     | DROP ROW ACCESS POLICY qualifiedName
     | DROP ALL ROW ACCESS POLICIES
+    // A view carries data metric functions as a table does, on the DATA_METRIC_SCHEDULE its SET gives (live-verified).
+    | ADD DATA METRIC FUNCTION qualifiedName ON LPAREN identifierList? RPAREN
+    | DROP DATA METRIC FUNCTION qualifiedName ON LPAREN identifierList? RPAREN
+    | MODIFY DATA METRIC FUNCTION qualifiedName ON LPAREN identifierList? RPAREN (SUSPEND | RESUME)
     // A view's column takes a masking policy, a projection policy and tags as a table's column does, under ALTER or
     // MODIFY alike, COLUMN optional before a projection policy; a masking policy's action may be followed by another
     // after a comma (live-verified).
@@ -3519,6 +3618,9 @@ dynamicTableAction
     | RENAME TO wholeObjectName
     // Automatic reclustering is paused and resumed on a dynamic table that has a clustering key.
     | (SUSPEND | RESUME) RECLUSTER
+    // The clustering key is set and dropped as a table's is, kept as written (live-verified).
+    | clusterByClause
+    | DROP CLUSTERING KEY
     | tagSet
     | tagUnset
     // Any property parses, so one the account refuses is refused in its own words before the table is
@@ -3828,6 +3930,11 @@ accessControlStatement
     // lists by its name or by an IDENTIFIER() reference to it (live-verified).
     | SHOW GRANTS TO DATABASE ROLE referencedName showTail SEMI?
     | SHOW GRANTS OF DATABASE ROLE referencedName showTail SEMI?
+    // The caller grants on an object, in the account, or to an executable owner (documented); without a target the
+    // listing is refused (live-verified).
+    | SHOW CALLER GRANTS
+        (ON (ACCOUNT | objectType grantedObjectName) | TO (ROLE principalName | DATABASE ROLE referencedName))?
+        showTail SEMI?
     | SHOW GRANTS ON ROLE principalName showTail SEMI?
     | SHOW GRANTS ON DATABASE ROLE referencedName showTail SEMI?
     | SHOW FUTURE GRANTS IN SCHEMA referencedName showTail SEMI?
@@ -4072,6 +4179,10 @@ dataTypeName
     // and `MAP(VARCHAR, FILE)` all fail "Unsupported data type 'FILE'."); `dataTypeName typeParameters?`
     // and the nested-type positions are shared by every type, so DataTypeParser rejects both there.
     | FILE
+    // LONG, the Iceberg format's 64-bit integer, is a type a table column's definition and SET DATA TYPE read, which
+    // only an Iceberg table's column holds; it takes no parameters, and any other type refuses it at the word
+    // (live-verified).
+    | longWord=LONG {refuseLongWord($ctx, $longWord);}
     // MAP(keyType, valueType); backed by OBJECT. Either type takes its parameters, as an ARRAY element and an
     // OBJECT field do (live-verified: `MAP(VARCHAR, NUMBER(10,2))` and `MAP(VARCHAR(5), NUMBER)` are types of
     // their own). The bare `MAP` spelling is a syntax error in Snowflake (live-verified: `NULL::MAP`).
@@ -4657,6 +4768,20 @@ usingColumnList
     : qualifiedName (COMMA qualifiedName)*
     ;
 
+// What a database or schema clone leaves out or takes in beyond its own objects, in any order: hybrid tables, and the
+// named internal stages a clone copies only when asked.
+cloneContentOption
+    : IGNORE HYBRID TABLES
+    | INCLUDE INTERNAL STAGES
+    ;
+
+// A clone at a point of Time Travel takes one option more, the tables purged before that point left out; without a
+// point the account refuses it at TABLES.
+cloneTimedOption
+    : cloneContentOption
+    | IGNORE TABLES WITH INSUFFICIENT DATA RETENTION
+    ;
+
 timeTravelClause
     : AT_KEYWORD LPAREN timeTravelPoint RPAREN
     | BEFORE LPAREN timeTravelPoint RPAREN
@@ -5052,7 +5177,7 @@ showStatement
     // The listings of the kinds Frostlake models no object of. Each answers the account's columns and no rows, and
     // reads the scopes and the modifiers the account's own grammar reads for it (ShowListing, UnmodelledListing).
     // HISTORY parses for all of them so that the three that do not read it refuse it where it stands.
-    | SHOW TERSE? unmodelledListingKind HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? unmodelledListingKind HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | DATA EXCHANGE (objectName | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? DELEGATED AUTHORIZATIONS delegatedAuthorizationScope? SEMI?
     // FAILOVER GROUPS, REPLICATION GROUPS and REPLICATION DATABASES: a LIKE, and an account for a scope, named after
     // ACCOUNT or alone. REPLICATION ACCOUNTS reads the LIKE and no scope. TERSE, the scope and the modifiers parse
@@ -5066,7 +5191,7 @@ showStatement
     // (live-verified).
     | SHOW PARAMETERS (LIKE stringText)? ((IN | FOR) showParametersScope?)? showTail SEMI?
     | SHOW TERSE? OBJECTS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
-    | SHOW ORGANIZATION ACCOUNTS showTail SEMI?
+    | SHOW ORGANIZATION ACCOUNTS (LIKE stringText)? showTail SEMI?
     // A scope parses and is refused whole: the listing takes none (live-verified).
     | SHOW ACCOUNTS HISTORY? (LIKE stringText)? showAccountsScope? showTail SEMI?
     | SHOW TERSE? LOCKS (IN ACCOUNT (objectName | openedIdentifierReference)?)? showTail SEMI?
@@ -5319,7 +5444,8 @@ describeStatement
     | (DESCRIBE | DESC) JOIN POLICY qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) SEARCH OPTIMIZATION ON qualifiedName describeProperty* SEMI?
     | (DESCRIBE | DESC) FILE FORMAT qualifiedName objectSignature? describeProperty* SEMI?
-    | (DESCRIBE | DESC) RESULT (STRING_LITERAL | identifier LPAREN RPAREN) SEMI?
+    // Any expression parses: the statement it names is judged as the statement compiles (see DescribeResultTarget).
+    | (DESCRIBE | DESC) RESULT expression SEMI?
     // An account parses and is never found: Frostlake models no account objects.
     | (DESCRIBE | DESC) ACCOUNT objectName describeProperty* SEMI?
     // No bare `DESCRIBE <name>` alternative: Snowflake requires the object type (live-verified,
@@ -5703,10 +5829,17 @@ callArguments
 
 callArgument
     : namedArgument   // name => value
+    // A NOT, AND or OR over values written for a name, CALL p(x => NOT TRUE), as a positional one may be
+    // (live-verified); a plain value is the named argument above. Function calls read namedArgument alone.
+    | namedLogicalArgument
     | expression      // positional
     // A NOT, AND or OR over values, positional: CALL p(NOT TRUE) and CALL p(TRUE AND FALSE) bind their BOOLEAN
     // (live-verified). An expression stands first, so a plain value is read as one.
     | booleanExpr
+    ;
+
+namedLogicalArgument
+    : variableName ARROW booleanExpr
     ;
 
 // USING binds the text's placeholders from VARIABLES: each argument is a name, never a literal, a session variable
@@ -5975,10 +6108,16 @@ expression
     // as a sign does.
     | ROW_PATTERN_SEMANTICS expression                            # RowPatternSemanticsExpr
     | op=(PLUS | MINUS) expression                               # UnaryExpr
+    // A tilde before a value is a call of a function named "~", which no account has (live-verified).
+    | TILDE expression                                           # TildeExpr
     // The caret between two values is an operator the account reads and has no use for: a statement that writes
     // one is refused while it compiles, `Unsupported feature '^'.`, and one left without an operand is the syntax
     // error it is (live-verified). Nothing this matches is ever accepted.
     | expression CARET expression                                # CaretExpr
+    // So is a bar, refused before any caret: SELECT 1 ^ 2 | 3 is `Unsupported feature '|'.` An ampersand between two
+    // values is a call of a function named "&", which no account has (all live-verified).
+    | expression BAR expression                                  # BarExpr
+    | expression AMP expression                                  # AmpExpr
     | expression op=(STAR | SLASH | PERCENT) expression          # MultiplicativeExpr
     // || shares the level of + and -, left-associative with them and below * / %: 1 + 2 || 'a' is (1 + 2) || 'a',
     // 'a' || 1 + 2 is ('a' || 1) + 2 and 'x' || 2 * 3 is 'x' || (2 * 3) (live-verified).
@@ -6336,6 +6475,10 @@ identifier
     | EXEMPT_OTHER_POLICIES
     | BEFORE        // Allow BEFORE as identifier
     | CALLER        // Allow CALLER as identifier
+    | INHERITED     // Allow INHERITED as identifier: only a caller grant reads it
+    | SCORING       // Allow SCORING and PROFILE as identifiers: only a Cortex search service's ALTER reads them
+    | PROFILE
+    | EXCHANGE      // Allow EXCHANGE as identifier: only a listing's DATA EXCHANGE scope reads it
     | CLOSE         // Allow CLOSE as identifier (e.g. a qualified fn name like tools.stats.close(); the
                     // CLOSE <cursor> statement is a separate rule, disambiguated by context)
     | COLUMNS       // Allow COLUMNS as identifier (for INFORMATION_SCHEMA views)
@@ -6366,6 +6509,7 @@ identifier
     | ECONOMY       // Allow ECONOMY as identifier
     | ENABLE_QUERY_ACCELERATION
     | FILE
+    | LONG          // Allow LONG as identifier: only an Iceberg table's column type reads it
     | FIRST         // Allow FIRST as identifier (also ORDER BY ... NULLS FIRST)
     | FLATTEN       // Allow FLATTEN as identifier (table function)
     | BUILTIN       // Allow BUILTIN as identifier (also the SHOW BUILTIN FUNCTIONS modifier)
@@ -6703,6 +6847,8 @@ identifier
     | ABORT | COMPUTE_POOL | EXTERNAL_ACCESS_INTEGRATIONS | IDLE_AUTO_SHUTDOWN_TIME_SECONDS | INDEXING
     | LIVE | MAIN_FILE | NOTEBOOK | NOTEBOOKS | PULL | PUSH | QUERY_WAREHOUSE | ROOT_LOCATION | RUNTIME_NAME
     | SERVING | STREAMLIT | STREAMLITS | TITLE | VERSION | VERSIONS
+    // Words of a database or schema clone's content options, still plain names elsewhere.
+    | INSUFFICIENT | INTERNAL | RETENTION
     ;
 
 // A VARIANT path key (the field name after `:` or `.`) is just a JSON key, so — unlike a bare identifier —
@@ -6809,6 +6955,7 @@ nonJoinKeywordIdentifier
     | PATTERN
     | URL
     | FILE
+    | LONG
     | TIMESTAMP_NTZ
     | OFFSET
     | PARTITION
@@ -6987,6 +7134,9 @@ INTERSECT: I N T E R S E C T;
 EXCEPT: E X C E P T;
 EXCLUDE: E X C L U D E;
 INCLUDE: I N C L U D E;
+INSUFFICIENT: I N S U F F I C I E N T;
+INTERNAL: I N T E R N A L;
+RETENTION: R E T E N T I O N;
 MINUS_KW: M I N U S;   // the word MINUS (set operator); the '-' symbol is the separate MINUS token
 USE: U S E;
 SHOW: S H O W;
@@ -7496,6 +7646,7 @@ ELSEIF: E L S E I F;
 ELSE: E L S E;
 END: E N D;
 LOOP: L O O P;
+LONG: L O N G;
 WHILE: W H I L E;
 FOR: F O R;
 DO: D O;
@@ -7511,6 +7662,10 @@ AWAIT: A W A I T;
 EXECUTE: E X E C U T E;
 OWNER: O W N E R;
 CALLER: C A L L E R;
+INHERITED: I N H E R I T E D;
+SCORING: S C O R I N G;
+PROFILE: P R O F I L E;
+EXCHANGE: E X C H A N G E;
 STRICT: S T R I C T;
 IMMUTABLE: I M M U T A B L E;
 MEMOIZABLE: M E M O I Z A B L E;
@@ -7536,14 +7691,19 @@ SYSTEM_FUNC: S Y S T E M '$' [A-Za-z_][A-Za-z0-9_]*;
 // Unquoted identifiers may contain '$' (but not as the first character), per Snowflake — e.g.
 // METADATA$ACTION, COL$1. Declared AFTER the SYSTEM$… / $-prefixed tokens so those specific tokens win the
 // equal-length tie-break (ANTLR picks the earliest rule when match lengths are equal).
-IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_$]*;
+IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_$]* | '`' BACKTICK_NAME_CHAR+ '`';
+// A name between backticks is a name of its own whose text keeps them, folded as any unquoted name is: SELECT `a` is
+// invalid identifier '"`A`"' and `x`.a reads the table aliased `x` (live-verified). It holds the printable ASCII
+// characters but the quotes and the backtick; at any other, or at the end of the text, the account's lexer gives the
+// name up (see UnclosedLiteralLines), and a backtick no such character follows is a character no token opens with.
+fragment BACKTICK_NAME_CHAR: [\u0021\u0023-\u0026\u0028-\u005F\u0061-\u007E];
 
 // Literals
 INTEGER_LITERAL: [0-9]+;
 FLOAT_LITERAL: [0-9]+ DOT [0-9]* ([eE] [+-]? [0-9]+)? | DOT [0-9]+ ([eE] [+-]? [0-9]+)? | [0-9]+ [eE] [+-]? [0-9]+;   // Either side of the point may be empty — 1. is 1 and .5 is 0.5, typed as the full spelling is (1. NUMBER(1,0), .5 NUMBER(2,1)), with or without an exponent (1.e2 is 100, .5e1 is 5) — so 1. AS v is the number under an alias, never a field access on it, and 1.v the same written tighter; a second point after a complete number starts a second number, which no rule takes (1..2, .5.5). The last alternative is the DOT-less exponent (1e0, 1E+3, 1e-3), a number wherever a number is allowed. Without it the lexer split 1e0 into 1 and the identifier e0, which silently read as an ALIAS in a select list and was a syntax error everywhere else. An exponent is folded in before the type is taken, so these are FIXED-point: 1e0 is NUMBER(1,0) and 1e20 NUMBER(21,0).
 MULTI_POINT_NUMBER: [0-9]+ DOT [0-9]+ DOT [0-9]+;   // 1.5.6: one token to the account, and one no rule reads, so SELECT 1.5.6 is refused at the whole of it (live-verified) rather than at the second number it would otherwise hold.
 HEX_NUMBER: '0' [xX] [0-9a-fA-F]+;   // 0x3, 0xFF: one token to the account, and one no rule reads, so SELECT 0x3 is refused at the token where a digit beside a name (0 x3) names a column. Longest-match keeps a plain 0 and a name apart wherever no hexadecimal digit follows the x.
-MALFORMED_EXPONENT: [0-9]+ (DOT [0-9]*)? [eE] [+-]? | DOT [0-9]+ [eE] [+-]? | '0' [xX];   // A digit run that OPENS an exponent and then stops — 1e, 12E, 1.5e, 1.e, .5e, 1e+ — which Snowflake reads as a malformed NUMBER rather than as a number beside an identifier: SELECT 1e FROM t is refused where the spaced SELECT 1 e FROM t names the column E. No parser rule uses this token, so every occurrence is a syntax error; it exists only to stop the lexer splitting the text into an INTEGER_LITERAL and an alias. Longest-match keeps the valid forms intact: FLOAT_LITERAL takes 1e5 and 1.5e5 whole, and in 1e1e it takes 1e1 and leaves e as the alias, exactly as live reads them.
+MALFORMED_EXPONENT: [0-9]+ (DOT [0-9]*)? [eE] [+-]? | DOT [0-9]+ [eE] [+-]? | '0' [xX] | [0-9]+ DOT [0-9]+ DOT;   // A digit run that OPENS an exponent and then stops — 1e, 12E, 1.5e, 1.e, .5e, 1e+ — or a number with a second point no digit follows, 1.5., which Snowflake reads as a malformed NUMBER rather than as a number beside an identifier or a dot (its lexer gives the text up there, see MalformedNumberLines): SELECT 1e FROM t is refused where the spaced SELECT 1 e FROM t names the column E. No parser rule uses this token, so every occurrence is a syntax error; it exists only to stop the lexer splitting the text into an INTEGER_LITERAL and an alias. Longest-match keeps the valid forms intact: FLOAT_LITERAL takes 1e5 and 1.5e5 whole, and in 1e1e it takes 1e1 and leaves e as the alias, exactly as live reads them.
 STRING_LITERAL: '\'' ('\\' . | '\'\'' | ~['\\])* '\'';    // Single-quoted. Backslash is EXCLUDED from ~[..] so it always begins a '\\' . escape (incl. \'); otherwise maximal-munch lets \'' lex as \ + '' and mis-aligns the string boundaries. Decode via SqlStringLiterals.
 DOLLAR_QUOTED_STRING: '$$' .*? '$$';
 

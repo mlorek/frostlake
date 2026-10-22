@@ -28,11 +28,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
- * How a task graph may change. A graph "starts with a scheduled root task and is linked together by dependencies"
- * (documented), so no statement makes a task its own ancestor (FL-438); and the root "must be suspended before any
- * task is recreated" and before "a child task is added (using CREATE TASK … AFTER or ALTER TASK … ADD AFTER) or
- * removed (using ALTER TASK … REMOVE AFTER)" (documented), which CREATE OR ALTER of a child follows too (FL-439,
- * #2340). The sentences of the cycle refusal are not measured, so the engine alone is asked.
+ * How a task graph may change. A graph may close a loop through other tasks, and a task of the loop then has a
+ * predecessor (TaskGraphLoopTest asks the account the same); the root "must be suspended before any task is
+ * recreated" and before "a child task is added (using CREATE TASK … AFTER or ALTER TASK … ADD AFTER) or removed
+ * (using ALTER TASK … REMOVE AFTER)" (documented), which CREATE OR ALTER of a child follows too. SHOW TASKS is not run
+ * on the live account, so the engine alone is asked.
  */
 public class TaskGraphChangeTest extends BaseDatabaseTest {
 
@@ -43,7 +43,7 @@ public class TaskGraphChangeTest extends BaseDatabaseTest {
 
     @Override
     protected void setupTest() {
-        assumeFalse(isLiveSnowflake(), "the cycle refusal's sentence is not measured");
+        assumeFalse(isLiveSnowflake(), "SHOW TASKS is not run on the live account");
     }
 
     private String refusalOf(final String sql) {
@@ -61,23 +61,22 @@ public class TaskGraphChangeTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void noStatementMakesATaskItsOwnAncestor() {
+    public void aGraphMayCloseALoopThroughOtherTasks() {
         engine.execute("CREATE TASK gc_a SCHEDULE = '60 MINUTE' AS SELECT 1");
         engine.execute("CREATE TASK gc_b AFTER gc_a AS SELECT 2");
         engine.execute("CREATE TASK gc_c AFTER gc_b AS SELECT 3");
-        assertTrue(refusalOf("CREATE OR ALTER TASK gc_a AFTER gc_c AS SELECT 1")
-            .contains("a task graph cannot have a cycle"));
-        assertTrue(refusalOf("CREATE OR REPLACE TASK gc_a AFTER gc_b AS SELECT 1")
-            .contains("a task graph cannot have a cycle"));
-        assertTrue(refusalOf("ALTER TASK gc_b ADD AFTER gc_c").contains("a task graph cannot have a cycle"));
-        // The graph is as it was: A the root, B after A, C after B.
-        assertEquals("[]", taskCell("GC_A", "predecessors"));
-        assertEquals("60MINUTE", taskCell("GC_A", "schedule"));
-        assertEquals("[\"" + PREFIX + "GC_A\"]", taskCell("GC_B", "predecessors"));
+        // A follows its own descendant C, and B follows its own child C as well: the account takes both.
+        engine.execute("CREATE OR ALTER TASK gc_a AFTER gc_c AS SELECT 1");
+        engine.execute("ALTER TASK gc_b ADD AFTER gc_c");
+        assertEquals("[\"" + PREFIX + "GC_C\"]", taskCell("GC_A", "predecessors"));
+        assertEquals("[\"" + PREFIX + "GC_A\",\"" + PREFIX + "GC_C\"]", taskCell("GC_B", "predecessors"));
         assertEquals("[\"" + PREFIX + "GC_B\"]", taskCell("GC_C", "predecessors"));
-        // A task beside the chain may still follow its end.
-        engine.execute("CREATE TASK gc_d AFTER gc_c AS SELECT 4");
-        engine.execute("ALTER TASK gc_d ADD AFTER gc_b");
+        // A task named as its own predecessor is still refused.
+        assertEquals("Task GC_B cannot use itself as its predecessor.", refusalOf("ALTER TASK gc_b ADD AFTER gc_b"));
+        // Dropping a task of the loop takes it out of the lists it was in.
+        engine.execute("DROP TASK gc_c");
+        assertEquals("[]", taskCell("GC_A", "predecessors"));
+        assertEquals("[\"" + PREFIX + "GC_A\"]", taskCell("GC_B", "predecessors"));
     }
 
     @Test
@@ -92,7 +91,7 @@ public class TaskGraphChangeTest extends BaseDatabaseTest {
             assertEquals(RUNNING, refusalOf("ALTER TASK gc_b REMOVE AFTER gc_r"));
             assertEquals(RUNNING, refusalOf("ALTER TASK gc_c ADD AFTER gc_r"));
             assertEquals(RUNNING, refusalOf("CREATE OR REPLACE TASK gc_b AFTER gc_r AS SELECT 97"));
-            // #2340: CREATE OR ALTER of a child of the running root is refused as ALTER TASK … ADD AFTER is.
+            // CREATE OR ALTER of a child of the running root is refused as ALTER TASK … ADD AFTER is.
             assertEquals(RUNNING, refusalOf("CREATE OR ALTER TASK gc_b AFTER gc_r AS SELECT 99"));
             assertEquals(RUNNING, refusalOf("CREATE OR ALTER TASK gc_c AS SELECT 98"));
             assertEquals("[\"" + PREFIX + "GC_R\"]", taskCell("GC_B", "predecessors"));

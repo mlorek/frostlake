@@ -123,7 +123,7 @@ public class AbortSessionRunningRequestTest {
     }
 
     /**
-     * FL-453: an aborted session runs nothing more, whoever keeps its context: every later request is refused as the
+     * an aborted session runs nothing more, whoever keeps its context: every later request is refused as the
      * account refuses a terminated session's (error 390111), COMMIT included, where its COMMIT answered success for
      * the transaction the abort had rolled back and its writes and DDL ran and committed.
      */
@@ -145,7 +145,7 @@ public class AbortSessionRunningRequestTest {
         assertEquals("0", say(other, "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'U3'"));
     }
 
-    /** FL-453: a session that aborts itself gets the function's answer, and is gone after it like any other. */
+    /** a session that aborts itself gets the function's answer, and is gone after it like any other. */
     @Test
     public void aSessionThatAbortedItselfRunsNothingMore() {
         final String session = say(waiter, "SELECT CURRENT_SESSION()");

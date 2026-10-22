@@ -48,6 +48,8 @@ public class View extends SqlObject implements SessionScoped {
     /** Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)), or null. */
     private String rowAccessPolicyName;
     private List<String> rowAccessPolicyColumns = new ArrayList<>();
+    /** The DATA METRIC FUNCTIONS attached to the view and their DATA_METRIC_SCHEDULE, as a table's are. */
+    private final DataMetricAttachments dataMetrics = new DataMetricAttachments();
 
     public View(final String name, final String definition) {
         super(name);
@@ -198,11 +200,14 @@ public class View extends SqlObject implements SessionScoped {
     }
     public boolean hasRowAccessPolicy() { return rowAccessPolicyName != null && !rowAccessPolicyName.isEmpty(); }
 
+    /** The data metric functions attached to this view and their schedule. */
+    public DataMetricAttachments dataMetricAttachments() { return dataMetrics; }
+
     /**
      * A full-fidelity duplicate for CLONE DATABASE/SCHEMA: keeps the explicit column list, the SECURE
-     * flag, the comment, the change tracking a stream on the clone reads by, any attached row access policy, and the
-     * columns with their masking and projection policies and their tags (the name-and-definition constructor alone
-     * silently dropped all of these from clones).
+     * flag, the comment, the change tracking a stream on the clone reads by, any attached row access policy, the
+     * attached data metric functions and their schedule, and the columns with their masking and projection policies
+     * and their tags (the name-and-definition constructor alone silently dropped all of these from clones).
      */
     public View copy() {
         final View clone = columnNames != null
@@ -226,6 +231,7 @@ public class View extends SqlObject implements SessionScoped {
         clone.writtenBody = writtenBody;
         clone.rowAccessPolicyName = rowAccessPolicyName;
         clone.rowAccessPolicyColumns = new ArrayList<>(rowAccessPolicyColumns);
+        dataMetrics.copyInto(clone.dataMetrics);
         return clone;
     }
 

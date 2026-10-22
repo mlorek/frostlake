@@ -403,6 +403,7 @@ import dev.frostlake.functions.table.PolicyReferencesFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.ServerlessTaskHistoryFunction;
 import dev.frostlake.functions.table.SplitToTable;
+import dev.frostlake.functions.table.StreamBacklogFunction;
 import dev.frostlake.functions.table.StrtokSplitToTable;
 import dev.frostlake.functions.table.TagReferencesAllColumnsFunction;
 import dev.frostlake.functions.table.TagReferencesFunction;
@@ -1117,6 +1118,7 @@ public class FunctionRegistry {
         registerTableFunction(new TagReferencesAllColumnsFunction(catalog));
         registerTableFunction(new AlertHistoryFunction(catalog));
         registerTableFunction(new TaskDependentsFunction(catalog));
+        registerTableFunction(new StreamBacklogFunction(catalog));
         registerTableFunction(new GetContactsFunction(catalog));
         registerTableFunction(new CurrentTaskGraphsFunction(catalog));
         registerTableFunction(new CompleteTaskGraphsFunction(catalog));

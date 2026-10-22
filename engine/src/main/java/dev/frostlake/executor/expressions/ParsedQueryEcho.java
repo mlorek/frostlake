@@ -58,11 +58,29 @@ import java.util.Locale;
  *
  * <p>A shape this printer does not model makes {@link #echo} answer null, and the caller keeps the query's text
  * as written.
+ *
+ * <p>Resolved, as a routine parameter's default is echoed, the operators read as they are written and a bare name
+ * is its relation's where the query reads one relation alone: {@code (SELECT COUNT(*) AS "COUNT(*)" FROM TC AS TC
+ * WHERE TC.I > 0)} (live-verified).
  */
 final class ParsedQueryEcho {
 
+    /** Whether the query is printed resolved (see the class's note). */
+    private final boolean resolved;
+
     /** How many operands of set operations have been named so far. */
     private int operands;
+
+    ParsedQueryEcho() {
+        this(false);
+    }
+
+    /**
+     * @param resolved whether the query is printed resolved (see the class's note)
+     */
+    ParsedQueryEcho(final boolean resolved) {
+        this.resolved = resolved;
+    }
     /** Whether the query being printed holds a shape this printer does not model. */
     private boolean unmodelled;
 
@@ -189,7 +207,9 @@ final class ParsedQueryEcho {
     private String block(final FrostlakeParser.SelectClauseContext select,
                          final FrostlakeParser.SelectStatementContext whole) {
         unmodelled = unmodelled || select.intoClause() != null || select.connectByClause() != null;
-        final ParsedEchoPrinter printer = new ParsedEchoPrinter(true, true, this);
+        final ParsedEchoPrinter printer = resolved
+            ? ParsedEchoPrinter.resolvedIn(this, onlyRelation(select.tableExpression()))
+            : new ParsedEchoPrinter(true, true, this);
         final StringBuilder text = new StringBuilder("SELECT ");
         if (select.DISTINCT() != null) {
             text.append("DISTINCT ");
@@ -310,17 +330,36 @@ final class ParsedQueryEcho {
     private String reference(final FrostlakeParser.TableReferenceContext ctx, final ParsedEchoPrinter printer) {
         unmodelled = unmodelled || ctx.pivotClause() != null || ctx.unpivotClause() != null
             || ctx.matchRecognizeClause() != null;
-        final String alias;
+        return source(ctx.tableSource(), aliasOf(ctx), printer);
+    }
+
+    /** The alias a reference writes, or null. */
+    private static String aliasOf(final FrostlakeParser.TableReferenceContext ctx) {
         if (ctx.aliasName() != null) {
-            alias = ParseTreeText.getIdentifier(ctx.aliasName());
-        } else if (ctx.nonJoinKeywordIdentifier() == null) {
-            alias = null;
-        } else if (ctx.nonJoinKeywordIdentifier().identifier() != null) {
-            alias = ParseTreeText.getIdentifier(ctx.nonJoinKeywordIdentifier().identifier());
-        } else {
-            alias = ctx.nonJoinKeywordIdentifier().getText().toUpperCase(Locale.ROOT);
+            return ParseTreeText.getIdentifier(ctx.aliasName());
         }
-        return source(ctx.tableSource(), alias, printer);
+        if (ctx.nonJoinKeywordIdentifier() == null) {
+            return null;
+        }
+        if (ctx.nonJoinKeywordIdentifier().identifier() != null) {
+            return ParseTreeText.getIdentifier(ctx.nonJoinKeywordIdentifier().identifier());
+        }
+        return ctx.nonJoinKeywordIdentifier().getText().toUpperCase(Locale.ROOT);
+    }
+
+    /** The name the one table a FROM reads goes by, as the echo names it; null for any other FROM. */
+    private static String onlyRelation(final FrostlakeParser.TableExpressionContext tables) {
+        if (tables == null || !tables.joinClause().isEmpty() || tables.tableReference().size() != 1
+                || tables.tableReference(0).tableSource().tableQualifiedName() == null) {
+            return null;
+        }
+        final FrostlakeParser.TableReferenceContext only = tables.tableReference(0);
+        final String alias = aliasOf(only);
+        if (alias != null) {
+            return alias;
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(only.tableSource().tableQualifiedName());
+        return parts[parts.length - 1];
     }
 
     private String source(final FrostlakeParser.TableSourceContext ctx, final String alias,

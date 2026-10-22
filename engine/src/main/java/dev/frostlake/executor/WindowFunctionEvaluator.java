@@ -54,6 +54,7 @@ import dev.frostlake.functions.aggregate.DeclaredArgumentAccumulator;
 import dev.frostlake.functions.aggregate.ExactFrameSums;
 import dev.frostlake.functions.aggregate.ListAggAccumulator;
 import dev.frostlake.functions.aggregate.MaxByMinByAccumulator;
+import dev.frostlake.functions.aggregate.MedianAccumulator;
 import dev.frostlake.functions.aggregate.ObjectAggAccumulator;
 import dev.frostlake.functions.aggregate.PercentileContAccumulator;
 import dev.frostlake.functions.aggregate.PercentileDiscAccumulator;
@@ -3762,6 +3763,13 @@ final class WindowFunctionEvaluator {
             } else {
                 ((PercentileDiscAccumulator) acc).setPercentile(fraction);
             }
+            // WITHIN GROUP (ORDER BY x DESC) counts the fraction from the greatest value, as the grouped call does.
+            final boolean ordersDown = withinGroup.orderItem(0).DESC() != null;
+            if (acc instanceof PercentileContAccumulator) {
+                ((PercentileContAccumulator) acc).setDescending(ordersDown);
+            } else {
+                ((PercentileDiscAccumulator) acc).setDescending(ordersDown);
+            }
         }
         final String argExpr = orderedPercentile
             ? ParseTreeText.getOriginalText(KeyContexts.of(withinGroup.orderItem(0)))
@@ -3778,8 +3786,15 @@ final class WindowFunctionEvaluator {
             ((DeclaredArgumentAccumulator) acc).setDeclaredArgumentType(declaredArgumentType(argExpr, table));
         }
         if (acc instanceof DecfloatAwareAccumulator) {
-            ((DecfloatAwareAccumulator) acc).setDecfloatArgument(
-                NumericType.isDecfloat(declaredArgumentType(argExpr, table)));
+            final boolean decfloat = NumericType.isDecfloat(declaredArgumentType(argExpr, table));
+            ((DecfloatAwareAccumulator) acc).setDecfloatArgument(decfloat);
+            final boolean partitioned = funcCtx.overClause() != null
+                && funcCtx.overClause().partitionByClause() != null;
+            if (acc instanceof PercentileContAccumulator) {
+                ((PercentileContAccumulator) acc).setPerGroup(partitioned);
+            } else if (acc instanceof MedianAccumulator) {
+                ((MedianAccumulator) acc).setPerGroup(partitioned);
+            }
         }
         if (acc instanceof ConstantArgumentsAccumulator) {
             ((ConstantArgumentsAccumulator) acc).setConstantArgumentTexts(tupleArgumentTexts(funcCtx, args, table));

@@ -27,6 +27,7 @@ import dev.frostlake.executor.expressions.JsonObjectExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.MultiColumnScalarSubqueryException;
+import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
@@ -85,10 +86,14 @@ final class InsertExecutor {
     }
 
     Object executeInsertFromContext(final FrostlakeParser.InsertStatementContext ctx) {
-        executor.checkNotReadOnly();
+        // An EXPLAIN compiles the statement and changes nothing (see ExplainPlan).
+        final boolean planning = ExplainPlan.planning();
+        if (!planning) {
+            executor.checkNotReadOnly();
+        }
         try {
             // Auto-start transaction if not active
-            if (!executor.getTransactionManager().hasActiveTransaction()) {
+            if (!planning && !executor.getTransactionManager().hasActiveTransaction()) {
                 executor.getTransactionManager().beginTransaction();
             }
 
@@ -142,6 +147,7 @@ final class InsertExecutor {
             final List<List<Object>> valuesList = new ArrayList<>();
             // The columns a query writes with a declared width that fits theirs, which no value is measured for.
             boolean[] fitByDeclaredWidth = null;
+            boolean[] nullableSources = null;
 
             if (ctx.valueTupleList() != null) {
                 if (ctx.insertColumnList() != null) {
@@ -182,7 +188,7 @@ final class InsertExecutor {
                 }
                 final List<DataType> foldedTypes = foldValuesColumns(rowCells, rowTypes);
                 // A column whose rows fold to a DECFLOAT is written into a VARIANT or a text column in the
-                // column's own form of it (see DecfloatWrites), as INSERT … SELECT writes it (FL-494, FL-495).
+                // column's own form of it (see DecfloatWrites), as INSERT … SELECT writes it.
                 final DataType[] decfloatTargets = new DataType[foldedTypes.size()];
                 for (int position = 0; position < foldedTypes.size(); position++) {
                     final TableColumn target = valuesTarget(table, columnNames, position);
@@ -201,6 +207,9 @@ final class InsertExecutor {
                     inserted.addAll(tuple.valueList().booleanExpr());
                 }
                 executor.rejectRestrictedAssignments(inserted, null, null, null);
+                if (planning) {
+                    return null;
+                }
                 for (int row = 0; row < tuples.size(); row++) {
                     final List<Object> values = new ArrayList<>();
                     int position = 0;
@@ -242,6 +251,10 @@ final class InsertExecutor {
                 // INSERT ... SELECT. A stream read in this subquery is consumed when the txn commits (the DML
                 // window is marked centrally in SQLCommandVisitor.visitDmlStatement); pass CTE results along.
                 ProjectionSlot.reset();
+                if (planning) {
+                    compileSelectSource(ctx, table, tableName, columnNames);
+                    return null;
+                }
                 final ResultSet selectResult;
                 try {
                     // Its values leave the query into the table, so a projection policy judges it as a result's.
@@ -252,13 +265,16 @@ final class InsertExecutor {
                     if (refusesColumnCount(failed)) {
                         rejectRowItems(ctx.selectStatement(), table, columnNames);
                     }
+                    // The statement compiles whole before a row is read, so a source column its target cannot take
+                    // is refused before a row's fault is (live-verified: an ARRAY of a text that is no number written
+                    // to an ARRAY(NUMBER(10,2)) column is "incompatible types", not the text's refusal).
+                    rejectPlannedSource(ctx, table, columnNames);
                     throw sourceQueryFailure(tableName, table, columnNames, failed);
                 }
-                if (ctx.insertColumnList() != null) {
-                    requireColumnList(table, ctx.insertColumnList(), selectResult.getColumns().size());
-                }
+                requireSourceWidth(ctx, table, selectResult.getColumns().size());
                 rejectMismatchedSelectColumnTypes(table, columnNames, selectResult.getColumns());
                 fitByDeclaredWidth = fitByDeclaredWidth(table, columnNames, selectResult.getColumns());
+                nullableSources = nullableSources(table, columnNames, selectResult.getColumns());
                 final DataType[] decfloatMembers = decfloatIntoVariant(table, columnNames, selectResult.getColumns());
                 for (final Row row : selectResult.getRows()) {
                     valuesList.add(asDecfloatMembers(row.getValues(), decfloatMembers));
@@ -305,7 +321,7 @@ final class InsertExecutor {
                 final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values,
                     filledByDefault);
                 executor.enforceColumnConstraintsForDml(table, row, boundToColumnSlot, tableName, filledByDefault,
-                    fitByDeclaredWidth);
+                    fitByDeclaredWidth, nullableSources);
                 storeInsertedRow(table, fullyQualifiedName, row, guard);
                 rowsInserted++;
             }
@@ -319,6 +335,64 @@ final class InsertExecutor {
             throw e; // Let security exceptions propagate
         } catch (final Exception e) {
             throw StatementErrors.propagate(e);
+        }
+    }
+
+    /**
+     * Compiles an INSERT's source query as the statement compiles it before a row is read, which is all an EXPLAIN
+     * does: the query is planned for its shape, its columns counted against the ones they fill, and their types
+     * matched against theirs.
+     */
+    private void compileSelectSource(final FrostlakeParser.InsertStatementContext ctx, final Table table,
+                                     final String tableName, final List<String> columnNames) {
+        final List<ResultSetColumn> columns;
+        try {
+            columns = executor.planSelectStatement(ctx.selectStatement()).shape.getColumns();
+        } catch (final RuntimeException failed) {
+            if (refusesColumnCount(failed)) {
+                rejectRowItems(ctx.selectStatement(), table, columnNames);
+            }
+            throw sourceQueryFailure(tableName, table, columnNames, failed);
+        }
+        requireSourceWidth(ctx, table, columns.size());
+        rejectMismatchedSelectColumnTypes(table, columnNames, columns);
+    }
+
+    /**
+     * Refuses an INSERT's source query whose run failed by what its plan alone shows, as the statement compiles it
+     * before a row is read: its width, then its columns' types. A query that cannot even be planned keeps its own
+     * failure, and so does one with a select of no FROM, whose items its planning would compute a second time - a
+     * sequence's NEXTVAL among them.
+     */
+    private void rejectPlannedSource(final FrostlakeParser.InsertStatementContext ctx, final Table table,
+                                     final List<String> columnNames) {
+        for (final FrostlakeParser.SelectOperandContext operand : ctx.selectStatement().selectOperand()) {
+            if (operand.selectClause() == null || operand.selectClause().tableExpression() == null) {
+                return;
+            }
+        }
+        final List<ResultSetColumn> columns;
+        try {
+            columns = executor.planSelectStatement(ctx.selectStatement()).shape.getColumns();
+        } catch (final RuntimeException unplanned) {
+            return;
+        }
+        requireSourceWidth(ctx, table, columns.size());
+        rejectMismatchedSelectColumnTypes(table, columnNames, columns);
+    }
+
+    /**
+     * Counts the columns an INSERT's source query answers against the ones they fill — its column list's, else
+     * every column of the table — before any row is read, so an empty source is refused too (live-verified).
+     */
+    private void requireSourceWidth(final FrostlakeParser.InsertStatementContext ctx, final Table table,
+                                    final int width) {
+        if (ctx.insertColumnList() != null) {
+            requireColumnList(table, ctx.insertColumnList(), width);
+        } else if (width != table.columnCount()) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Insert value list does not match column list expecting " + table.columnCount() + " but got "
+                + width));
         }
     }
 
@@ -395,6 +469,29 @@ final class InsertExecutor {
             }
         }
         return fit;
+    }
+
+    /**
+     * The columns a query writes from a value that can be NULL, which a refusal of a number too wide for its column
+     * prints as {@code {nullable}} even when the column is NOT NULL (see
+     * {@link QueryExecutor#enforceColumnConstraintsForDml}): the projection's own judgement of its item where it made
+     * one, else the column it carries out. One flag per column of the table; null when no column is so written.
+     */
+    private static boolean[] nullableSources(final Table table, final List<String> columnNames,
+                                             final List<ResultSetColumn> sourceColumns) {
+        boolean[] nullable = null;
+        final int pairs = columnNames != null
+            ? Math.min(columnNames.size(), sourceColumns.size())
+            : Math.min(table.getColumns().size(), sourceColumns.size());
+        for (int i = 0; i < pairs; i++) {
+            final TableColumn target = columnNames != null
+                ? table.getColumn(columnNames.get(i)) : table.getColumns().get(i);
+            if (target != null && sourceColumns.get(i).canBeNull()) {
+                nullable = nullable != null ? nullable : new boolean[table.getColumns().size()];
+                nullable[table.getColumns().indexOf(target)] = true;
+            }
+        }
+        return nullable;
     }
 
     private void rejectMismatchedSelectColumnTypes(final Table table, final List<String> columnNames,
@@ -650,7 +747,10 @@ final class InsertExecutor {
         // refuses UPPER(UUID_STRING()) and CONCAT('p', RANDOM()) too, naming the OUTER expression.
         semiStructured = semiStructured || containsRejectedFunction(ast);
         if (semiStructured) {
-            throw new RuntimeException(SqlCompilationError.of("Invalid expression [" + exprText + "] in VALUES clause"));
+            // The item is echoed as the statement compiled it: [1, 2] as ARRAY_CONSTRUCT(1, 2), a :: as a CAST to the
+            // type spelled in full, an element appended to a structured ARRAY converted to its type (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Invalid expression ["
+                + ParsedEchoPrinter.print(ast, new StructuredElementEcho()) + "] in VALUES clause"));
         }
         // A function a handler answers is refused wherever it sits in the item, the item echoed as the plan
         // prints it: INSERT INTO t VALUES (jcnt(1) + 1) is "Invalid expression [(EXTENSION_FUNC_V(1)) + 1] in

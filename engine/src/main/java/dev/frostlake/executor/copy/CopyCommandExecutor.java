@@ -765,7 +765,21 @@ public final class CopyCommandExecutor {
                 CopyFileError firstError = null;
                 try {
                     if (recordReader != null) {
-                        final List<JsonNode> records = loadedRecords(recordReader, file, rowRules);
+                        List<JsonNode> records;
+                        try {
+                            records = loadedRecords(recordReader, file, rowRules, format);
+                        } catch (final RuntimeException unreadable) {
+                            // A file that cannot be read at all - a byte that is no UTF-8, text that is no JSON - is
+                            // one error of the file: ON_ERROR = CONTINUE or SKIP_FILE reports it LOAD_FAILED and goes
+                            // on to the next file, as for a file whose every record is rejected (documented); the
+                            // default aborts the statement with the reader's refusal.
+                            if (abortOnError) {
+                                throw unreadable;
+                            }
+                            errors++;
+                            firstError = new CopyFileError(copyErrorMessage(unreadable), 1, null, null);
+                            records = new ArrayList<>();
+                        }
                         for (final JsonNode record : records) {
                             parsed++;
                             try {
@@ -1018,15 +1032,16 @@ public final class CopyCommandExecutor {
     /**
      * A file's records as the load reads them: a JSON file's top-level array split into its elements only under
      * STRIP_OUTER_ARRAY = TRUE, without their null values under STRIP_NULL_VALUES = TRUE (see
-     * {@link JsonNullStripping}), and a byte that is no UTF-8 refusing the file unless REPLACE_INVALID_CHARACTERS =
-     * TRUE reads it as U+FFFD, as a staged-file query reads it.
+     * {@link JsonNullStripping}), an XML file under its format's XML options, and a byte that is no UTF-8 refusing
+     * the file unless REPLACE_INVALID_CHARACTERS = TRUE reads it as U+FFFD, as a staged-file query reads it.
      */
     private static List<JsonNode> loadedRecords(final StageFileReader reader, final Path file,
-                                                final LoadedRowRules rules) throws IOException {
+                                                final LoadedRowRules rules, final FileFormatOptions format)
+            throws IOException {
         final List<JsonNode> records = reader instanceof JsonStageReader
             ? ((JsonStageReader) reader).readRecords(file, rules.stripsOuterArray(), rules.replacesInvalidCharacters(),
                 String.valueOf(file.getFileName()))
-            : reader.readRecords(file);
+            : reader.readRecords(file, format, String.valueOf(file.getFileName()));
         if (rules.stripsNullValues()) {
             for (final JsonNode record : records) {
                 JsonNullStripping.strip(record);
@@ -1242,7 +1257,7 @@ public final class CopyCommandExecutor {
         try {
             if (recordReader != null) {
                 int recordNumber = 0;
-                for (final JsonNode record : loadedRecords(recordReader, file, rowRules)) {
+                for (final JsonNode record : loadedRecords(recordReader, file, rowRules, format)) {
                     recordNumber++;
                     try {
                         final Row row = transformItems != null

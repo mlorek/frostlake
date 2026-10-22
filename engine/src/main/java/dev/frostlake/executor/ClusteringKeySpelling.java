@@ -65,6 +65,22 @@ public final class ClusteringKeySpelling {
     }
 
     /**
+     * The text a CLUSTER BY wrote after its two keywords where its keys are no list of their own — a dynamic table's
+     * option: from its ordering or its parenthesis to the closing one.
+     *
+     * @param order the ordering the clause names, or null when it names none
+     * @param open the clause's opening parenthesis
+     * @param close its closing one
+     * @return the text, as written
+     */
+    public static String written(final FrostlakeParser.ClusterKeyOrderContext order, final TerminalNode open,
+                                 final TerminalNode close) {
+        final Token from = order != null ? order.getStart() : open.getSymbol();
+        return from.getInputStream() == null ? null
+            : from.getInputStream().getText(new Interval(from.getStartIndex(), close.getSymbol().getStopIndex()));
+    }
+
+    /**
      * The key expressions of a clause, each as written.
      *
      * @param keys the clause's key list

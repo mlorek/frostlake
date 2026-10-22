@@ -47,6 +47,14 @@ public class MedianAccumulator implements AggregateFunction.Accumulator, Approxi
     /** Whether the argument is declared DECFLOAT, interpolated to 38 digits (see DecfloatAggregates). */
     private boolean decfloatArgument;
 
+    /** Whether the call is computed per group, which refuses a DECFLOAT interpolation (see DecfloatAggregates). */
+    private boolean perGroup;
+
+    /** @param computedPerGroup whether a GROUP BY or a PARTITION BY computes the call group by group */
+    public void setPerGroup(final boolean computedPerGroup) {
+        this.perGroup = computedPerGroup;
+    }
+
     @Override
     public void setDecfloatArgument(final boolean decfloat) {
         this.decfloatArgument = decfloat;
@@ -71,7 +79,7 @@ public class MedianAccumulator implements AggregateFunction.Accumulator, Approxi
     @Override
     public Object getResult() {
         if (decfloatArgument) {
-            return DecfloatAggregates.percentileCont(values, 0.5d);
+            return DecfloatAggregates.percentileCont(values, 0.5d, false, perGroup);
         }
         return coercedArgument
             ? AggregateNumerics.medianOverCoerced(values, jsonNulls)

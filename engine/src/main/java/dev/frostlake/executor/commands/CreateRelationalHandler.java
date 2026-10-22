@@ -17,9 +17,12 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ChangeTrackedQuery;
+import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.DdlStatusNote;
 import dev.frostlake.executor.DmlWriteTarget;
 import dev.frostlake.executor.DynamicTableColumns;
+import dev.frostlake.executor.DynamicTableRefreshReason;
 import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.MaterializedViewRefresh;
@@ -800,9 +803,10 @@ public class CreateRelationalHandler implements CommandHandler {
             // The clustering key reads the view's own columns, under the names its column list gives them;
             // of several CLUSTER BY clauses the last one stands.
             if (!ctx.clusterByClause().isEmpty()) {
-                mv.setClusterKeys(MaterializedViewKeys.read(
-                    ctx.clusterByClause(ctx.clusterByClause().size() - 1).expressionList(), mv.getResolvedColumns(),
-                    ddl, queryExecutor));
+                final FrostlakeParser.ClusterByClauseContext clause =
+                    ctx.clusterByClause(ctx.clusterByClause().size() - 1);
+                mv.setClusterKeys(MaterializedViewKeys.read(clause.expressionList(), mv.getResolvedColumns(), ddl,
+                    queryExecutor), ClusteringKeySpelling.written(clause.clusterKeyOrder(), clause.expressionList()));
             }
                         // Same rule as the plain view: a FAILED CREATE OR REPLACE leaves the existing materialized
             // view standing on live (measured over an uncompilable body, a missing base table and an
@@ -890,6 +894,7 @@ public class CreateRelationalHandler implements CommandHandler {
             Integer retentionDays = null;
             String comment = null;
             final List<String> clusterKeys = new ArrayList<>();
+            String clusterByText = null;
 
             if (ctx.dynamicTableOptions() != null) {
                 for (final FrostlakeParser.DynamicTableOptionContext opt : ctx.dynamicTableOptions().dynamicTableOption()) {
@@ -916,6 +921,8 @@ public class CreateRelationalHandler implements CommandHandler {
                         for (final FrostlakeParser.ExpressionContext key : opt.expression()) {
                             clusterKeys.add(ddl.getOriginalText(key));
                         }
+                        clusterByText = ClusteringKeySpelling.written(opt.clusterKeyOrder(), opt.LPAREN(),
+                            opt.RPAREN());
                     }
                 }
             }
@@ -928,7 +935,7 @@ public class CreateRelationalHandler implements CommandHandler {
             if (retentionDays != null) {
                 dt.setDataRetentionDays(retentionDays.intValue());
             }
-            dt.setClusterKeys(clusterKeys);
+            dt.setClusterKeys(clusterKeys, clusterByText);
             // A dynamic table in a transient schema is transient, as a table there is.
             dt.setTransient(ctx.TRANSIENT() != null || schema.isTransientObject());
 
@@ -959,8 +966,26 @@ public class CreateRelationalHandler implements CommandHandler {
             if (orReplace) {
                 try { schema.dropDynamicTable(dtName); } catch (final RuntimeException ignored) {}
             }
+            // An AUTO refresh mode settles on FULL where the query holds a construct an incremental refresh does not
+            // follow, and the status sentence says why (live-verified).
+            if (refreshMode == RefreshMode.AUTO && creates) {
+                final String reason = DynamicTableRefreshReason.of(catalog, catalog.getCurrentDatabase(),
+                    catalog.getCurrentSchema(), ctx.selectStatement());
+                dt.setFullRefreshReason(reason);
+                if (reason != null) {
+                    DdlStatusNote.add("FULL refresh mode was selected because: " + reason);
+                }
+            }
             schema.addDynamicTable(dt);
             grantsOfNew.apply();
+            if (creates) {
+                // The tables its query reads track their changes from now on: the account turns change tracking on
+                // for a dynamic table's sources as it creates the table (live-verified: a CHANGES clause over its
+                // base table answers).
+                for (final Table read : ChangeTrackedQuery.trackedTables(catalog, ctx.selectStatement())) {
+                    read.setChangeTracking(true);
+                }
+            }
             logger.trace("Created dynamic table: {}", qualifiedName);
         } catch (final RuntimeException e) {
             if (e == bodyRefusal) {

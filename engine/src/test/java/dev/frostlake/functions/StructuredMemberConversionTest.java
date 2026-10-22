@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
  */
 public class StructuredMemberConversionTest extends MeasuredCellsTestSupport {
 
-    /** FL-476: a whole element under a scaled NUMBER reads as the NUMBER, as its neighbour with a fraction does. */
+    /** a whole element under a scaled NUMBER reads as the NUMBER, as its neighbour with a fraction does. */
     @Test
     public void aWholeElementOfAScaledNumberReadsAsThatNumber() {
         assertCells(new String[][] {
@@ -53,7 +53,7 @@ public class StructuredMemberConversionTest extends MeasuredCellsTestSupport {
     }
 
     /**
-     * FL-477: OBJECT_INSERT's update casts to the field's declared type with its precision and length, and
+     * OBJECT_INSERT's update casts to the field's declared type with its precision and length, and
      * ARRAY_APPEND, ARRAY_PREPEND and ARRAY_INSERT hold a text to the element's length, so neither puts in a value
      * the cast to the structured type refuses and a CTAS no longer stores one.
      */
@@ -61,35 +61,32 @@ public class StructuredMemberConversionTest extends MeasuredCellsTestSupport {
     public void anInsertedValueIsHeldToTheMembersPrecisionAndLength() {
         assertCells(new String[][] {
             {"SELECT OBJECT_INSERT({'a':1}::OBJECT(a NUMBER(3,0)), 'a', 12345, TRUE) x",
-                "REFUSED Number out of representable range: type FIXED[SB2](3,0){not null}, value 12345"},
+                "REFUSED Number out of representable range: type FIXED[SB2](3,0){nullable}, value 12345"},
             {"SELECT OBJECT_INSERT({'a':'x'}::OBJECT(a VARCHAR(2)), 'a', 'toolong', TRUE) x",
                 "REFUSED String 'toolong' is too long and would be truncated"},
             {"SELECT OBJECT_INSERT({'a':1}::OBJECT(a INT), 'a', 1e40, TRUE) x",
-                "REFUSED Number out of representable range: type FIXED[SB16](38,0){not null}, "
-                + "value 10000000000000000303786028427003666890752"},
+                "REFUSED Number out of representable range: type FIXED[SB16](38,0){nullable}, "
+                + "value 1e+40"},
             {"SELECT OBJECT_INSERT({'a':1}::OBJECT(a NUMBER(3,0)), 'a', 123, TRUE) x", "{\"a\":123}"},
             {"SELECT OBJECT_INSERT({'a':'x', 'b':2}::OBJECT(a VARCHAR(10), b NUMBER(5,2)), 'b', 1.239, TRUE) x",
                 "{\"a\":\"x\",\"b\":1.24}"},
             {"SELECT OBJECT_INSERT({'a':'x'}::OBJECT(a VARCHAR(2)), 'a', 'ok', TRUE) x", "{\"a\":\"ok\"}"},
-            {"SELECT ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 'toolong') x",
-                "REFUSED String 'toolong' is too long and would be truncated"},
-            {"SELECT ARRAY_PREPEND(['a']::ARRAY(VARCHAR(2)), 'toolong') x",
-                "REFUSED String 'toolong' is too long and would be truncated"},
-            {"SELECT ARRAY_INSERT(['a']::ARRAY(VARCHAR(2)), 0, 'toolong') x",
-                "REFUSED String 'toolong' is too long and would be truncated"},
+            // An added array element is held to its scale, not to its declared length; an updated field is held to
+            // its type, refused outside any DML sentence.
+            {"SELECT ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 'toolong') x", "[\"a\",\"toolong\"]"},
+            {"SELECT ARRAY_PREPEND(['a']::ARRAY(VARCHAR(2)), 'toolong') x", "[\"toolong\",\"a\"]"},
+            {"SELECT ARRAY_INSERT(['a']::ARRAY(VARCHAR(2)), 0, 'toolong') x", "[\"toolong\",\"a\"]"},
             {"SELECT ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 'ok') x", "[\"a\",\"ok\"]"},
-            {"SELECT ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 12345) x",
-                "REFUSED String '12345' is too long and would be truncated"},
+            {"SELECT ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 123) x", "[\"a\",\"123\"]"},
             {"CREATE OR REPLACE TABLE smc_ct AS SELECT OBJECT_INSERT({'a':'x'}::OBJECT(a VARCHAR(2)), 'a', 'toolong', "
                 + "TRUE) y",
-                "REFUSED DML operation to table TEST_DB.TEST_SCHEMA.SMC_CT failed on column Y with error: "
-                + "String 'toolong' is too long and would be truncated"},
-            {"CREATE OR REPLACE TABLE smc_ct AS SELECT ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 'toolong') y",
                 "REFUSED String 'toolong' is too long and would be truncated"},
+            {"CREATE OR REPLACE TABLE smc_ct AS SELECT ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 'toolong') y",
+                "Table SMC_CT successfully created."},
         });
     }
 
-    /** FL-478: a cast to a NUMBER-keyed MAP converts each key to its number, and refuses one that is no number. */
+    /** a cast to a NUMBER-keyed MAP converts each key to its number, and refuses one that is no number. */
     @Test
     public void aNumberKeyedMapCastConvertsItsKeys() {
         assertCells(new String[][] {
@@ -99,10 +96,11 @@ public class StructuredMemberConversionTest extends MeasuredCellsTestSupport {
             {"SELECT m, m[1] a FROM (SELECT {' 1':'x', '+2':'y'}::MAP(INT,VARCHAR) m)", "{\"1\":\"x\",\"2\":\"y\"}|x"},
             {"SELECT m, m[1] FROM (SELECT PARSE_JSON('{\"01\":\"x\"}')::MAP(INT,VARCHAR) m)", "{\"1\":\"x\"}|x"},
             {"SELECT m FROM (SELECT {'abc':'x'}::MAP(INT,VARCHAR) m)",
-                "REFUSED Typed object schema mismatch in conversion"},
+                "REFUSED Numeric value 'abc' is not recognized"},
             {"SELECT m FROM (SELECT {'1000':'x'}::MAP(NUMBER(3,0),VARCHAR) m)",
-                "REFUSED Typed object schema mismatch in conversion"},
-            {"SELECT {'01':'x', '1':'y'}::MAP(INT,VARCHAR) m", "REFUSED Duplicate field key '1'"},
+                "REFUSED Numeric value '1000' is out of range"},
+            // Keys converting to one number are one entry, the source key sorting last as text winning.
+            {"SELECT {'01':'x', '1':'y'}::MAP(INT,VARCHAR) m", "{\"1\":\"y\"}"},
             {"SELECT {'01':'x'}::MAP(VARCHAR,VARCHAR) m", "{\"01\":\"x\"}"},
             {"CREATE OR REPLACE TABLE smc_mt (m MAP(INT, VARCHAR))", "Table SMC_MT successfully created."},
             {"INSERT INTO smc_mt SELECT {'01':'x'}::MAP(INT,VARCHAR)", "1"},
@@ -112,14 +110,17 @@ public class StructuredMemberConversionTest extends MeasuredCellsTestSupport {
     }
 
     /**
-     * FL-486: a DECFLOAT member is a DECFLOAT, not a FLOAT whose name test it passed: it keeps its digits, its range
+     * a DECFLOAT member is a DECFLOAT, not a FLOAT whose name test it passed: it keeps its digits, its range
      * and its type, a structured value already holding DECFLOATs casts, and a column of the type takes one.
      */
     @Test
     public void aDecfloatMemberKeepsItsDigitsAndItsType() {
         assertCells(new String[][] {
-            {"SELECT [1.5]::ARRAY(DECFLOAT), {'a': 1.5}::OBJECT(a DECFLOAT), {'a': 1.5}::MAP(VARCHAR, DECFLOAT)",
+            {"SELECT ['1.5']::ARRAY(DECFLOAT), {'a': '1.5'}::OBJECT(a DECFLOAT), {'a': '1.5'}::MAP(VARCHAR, DECFLOAT)",
                 "[\"1.5\"]|{\"a\":\"1.5\"}|{\"a\":\"1.5\"}"},
+            // Only a text or a DECFLOAT member converts to a DECFLOAT one.
+            {"SELECT [1.5]::ARRAY(DECFLOAT)", "REFUSED Typed object schema mismatch in conversion"},
+            {"SELECT {'a': 1.5::FLOAT}::OBJECT(a DECFLOAT)", "REFUSED Typed object schema mismatch in conversion"},
             {"SELECT ['1.2345678901234567890123']::ARRAY(DECFLOAT)[0]::VARCHAR, "
                 + "SYSTEM$TYPEOF(['1.5']::ARRAY(DECFLOAT)[0]), TYPEOF(['1.5']::ARRAY(DECFLOAT)[0]::VARIANT)",
                 "1.2345678901234567890123|DECFLOAT(38)[DECFLOAT18]|DECFLOAT"},
@@ -127,8 +128,8 @@ public class StructuredMemberConversionTest extends MeasuredCellsTestSupport {
             {"SELECT ARRAY_CONSTRUCT(DECFLOAT '2')::ARRAY(DECFLOAT) a, a[0] + 1", "[\"2\"]|3"},
             {"SELECT {'a': '1.2345678901234567890123'}::MAP(VARCHAR, DECFLOAT)['a'] + 1",
                 "2.2345678901234567890123"},
-            {"SELECT ARRAY_APPEND([1.5]::ARRAY(DECFLOAT), DECFLOAT '2.5') a, a[1] + 0", "[\"1.5\",\"2.5\"]|2.5"},
-            {"SELECT OBJECT_INSERT({'a':1.5}::OBJECT(a DECFLOAT), 'a', 2.25, TRUE) o, o:a + 0",
+            {"SELECT ARRAY_APPEND(['1.5']::ARRAY(DECFLOAT), DECFLOAT '2.5') a, a[1] + 0", "[\"1.5\",\"2.5\"]|2.5"},
+            {"SELECT OBJECT_INSERT({'a':'1.5'}::OBJECT(a DECFLOAT), 'a', 2.25, TRUE) o, o:a + 0",
                 "{\"a\":\"2.25\"}|2.25"},
             {"CREATE OR REPLACE TABLE smc_st3 (ar ARRAY(DECFLOAT))", "Table SMC_ST3 successfully created."},
             {"INSERT INTO smc_st3 SELECT ARRAY_CONSTRUCT(DECFLOAT '1e-50')::ARRAY(DECFLOAT)", "1"},
@@ -138,7 +139,7 @@ public class StructuredMemberConversionTest extends MeasuredCellsTestSupport {
                 + "[\"1.2345678901234567890123\"]|1.2345678901234567890123|DECFLOAT(38)[DECFLOAT18]"},
         });
         assertAnswer("ARRAY(DECFLOAT(38))[LOB]|OBJECT(a DECFLOAT(38))[LOB]|MAP(VARCHAR, DECFLOAT(38))[LOB]",
-            "SELECT SYSTEM$TYPEOF([1.5]::ARRAY(DECFLOAT)), SYSTEM$TYPEOF({'a': 1.5}::OBJECT(a DECFLOAT)), "
-                + "SYSTEM$TYPEOF({'a': 1.5}::MAP(VARCHAR, DECFLOAT))");
+            "SELECT SYSTEM$TYPEOF(['1.5']::ARRAY(DECFLOAT)), SYSTEM$TYPEOF({'a': '1.5'}::OBJECT(a DECFLOAT)), "
+                + "SYSTEM$TYPEOF({'a': '1.5'}::MAP(VARCHAR, DECFLOAT))");
     }
 }

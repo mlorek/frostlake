@@ -18,7 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.functions.WholeNumbers;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.LobSize;
 
@@ -34,7 +34,7 @@ public class Space extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final long n = WholeNumbers.wholeLong(args.get(0));
+        final long n = WholeNumberArgument.padLength(args.get(0));
         if (n <= 0) return "";
         // One byte a blank, judged before the blanks are built (see LobSize).
         LobSize.requireText(n);

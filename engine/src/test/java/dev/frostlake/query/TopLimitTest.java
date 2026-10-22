@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -36,7 +38,8 @@ public class TopLimitTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)");
         for (int i = 1; i <= 20; i++) {
             final String category = (i % 2 == 0) ? "even" : "odd";
-            engine.execute(String.format("INSERT INTO numbers VALUES (%d, %d, '%s')", i, i * 10, category));
+            engine.execute(String.format(Locale.ROOT, "INSERT INTO numbers VALUES (%d, %d, '%s')", i, i * 10,
+                category));
         }
     }
 

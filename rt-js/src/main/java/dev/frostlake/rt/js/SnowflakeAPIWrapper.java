@@ -17,6 +17,7 @@
 package dev.frostlake.rt.js;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.storage.ResultSet;
 import org.graalvm.polyglot.HostAccess;
 
@@ -50,7 +51,8 @@ public class SnowflakeAPIWrapper {
     }
 
     /**
-     * {@code snowflake.execute}: runs a statement.
+     * {@code snowflake.execute}: runs a statement with its {@code binds}, which a {@code binds} that is no array is
+     * refused for as createStatement refuses it (live-verified).
      *
      * @param options the handler's options object
      * @return the rows, a {@link JavaScriptResultSet}, or a led failure
@@ -65,8 +67,14 @@ public class SnowflakeAPIWrapper {
         if (sqlText == null) {
             return failures.misuse(EMPTY_ARGUMENT);
         }
+        final Object bindsObj = ((Map<?, ?>) options).get("binds");
+        if (bindsObj != null && !(bindsObj instanceof List)) {
+            return failures.misuse(INVALID_BINDS);
+        }
+        final List<?> binds = (List<?>) bindsObj;
         try {
-            final ResultSet rs = engine.executeQuery(sqlText);
+            final ResultSet rs = engine.executeQuery(binds == null || binds.isEmpty() ? sqlText
+                : JdbcMarshaling.substitutePlaceholders(sqlText, new ArrayList<Object>(binds)));
             return new JavaScriptResultSet(rs, failures, engine.getExecutor().getResultCache().getLastQueryId());
         } catch (final RuntimeException failed) {
             return failures.statement(failed);

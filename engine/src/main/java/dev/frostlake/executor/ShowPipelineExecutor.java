@@ -843,20 +843,20 @@ final class ShowPipelineExecutor {
             if (!seen("DYNAMIC_TABLE", schema, dt.getName(), dt.getOwner())) {
                 continue;
             }
-            final List<String> clusterKeys = dt.getClusterKeys();
+            final String clusterBy = ClusteringKeySpelling.listed(dt.getClusterByText());
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(dt.getCreatedTime()),
                 dt.getName(), dbName, scName,
-                clusterKeys.isEmpty() ? "" : "LINEAR(" + String.join(", ", clusterKeys) + ")",
+                clusterBy == null ? "" : clusterBy,
                 dt.getRefreshedRows(), 0L,
                 dt.getOwner(),
                 dt.getTargetLag(),
                 resolvedRefreshMode(dt),
-                null,
+                dt.getFullRefreshReason(),
                 dt.getWarehouse(),
                 ShowResultHelpers.text(dt.getComment()),
                 dynamicTableText(dt),
-                clusterKeys.isEmpty() || dt.isReclusterSuspended() ? "OFF" : "ON",
+                clusterBy == null || dt.isReclusterSuspended() ? "OFF" : "ON",
                 dt.getSchedulingState(),
                 ShowResultHelpers.createdOn(dt.getLastSuspendedOn()), dt.isClone() ? "true" : "false", "false",
                 "false",
@@ -883,13 +883,15 @@ final class ShowPipelineExecutor {
 
     /**
      * The refresh_mode CELL reports the RESOLVED mode: a dynamic table configured AUTO runs (and
-     * reads back) INCREMENTAL for the plain projections this engine evaluates, live-verified,
-     * while configured_refresh_mode keeps the declared word.
+     * reads back) INCREMENTAL, or FULL where its query holds a construct an incremental refresh does
+     * not follow (see DynamicTableRefreshReason), live-verified, while configured_refresh_mode keeps
+     * the declared word.
      */
     private static String resolvedRefreshMode(final DynamicTable dt) {
-        return dt.getRefreshMode() == RefreshMode.AUTO
-            ? RefreshMode.INCREMENTAL.name()
-            : dt.getRefreshMode().name();
+        if (dt.getRefreshMode() != RefreshMode.AUTO) {
+            return dt.getRefreshMode().name();
+        }
+        return dt.getFullRefreshReason() != null ? RefreshMode.FULL.name() : RefreshMode.INCREMENTAL.name();
     }
 
     /** SHOW DYNAMIC TABLES in live's column order — the definition column is named {@code text}. */

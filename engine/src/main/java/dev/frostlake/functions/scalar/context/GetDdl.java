@@ -1137,8 +1137,8 @@ public class GetDdl extends BuiltInFunction {
               .append(columnComment(view.getResolvedColumns(), columns.get(i)));
         }
         sb.append("\n)").append(commentClause(view.getComment()));
-        if (!view.getClusterKeys().isEmpty()) {
-            sb.append(" cluster by (").append(String.join(", ", view.getClusterKeys())).append(")");
+        if (view.getClusterByText() != null) {
+            sb.append(" cluster by ").append(view.getClusterByText());
         }
         sb.append(" as ");
         return sb.append(SqlObject.withoutTrailingSemicolon(view.getDefinition()).trim()).append(";").toString();
@@ -1171,8 +1171,8 @@ public class GetDdl extends BuiltInFunction {
         if (ObjectDdl.hasText(table.getComment())) {
             sb.append(" COMMENT=").append(ObjectDdl.quoted(table.getComment())).append('\n');
         }
-        if (!table.getClusterKeys().isEmpty()) {
-            sb.append(" cluster by (").append(String.join(", ", table.getClusterKeys())).append(")");
+        if (table.getClusterByText() != null) {
+            sb.append(" cluster by ").append(table.getClusterByText());
         }
         return sb.append(" as ").append(SqlObject.withoutTrailingSemicolon(table.getQuery()).trim()).append(";")
             .toString();

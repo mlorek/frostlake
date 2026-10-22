@@ -56,6 +56,12 @@ public final class ScriptingStatementPlacement {
     public static void requireSqlStatementsBefore(final FrostlakeParser.SqlScriptContext script,
                                                   final TokenStream tokens, final String sql,
                                                   final SyntaxErrorListener listener) {
+        if (listener.unknownTypes() != null || listener.readsBlockCalls()) {
+            // The parse's faults are words where types belong, or a block's statement opening with a call: once the
+            // words are types, or the call is read as the statement live reads it, the statements after it stand in
+            // the block (BEGIN LET q r; RETURN q; END is 'R', BEGIN ABS(1); RETURN 1 END is 'END', live-verified).
+            return;
+        }
         Token word = firstScriptingStatement(script);
         if (word == null && listener.hasErrors()) {
             word = strayOpeningKeyword(tokens);

@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * USAGE on a routine whose name is quoted lower case authorizes calling it: the privilege is asked under the name it
  * is recorded under, {@code DB.S.pq()}, not the name SHOW GRANTS and the refusals spell, {@code DB.S."pq"()}. Only
  * USAGE on the routine and on its database and schema is needed (documented), for a procedure of owner's or
- * caller's rights, a function, and a defaulted parameter alike, as for an upper-case name (FL-449). Engine only:
+ * caller's rights, a function, and a defaulted parameter alike, as for an upper-case name. Engine only:
  * GRANT and USE ROLE are not run on the live account.
  */
 public class QuotedRoutineUsageTest extends BaseDatabaseTest {

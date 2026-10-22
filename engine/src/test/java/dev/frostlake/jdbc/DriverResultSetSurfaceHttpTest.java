@@ -70,6 +70,8 @@ public class DriverResultSetSurfaceHttpTest {
         statement.execute("DROP DATABASE IF EXISTS test_db");
         statement.execute("CREATE DATABASE test_db");
         statement.execute("USE SCHEMA test_db.PUBLIC");
+        // The in-process twin's session reads labels ignoring case, as the live harness's does (see BaseJdbcTest).
+        statement.execute("ALTER SESSION SET CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE");
         statement.close();
     }
 

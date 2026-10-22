@@ -44,6 +44,12 @@ import java.util.Set;
  * below 5 answers NULL where the subquery returns several rows (live-verified). An EXISTS, an IN or a quantified
  * comparison reads its subquery's rows rather than one value, and a window call or a lambda computes its
  * arguments per row of its own, so their subqueries are left out too; nothing is looked for inside a subquery.
+ *
+ * <p>Over no rows at all the branches are no choice: an ungrouped projection that receives no row computes the
+ * subqueries of a CASE's branches and of a choosing call's arguments too, {@code CASE WHEN i > 0 THEN (SELECT i FROM
+ * g) END} over a table with no rows raising what the subquery raises (live-verified, for CASE, COALESCE, IFF and NVL
+ * over a table with no rows and under a WHERE that keeps none). A grouped one a HAVING left no group of keeps the
+ * branches uncomputed.
  */
 final class AheadSubqueryWalk extends AstPrinterVisitor {
 
@@ -51,6 +57,20 @@ final class AheadSubqueryWalk extends AstPrinterVisitor {
     private static final Set<String> CHOOSING_CALLS = Set.of("IFF", "COALESCE", "NVL", "NVL2", "IFNULL", "DECODE");
 
     private final List<SubqueryExpression> subqueries = new ArrayList<>();
+    /** Whether a CASE's branches and a choosing call's arguments are walked too: no row chooses among them. */
+    private final boolean everyBranch;
+
+    /** A walk that leaves out what only some rows compute. */
+    AheadSubqueryWalk() {
+        this(false);
+    }
+
+    /**
+     * @param everyBranch whether a CASE's branches and a choosing call's arguments are walked too, as over no rows
+     */
+    AheadSubqueryWalk(final boolean everyBranch) {
+        this.everyBranch = everyBranch;
+    }
 
     /** The scalar subqueries found, in the order written. */
     List<SubqueryExpression> subqueries() {
@@ -76,13 +96,13 @@ final class AheadSubqueryWalk extends AstPrinterVisitor {
 
     @Override
     public String visitCaseExpression(final CaseExpression expr) {
-        return "";
+        return everyBranch ? super.visitCaseExpression(expr) : "";
     }
 
     @Override
     public String visitFunctionCall(final FunctionCallExpression expr) {
         final String name = expr.getFunctionName();
-        return name != null && CHOOSING_CALLS.contains(name.toUpperCase(Locale.ROOT)) ? ""
+        return !everyBranch && name != null && CHOOSING_CALLS.contains(name.toUpperCase(Locale.ROOT)) ? ""
             : super.visitFunctionCall(expr);
     }
 

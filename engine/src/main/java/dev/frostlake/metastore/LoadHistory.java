@@ -50,6 +50,16 @@ public final class LoadHistory {
         }
     }
 
+    /**
+     * Replace every record with a restored state's.
+     *
+     * @param loads the restored records, oldest first
+     */
+    public synchronized void restore(final List<LoadRecord> loads) {
+        records.clear();
+        records.addAll(loads);
+    }
+
     /** Every record, oldest first. */
     public synchronized List<LoadRecord> records() {
         return new ArrayList<LoadRecord>(records);

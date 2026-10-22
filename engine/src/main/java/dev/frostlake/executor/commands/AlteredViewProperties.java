@@ -50,13 +50,14 @@ import java.util.Set;
  * </pre>
  *
  * A value that is a reserved word ({@code SET COMMENT = ON}) is a syntax error at the list's first name, as an item
- * without its value is. A view's COMMENT and CHANGE_TRACKING are its properties, a materialized view's COMMENT
- * alone; {@code COMMENT = NULL} takes the comment away.
+ * without its value is. A view's COMMENT, CHANGE_TRACKING and DATA_METRIC_SCHEDULE are its properties, a materialized
+ * view's COMMENT alone; {@code COMMENT = NULL} takes the comment away.
  */
 final class AlteredViewProperties {
 
     private static final String COMMENT = "COMMENT";
     private static final String CHANGE_TRACKING = "CHANGE_TRACKING";
+    private static final String DATA_METRIC_SCHEDULE = "DATA_METRIC_SCHEDULE";
 
     private AlteredViewProperties() {
     }
@@ -245,7 +246,35 @@ final class AlteredViewProperties {
     }
 
     private static boolean isProperty(final String key, final boolean materialized) {
-        return COMMENT.equals(key) || !materialized && CHANGE_TRACKING.equals(key);
+        return COMMENT.equals(key)
+            || !materialized && (CHANGE_TRACKING.equals(key) || DATA_METRIC_SCHEDULE.equals(key));
+    }
+
+    /**
+     * The schedule a judged SET gives the view's data metric functions, as written.
+     *
+     * @param items the items, judged
+     * @return the last DATA_METRIC_SCHEDULE's text, or null when none is set
+     */
+    static String dataMetricScheduleOf(final List<FrostlakeParser.ViewSetItemContext> items) {
+        final FrostlakeParser.ViewSetItemContext item = lastItem(items, DATA_METRIC_SCHEDULE);
+        return item == null || item.copyOptionValue() == null ? null
+            : SqlStringLiterals.decode(item.copyOptionValue().getText());
+    }
+
+    /**
+     * Whether a judged UNSET takes the view's data metric schedule away.
+     *
+     * @param keys the names, judged
+     * @return whether one of them is DATA_METRIC_SCHEDULE
+     */
+    static boolean unsetsDataMetricSchedule(final List<FrostlakeParser.OptionKeyContext> keys) {
+        for (final FrostlakeParser.OptionKeyContext key : keys) {
+            if (DATA_METRIC_SCHEDULE.equals(ParameterRegistry.canonical(key.getText()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The syntax error at a token, the one line the account gives. */

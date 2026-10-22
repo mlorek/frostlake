@@ -29,8 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * held 1.555. The column's own type refuses or rounds all of these on an explicit cast.
  *
  * <p>Snowflake's documentation sets the rules. A semi-structured value is castable to a structured type but not
- * coercible to one, nor the reverse, so an INSERT casts it explicitly. A structured value of the column's family
- * converts as the cast converts it.
+ * coercible to one, nor the reverse, so an INSERT casts it explicitly; written uncast it is "incompatible types"
+ * (live-verified). A structured value of the column's family converts as the cast converts it.
  */
 public class StructuredColumnWriteTest extends BaseDatabaseTest {
 
@@ -60,20 +60,25 @@ public class StructuredColumnWriteTest extends BaseDatabaseTest {
             + " for column " + column;
     }
 
+    /** The sentence a semi-structured value written to a structured column gets (live-verified). */
+    private static String incompatible(final String got, final String expecting) {
+        return "incompatible types: [" + got + "] and [" + expecting + "]";
+    }
+
     @Test
     public void aSemiStructuredValueIsRefusedWhileCompiling() {
         assertTrue(refusal("INSERT INTO sw (o) SELECT OBJECT_CONSTRUCT('zzz', 'x')")
-            .contains(mismatch("OBJECT(a NUMBER(38,0))", "OBJECT", "O")));
+            .contains(incompatible("OBJECT", "OBJECT(a NUMBER(38,0))")));
         assertTrue(refusal("INSERT INTO sw (ar) SELECT ARRAY_CONSTRUCT('y')")
-            .contains(mismatch("ARRAY(NUMBER(38,0))", "ARRAY", "AR")));
+            .contains(incompatible("ARRAY", "ARRAY(NUMBER(38,0))")));
         assertTrue(refusal("INSERT INTO sw (m) SELECT PARSE_JSON('{\"k\": 1}')")
-            .contains(mismatch("MAP(VARCHAR(16777216), NUMBER(38,0))", "VARIANT", "M")));
+            .contains(incompatible("VARIANT", "MAP(VARCHAR(16777216), NUMBER(38,0))")));
         engine.execute("INSERT INTO sw (o) SELECT NULL");
         assertTrue(refusal("UPDATE sw SET o = OBJECT_CONSTRUCT('zzz', 'x')")
-            .contains(mismatch("OBJECT(a NUMBER(38,0))", "OBJECT", "O")), "UPDATE");
+            .contains(incompatible("OBJECT", "OBJECT(a NUMBER(38,0))")), "UPDATE");
         assertTrue(refusal("MERGE INTO sw USING (SELECT 1 k) s ON FALSE"
                 + " WHEN NOT MATCHED THEN INSERT (o) VALUES (OBJECT_CONSTRUCT('q', 'w'))")
-            .contains(mismatch("OBJECT(a NUMBER(38,0))", "OBJECT", "O")), "MERGE");
+            .contains(incompatible("OBJECT", "OBJECT(a NUMBER(38,0))")), "MERGE");
     }
 
     @Test

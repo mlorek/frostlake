@@ -94,7 +94,7 @@ TWO PLACES DO CHOOSE THAT, and both are documented where they are used rather th
 If Frostlake ever needs to hold data worth protecting, this entry is the thing to revisit — not as a
 missing feature, but as a change of what the project is for.
 
-## INFORMATION_SCHEMA — answered and enumerated, but its views' COLUMNS are not
+## INFORMATION_SCHEMA — answered, enumerated, and its views' columns listed
 
 A database's INFORMATION_SCHEMA is a schema full of views, and Frostlake models all 62 of them as real
 catalog objects: they are listed, they carry live's own metadata (owned by nobody, and the schema's fixed
@@ -105,20 +105,17 @@ comment), and the container-scoped listings tally exactly —
     SHOW OBJECTS IN DATABASE <db>                  62 + your tables and views
     SHOW TABLES IN DATABASE <db>                   your tables only — none of the 62 is a table
 
-WHAT IS NOT MODELLED IS THEIR COLUMNS. The 62 are registered as views without a resolved column list, so
-a container-scoped `SHOW COLUMNS` counts user objects only:
+THEIR COLUMNS ARE THE ACCOUNT'S OWN, NOT INVENTED. The views' column lists are read from the account's own
+description of them, `metadata/information-schema-columns.tsv` (what DESCRIBE VIEW answers there, in its
+order), the file DESCRIBE reads too. `SHOW COLUMNS` lists them as `VIEW_COLUMN` rows with their descriptions,
+and INFORMATION_SCHEMA.COLUMNS under TABLE_SCHEMA 'INFORMATION_SCHEMA', each with its type and nullability:
+918 columns over the 63 views the file holds, as the account lists them.
 
-    SHOW COLUMNS IN DATABASE <db>     live 894 over one table and one view; Frostlake 3
+    SHOW COLUMNS IN DATABASE <db>     the 918, and your tables' and views' columns
 
 Sixteen of the views are genuinely answered — querying INFORMATION_SCHEMA.TABLES, .COLUMNS, .VIEWS,
-.SCHEMATA and the rest returns real rows — and the other 46 exist as names. Giving all 62 a column list
-would mean INVENTING the columns of the 46 Frostlake does not implement, which is the one thing this
-project will not do with metadata: a listing that is short is honest, a listing padded with made-up
-columns is not. The 16 could be populated from what they already answer, but a partly-populated listing
-is harder to reason about than an absent one, because nothing tells the reader which half they have.
-
-So container-scoped `SHOW COLUMNS` counts user objects, and tests that walk a database or the account
-assert "at least mine" rather than a total. Revisit only if something real depends on the count.
+.SCHEMATA and the rest returns real rows — and the others exist as names; their columns describe what they
+would answer. Tests that walk a database or the account may count the 918 among a container's columns.
 
 WHAT THE ANSWERED VIEWS LIST IS WHAT THE ROLE REACHES. Every role reads the views - they need no grant, and
 none can be granted on one - and TABLES, COLUMNS, VIEWS, TABLE_CONSTRAINTS, REFERENTIAL_CONSTRAINTS, FUNCTIONS,
@@ -127,6 +124,26 @@ hold a privilege on, in the schemas and the database those rights were granted i
 ACCOUNTADMIN does not see a table that another role owns and it was granted nothing on. Inside a stored
 procedure that runs with owner's rights the rights are the owner's. The SHOW commands are not filtered this
 way: they list every object, as the account's do.
+
+## A Python handler catching a refused statement under a JavaScript procedure — a known limit with `-ea`
+
+The JavaScript and the Python runtimes are separate GraalVM polyglot engines: JavaScript builds a context per
+call on its own engine, and Python keeps one context per thread on another. When a Python handler runs under a
+JavaScript procedure's `snowflake.execute` and CATCHES a statement the engine refused, the second and later such
+calls fail on the polyglot runtime's own context-sharing check — but only where JVM assertions are enabled for
+GraalVM's classes, as surefire's default `-ea` enables them in a test JVM. Without those assertions every such
+call answers. Every other mix answers with them too: a Python handler that answers, raises, lets a refused
+statement escape or catches a pure-Python exception, and a JavaScript handler under a Python one.
+
+Evaluating both languages in one polyglot context, or a nested Python evaluation on a thread of its own with the
+session's state carried over, would lift it; neither is done, since both reach deep into how a routine runs.
+
+## Task notification and run properties — kept and shown, not acted on
+
+A task's SUCCESS_INTEGRATION and ERROR_INTEGRATION are kept and shown, but no notification is sent: no message
+service stands behind an integration here. OVERLAP_POLICY is kept and read back, but a task graph runs to its end
+before the next run starts, so no run overlaps another. USER_TASK_TIMEOUT_MS is kept and shown and not enforced: a
+task's statement runs to completion.
 
 ## Object kinds that are listed but not modelled — the listing answers its columns and no rows
 

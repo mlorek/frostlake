@@ -75,15 +75,11 @@ public final class PrivilegeHint {
         "Application package"));
 
     /**
-     * The account privileges any one of which would let a role DESCRIBE a network rule, in the order live lists
-     * them. A statement that grants on a missing rule asks for {@link #NETWORK_RULE_GRANTS}, and every other
-     * statement over one for MONITOR alone.
+     * The account privilege a DESCRIBE of a missing network rule asks for. A statement that grants on a missing rule
+     * asks for {@link #NETWORK_RULE_GRANTS}, and every other statement over one for MONITOR alone.
      */
     private static final List<String> NETWORK_RULE_READERS = Collections.unmodifiableList(Arrays.asList(
-        "APPLY AGGREGATION POLICY", "APPLY DATA MOVEMENT POLICY", "APPLY PRIVACY POLICY", "APPLY JOIN POLICY",
-        "APPLY MASKING POLICY", "APPLY MULTI PARTY APPROVAL POLICY", "APPLY FEATURE POLICY",
-        "APPLY PROJECTION POLICY", "APPLY ROW ACCESS POLICY", "APPLY STORAGE LIFECYCLE POLICY",
-        "APPLY TOKENIZATION POLICY", "MONITOR", "RESOLVE ALL"));
+        "APPLY MASKING POLICY"));
 
     /**
      * The account privileges a GRANT, a REVOKE or a SHOW GRANTS ON over a missing network rule asks for, in the order
@@ -109,7 +105,7 @@ public final class PrivilegeHint {
     }
 
     /**
-     * The hint a DESCRIBE NETWORK RULE refusal ends with for the running statement: one sentence per account
+     * The hint a DESCRIBE NETWORK RULE refusal ends with for the running statement: the sentence naming the account
      * privilege in {@link #NETWORK_RULE_READERS}.
      *
      * @return the hint with its leading space, or "" when no statement pinned a role

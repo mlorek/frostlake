@@ -257,7 +257,21 @@ public final class SetOperations {
                         continue;
                     }
                     final Object value = row.getValue(col);
-                    final Object converted = toUnifiedColumnValue(value, target);
+                    if (value instanceof DeferredFault) {
+                        continue;
+                    }
+                    Object converted;
+                    try {
+                        converted = toUnifiedColumnValue(value, target);
+                    } catch (final RuntimeException unconvertible) {
+                        if (!DeferredFault.deferrable(unconvertible)) {
+                            throw unconvertible;
+                        }
+                        // An arm's value is converted where the row is read, not where the arms meet: a plain
+                        // SELECT refuses a text past the unified NUMBER bare, a CTAS or INSERT … SELECT inside its
+                        // DML sentence naming the column, and a UNION's duplicate check bare again (live-verified).
+                        converted = new DeferredFault(unconvertible);
+                    }
                     if (converted != value) {
                         final List<Object> replaced = new ArrayList<>(row.getValues());
                         replaced.set(col, converted);

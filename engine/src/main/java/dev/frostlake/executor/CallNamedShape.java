@@ -60,14 +60,14 @@ public final class CallNamedShape {
         boolean named = false;
         boolean positional = false;
         for (final FrostlakeParser.CallArgumentContext argument : call.callArguments().callArgument()) {
-            if (argument.namedArgument() == null) {
+            if (!CallArgumentTypes.isNamed(argument)) {
                 positional = true;
                 continue;
             }
             named = true;
-            final String name = SqlIdentifiers.canonical(argument.namedArgument().variableName());
+            final String name = SqlIdentifiers.canonical(CallArgumentTypes.nameOf(argument));
             if (!seen.add(name)) {
-                final Token at = argument.namedArgument().variableName().getStart();
+                final Token at = CallArgumentTypes.nameOf(argument).getStart();
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                     "duplicate named argument " + name + " for function " + procedure));
             }

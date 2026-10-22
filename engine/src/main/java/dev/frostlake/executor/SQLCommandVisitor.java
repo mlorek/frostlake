@@ -63,6 +63,7 @@ import dev.frostlake.executor.procedural.StatementValueExpression;
 import dev.frostlake.executor.procedural.VariableExpression;
 import dev.frostlake.executor.udf.HandlerResults;
 import dev.frostlake.executor.udf.JavaProcedureExecutor;
+import dev.frostlake.executor.udf.PythonSnowparkPackage;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.SystemFunctionArity;
 import dev.frostlake.functions.window.WindowFunctionNames;
@@ -1208,7 +1209,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             if (!inBlock) {
                 SessionVariableNames.refuseUnsetBinds(ctx.booleanExpr());
             }
-            setSessionVar(sm, names.get(0), sessionValueOf(ctx.booleanExpr()));
+            setSessionVar(sm, names.get(0), sessionValueOf(ctx.booleanExpr()), isDecfloat(ctx.booleanExpr()));
             return null;
         }
         // SET (var1, var2, ...) = (expr1, expr2, ...): every value is computed before any variable is set, so
@@ -1229,9 +1230,23 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             values.add(sessionValueOf(expr));
         }
         for (int i = 0; i < names.size(); i++) {
-            setSessionVar(sm, names.get(i), values.get(i));
+            setSessionVar(sm, names.get(i), values.get(i), isDecfloat(exprs.get(i)));
         }
         return null;
+    }
+
+    /**
+     * Whether a SET's value is a DECFLOAT. The variable keeps the type, which its decimal value cannot tell:
+     * {@code SET v = 1.5::DECFLOAT} is DECFLOAT and {@code SET v = 1.5} NUMBER(2,1) (live-verified).
+     */
+    private boolean isDecfloat(final FrostlakeParser.BooleanExprContext ctx) {
+        try {
+            return NumericType.isDecfloat(new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(),
+                queryExecutor.getCatalog(), queryExecutor).inferStaticType(
+                    ExpressionEvaluator.parse(getOriginalText(ctx))));
+        } catch (final RuntimeException untyped) {
+            return false;
+        }
     }
 
     /**
@@ -1264,8 +1279,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return SessionAssignmentSource.assignable(folded, ctx, queryExecutor);
     }
 
-    private void setSessionVar(final SecurityManager sm, final String name, final Object value) {
-        if (sm != null) {
+    private void setSessionVar(final SecurityManager sm, final String name, final Object value,
+                               final boolean decfloat) {
+        if (sm != null && decfloat) {
+            sm.getSessionContext().setDecfloatSessionVariable(name, value);
+        } else if (sm != null) {
             sm.getSessionContext().setSessionVariable(name, value);
         } else {
             queryExecutor.getSessionVariables().put(name, value);
@@ -1853,6 +1871,20 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return -1;
     }
 
+    /** The parameter a named CALL argument binds, refused when the procedure has none so named or it is bound. */
+    private int namedParameterIndex(final List<Parameter> params, final String argName, final boolean[] boundFlags,
+            final String qualifiedName) {
+        final int idx = indexOfParameter(params, argName);
+        if (idx < 0) {
+            throw new RuntimeException("Unknown argument '" + argName + "' for procedure: " + qualifiedName);
+        }
+        if (boundFlags[idx]) {
+            throw new RuntimeException("Argument '" + argName + "' specified more than once for procedure: "
+                + qualifiedName);
+        }
+        return idx;
+    }
+
     /**
      * How deep inside an OWNER's-rights stored-procedure body execution currently is. Such a
      * procedure may not change the session it runs in, and the statements that would are refused
@@ -1973,6 +2005,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final SecurityManager security = queryExecutor.getSecurityManager();
         final String callerOwner = security == null ? null : security.getSessionContext().getExecutableOwner();
         final boolean callerRestricted = security != null && security.getSessionContext().isRestrictedCaller();
+        final String callerRestrictedOwner = security == null ? null
+            : security.getSessionContext().getRestrictedOwner();
         // A procedure's body, in any language, is a transaction scope of its own: it adds to a transaction its
         // caller began and may not end it, and a transaction it begins is its own to end before it returns
         // (live-verified).
@@ -1991,6 +2025,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             if (security != null) {
                 security.getSessionContext().setExecutableOwner(callerOwner);
                 security.getSessionContext().setRestrictedCaller(callerRestricted);
+                security.getSessionContext().setRestrictedOwner(callerRestrictedOwner);
             }
             SessionRole.restore(callerRole);
         }
@@ -2157,7 +2192,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         if (ctx.callArguments() != null) {
             for (final FrostlakeParser.CallArgumentContext argument : ctx.callArguments().callArgument()) {
                 final FrostlakeParser.NamedArgumentContext named = argument.namedArgument();
-                written.add(ParseTreeText.getOriginalText(named == null ? argument
+                written.add(ParseTreeText.getOriginalText(argument.namedLogicalArgument() != null
+                    ? argument.namedLogicalArgument().booleanExpr() : named == null ? argument
                     : named.expression() != null ? named.expression()
                     : named.selectStatement() != null ? named.selectStatement() : named.argumentRow()));
             }
@@ -2325,7 +2361,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // looked for (see CallNamedShape).
             boolean sawNamed = false;
             for (final FrostlakeParser.CallArgumentContext argCtx : ctx.callArguments().callArgument()) {
-                sawNamed |= argCtx.namedArgument() != null;
+                sawNamed |= CallArgumentTypes.isNamed(argCtx);
             }
             // The names that fit no signature are refused under the procedure's name as the CALL writes it,
             // test_schema.p as TEST_SCHEMA.P (live-verified).
@@ -2341,15 +2377,16 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             CallArgumentTypes.check(sawNamed ? namedName : procName, params,
                 ctx.callArguments().callArgument(), sawNamed, typer);
             for (final FrostlakeParser.CallArgumentContext argCtx : ctx.callArguments().callArgument()) {
-                if (argCtx.namedArgument() != null) {
-                    final String argName = getText(argCtx.namedArgument().variableName());
-                    final int idx = indexOfParameter(params, argName);
-                    if (idx < 0) {
-                        throw new RuntimeException("Unknown argument '" + argName + "' for procedure: " + qualifiedName);
-                    }
-                    if (boundFlags[idx]) {
-                        throw new RuntimeException("Argument '" + argName + "' specified more than once for procedure: " + qualifiedName);
-                    }
+                if (argCtx.namedLogicalArgument() != null) {
+                    // A NOT, AND or OR over values is a named argument too: CALL p(x => NOT TRUE) binds FALSE
+                    // (live-verified).
+                    final int idx = namedParameterIndex(params,
+                        getText(argCtx.namedLogicalArgument().variableName()), boundFlags, qualifiedName);
+                    boundValues[idx] = evaluateSqlExpression(argCtx.namedLogicalArgument().booleanExpr());
+                    boundFlags[idx] = true;
+                } else if (argCtx.namedArgument() != null) {
+                    final int idx = namedParameterIndex(params, getText(argCtx.namedArgument().variableName()),
+                        boundFlags, qualifiedName);
                     if (argCtx.namedArgument().expression() == null) {
                         throw new RuntimeException(
                             "A bare subquery CALL argument is not supported; parenthesize it: (SELECT ...)");
@@ -2433,10 +2470,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         // A RESTRICTED CALLER body runs with none of its caller's privileges, as no caller grant lets it use one; an
         // owner's-rights body runs with its owner's own, however it was called; a caller's-rights body runs with what
-        // its caller runs with (FL-434).
+        // its caller runs with.
         if (queryExecutor.getSecurityManager() != null) {
             if (procedure.runsWithRestrictedCallersRights()) {
                 queryExecutor.getSecurityManager().getSessionContext().setRestrictedCaller(true);
+                // Its owner's caller grants say which of the caller's privileges the body may use.
+                queryExecutor.getSecurityManager().getSessionContext().setRestrictedOwner(procedure.getOwner());
             } else if (!procedure.runsWithCallersRights()) {
                 queryExecutor.getSecurityManager().getSessionContext().setRestrictedCaller(false);
             }
@@ -2466,6 +2505,15 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 final DatabaseEngine host = queryExecutor.getDatabaseEngine();
                 // A handler may answer otherwise when called again (see CheckpointDebt).
                 CheckpointDebt.owe();
+                if (language == UdfLanguage.PYTHON && !PythonSnowparkPackage.isNamed(procedure.getPackages())) {
+                    throw PythonSnowparkPackage.missing(procedure.getName(), procedure.getHandler());
+                }
+                if (language == UdfLanguage.JAVA || language == UdfLanguage.PYTHON || language == UdfLanguage.SCALA) {
+                    // A Java, Python or Scala handler is handed a session, which issues a statement as it opens:
+                    // past the depth bodies run to, the body is ended before its code runs, where a SQL or
+                    // JavaScript body runs until it issues one (live-verified).
+                    CallDepth.requireMayIssue(queryExecutor.getTransactionManager().scopeDepth());
+                }
                 returnValue = language == UdfLanguage.JAVA
                     ? JavaProcedureExecutor.executeJavaProcedure(procedure, arguments, host)
                     : UdfRuntimes.require(language).executeProcedure(procedure, arguments, host);
@@ -2592,7 +2640,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     if (bodyRs.getColumns().size() == 1) {
                         final List<ResultSetColumn> renamed = new ArrayList<>();
                         renamed.add(new ResultSetColumn(procName, callResultColumnType(), null));
-                        return new ResultSet(renamed, bodyRs.getRows());
+                        return new ResultSet(renamed, bodyRs.getRows()).markScriptingAnswer();
                     }
                     return bodyRs;
                 }
@@ -2612,7 +2660,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     resultColumns.add(new ResultSetColumn(procName, callResultColumnType(), null));
                     final List<Row> resultRows = new ArrayList<>();
                     resultRows.add(new Row(rv));
-                    return new ResultSet(resultColumns, resultRows);
+                    return new ResultSet(resultColumns, resultRows).markScriptingAnswer();
                 }
                 // A body that completes WITHOUT a RETURN implicitly returns NULL — and CALL still
                 // yields its one-row result set (column named after the procedure), never an empty
@@ -2890,6 +2938,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 for (final FrostlakeParser.StatementContext stmtCtx : dynamicStatements) {
                     // Only the last statement's conditional branch may reach the status sentence.
                     ConditionalDdlOutcome.clear();
+                    DdlStatusNote.clear();
                     // A statement of a text of several reports its places against its own text, and fails named
                     // the way a multi-statement request names it.
                     final SourcePosition displaced = severalStatements ? LeadingCommentOffset.begin(new SourcePosition(

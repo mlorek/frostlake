@@ -28,8 +28,8 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.IntegrationKind;
-import dev.frostlake.metastore.model.PropertyValue;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.PropertyValue;
 import dev.frostlake.metastore.model.PropertyValueKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObject;
@@ -60,7 +60,7 @@ import java.util.Map;
  * and a CREATE OR REPLACE over one take its OWNERSHIP, and SHOW and DESCRIBE answer for an integration only to a role
  * that holds some privilege on it, or MANAGE GRANTS; to any other it is not there (documented: each statement's access
  * control table, and SHOW lists "only objects for which the current role has been granted at least one access
- * privilege"). Every role could create, widen, disable and drop every integration (FL-430).
+ * privilege"). Every role could create, widen, disable and drop every integration.
  */
 public final class IntegrationCommandHandler {
 
@@ -378,6 +378,11 @@ public final class IntegrationCommandHandler {
             // An inbound Pub/Sub queue lists its subscription and its service account, not its provider.
             shown.add("NOTIFICATION_PROVIDER");
         }
+        if (azureQueue(integration)) {
+            // An Azure storage queue lists the application its tenant consents to, not its provider or its tenant.
+            shown.add("NOTIFICATION_PROVIDER");
+            shown.add("AZURE_TENANT_ID");
+        }
         for (final String[] row : layout(integration)) {
             shown.add(row[0]);
             rows.add(new Row(Arrays.asList((Object) row[0], row[1], value(integration, row[0]), row[2])));
@@ -515,15 +520,22 @@ public final class IntegrationCommandHandler {
             return concat(head, new String[][] {{"AZURE_EVENT_GRID_TOPIC_ENDPOINT", "String", ""},
                 {"AZURE_TENANT_ID", "String", ""}});
         }
-        if ("AZURE_STORAGE_QUEUE".equals(provider)) {
-            return concat(head, new String[][] {{"AZURE_STORAGE_QUEUE_PRIMARY_URI", "String", ""},
-                {"AZURE_TENANT_ID", "String", ""}});
+        if (azureQueue(integration)) {
+            return new String[][] {enabled, {"USE_PRIVATELINK_ENDPOINT", "Boolean", "false"},
+                {"AZURE_STORAGE_QUEUE_PRIMARY_URI", "String", ""}, {"AZURE_CONSENT_URL", "String", ""},
+                {"AZURE_MULTI_TENANT_APP_NAME", "String", ""}, direction};
         }
         if (inboundPubSub(integration)) {
             return new String[][] {enabled, direction, {"GCP_PUBSUB_SUBSCRIPTION_NAME", "String", ""},
                 {"GCP_PUBSUB_SERVICE_ACCOUNT", "String", ""}};
         }
         return concat(head, new String[][] {{"GCP_PUBSUB_TOPIC_NAME", "String", ""}});
+    }
+
+    /** Whether the integration is an Azure storage queue read into the account (live-verified DESCRIBE layout). */
+    private static boolean azureQueue(final Integration integration) {
+        return integration.getKind() == IntegrationKind.NOTIFICATION
+            && "AZURE_STORAGE_QUEUE".equals(integration.text("NOTIFICATION_PROVIDER"));
     }
 
     /** Whether the integration is a Pub/Sub queue read into the account (live-verified DESCRIBE layout). */

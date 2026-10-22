@@ -24,6 +24,7 @@ import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Database;
@@ -128,12 +129,10 @@ final class ShowRelationalExecutor {
         return listed == null ? "" : listed;
     }
 
-    /** How live renders a clustering key in SHOW output: LINEAR(a, b), or empty when unclustered. */
-    private String clusterByText(final List<String> clusterKeys) {
-        if (clusterKeys.isEmpty()) {
-            return "";
-        }
-        return "LINEAR(" + String.join(", ", clusterKeys) + ")";
+    /** A clustering key's written text as SHOW lists it, under LINEAR when it names no ordering; empty for none. */
+    private static String listedKey(final String written) {
+        final String listed = ClusteringKeySpelling.listed(written);
+        return listed == null ? "" : listed;
     }
 
     /** One SHOW OBJECTS row in live's column order.
@@ -265,23 +264,28 @@ final class ShowRelationalExecutor {
         return new ResultSet(columns, rows);
     }
 
-    /** One SHOW DATABASES row; with {@code history}, followed by its {@code dropped_on}. */
+    /**
+     * One SHOW DATABASES row; with {@code history}, followed by its {@code dropped_on}. The SNOWFLAKE database is the
+     * application its ACCOUNT_USAGE share comes from: of origin {@code SNOWFLAKE.ACCOUNT_USAGE}, owned by no role,
+     * retained for no day (live-verified).
+     */
     private Row databaseRow(final Database db, final boolean current, final boolean history,
                             final Instant droppedOn) {
+        final boolean system = SystemDatabase.is(db.getName());
         final List<Object> cells = new ArrayList<>(Arrays.asList(
                 ShowResultHelpers.createdOn(db.getCreatedTime()),
                 db.getName(),
                 "N",
                 current ? "Y" : "N",
-                "",
-                db.getOwner(),
+                system ? SystemDatabase.ORIGIN : "",
+                system ? "" : db.getOwner(),
                 ShowResultHelpers.text(db.getComment()),
                 // options is where SHOW spells transience: the word TRANSIENT, or nothing at all for
                 // a permanent object — not a YES/NO cell like INFORMATION_SCHEMA's.
                 db.isTransientObject() ? "TRANSIENT" : "",
-                effectiveRetention(db, null, null),
-                "STANDARD",
-                ShowResultHelpers.OWNER_ROLE_TYPE,
+                system ? "0" : effectiveRetention(db, null, null),
+                system ? "APPLICATION" : "STANDARD",
+                system ? "" : ShowResultHelpers.OWNER_ROLE_TYPE,
                 null, null, null
             ));
         if (history) {
@@ -587,7 +591,7 @@ final class ShowRelationalExecutor {
                         dt.getName(),
                         dbName, scName, dt.isTransient() ? "TRANSIENT" : "TABLE",
                         ShowResultHelpers.text(dt.getComment()),
-                        clusterByText(dt.getClusterKeys()),
+                        listedKey(dt.getClusterByText()),
                         // The rows its last refresh held; no size is told.
                         dt.getRefreshedRows(),
                         0L,
@@ -641,9 +645,9 @@ final class ShowRelationalExecutor {
      */
     private static String versionKey(final String scName, final String name, final Instant created,
                                      final Instant droppedOn, final int place) {
-        return scName + "." + name + "\u0001" + String.format("%020d", created.toEpochMilli()) + "\u0001"
-            + (droppedOn == null ? "~" : String.format("%020d", droppedOn.toEpochMilli())) + "\u0001"
-            + String.format("%06d", place);
+        return scName + "." + name + "\u0001" + String.format(Locale.ROOT, "%020d", created.toEpochMilli()) + "\u0001"
+            + (droppedOn == null ? "~" : String.format(Locale.ROOT, "%020d", droppedOn.toEpochMilli())) + "\u0001"
+            + String.format(Locale.ROOT, "%06d", place);
     }
 
     /**
@@ -882,7 +886,7 @@ final class ShowRelationalExecutor {
                     mv.getName(),
                     "",
                     dbName, scName,
-                    clusterByText(mv.getClusterKeys()),
+                    listedKey(mv.getClusterByText()),
                     // The rows it materialized; no size is told.
                     mv.getMaterializedRows(),
                     0L,
@@ -956,8 +960,9 @@ final class ShowRelationalExecutor {
             if (!seen("VIEW", schema, v.getName(), v.getOwner())) {
                 continue;
             }
-            byRelation.put(v.getName(), viewColumnRows(v.getName(), v.getResolvedColumns(),
-                v.getColumnNames(), databaseName, schema.getName()));
+            byRelation.put(v.getName(), viewColumnRows(v.getName(),
+                InformationSchemaColumns.resolvedColumns(v, schema.getName()), v.getColumnNames(), databaseName,
+                schema.getName()));
         }
         for (final MaterializedView mv : schema.getMaterializedViews()) {
             if (!seen("MATERIALIZED_VIEW", schema, mv.getName(), mv.getOwner())) {
@@ -1071,8 +1076,9 @@ final class ShowRelationalExecutor {
         final View named = findViewOrNull(name);
         if (named != null) {
             requireSeen("VIEW", catalog.resolveOwningSchema(name), named.getName(), named.getOwner(), name, kind);
-            rows.addAll(viewColumnRows(named.getName(), named.getResolvedColumns(),
-                named.getColumnNames(), relationDatabase(name), relationSchema(name)));
+            rows.addAll(viewColumnRows(named.getName(),
+                InformationSchemaColumns.resolvedColumns(named, relationSchema(name)), named.getColumnNames(),
+                relationDatabase(name), relationSchema(name)));
             return new ResultSet(columns, rows);
         }
         final MaterializedView materialized = findMaterializedViewOrNull(name);
@@ -1251,8 +1257,9 @@ final class ShowRelationalExecutor {
                               final String comment) {
         // The unset text cells are the EMPTY STRING here too — default, expression and autoincrement
         // alike. A derived column has no default and no identity, so all three are always empty.
+        // One of INFORMATION_SCHEMA's own views lists its columns as VIEW_COLUMN (live-verified).
         return new Row(Arrays.asList(relationName, schemaName, columnName, dataType,
-            nullable ? "true" : "NOT_NULL", "", "COLUMN", "",
+            nullable ? "true" : "NOT_NULL", "", "INFORMATION_SCHEMA".equals(schemaName) ? "VIEW_COLUMN" : "COLUMN", "",
             // The view's OWN declared column comment, spelled the way SHOW spells every unset text
             // value — the empty string, never NULL. A base column's comment does not reach here
             // (live-verified), and the view's does.

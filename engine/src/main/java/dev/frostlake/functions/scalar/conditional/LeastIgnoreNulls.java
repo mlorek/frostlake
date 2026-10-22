@@ -14,71 +14,10 @@
  * limitations under the License.
  */
 
+
 package dev.frostlake.functions.scalar.conditional;
 
-import dev.frostlake.executor.ValueComparisons;
-import dev.frostlake.executor.expressions.CollationSpec;
-import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.VariantType;
-
-import java.util.List;
-
-/**
- * LEAST_IGNORE_NULLS — the smallest non-NULL argument, IGNORING NULLs (Snowflake's explicit skipping variant; plain
- * LEAST/GREATEST return NULL when any argument is NULL). NULL only when every argument is NULL.
- */
-public class LeastIgnoreNulls extends BuiltInFunction {
-
-    public LeastIgnoreNulls() { super("LEAST_IGNORE_NULLS", VariantType.VARIANT); }
-
-    @Override
-    public Object evaluate(final List<Object> rawArgs) {
-        final List<Object> args = OrderingCoercion.coerceAll(rawArgs);
-        if (args.isEmpty()) {
-            return null;
-        }
-        Object min = null;
-        for (final Object arg : args) {
-            if (arg == null) {
-                continue;
-            }
-            if (min == null) {
-                min = arg;
-            } else if (ValueComparisons.compareValues(arg, min) < 0) {
-                min = arg;
-            }
-        }
-        return min;
-    }
-
-    /** Under a collation the arguments are ordered by its rules, so 'a' outranks 'B' where it should. */
-    @Override
-    public Object evaluate(final List<Object> args, final CollationSpec collation) {
-        if (collation == null) {
-            return evaluate(args);
-        }
-        Object min = null;
-        for (final Object arg : OrderingCoercion.coerceAll(args)) {
-            if (arg == null) {
-                continue;
-            }
-            if (min == null || compareUnder(collation, arg, min) < 0) {
-                min = arg;
-            }
-        }
-        return min;
-    }
-
-    /** The extreme's comparison, by the collation when both sides are text. */
-    private static int compareUnder(final CollationSpec collation, final Object left, final Object right) {
-        if (left instanceof String && right instanceof String) {
-            return collation.compare((String) left, (String) right);
-        }
-        return ValueComparisons.compareForExtreme(left, right);
-    }
-
-    @Override
-    public int getMinArgCount() { return 1; }
-    @Override
-    public int getMaxArgCount() { return Integer.MAX_VALUE; }
+/** LEAST_IGNORE_NULLS — the smallest non-NULL argument, NULL only when every argument is NULL. */
+public class LeastIgnoreNulls extends ArgumentExtremeFunction {
+    public LeastIgnoreNulls() { super("LEAST_IGNORE_NULLS", false, true); }
 }

@@ -37,6 +37,7 @@ import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.JavaHandlerInstances;
 import dev.frostlake.executor.udf.JavaRuntimeLevel;
 import dev.frostlake.executor.udf.JavaTableFunctions;
+import dev.frostlake.executor.udf.PythonSnowparkPackage;
 import dev.frostlake.executor.udf.SnowparkPackage;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
@@ -978,6 +979,10 @@ final class RoutineBodyCompiler {
             if (SqlUdfQueryBodyRefusal.readsWithBareAlias(queryExecutor, body)) {
                 return null;
             }
+            final String rowCount = RowCountFaults.lines(framedTokens);
+            if (rowCount != null) {
+                return rowCount;
+            }
             if (!readsToEarlyClose(framedTokens, stop)) {
                 final String query = SqlUdfQueryBodyRefusal.describe(framed, framedTokens, stop, unclosed);
                 if (query != null) {
@@ -1663,6 +1668,11 @@ final class RoutineBodyCompiler {
 
     /** Compile {@code procedure}'s body — see the language table for which languages that means. */
     static void compileProcedureBody(final Procedure procedure) {
+        if (procedure != null && procedure.getUdfLanguage() == UdfLanguage.PYTHON
+                && PythonSnowparkPackage.namesNone(procedure.getPackages())) {
+            // Its handler is handed a Snowpark session the account cannot build without the package.
+            throw PythonSnowparkPackage.missing(procedure.getName(), procedure.getHandler());
+        }
         if (procedure == null || procedure.getUdfLanguage() == UdfLanguage.PYTHON
                 || !judgeable(procedure.getUdfLanguage(), procedure.getBody(),
                     procedure.getImports().isEmpty())) {

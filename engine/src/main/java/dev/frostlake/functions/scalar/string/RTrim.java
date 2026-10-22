@@ -14,43 +14,12 @@
  * limitations under the License.
  */
 
+
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.SemiStructuredRejection;
-import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.StringType;
-import dev.frostlake.values.CodePointText;
-
-import java.util.List;
-
-public class RTrim extends TextArgumentFunction {
+/** RTRIM(expr [, chars]) — the text with the set cut from its end. */
+public class RTrim extends TrimFunction {
     public RTrim() {
-        super("RTRIM", StringType.VARCHAR);
-    }
-
-    @Override
-    public Object evaluate(final List<Object> args) {
-        // A NULL in any argument answers NULL (live-verified).
-        if (anyNull(args)) {
-            return null;
-        }
-        if (args.get(0) == null) return null;
-        final String str = SharedFunctionHelpers.textOf(args.get(0));
-        // Snowflake RTRIM(expr [, chars]): trims every character in the set (default whitespace).
-        final String chars = args.size() > 1 && args.get(1) != null ? SharedFunctionHelpers.textOf(args.get(1)) : null;
-        return str.substring(0, CodePointText.trimmedEnd(str, chars, 0));
-    }
-
-    @Override
-    public int getMinArgCount() { return 1; }
-
-    @Override
-    public int getMaxArgCount() { return 2; }
-
-    /** A BINARY is no text here: the account refuses it by the argument types (live-verified). */
-    @Override
-    public SemiStructuredRejection binaryRejection(final int position) {
-        return SemiStructuredRejection.ARGUMENT_TYPES;
+        super("RTRIM", false, true);
     }
 }

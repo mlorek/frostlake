@@ -24,6 +24,7 @@ import java.net.URL;
 import java.sql.Array;
 import java.sql.Blob;
 import java.sql.Clob;
+import java.sql.Connection;
 import java.sql.Date;
 import java.sql.NClob;
 import java.sql.Ref;
@@ -51,9 +52,11 @@ import java.util.Map;
  * <p>The cursor moves forward only: the account's driver offers no other movement and refuses every scrolling call.
  * Its position reads as that driver's does: {@code getRow} counts the rows {@code next} has reached and keeps the
  * last one's number once the rows are exhausted, {@code isBeforeFirst} holds until a row is reached — for an empty
- * result, always — and {@code isLast} holds while the next call would pass the end. A label names the first column
- * whose name matches it ignoring case — the account's driver's rule under
- * {@code CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE} — and a label no column has is refused with SQLSTATE 42703.
+ * result, always — and {@code isLast} holds while the next call would pass the end. A label names the column spelled
+ * exactly as it is, as the account's driver reads one by default, until the connection's session sets
+ * {@code CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE}; from then on it names the first column whose name matches it
+ * ignoring case (see {@link ResultColumnCase}). A label no column has is refused with SQLSTATE 42703: {@code Column
+ * not found: x} (live-verified).
  * A closed result set refuses every read with {@code Result set has been closed.}, while {@code next} answers false.
  */
 public abstract class AbstractFrostlakeResultSet implements ResultSet {
@@ -76,6 +79,8 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     private int cursor = -1;
     // How many rows next() has reached.
     private int reached;
+    // The most rows the cursor reaches, the statement's setMaxRows when the result was made; 0 for every row.
+    private final int rowLimit;
 
     /**
      * A result set the statement produced.
@@ -84,6 +89,25 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
      */
     protected AbstractFrostlakeResultSet(final Statement statement) {
         this.statement = statement;
+        this.rowLimit = maxRowsOf(statement);
+    }
+
+    /** The statement's setMaxRows, which bounds the rows its result hands out (live-verified); 0 when unset. */
+    private static int maxRowsOf(final Statement statement) {
+        if (statement == null) {
+            return 0;
+        }
+        try {
+            return statement.getMaxRows();
+        } catch (final SQLException closed) {
+            return 0;
+        }
+    }
+
+    /** The rows the cursor reaches: every row, or the first {@link #rowLimit} of them. */
+    private int rows() {
+        final int all = rowCount();
+        return rowLimit > 0 && rowLimit < all ? rowLimit : all;
     }
 
     // ---------------------------------------------------------------- what a transport supplies
@@ -184,7 +208,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
      * @return the current row, or 0 when the cursor is on none
      */
     protected final int currentRow() {
-        return cursor >= 0 && cursor < rowCount() ? cursor + 1 : 0;
+        return cursor >= 0 && cursor < rows() ? cursor + 1 : 0;
     }
 
     /** Refuses every call on a closed result set, as the account's driver refuses it. */
@@ -204,7 +228,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
      */
     protected final Object read(final int column) throws SQLException {
         checkClosed();
-        if (column < 1 || column > columnCount() || cursor < 0 || cursor >= rowCount()) {
+        if (column < 1 || column > columnCount() || cursor < 0 || cursor >= rows()) {
             throw new SQLException("Invalid column index: " + column, NO_SUCH_COLUMN_STATE, NO_SUCH_COLUMN_CODE);
         }
         final Object value = cell(cursor + 1, column);
@@ -428,9 +452,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         return cell == null ? null : object(columnIndex, cell);
     }
 
+    /** The account's driver reads no cell through a type map (live-verified), so neither does this one. */
     @Override
     public Object getObject(final int columnIndex, final Map<String, Class<?>> map) throws SQLException {
-        return getObject(columnIndex);
+        throw new SQLFeatureNotSupportedException();
     }
 
     @Override
@@ -443,9 +468,14 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         return TypedObjectReads.getObject(this, columnIndex, type);
     }
 
+    /**
+     * The account's driver reads no cell as a {@link java.sql.Array} — a semi-structured ARRAY, a structured
+     * {@code ARRAY(NUMBER)} and a NULL alike, over JSON and Arrow results (live-verified) — so neither does this one:
+     * an ARRAY reads as its JSON text through getString and getObject.
+     */
     @Override
     public Array getArray(final int columnIndex) throws SQLException {
-        return EngineArray.from(read(columnIndex));
+        throw new SQLFeatureNotSupportedException();
     }
 
     @Override
@@ -459,12 +489,27 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     public int findColumn(final String columnLabel) throws SQLException {
         checkClosed();
         final int count = columnCount();
+        final boolean ignoreCase = labelsIgnoreCase();
         for (int i = 1; i <= count; i++) {
-            if (columnLabel != null && columnLabel.equalsIgnoreCase(columnLabel(i))) {
+            final String name = columnLabel(i);
+            if (columnLabel != null && (ignoreCase ? columnLabel.equalsIgnoreCase(name) : columnLabel.equals(name))) {
                 return i;
             }
         }
         throw new SQLException("Column not found: " + columnLabel, UNDEFINED_COLUMN);
+    }
+
+    /** Whether the connection this result set came from matches a label ignoring case (see ResultColumnCase). */
+    private boolean labelsIgnoreCase() {
+        if (statement == null) {
+            return false;
+        }
+        try {
+            final Connection connection = statement.getConnection();
+            return connection instanceof ResultColumnCase && ((ResultColumnCase) connection).labelsIgnoreCase();
+        } catch (final SQLException noConnection) {
+            return false;
+        }
     }
 
     @Override
@@ -559,7 +604,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
 
     @Override
     public Object getObject(final String columnLabel, final Map<String, Class<?>> map) throws SQLException {
-        return getObject(findColumn(columnLabel));
+        throw new SQLFeatureNotSupportedException();
     }
 
     @Override
@@ -585,10 +630,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (closed) {
             return false;
         }
-        if (cursor < rowCount()) {
+        if (cursor < rows()) {
             cursor++;
         }
-        if (cursor < rowCount()) {
+        if (cursor < rows()) {
             reached++;
             enteredRow(cursor + 1);
             return true;
@@ -611,7 +656,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     @Override
     public boolean isAfterLast() throws SQLException {
         checkClosed();
-        return cursor >= rowCount();
+        return cursor >= rows();
     }
 
     @Override
@@ -623,7 +668,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     @Override
     public boolean isLast() throws SQLException {
         checkClosed();
-        return cursor + 1 == rowCount();
+        return cursor + 1 == rows();
     }
 
     @Override

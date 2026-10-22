@@ -347,9 +347,20 @@ public final class StatementSeparation {
                 // INSERT after a select list's trailing comma is the string function's name, and the token after it
                 // is refused: SELECT 'foo', INSERT FROM t is the FROM, SELECT 1, INSERT the end of the input.
                 final Token after = nextSpoken(tokens, word.getTokenIndex());
-                return after == null || after.getType() == Token.EOF
-                    ? fault("<EOF>", EndOfInput.line(sql), EndOfInput.position(sql), null).between(i + 1)
-                    : fault(after.getText(), after.getLine(), after.getCharPositionInLine(), null).between(i + 1);
+                if (after == null || after.getType() == Token.EOF) {
+                    return fault("<EOF>", EndOfInput.line(sql), EndOfInput.position(sql), null).between(i + 1);
+                }
+                // INTO and a name read as the call's argument and its alias: a VALUES after them is refused too, SELECT
+                // 'foo', INSERT INTO t VALUES (1) is 'INTO' and 'VALUES' (live-verified).
+                final Token target =
+                    after.getType() == FrostlakeLexer.INTO ? nextSpoken(tokens, after.getTokenIndex()) : null;
+                final Token values = target == null || target.getType() == Token.EOF ? null
+                    : nextSpoken(tokens, target.getTokenIndex());
+                final boolean named = target != null && FrostlakeParser._ATN.nextTokens(
+                    FrostlakeParser._ATN.ruleToStartState[FrostlakeParser.RULE_identifier]).contains(target.getType());
+                final String second = named && values != null && values.getType() == FrostlakeLexer.VALUES
+                    ? SyntaxErrorListener.sentence(values) : null;
+                return fault(after.getText(), after.getLine(), after.getCharPositionInLine(), second).between(i + 1);
             }
             if (word.getType() == FrostlakeLexer.LPAREN && endsInSignableName(chain)) {
                 // The '(' opens the name's signature, which no statement's first token can open.

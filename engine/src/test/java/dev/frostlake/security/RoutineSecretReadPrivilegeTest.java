@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * A routine's SECRETS clause binds a secret only for a role that may read it: READ or OWNERSHIP on the secret, and
  * USAGE on its database and schema (documented, CREATE FUNCTION's access control table). A routine that names a
- * secret hands its value to the handler, so binding any secret read it (FL-432). A secret the role may not read is
+ * secret hands its value to the handler, so binding any secret read it. A secret the role may not read is
  * refused as one that is not there. Engine only: the live account allows no CREATE ROLE or GRANT.
  */
 public class RoutineSecretReadPrivilegeTest {

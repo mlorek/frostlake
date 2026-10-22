@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.util.Locale;
 
 /**
  * A day-time interval, the value of an {@code INTERVAL DAY(9) TO SECOND(9)}: a signed count of seconds
@@ -155,7 +156,7 @@ public class DayTimeInterval implements Comparable<DayTimeInterval>, Serializabl
         final String fraction = magnitude.subtract(new BigDecimal(whole)).movePointRight(SCALE)
             .setScale(0, RoundingMode.UNNECESSARY).toPlainString();
         return (seconds.signum() < 0 ? "-" : "+") + dayParts[0] + " "
-            + String.format("%02d:%02d:%02d.", rest / SECONDS_PER_HOUR,
+            + String.format(Locale.ROOT, "%02d:%02d:%02d.", rest / SECONDS_PER_HOUR,
                 rest % SECONDS_PER_HOUR / SECONDS_PER_MINUTE, rest % SECONDS_PER_MINUTE)
             + "000000000".substring(fraction.length()) + fraction;
     }

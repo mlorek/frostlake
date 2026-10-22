@@ -20,15 +20,17 @@ import dev.frostlake.query.MeasuredCellsTestSupport;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /**
  * What a routine does to the objects it raises or the modules it imports reaches no value the Python runtime itself
  * reads or writes, and both backends answer alike. An exception whose {@code str()} fails fails only its statement,
  * as {@code E: <exception str() failed>}, and under a procedure's {@code session.sql} only that query, which the
- * procedure catches as it would any refusal (#2388); the cpython worker's reply to it once ended the worker, or under
+ * procedure catches as it would any refusal; the cpython worker's reply to it once ended the worker, or under
  * a procedure left the CALL waiting for the 60-second watchdog. A routine that replaces {@code json.dumps},
  * {@code json.loads}, the json module's encoder and decoder or {@code decimal.Decimal} answers as it would without
  * them, and the arguments the routines it calls receive are untouched: the runtime reads and writes them through
- * references of its own, bound before any routine ran (#2389).
+ * references of its own, bound before any routine ran.
  */
 public class PythonRuntimeIntegrityTest extends MeasuredCellsTestSupport {
 
@@ -49,6 +51,13 @@ public class PythonRuntimeIntegrityTest extends MeasuredCellsTestSupport {
             + "    try:\n        session.sql('SELECT bad()').collect()\n        out.append('no error')\n"
             + "    except BaseException as e:\n        out.append('caught ' + type(e).__name__)\n"
             + "    out.append(str(session.sql('SELECT ok()').collect()))\n    return ' '.join(out)\n$$");
+        if (isLiveSnowflake()) {
+            // The account answers SELECT bad() with an internal error and an incident number, a defect of its own,
+            // recorded and not imitated: both sides refuse the call and go on.
+            assertTrue(answer("SELECT bad()").startsWith("REFUSED "));
+            assertAnswer("7", "SELECT ok()");
+            return;
+        }
         assertCells(new String[][] {
             {"SELECT bad()", "REFUSED Error executing Python function BAD: E: <exception str() failed>"},
             {"SELECT nameless()", "REFUSED Error executing Python function NAMELESS: E: <exception str() failed>"},
@@ -76,7 +85,11 @@ public class PythonRuntimeIntegrityTest extends MeasuredCellsTestSupport {
             {"SELECT patch() || patch()", "okok"},
             {"SELECT args(PARSE_JSON('{\"x\":[1,2]}'), 1.50) || ' / ' || args(PARSE_JSON('[3]'), 2.25)",
                 "{'x': [1, 2]} Decimal('1.50') / [3] Decimal('2.25')"},
-            {"CALL calls_args()", "{'a': 1} Decimal('1.25')"},
         });
+        // On the account Snowpark's own connector reads the query's reply with the replaced json.loads, so the CALL
+        // fails inside the procedure's sandbox; the runtime here reads it through references of its own.
+        if (!isLiveSnowflake()) {
+            assertAnswer("{'a': 1} Decimal('1.25')", "CALL calls_args()");
+        }
     }
 }

@@ -35,6 +35,7 @@ import org.antlr.v4.runtime.Token;
  *   COUNT(x => DISTINCT n)             'DISTINCT' alone, whatever stands before the ')'
  *   COUNT(x => DISTINCT n, 1)          'DISTINCT' then the ')': the comma is not named
  *   COUNT(x => DISTINCT n, y => 1)     'DISTINCT' then the '=>'
+ *   COUNT(x => t.*)                    '*' then the '.' before it, and nothing more
  * </pre>
  *
  * <p>The call is given up at the token — a comma right after a star is named with it — and the list around it is
@@ -71,6 +72,12 @@ final class NamedStarLines {
             if (spoken.get(i).getTokenIndex() == faultIndex) {
                 at = i;
             }
+        }
+        if (isQualifiedStarValue(spoken, at)) {
+            final List<String> lines = new ArrayList<String>();
+            lines.add(SyntaxErrorListener.sentence(spoken.get(at)));
+            lines.add(SyntaxErrorListener.sentence(spoken.get(at - 1)));
+            return lines;
         }
         if (at < 3 || !isRefusedValue(spoken.get(at).getType())
                 || spoken.get(at - 1).getType() != FrostlakeLexer.ARROW
@@ -132,6 +139,29 @@ final class NamedStarLines {
                 spoken.get(close).getStartIndex(), ""), fault));
         }
         return lines;
+    }
+
+    /**
+     * Whether the token at {@code at} is a relation's star written as a named argument's value, {@code x => t.*}, in a
+     * call's parentheses and in no query in parentheses.
+     */
+    private static boolean isQualifiedStarValue(final List<Token> spoken, final int at) {
+        if (at < 5 || spoken.get(at).getType() != FrostlakeLexer.STAR
+                || spoken.get(at - 1).getType() != FrostlakeLexer.DOT || !CallTokenGroups.isCallName(spoken.get(at - 2))
+                || spoken.get(at - 3).getType() != FrostlakeLexer.ARROW
+                || !CallTokenGroups.isCallName(spoken.get(at - 4))) {
+            return false;
+        }
+        final List<Integer> open = CallTokenGroups.openAt(spoken, at);
+        if (open.isEmpty() || CallTokenGroups.callNameStart(spoken, open.get(open.size() - 1).intValue()) < 0) {
+            return false;
+        }
+        for (final Integer group : open) {
+            if (CallTokenGroups.holdsQuery(spoken, group.intValue())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean isRefusedValue(final int type) {

@@ -228,7 +228,11 @@ final class ScriptingUdfBodyValidator {
             final FrostlakeParser.StatementContext stmt = (FrostlakeParser.StatementContext) node;
             if (stmt.proceduralStatement() == null) {
                 // Any non-procedural statement — DML, DDL, a bare query, SHOW … — is where a side effect
-                // would come from, and Snowflake refuses each by the name of its kind.
+                // would come from, and Snowflake refuses each by the name of its kind; a template query that
+                // reads no table function is refused for that first.
+                if (stmt.ddlStatement() != null && stmt.ddlStatement().createStatement() != null) {
+                    CreateTableHandler.requireTemplateTableFunction(stmt.ddlStatement().createStatement());
+                }
                 throw unsupportedStatement(SnowscriptStatementKind.of(stmt));
             }
         }

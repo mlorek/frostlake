@@ -130,7 +130,7 @@ public final class WholeNumbers {
             final double approximate = ((Number) value).doubleValue();
             if (!Double.isFinite(approximate)) {
                 // A NaN or an infinity has no NUMBER value, so it is refused as the FLOAT's cast to NUMBER refuses
-                // it (live-verified for the cast), never read as a position of 0 (FL-469).
+                // it (live-verified for the cast), never read as a position of 0.
                 throw new RuntimeException(NumericRangeRefusal.typedText("SB16", 38, 0, false,
                     NumericRangeRefusal.nonFiniteWord(approximate)));
             }

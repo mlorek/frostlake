@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -76,7 +77,10 @@ public final class AccessControlListings {
         this.catalog = catalog;
     }
 
-    /** SHOW DATABASE ROLES IN DATABASE: the database's roles, by name. */
+    /**
+     * SHOW DATABASE ROLES IN DATABASE: the database's roles, by name. The SNOWFLAKE database's are inherited from the
+     * share it is, and no role type owns them (live-verified).
+     */
     public ResultSet databaseRoles(final Database database) {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
@@ -93,6 +97,7 @@ public final class AccessControlListings {
         );
         final List<Row> rows = new ArrayList<>();
         final List<DatabaseRole> roles = database == null ? new ArrayList<DatabaseRole>() : database.getDatabaseRoles();
+        final boolean shared = database != null && SystemDatabase.is(database.getName());
         for (final DatabaseRole role : roles) {
             int toRoles = 0;
             for (final Role holder : catalog.getAllRoles()) {
@@ -108,11 +113,11 @@ public final class AccessControlListings {
             }
             rows.add(new Row(Arrays.<Object>asList(
                 ShowResultHelpers.createdOn(role.getCreatedTime()),
-                role.getName(), "N", "N", "N",
+                role.getName(), "N", "N", shared ? "Y" : "N",
                 toRoles, toDatabaseRoles, role.getDatabaseRoleGrants().size(),
                 ShowResultHelpers.text(role.getOwner()),
                 ShowResultHelpers.text(role.getComment()),
-                ShowResultHelpers.OWNER_ROLE_TYPE)));
+                shared ? "" : ShowResultHelpers.OWNER_ROLE_TYPE)));
         }
         return new ResultSet(columns, sortedByName(rows, 1));
     }

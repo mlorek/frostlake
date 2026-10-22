@@ -57,6 +57,7 @@ public class DirectStatement implements Statement {
     private final List<String> batchStatements = new ArrayList<>();
     private final List<Long> generatedKeys = new ArrayList<>();
     private String lastQueryId;
+    private int maxRows;
     private boolean returnGeneratedKeys = false;
     private static long keySequence = 0;
 
@@ -319,12 +320,16 @@ public class DirectStatement implements Statement {
 
     @Override
     public int getMaxRows() throws SQLException {
-        return 0;
+        return maxRows;
     }
 
+    /** The most rows a result of this statement hands out from now on, 0 for every row (live-verified). */
     @Override
     public void setMaxRows(final int max) throws SQLException {
-        // No-op
+        if (max < 0) {
+            throw new SQLException("The maximum row count must be zero or more: " + max);
+        }
+        maxRows = max;
     }
 
     @Override

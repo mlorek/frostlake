@@ -150,6 +150,12 @@ final class CallShapeRules {
         if (!refusedQuantifier && !refusedWithinGroup && kind == null && !orderRequired) {
             return;
         }
+        if (kind != null && window.getStarCall() != null && !refusedQuantifier) {
+            // A star names no column of its own: the call is refused for its kind before it is read, HASH(*) OVER ()
+            // (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Invalid function type [" + echoedName(kind)
+                + "] for window function."));
+        }
         walkArguments(builtin, arguments, walk);
         if (refusedQuantifier) {
             // Under OVER the account plans CONDITIONAL_CHANGE_EVENT as LAG, and echoes the call by that name.

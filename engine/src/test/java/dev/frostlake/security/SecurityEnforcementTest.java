@@ -160,8 +160,9 @@ public class SecurityEnforcementTest {
 
     @Test
     public void testUpdatePermissionGranted() {
-        // Grant UPDATE permission
+        // Grant UPDATE permission, and SELECT: the statement reads the rows it changes.
         engine.execute("GRANT UPDATE ON TABLE employees TO ROLE data_writer_role");
+        engine.execute("GRANT SELECT ON TABLE employees TO ROLE data_writer_role");
 
         // Switch to writer user
         engine.setCurrentUser("writer_user");
@@ -202,8 +203,9 @@ public class SecurityEnforcementTest {
 
     @Test
     public void testDeletePermissionGranted() {
-        // Grant DELETE permission
+        // Grant DELETE permission, and SELECT: the statement reads the rows it removes.
         engine.execute("GRANT DELETE ON TABLE employees TO ROLE data_writer_role");
+        engine.execute("GRANT SELECT ON TABLE employees TO ROLE data_writer_role");
 
         // Switch to writer user
         engine.setCurrentUser("writer_user");
@@ -356,6 +358,8 @@ public class SecurityEnforcementTest {
         engine.execute("CREATE ROLE child_role");
 
         engine.execute("GRANT SELECT ON TABLE employees TO ROLE child_role");
+        engine.execute("GRANT USAGE ON DATABASE security_test_db TO ROLE child_role");
+        engine.execute("GRANT USAGE ON SCHEMA security_test_db.PUBLIC TO ROLE child_role");
         engine.execute("GRANT ROLE child_role TO ROLE parent_role");
 
         // Create user with parent role

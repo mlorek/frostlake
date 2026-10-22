@@ -16,6 +16,7 @@
 
 package dev.frostlake.system;
 
+import dev.frostlake.executor.ClockDefaultSpelling;
 import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.JsonTextList;
 import dev.frostlake.executor.ShowResultHelpers;
@@ -23,6 +24,7 @@ import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -145,6 +147,10 @@ public class SystemViews {
             col("REPLICABLE_WITH_FAILOVER_GROUPS"), col("OWNER_ROLE_TYPE")
         ));
         for (final Database db : catalog.getAllDatabases()) {
+            if (SystemDatabase.is(db.getName())) {
+                // The account's DATABASES view leaves the SNOWFLAKE database out (live-verified).
+                continue;
+            }
             result.addRow(new Row(
                 // The same fact SHOW spells as the word TRANSIENT reads YES/NO here — the two
                 // metadata surfaces disagree on spelling by design.
@@ -195,7 +201,10 @@ public class SystemViews {
                             ? Long.valueOf(db.getDataRetentionTimeInDays().longValue())
                             : DEFAULT_RETENTION_TIME,
                     null, null, null, null,
-                    schema.getCreatedTime(), schema.getLastDdlTime(), schema.getComment(),
+                    // Every database's INFORMATION_SCHEMA was made at no instant it tells (live-verified).
+                    "INFORMATION_SCHEMA".equals(schema.getName()) ? null : schema.getCreatedTime(),
+                    "INFORMATION_SCHEMA".equals(schema.getName()) ? null : schema.getLastDdlTime(),
+                    schema.getComment(),
                     "UNSET", OWNER_ROLE_TYPE
                 ));
             }
@@ -432,7 +441,8 @@ public class SystemViews {
                         continue;
                     }
                     if (matchesName(view.getName(), tableName)) {
-                        addDerivedColumnRows(result, db, schema, view.getName(), view.getResolvedColumns());
+                        addDerivedColumnRows(result, db, schema, view.getName(),
+                            InformationSchemaColumns.resolvedColumns(view, schema.getName()));
                     }
                 }
                 for (final MaterializedView view : schema.getMaterializedViews()) {
@@ -486,6 +496,12 @@ public class SystemViews {
         }
     }
 
+    /** COLUMN_DEFAULT's text: a default that reads the clock as the account prints it, any other as stored. */
+    private static String columnDefault(final Object stored) {
+        final String clock = ClockDefaultSpelling.of(stored);
+        return clock != null ? clock : stored.toString();
+    }
+
     /**
      * One COLUMNS row. {@code fromBaseTable} tells apart the columns of a real table — which carry a
      * DEFAULT, an IDENTITY and a PRIMARY KEY — from a view's, which live reports without any of the
@@ -534,7 +550,7 @@ public class SystemViews {
         return new Row(
             db.getName(), schema.getName(), relationName,
             col.getName(), position,
-            fromBaseTable && col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
+            fromBaseTable && col.getDefaultValue() != null ? columnDefault(col.getDefaultValue()) : null,
             // A view's column carries its NOT NULL here exactly as it does in DESCRIBE VIEW's null?
             // cell — live-verified, including an expression column reading YES and an outer join's
             // null-extended side losing it. This cell is NOT one of the three the fromBaseTable flag
@@ -556,7 +572,9 @@ public class SystemViews {
             identity ? YES_NO_FALSE : null,
             // An identity declared ORDER hands its numbers out in order; NOORDER is the default (live-verified).
             identity ? yesNo(col.isIdentityOrdered()) : null,
-            null, dataType.getName(), fromBaseTable ? col.getComment() : null,
+            // INFORMATION_SCHEMA's own views carry the account's description of each column (live-verified).
+            null, dataType.getName(), fromBaseTable || "INFORMATION_SCHEMA".equals(schema.getName())
+                ? col.getComment() : null,
             null, null
         );
     }

@@ -137,6 +137,9 @@ class HttpClient {
     private volatile int heartbeatSecondsProperty = MAX_HEARTBEAT_SECONDS;
     private volatile Boolean sessionKeepAlive;
     private volatile Integer sessionHeartbeatSeconds;
+    // Whether a column label is matched ignoring case: once an answer says the session set
+    // CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, for the rest of the connection (see ResultColumnCase).
+    private volatile boolean labelsIgnoreCase;
     // Where the session stood after the last answer that said, or null before one has (or from a server that
     // predates the report).
     private volatile SessionNamespace namespace;
@@ -410,6 +413,9 @@ class HttpClient {
                 }
                 this.sessionId = response.getSessionId();
                 followKeepAlive(response);
+                if (Boolean.TRUE.equals(response.getClientResultColumnCaseInsensitive())) {
+                    labelsIgnoreCase = true;
+                }
             }
             if (response.getNamespace() != null) {
                 namespace = response.getNamespace();
@@ -569,6 +575,13 @@ class HttpClient {
         this.keepAliveProperty = enabled;
         this.heartbeatSecondsProperty = seconds != null ? seconds : MAX_HEARTBEAT_SECONDS;
         rescheduleHeartbeat();
+    }
+
+    /**
+     * @return whether the connection's result sets match a column label ignoring case (see ResultColumnCase)
+     */
+    boolean labelsIgnoreCase() {
+        return labelsIgnoreCase;
     }
 
     /** Follows what the answer says the session keeps itself alive by, as an ALTER SESSION may have changed it. */

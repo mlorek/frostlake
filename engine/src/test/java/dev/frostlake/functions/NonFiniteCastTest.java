@@ -111,8 +111,9 @@ public class NonFiniteCastTest extends BaseDatabaseTest {
 
     /**
      * TO_NUMBER, TO_DECIMAL and TO_NUMERIC are the conversion the cast performs (documented), so a non-finite source
-     * is refused in the cast's own words, the FLOAT's and the VARIANT's alike, whatever width the call names (FL-482):
-     * a NumberFormatException with BigDecimal's text is no refusal of the engine's.
+     * is refused in the cast's own words, the FLOAT's and the VARIANT's alike, the FLOAT's naming the width the call
+     * declares as the cast's names its target's (live-verified): a NumberFormatException with BigDecimal's text is no
+     * refusal of the engine's.
      */
     @Test
     public void toNumberRefusesANonFiniteAsTheCastDoes() {
@@ -120,10 +121,12 @@ public class NonFiniteCastTest extends BaseDatabaseTest {
         assertEquals(fixed + "nan", answer("SELECT TO_NUMBER('NaN'::FLOAT) x"));
         assertEquals(fixed + "inf", answer("SELECT TO_NUMBER('inf'::FLOAT) x"));
         assertEquals(fixed + "-inf", answer("SELECT TO_NUMBER('-inf'::FLOAT) x"));
-        assertEquals(fixed + "nan", answer("SELECT TO_DECIMAL('NaN'::FLOAT, 10, 2) x"),
-            "the declared width is not echoed, as the cast's is not");
-        assertEquals(fixed + "-inf", answer("SELECT TO_NUMERIC('-inf'::FLOAT, 10) x"));
-        assertEquals(fixed + "inf", answer("SELECT CAST('inf'::FLOAT AS NUMBER(10,2)) x"),
+        final String declared = "Number out of representable range: type FIXED[SB8](10,2){not null}, value ";
+        assertEquals(declared + "nan", answer("SELECT TO_DECIMAL('NaN'::FLOAT, 10, 2) x"),
+            "the declared width is echoed, as the cast's target is");
+        assertEquals("Number out of representable range: type FIXED[SB8](10,0){not null}, value -inf",
+            answer("SELECT TO_NUMERIC('-inf'::FLOAT, 10) x"));
+        assertEquals(declared + "inf", answer("SELECT CAST('inf'::FLOAT AS NUMBER(10,2)) x"),
             "the cast it mirrors");
         assertEquals("Number out of representable range: type FIXED, value NaN",
             answer("SELECT TO_NUMBER(PARSE_JSON('NaN'))"), "a VARIANT source keeps the VARIANT's sentence");

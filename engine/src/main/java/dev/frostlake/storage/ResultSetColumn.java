@@ -361,4 +361,15 @@ public class ResultSetColumn {
     public boolean isNullabilityKnown() {
         return nullabilityKnown;
     }
+
+    /**
+     * Whether a value of this column can be NULL as a write judges it: the projection's own judgement of its item
+     * where it made one, else a carried-out column's NOT NULL; a column nothing judged counts as never NULL. A number
+     * too wide for the column it is written to prints its type {@code {nullable}} when this answers true.
+     *
+     * @return whether a value can be NULL
+     */
+    public boolean canBeNull() {
+        return derivedNullable != null ? derivedNullable.booleanValue() : nullabilityKnown && nullable;
+    }
 }

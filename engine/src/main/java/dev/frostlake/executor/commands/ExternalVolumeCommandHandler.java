@@ -288,11 +288,11 @@ public final class ExternalVolumeCommandHandler {
 
     /**
      * A location as DESCRIBE shows it: NAME, STORAGE_PROVIDER, STORAGE_BASE_URL, the STORAGE_ALLOWED_LOCATIONS the
-     * base URL opens, the provider's own properties, and — but for Azure — the encryption flattened to
-     * ENCRYPTION_TYPE and ENCRYPTION_KMS_KEY_ID. A role the location assumes is followed by the IAM user the
-     * account assumes it as and by the external ID, the one written or else the one generated, and a Google Cloud
-     * location names the service account that reads it (live-verified).
-     * Credentials never show.
+     * base URL opens, the provider's own properties, and the encryption flattened to ENCRYPTION_TYPE and
+     * ENCRYPTION_KMS_KEY_ID. A role the location assumes is followed by the IAM user the account assumes it as and by
+     * the external ID, the one written or else the one generated, an Azure tenant by the application it consents to
+     * and the URL it consents at, and a Google Cloud location names the service account that reads it
+     * (live-verified). Credentials never show.
      */
     private static String locationJson(final Map<String, PropertyValue> location, final String generatedId) {
         final Map<String, PropertyValue> shown = new LinkedHashMap<>();
@@ -316,16 +316,19 @@ public final class ExternalVolumeCommandHandler {
                 shown.put("STORAGE_AWS_IAM_USER_ARN", PropertyValue.text(GeneratedCloudIdentity.USER_ARN));
                 shown.put("STORAGE_AWS_EXTERNAL_ID", written != null ? written : PropertyValue.text(generatedId));
             }
+            if ("AZURE_TENANT_ID".equals(entry.getKey())) {
+                shown.put("AZURE_MULTI_TENANT_APP_NAME", PropertyValue.text(GeneratedCloudIdentity.APPLICATION_NAME));
+                shown.put("AZURE_CONSENT_URL",
+                    PropertyValue.text(GeneratedCloudIdentity.consentUrl(entry.getValue().getText())));
+            }
         }
-        if (!"AZURE".equals(location.get("STORAGE_PROVIDER").getText())) {
-            final PropertyValue encryption = location.get("ENCRYPTION");
-            final PropertyValue type = encryption == null ? null : encryption.entry("TYPE");
-            final PropertyValue key = encryption == null ? null : encryption.entry("KMS_KEY_ID");
-            shown.put("ENCRYPTION_TYPE", PropertyValue.text(type == null || type.getText() == null ? "NONE"
-                : type.getText().toUpperCase(Locale.ROOT)));
-            shown.put("ENCRYPTION_KMS_KEY_ID", PropertyValue.text(key == null || key.getText() == null ? ""
-                : key.getText()));
-        }
+        final PropertyValue encryption = location.get("ENCRYPTION");
+        final PropertyValue type = encryption == null ? null : encryption.entry("TYPE");
+        final PropertyValue key = encryption == null ? null : encryption.entry("KMS_KEY_ID");
+        shown.put("ENCRYPTION_TYPE", PropertyValue.text(type == null || type.getText() == null ? "NONE"
+            : type.getText().toUpperCase(Locale.ROOT)));
+        shown.put("ENCRYPTION_KMS_KEY_ID", PropertyValue.text(key == null || key.getText() == null ? ""
+            : key.getText()));
         return PropertyValue.properties(shown).json();
     }
 }

@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.DefaultMarkerExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.operators.MemoizedRows;
 import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Privilege;
@@ -84,6 +85,35 @@ final class MergeExecutor {
             }
         };
 
+    /**
+     * Whether a value a MERGE writes can be NULL, judged over the source relation as a select item is (see
+     * {@link ResultNullability}): a number too wide for a NOT NULL column prints its type {@code {nullable}} when it
+     * comes from a nullable source column, through an INSERT clause and an UPDATE alike (live-verified, as for INSERT;
+     * see {@link QueryExecutor#enforceColumnConstraintsForDml}). A scalar subquery counts as never NULL, as UPDATE's.
+     */
+    private static boolean mergeValueNullable(final Expression value, final Table sourceTable,
+                                              final String sourceAlias) {
+        if (value instanceof DefaultMarkerExpression || value instanceof SubqueryExpression || sourceTable == null) {
+            return false;
+        }
+        final Map<String, Table> aliases = new HashMap<>();
+        aliases.put(sourceAlias != null ? sourceAlias : sourceTable.getName(), sourceTable);
+        return new ResultNullability(sourceTable, aliases).of(value);
+    }
+
+    /** The target columns an INSERT clause writes from a value that can be NULL, one flag each; null when none. */
+    private static boolean[] mergeNullableSources(final Table targetTable, final List<String> columnNames,
+                                                  final List<Boolean> nullableValues) {
+        boolean[] nullable = null;
+        for (int i = 0; i < columnNames.size() && i < nullableValues.size(); i++) {
+            if (nullableValues.get(i).booleanValue() && targetTable.hasColumn(columnNames.get(i))) {
+                nullable = nullable != null ? nullable : new boolean[targetTable.getColumns().size()];
+                nullable[targetTable.getColumnIndex(columnNames.get(i))] = true;
+            }
+        }
+        return nullable;
+    }
+
     private MergeRowShape shapeFor(final Table targetTable, final Table sourceTable,
                                    final String targetAlias, final String sourceAlias,
                                    final boolean valueMode, final boolean unqualifiedFromSource) {
@@ -110,7 +140,8 @@ final class MergeExecutor {
         try {
             // Deferred-apply: ensure a transaction exists to buffer MERGE's writes into (autocommit then
             // applies it at statement end). The immediate path is unaffected.
-            if (executor.isDeferredApply() && !executor.getTransactionManager().hasActiveTransaction()) {
+            if (executor.isDeferredApply() && !executor.getTransactionManager().hasActiveTransaction()
+                    && !ExplainPlan.planning()) {
                 executor.getTransactionManager().beginTransaction();
             }
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
@@ -219,7 +250,10 @@ final class MergeExecutor {
                 // Create a table structure from the planned shape's columns
                 final List<TableColumn> sourceColumns = new ArrayList<>();
                 for (final ResultSetColumn rsCol : subquery.shape.getColumns()) {
-                    final TableColumn col = new TableColumn(rsCol.getName(), rsCol.getDataType(), true, null, false, false, false);
+                    // A column the subquery cannot make NULL is NOT NULL here, as a write from it prints it:
+                    // USING (SELECT 12345 v) s writes s.v as {not null} (live-verified).
+                    final TableColumn col = new TableColumn(rsCol.getName(), rsCol.getDataType(), rsCol.canBeNull(),
+                        null, false, false, false);
                     // A branch value read through the source alias types like any other column, and so
                     // meets the compile-time match against the target's column — but only where the
                     // shape KNOWS the type. A projected bare NULL has none, and an untyped NULL is
@@ -251,6 +285,36 @@ final class MergeExecutor {
             // The statement compiles once, before any row is read (see MergeCompilation).
             final RuntimeException subqueryRefusal = new MergeCompilation(executor).compile(ctx, targetTable,
                 targetAlias, sourceTable, sourceAlias, !(mergeSource instanceof FrostlakeParser.MergeSourceValuesContext));
+            // Track which source rows matched
+            final Set<Integer> matchedSourceIndices = new HashSet<>();
+            // Collect merge clauses (can have multiple WHEN MATCHED clauses with different conditions)
+            final List<FrostlakeParser.MergeClauseContext> matchedClauses = new ArrayList<>();
+            final List<FrostlakeParser.MergeClauseContext> notMatchedClauses = new ArrayList<>();
+            for (final FrostlakeParser.MergeClauseContext clause : ctx.mergeClause()) {
+                if (clause.MATCHED() != null && clause.NOT() == null) {
+                    matchedClauses.add(clause);
+                } else if (clause.NOT() != null && clause.MATCHED() != null) {
+                    notMatchedClauses.add(clause);
+                }
+            }
+            // Every value a branch writes is type-matched against its column before any row is read, as an
+            // INSERT's is: WHEN MATCHED THEN UPDATE SET n = (1 = 1) is refused even when nothing matches.
+            // A DECFLOAT value a branch writes into a VARIANT or a text column is held in the column's own form of it
+            // (see DecfloatWrites); each such value is kept with its column's type.
+            final Map<ParserRuleContext, DataType> decfloatValues = new HashMap<>();
+            final Set<ParserRuleContext> jsonValues = rejectMistypedBranchValues(targetTable, targetAlias,
+                sourceTable, sourceAlias, matchedClauses, notMatchedClauses, decfloatValues);
+            // ... and judged by a projection policy as a projection is: UPDATE SET x = s.p and INSERT VALUES (s.p)
+            // write the value into the target. The ON condition only uses the column.
+            rejectRestrictedBranchValues(targetTable, targetAlias, sourceTable, sourceAlias, matchedClauses,
+                notMatchedClauses);
+            if (subqueryRefusal != null) {
+                throw subqueryRefusal;
+            }
+            // An EXPLAIN compiles the statement and reads no row (see ExplainPlan).
+            if (ExplainPlan.planning()) {
+                return null;
+            }
             // Get ON condition (preserve whitespace for proper AND/OR parsing)
             final String onCondition = executor.getOriginalText(ctx.booleanExpr());
             // Get target table rows - use fully qualified name
@@ -308,32 +372,6 @@ final class MergeExecutor {
             }
             final List<Long> mergeTargetRowIds = targetRowIds;
             final List<Integer> mergeTargetPendingIdx = targetPendingIdx;
-            // Track which source rows matched
-            final Set<Integer> matchedSourceIndices = new HashSet<>();
-            // Collect merge clauses (can have multiple WHEN MATCHED clauses with different conditions)
-            final List<FrostlakeParser.MergeClauseContext> matchedClauses = new ArrayList<>();
-            final List<FrostlakeParser.MergeClauseContext> notMatchedClauses = new ArrayList<>();
-            for (final FrostlakeParser.MergeClauseContext clause : ctx.mergeClause()) {
-                if (clause.MATCHED() != null && clause.NOT() == null) {
-                    matchedClauses.add(clause);
-                } else if (clause.NOT() != null && clause.MATCHED() != null) {
-                    notMatchedClauses.add(clause);
-                }
-            }
-            // Every value a branch writes is type-matched against its column before any row is read, as an
-            // INSERT's is: WHEN MATCHED THEN UPDATE SET n = (1 = 1) is refused even when nothing matches.
-            // A DECFLOAT value a branch writes into a VARIANT or a text column is held in the column's own form of it
-            // (see DecfloatWrites); each such value is kept with its column's type.
-            final Map<ParserRuleContext, DataType> decfloatValues = new HashMap<>();
-            final Set<ParserRuleContext> jsonValues = rejectMistypedBranchValues(targetTable, targetAlias,
-                sourceTable, sourceAlias, matchedClauses, notMatchedClauses, decfloatValues);
-            // ... and judged by a projection policy as a projection is: UPDATE SET x = s.p and INSERT VALUES (s.p) write
-            // the value into the target. The ON condition only uses the column.
-            rejectRestrictedBranchValues(targetTable, targetAlias, sourceTable, sourceAlias, matchedClauses,
-                notMatchedClauses);
-            if (subqueryRefusal != null) {
-                throw subqueryRefusal;
-            }
             // The plan over the target's rows; the source is the relation every stage reads beside them.
             final SelectPlan plan = new SelectPlan(executor, executor.getFunctionRegistry());
             plan.source(targetRows, "TARGET[" + targetTableName + "]");
@@ -433,6 +471,8 @@ final class MergeExecutor {
                                             // and the row is written once (live-verified).
                                             final List<Object> newValues = new ArrayList<>(targetRow.getValues());
                                             final List<Integer> writtenColumns = new ArrayList<>();
+                                            final boolean[] nullableWritten =
+                                                new boolean[targetTable.getColumns().size()];
                                             for (final FrostlakeParser.AssignmentContext assign
                                                     : matchedClause.assignmentList().assignment()) {
                                                 // Handle qualified identifiers (table.column) or simple identifiers
@@ -456,12 +496,15 @@ final class MergeExecutor {
                                                         decfloatValues.get(assign.expression()))
                                                     : newValue);
                                                 writtenColumns.add(Integer.valueOf(colIndex));
+                                                nullableWritten[colIndex] = mergeValueNullable(
+                                                    ExpressionEvaluator.parse(valueExpr), mergeSourceTable,
+                                                    mergeSourceAlias);
                                             }
                                             final Row updatedRow = new Row(newValues);
                                             executor.enforceColumnConstraintsForDml(targetTable, updatedRow, false,
                                                 targetTableName, null, JsonTextWrites.keptAsWritten(targetTable,
                                                     jsonColumns(targetTable, matchedClause.assignmentList()
-                                                        .assignment(), jsonValues), writtenColumns));
+                                                        .assignment(), jsonValues), writtenColumns), nullableWritten);
                                             changed.add(targetRow);
                                             images.add(updatedRow);
                                             changedAt.add(targetPositions.take(targetRow));
@@ -569,6 +612,8 @@ final class MergeExecutor {
                             if (notMatchedClause.INSERT() != null) {
                                 List<Object> values = new ArrayList<>();
                                 final Set<String> jsonInserted = new HashSet<>();
+                                // Which listed values can be NULL, which a range refusal prints (see below).
+                                final List<Boolean> nullableValues = new ArrayList<>();
                                 if (notMatchedClause.valueTuple() != null) {
                                     final Row emptyTargetRow = new Row(new ArrayList<>());
                                     final List<FrostlakeParser.BooleanExprContext> valueExprs =
@@ -578,6 +623,8 @@ final class MergeExecutor {
                                         // column below, the same way INSERT … VALUES does it.
                                         final String valueText = executor.getOriginalText(valueExprs.get(v));
                                         final Expression parsedValue = ExpressionEvaluator.parse(valueText);
+                                        nullableValues.add(mergeValueNullable(parsedValue, mergeSourceTable,
+                                            mergeSourceAlias));
                                         try {
                                             final Object computed = parsedValue instanceof DefaultMarkerExpression
                                                 ? parsedValue
@@ -657,7 +704,7 @@ final class MergeExecutor {
                                     }
                                 }
                                 executor.enforceColumnConstraintsForDml(targetTable, newRow, false, targetTableName,
-                                    null, jsonRead);
+                                    null, jsonRead, mergeNullableSources(targetTable, columnNames, nullableValues));
                                 guards.refuseOrphanRow(targetTable, fullyQualifiedTargetName, newRow);
                                 requireUnlockedOnce(lockChecked, fullyQualifiedTargetName, targetTable);
                                 if (executor.isDeferredApply()) {

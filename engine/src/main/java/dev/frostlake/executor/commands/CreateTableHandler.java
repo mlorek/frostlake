@@ -574,10 +574,14 @@ public class CreateTableHandler implements CommandHandler {
                 final String envelopeName = ((parts.length == 3
                         ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
                     + databaseName + "." + schema.getName() + "." + tableName).toUpperCase(Locale.ROOT);
+                final boolean[] nullableSources = new boolean[resultSet.getColumns().size()];
+                for (int i = 0; i < nullableSources.length; i++) {
+                    nullableSources[i] = resultSet.getColumns().get(i).canBeNull();
+                }
                 for (final Row resultRow : resultSet.getRows()) {
                     final Row typedRow = new Row(new ArrayList<>(resultRow.getValues()));
                     if (ctx.columnList() != null) {
-                        queryExecutor.writeCtasRow(table, typedRow, envelopeName);
+                        queryExecutor.writeCtasRow(table, typedRow, envelopeName, nullableSources);
                     } else {
                         queryExecutor.coerceRowTypesLenient(table, typedRow);
                     }
@@ -1202,10 +1206,8 @@ public class CreateTableHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
                 + shown[1] + " unexpected '" + first.getText() + "'."));
         }
+        requireTemplateTableFunction(ctx);
         final FrostlakeParser.TableSourceContext source = firstSource(query);
-        if (source == null || !isTableFunction(source)) {
-            throw new RuntimeException("Unsupported feature 'Table function must be used in the TEMPLATE sub-query'.");
-        }
         if (!readsInferSchema(source)) {
             throw new RuntimeException(
                 "Unsupported feature 'INFER_SCHEMA function must be used in the TEMPLATE sub-query'.");
@@ -1274,6 +1276,25 @@ public class CreateTableHandler implements CommandHandler {
     }
 
     /** The query a parenthesized statement holds — one operand in parentheses and nothing beside it — or null. */
+    /**
+     * Refuses a bracketed template query that reads no table function — before anything else of the statement is
+     * judged, the kind of statement a SQL function's block body refuses included (live-verified: {@code BEGIN CREATE
+     * TABLE z USING TEMPLATE (SELECT 1); …} is refused for the template, not as a CREATE_TABLE). A query that is no
+     * bracketed SELECT is left to the statement's own reading.
+     *
+     * @param ctx the CREATE … USING TEMPLATE statement
+     */
+    static void requireTemplateTableFunction(final FrostlakeParser.CreateStatementContext ctx) {
+        final FrostlakeParser.SelectStatementContext query = ctx.selectStatement();
+        if (ctx.TEMPLATE() == null || query == null || parenthesized(query) == null) {
+            return;
+        }
+        final FrostlakeParser.TableSourceContext source = firstSource(query);
+        if (source == null || !isTableFunction(source)) {
+            throw new RuntimeException("Unsupported feature 'Table function must be used in the TEMPLATE sub-query'.");
+        }
+    }
+
     private static FrostlakeParser.SelectStatementContext parenthesized(
             final FrostlakeParser.SelectStatementContext statement) {
         if (statement.withClause() != null || statement.selectOperand().size() != 1

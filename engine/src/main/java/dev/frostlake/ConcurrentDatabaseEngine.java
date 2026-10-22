@@ -17,6 +17,7 @@
 package dev.frostlake;
 
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.executor.ReadOnlyBodies;
 import dev.frostlake.executor.ReadOnlyRequest;
 import dev.frostlake.executor.RequestSessionAborts;
 import dev.frostlake.functions.scalar.file.NamedStage;
@@ -28,11 +29,13 @@ import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.transaction.EngineLockRelease;
 import dev.frostlake.transaction.TableLockGate;
+import dev.frostlake.transaction.Transaction;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -119,6 +122,12 @@ public class ConcurrentDatabaseEngine {
         } finally {
             // A session this request aborted — its own included — ends now that the request holds no lock.
             engine.getSessionDirectory().endAborted();
+            if (session.getSettings().isAborted()) {
+                // The request of a session another one aborted is answered once the session has ended: its
+                // transaction rolled back and its locks released, as live answers it. Another request may be ending
+                // the session as this one returns; this waits for it, or ends the session itself.
+                endSession(session);
+            }
         }
     }
 
@@ -181,9 +190,10 @@ public class ConcurrentDatabaseEngine {
             // Under the session's lock, so the mode applied below is the one this request declared.
             session.followClientAutoCommit(clientAutoCommit);
             try {
-                // Read lock for read-only scripts, write lock for anything that mutates — decided
-                // ONCE per request from the parse tree (the unlock below must mirror the decision).
-                final boolean readOnly = isReadOnlyQuery(sql);
+                // Read lock for read-only scripts, write lock for anything that mutates — decided per request
+                // from the parse tree, and from the bodies its names reach before it runs (the unlock below must
+                // mirror the decision).
+                boolean readOnly = isReadOnlyQuery(sql);
                 if (!readOnly) {
                     // An abort of another session is carried out as the request is read, before it waits for the
                     // engine: that session ends what it runs now rather than running on to its end and committing.
@@ -192,6 +202,13 @@ public class ConcurrentDatabaseEngine {
                 }
                 if (readOnly) {
                     engineLock.readLock().lock();
+                    // Judged under the shared lock, which holds the catalog still: a body one of the request's names
+                    // stands for may write, and then the request runs alone, before anything of it has run.
+                    if (ReadOnlyBodies.reachWrite(engine.getCatalog(), sql)) {
+                        engineLock.readLock().unlock();
+                        engineLock.writeLock().lock();
+                        readOnly = false;
+                    }
                 } else {
                     engineLock.writeLock().lock();
                 }
@@ -442,6 +459,29 @@ public class ConcurrentDatabaseEngine {
         }
     }
 
+    /**
+     * Rolls back every transaction still open under an ending session's number: one its requests left without the
+     * session holding it, or one whose ROLLBACK above failed, would otherwise keep its locks with nobody to end it.
+     * Called under the engine's write lock.
+     */
+    private void rollBackLeftTransactions(final long sessionNumber) {
+        final List<Transaction> left = new ArrayList<Transaction>();
+        for (final Transaction open : engine.getTransactionManager().getActiveTransactions()) {
+            if (open.getSessionNumber() != null && open.getSessionNumber().longValue() == sessionNumber
+                    && !open.isStatementScoped()) {
+                left.add(open);
+            }
+        }
+        for (final Transaction open : left) {
+            try {
+                engine.getTransactionManager().rollBackLeft(open);
+            } catch (final RuntimeException failed) {
+                logger.warn("Rolling back a transaction ended session {} left failed: {}", sessionNumber,
+                    failed.getMessage());
+            }
+        }
+    }
+
     /** {@link #endSession}'s work, once no request of the session is running. */
     private void endSessionNow(final SessionContext session) {
         if (session.isInTransaction()) {
@@ -457,6 +497,7 @@ public class ConcurrentDatabaseEngine {
         // What the session created TEMPORARY ends with it: under the engine's write lock, like the DROP it is.
         engineLock.writeLock().lock();
         try {
+            rollBackLeftTransactions(session.getSettings().getSessionNumber());
             engine.dropTemporaryObjectsOf(session.getSettings().getSessionNumber());
         } catch (final RuntimeException failed) {
             logger.warn("Dropping the temporary objects of ended session {} failed: {}", session.getSessionId(),

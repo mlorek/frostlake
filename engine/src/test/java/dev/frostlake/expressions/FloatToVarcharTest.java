@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -75,7 +76,7 @@ public class FloatToVarcharTest extends BaseDatabaseTest {
             final byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
             final StringBuilder hex = new StringBuilder(hash.length * 2);
             for (final byte b : hash) {
-                hex.append(String.format("%02x", b));
+                hex.append(String.format(Locale.ROOT, "%02x", b));
             }
             return hex.toString();
         } catch (final NoSuchAlgorithmException e) {

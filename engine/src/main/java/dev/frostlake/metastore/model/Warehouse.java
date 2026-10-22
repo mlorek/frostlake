@@ -59,7 +59,7 @@ public class Warehouse implements Taggable {
 
     private int maxConcurrencyLevel = DEFAULT_MAX_CONCURRENCY_LEVEL;
     private int statementQueuedTimeoutSeconds = 0;
-    // The engine stores the setting but enforces no timeout.
+    // A statement run on the warehouse is timed by the lower of this and the session's (see QueryExecutor).
     private int statementTimeoutSeconds = DEFAULT_STATEMENT_TIMEOUT_SECONDS;
     /** Parameter names this warehouse set explicitly, which SHOW PARAMETERS reports at WAREHOUSE level. */
     private final Set<String> explicitParameters = new LinkedHashSet<>();

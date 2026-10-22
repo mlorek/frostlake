@@ -297,6 +297,20 @@ final class TypeInferencer {
             + (leftInterval ? interval + ", " + spelled : spelled + ", " + interval) + ")";
     }
 
+    /**
+     * The refusal a quoted interval earns as the first operand of an addition to a DATE, a TIME or a timestamp: an
+     * interval is added TO a temporal value and never the reverse, so {@code INTERVAL '1 day' + d} is "Invalid
+     * argument types for function '+': (INTERVAL, DATE)" at the operator while the statement compiles
+     * (live-verified). Null for any other pair.
+     */
+    private static String intervalBeforeTemporal(final BinaryOperationExpression binary, final DataType rightType) {
+        if (binary.getOperator() != BinaryOperator.ADD || !isQuotedInterval(binary.getLeft())
+                || !(rightType instanceof DateTimeType)) {
+            return null;
+        }
+        return "Invalid argument types for function '+': (INTERVAL, " + SqlTypeNames.canonical(rightType) + ")";
+    }
+
     /** Whether an operand is the quoted-string interval form, {@code INTERVAL '1 day'}, which has no type. */
     private static boolean isQuotedInterval(final Expression operand) {
         return operand instanceof IntervalExpression && ((IntervalExpression) operand).getLiteral() == null;
@@ -498,6 +512,10 @@ final class TypeInferencer {
                 if (beside != null) {
                     throw new RuntimeException(positioned(beside, binary));
                 }
+                final String reversed = intervalBeforeTemporal(binary, rightType);
+                if (reversed != null) {
+                    throw new RuntimeException(positioned(reversed, binary));
+                }
             }
             if (isNumericOperator(binary.getOperator())
                     && (NumericType.isDecfloat(leftType) || NumericType.isDecfloat(rightType))) {
@@ -636,6 +654,7 @@ final class TypeInferencer {
             // evaluator instead made the refusal data-dependent: over a table with no rows nothing
             // was evaluated, so the statement was accepted — and a view or CTAS over it was created.
             visitor.requireResolvableFunctionName(call);
+            visitor.rejectNullFormattedBinary(call);
             final String funcName = call.getFunctionName().toUpperCase(Locale.ROOT);
             // A COLLATE call is judged here — its operand, then its specification — and every call that
             // hands a collation on settles its arguments' here, refusing two that disagree.
@@ -1926,14 +1945,15 @@ final class TypeInferencer {
 
     /**
      * Whether a branch has no type at all: the word NULL itself, or a call that folds to one — see
-     * {@link UntypedNullFold}, whose shapes every rule here reads as it reads the word.
+     * {@link UntypedNullFold}, whose shapes every rule here reads as it reads the word, an aggregate that picks one
+     * of its values over the word included.
      *
      * @param branch the branch expression
      * @return true for an untyped NULL
      */
     private boolean isNullLiteral(final Expression branch) {
         // A reference to a column that holds nothing but an untyped NULL is read as the bare word.
-        return UntypedNullFold.isUntypedNull(branch)
+        return UntypedNullFold.isUntypedNull(branch) || UntypedNullFold.picksAnUntypedNull(branch)
             || branch instanceof ColumnReferenceExpression
                 && visitor.readsUntypedNull((ColumnReferenceExpression) branch);
     }
@@ -3424,7 +3444,7 @@ final class TypeInferencer {
      * where an expression genuinely takes the declared scale on, and losing it here costs data: live
      * {@code 1.5::NUMBER(5,2)} is NUMBER(5,2) holding 1.50, while a scale-0 answer stores 2.
      */
-    private static NumericType numberTargetWithParameters(final String targetType) {
+    static NumericType numberTargetWithParameters(final String targetType) {
         if (targetType == null) {
             return null;
         }
@@ -3559,10 +3579,21 @@ final class TypeInferencer {
         return number != null ? number : typeForName(targetType);
     }
 
-    static DataType typeForName(final String targetType) {
+    /**
+     * A cast target's base type name: the words written before its parameters, upper-cased, with no space between
+     * them — {@code VARCHAR} for {@code varchar(5)}, {@code DOUBLEPRECISION} for {@code double precision}.
+     *
+     * @param targetType the target type text as written
+     * @return the base name
+     */
+    static String baseTypeName(final String targetType) {
         final int paren = targetType.indexOf('(');
-        final String base = (paren > 0 ? targetType.substring(0, paren) : targetType)
-            .trim().toUpperCase(Locale.ROOT).replace(" ", "");
+        return (paren > 0 ? targetType.substring(0, paren) : targetType).trim().toUpperCase(Locale.ROOT)
+            .replace(" ", "");
+    }
+
+    static DataType typeForName(final String targetType) {
+        final String base = baseTypeName(targetType);
         final int parameter = firstParameter(targetType);
         switch (base) {
             case "CHAR": case "CHARACTER": case "NCHAR":

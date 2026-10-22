@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Snowflake {@code ASOF JOIN}: for every left row, the single CLOSEST right row that satisfies the
@@ -159,7 +160,7 @@ public class AsofJoinOperator implements Operator {
 
     @Override
     public String getDescription() {
-        return String.format("ASOF JOIN[%s x %s MATCH_CONDITION %s %s %s]",
+        return String.format(Locale.ROOT, "ASOF JOIN[%s x %s MATCH_CONDITION %s %s %s]",
             leftTable.getName(), rightTable.getName(),
             leftMatchExpression, matchOperator, rightMatchExpression);
     }

@@ -43,8 +43,11 @@ public class TextBesideNumberFoldWidthTest extends MeasuredCellsTestSupport {
         assertAnswer(REFUSED, "SELECT '" + WIDE + "' UNION ALL SELECT id FROM tbn_t");
         assertAnswer(REFUSED, "SELECT id FROM tbn_t INTERSECT SELECT '" + WIDE + "'");
         assertAnswer(REFUSED, "SELECT id FROM tbn_t EXCEPT SELECT '" + WIDE + "'");
-        assertAnswer(REFUSED, "CREATE TABLE tbn_w AS SELECT id FROM tbn_t UNION ALL SELECT '" + WIDE + "'");
-        // FL-412's own case keeps its sentence.
+        // A UNION ALL arm's value converts where the row is written, inside the write's DML sentence.
+        assertAnswer("REFUSED DML operation to table TEST_DB.TEST_SCHEMA.TBN_W failed on column ID with error: "
+            + REFUSED.substring("REFUSED ".length()),
+            "CREATE TABLE tbn_w AS SELECT id FROM tbn_t UNION ALL SELECT '" + WIDE + "'");
+        // A text past every NUMBER keeps its own sentence.
         assertAnswer("REFUSED Numeric value '1e39' is not recognized", "SELECT id FROM tbn_t UNION ALL SELECT '1e39'");
         assertAnswer("REFUSED Numeric value '1e38' is out of range", "SELECT id FROM tbn_t UNION ALL SELECT '1e38'");
     }
@@ -63,9 +66,8 @@ public class TextBesideNumberFoldWidthTest extends MeasuredCellsTestSupport {
         assertAnswer(REFUSED, "SELECT LEAST(id, '" + WIDE + "') FROM tbn_t");
         assertAnswer(REFUSED, "SELECT GREATEST_IGNORE_NULLS(id, NULL, '" + WIDE + "') FROM tbn_t");
         assertAnswer(REFUSED, "SELECT LEAST_IGNORE_NULLS(id, NULL, '" + WIDE + "') FROM tbn_t");
-        assertAnswer("REFUSED DML operation to table TEST_DB.TEST_SCHEMA.TBN_G failed on column G with error: "
-            + REFUSED.substring("REFUSED ".length()),
-            "CREATE TABLE tbn_g AS SELECT GREATEST(id, '" + WIDE + "') g FROM tbn_t");
+        // GREATEST converts the text as it compares, inside the query, so a CTAS raises it bare.
+        assertAnswer(REFUSED, "CREATE TABLE tbn_g AS SELECT GREATEST(id, '" + WIDE + "') g FROM tbn_t");
         // A text that fits, and one that spells no number, read as they did.
         assertAnswer("5.0|5.0", "SELECT GREATEST(id, '1.5'), LEAST(id, '9999999999999999999999999999999999999.5') "
             + "FROM tbn_t");

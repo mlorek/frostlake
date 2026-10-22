@@ -159,9 +159,11 @@ final class DefaultExpressionCalls {
         requireKnownFunctions(written);
         final Token query = firstOfType(written, FrostlakeParser.SELECT);
         if (query != null) {
-            // A default reads no query: it is refused where the query starts, echoed as the tree holds it.
+            // A default reads no query: a table it names that is not there is refused first, and then the default is
+            // refused where the query starts, echoed resolved (live-verified).
+            requireNamedTables(written);
             throw new RuntimeException(SqlCompilationError.at(query.getLine(), query.getCharPositionInLine(),
-                "invalid default argument expression " + parsedText(ParseTreeText.getOriginalText(written))));
+                "invalid default argument expression " + resolvedText(ParseTreeText.getOriginalText(written))));
         }
         final FrostlakeParser.QualifiedNameExprContext name = firstName(written);
         if (name != null) {
@@ -436,10 +438,25 @@ final class DefaultExpressionCalls {
         return null;
     }
 
-    /** An expression's text as the tree it parses to prints it; as written where the printer does not read it. */
-    private static String parsedText(final String expression) {
+    /** Refuses a table a query in the default names that is not there, as an object that does not exist. */
+    private void requireNamedTables(final ParseTree node) {
+        if (node instanceof FrostlakeParser.TableSourceContext
+                && ((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null) {
+            final String name = ParseTreeText.getQualifiedName(
+                ((FrostlakeParser.TableSourceContext) node).tableQualifiedName());
+            if (!queryExecutor.namesARelation(name)) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Object", name));
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            requireNamedTables(node.getChild(i));
+        }
+    }
+
+    /** An expression's text as the plan prints it resolved; as written where the printer does not read it. */
+    private static String resolvedText(final String expression) {
         try {
-            return ParsedEchoPrinter.print(ExpressionEvaluator.parse(expression));
+            return ParsedEchoPrinter.printResolved(ExpressionEvaluator.parse(expression));
         } catch (final RuntimeException unprintable) {
             return expression;
         }

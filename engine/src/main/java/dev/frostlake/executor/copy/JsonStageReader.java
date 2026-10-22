@@ -71,14 +71,7 @@ public class JsonStageReader implements StageFileReader {
         final String marked = StagedFileIo.readMarked(file, StandardCharsets.UTF_8);
         final int unreadable = StagedFileIo.firstUnreadable(marked);
         if (unreadable >= 0 && !replaceInvalid) {
-            final int lineStart = marked.lastIndexOf('\n', unreadable - 1) + 1;
-            int line = 1;
-            for (int i = 0; i < lineStart; i++) {
-                line += marked.charAt(i) == '\n' ? 1 : 0;
-            }
-            throw new RuntimeException("Error parsing JSON: invalid UTF-8 sequence: "
-                + StagedFileIo.unreadableByte(marked.charAt(unreadable)) + "\n  File '" + shownName + "', line " + line
-                + ", character " + (unreadable - lineStart + 1) + "\n  Row 0, column $1");
+            throw StagedFileIo.unreadableRefusal("JSON", marked, unreadable, shownName);
         }
         return records(StagedFileIo.unreadableReplaced(marked).trim(), stripOuterArray, file);
     }

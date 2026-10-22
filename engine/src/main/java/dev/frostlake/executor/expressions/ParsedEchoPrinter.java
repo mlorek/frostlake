@@ -72,18 +72,44 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     private final boolean unresolved;
     /** How the calls it spells its own way are printed, or null for none. */
     private final CallEcho spelled;
+    /** The relation a bare name is read in, where a query is printed resolved; null for none. */
+    private final String relation;
 
     ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries) {
-        this(calls, inQuery, queries, false, null);
+        this(calls, inQuery, queries, false, null, null);
     }
 
     private ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries,
-                              final boolean unresolved, final CallEcho spelled) {
+                              final boolean unresolved, final CallEcho spelled, final String relation) {
         this.calls = calls;
         this.inQuery = inQuery;
         this.queries = queries;
         this.unresolved = unresolved;
         this.spelled = spelled;
+        this.relation = relation;
+    }
+
+    /**
+     * A printer for a query's own expressions where the query is printed resolved: the operators as written, and a
+     * bare name its relation's.
+     *
+     * @param queries  prints the queries the expressions hold
+     * @param relation the relation a bare name is read in, or null where the query reads more than one or none
+     * @return the printer
+     */
+    static ParsedEchoPrinter resolvedIn(final ParsedQueryEcho queries, final String relation) {
+        return new ParsedEchoPrinter(false, true, queries, false, null, relation);
+    }
+
+    /**
+     * An expression as the plan prints it resolved, as a routine parameter's default is echoed: the operators as
+     * written, and a query's bare names its relation's (see {@link ParsedQueryEcho}).
+     *
+     * @param expression the expression
+     * @return its text
+     */
+    public static String printResolved(final Expression expression) {
+        return expression.accept(new ParsedEchoPrinter(false, false, new ParsedQueryEcho(true), false, null, null));
     }
 
     /**
@@ -106,7 +132,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     public static String print(final Expression expression, final CallEcho spelled) {
         final QueryOrWindowWalk walk = new QueryOrWindowWalk();
         expression.accept(walk);
-        return expression.accept(new ParsedEchoPrinter(walk.found(), false, new ParsedQueryEcho(), false, spelled));
+        return expression.accept(new ParsedEchoPrinter(walk.found(), false, new ParsedQueryEcho(), false, spelled,
+            null));
     }
 
     /**
@@ -134,7 +161,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
      * @return its text
      */
     public static String printUnresolved(final Expression expression) {
-        return expression.accept(new ParsedEchoPrinter(true, true, new ParsedQueryEcho(), true, null));
+        return expression.accept(new ParsedEchoPrinter(true, true, new ParsedQueryEcho(), true, null, null));
     }
 
     /** A call's name, told as unresolved where the list being printed has not found its functions yet. */
@@ -181,7 +208,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         final String column = expr.getPositionalOrdinal() > 0
             ? "$" + expr.getPositionalOrdinal() : SqlIdentifiers.spellCanonical(expr.getColumnName());
         if (!expr.isQualified()) {
-            return column;
+            return relation != null && expr.getPositionalOrdinal() <= 0 ? relation + "." + column : column;
         }
         final String qualifier = SqlIdentifiers.spellAlreadyCanonicalPath(expr.getTableName());
         // Outside a query a qualified name is a variable and its field, and the variable alone is named.
@@ -203,7 +230,13 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
                 ? symbol : "\"" + symbol + "\"";
             return named(name) + "(" + expr.getLeft().accept(this) + ", " + expr.getRight().accept(this) + ")";
         }
-        return operand(expr.getLeft()) + " " + symbol + " " + operand(expr.getRight());
+        return operand(expr, expr.getLeft()) + " " + symbol + " " + operand(expr, expr.getRight());
+    }
+
+    /** An operand of an operation: as the echo spells it beside its operator, else as {@link #operand} prints it. */
+    private String operand(final BinaryOperationExpression operation, final Expression expr) {
+        final String own = spelled == null ? null : spelled.spellOperand(operation, expr, this);
+        return own != null ? own : operand(expr);
     }
 
     /** A LIKE or an ILIKE: its escape is one more operand of the same operator, a third argument of the call. */
@@ -684,8 +717,11 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         }
         final String name = name(expr.getNameParts(), expr.getFunctionName());
         final boolean average = "AVG".equals(name) && !expr.isDistinct();
-        // An aggregate over the whole partition reads the same rows in any order, and the AVG names none.
-        final String over = over(expr, !(average && expr.isWholeFramed()));
+        // An aggregate over the whole partition reads the same rows in any order, and names none: AVG, SUM and MAX
+        // over ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING are OVER (), where a navigation function
+        // keeps its order, LAST_VALUE's ORDER BY is printed (live-verified).
+        final boolean navigation = "FIRST_VALUE".equals(name) || "LAST_VALUE".equals(name) || "NTH_VALUE".equals(name);
+        final String over = over(expr, !(!navigation && expr.isWholeFramed()));
         final String arguments = (expr.isDistinct() ? "DISTINCT " : "") + list(expr.getArguments());
         if (average && expr.isOrdered() && !expr.isOwnFramed() && !expr.isWholeFramed()) {
             return "SUM(" + arguments + ")" + over + " / COUNT(" + arguments + ")" + over;

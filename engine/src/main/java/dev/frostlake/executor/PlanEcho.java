@@ -175,6 +175,19 @@ final class PlanEcho {
      * @param call the call
      */
     void refuseArgumentFamilies(final ParserRuleContext call) {
+        refuseArgumentTypes(call, false);
+    }
+
+    /**
+     * {@link #refuseArgumentFamilies}, and with {@code strict} the call's every argument type and its own type as
+     * well: an aggregate is typed whole before the place it stands in is judged — {@code VECTOR_AVG} over a VARIANT,
+     * {@code BITAND_AGG} over a BOOLEAN, {@code BOOLAND} over BOOLEANs and an AVG whose intermediate type no NUMBER
+     * holds are refused for the type (live-verified).
+     *
+     * @param call   the call
+     * @param strict whether the arguments' types and the call's own are judged too
+     */
+    void refuseArgumentTypes(final ParserRuleContext call, final boolean strict) {
         final Expression parsed;
         try {
             parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(call));
@@ -185,6 +198,10 @@ final class PlanEcho {
             new SourcePosition(call.getStart().getLine(), call.getStart().getCharPositionInLine()));
         try {
             printer.rejectArgumentFamilies(parsed);
+            if (strict) {
+                printer.validateStrict(parsed);
+                printer.inferStaticType(parsed);
+            }
         } catch (final RuntimeException refused) {
             if (SqlCompilationError.isCompilationError(refused.getMessage())) {
                 throw refused;

@@ -24,6 +24,8 @@ import dev.frostlake.parser.SqlCharStream;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -40,7 +42,8 @@ import java.util.Set;
  *
  * <p>The judgement is of the request's own text. What a statement reaches while it runs — the text a block
  * hands to EXECUTE IMMEDIATE, the body of a procedure — is held to the same rule as it runs, under
- * {@link #enter}: a statement that is none of the four is refused there.
+ * {@link #enter}: a statement that is none of the four is refused there. The bodies the text's names stand for
+ * are followed by {@link ReadOnlyBodies}, which needs the catalog.
  */
 public final class ReadOnlyRequest {
 
@@ -124,11 +127,18 @@ public final class ReadOnlyRequest {
                 }
             }
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
-        lexer.removeErrorListeners();
-        final CommonTokenStream stream = new CommonTokenStream(lexer);
-        stream.fill();
-        for (final Token token : stream.getTokens()) {
+        return tokenRefusal(sql);
+    }
+
+    /**
+     * Why a text reaches a write by what it calls, whatever statement holds it: a NEXTVAL, a TO_QUERY, a system
+     * function that acts on the server.
+     *
+     * @param sql the text
+     * @return the refusal, or null when the text calls none of them
+     */
+    static String tokenRefusal(final String sql) {
+        for (final Token token : tokens(sql)) {
             final int type = token.getType();
             final String text = token.getText();
             if (type == FrostlakeLexer.NEXTVAL || type == FrostlakeLexer.QUOTED_IDENTIFIER
@@ -147,6 +157,42 @@ public final class ReadOnlyRequest {
             }
         }
         return null;
+    }
+
+    /**
+     * The names a text holds, each as the catalog keeps it: a bare word folded to upper case, a quoted one as
+     * written between its quotes, and a text that reads as an identifier reference, the way IDENTIFIER() reads
+     * it, by its last part. Every word counts, keywords too, since an object may carry such a name.
+     *
+     * @param sql the text
+     * @return the names, in the order the text holds them
+     */
+    static List<String> names(final String sql) {
+        final List<String> names = new ArrayList<>();
+        for (final Token token : tokens(sql)) {
+            final String text = token.getText();
+            if (token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER) {
+                final String[] parts = SqlIdentifiers.canonicalTextParts(text);
+                names.add(parts[parts.length - 1]);
+            } else if (token.getType() == FrostlakeLexer.STRING_LITERAL && text.length() >= 2) {
+                final String content = text.substring(1, text.length() - 1).replace("''", "'");
+                if (SqlIdentifiers.isIdentifierReference(content)) {
+                    final String[] parts = SqlIdentifiers.canonicalTextParts(content.trim());
+                    names.add(parts[parts.length - 1]);
+                }
+            } else if (!text.isEmpty() && (Character.isLetter(text.charAt(0)) || text.charAt(0) == '_')) {
+                names.add(text.toUpperCase(Locale.ROOT));
+            }
+        }
+        return names;
+    }
+
+    private static List<Token> tokens(final String sql) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        return stream.getTokens();
     }
 
     /** A query (SELECT / WITH, however wrapped), EXPLAIN, SHOW or DESCRIBE — nothing else reads only. */

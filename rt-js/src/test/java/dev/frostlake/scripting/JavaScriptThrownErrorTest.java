@@ -177,6 +177,8 @@ public class JavaScriptThrownErrorTest extends BaseDatabaseTest {
                 "#<Old> in EP at 'throw new (function Old() { })();' position 0\nstackstrace: \nEP line: 1"},
             {"throw new (function () { })();",
                 "[object Object] in EP at 'throw new (function () { })();' position 0\nstackstrace: \nEP line: 1"},
+            {"throw globalThis;",
+                "[object Object] in EP at 'throw globalThis;' position 0\nstackstrace: \nEP line: 1"},
     };
 
     /** An error thrown from another place than the one it arose at. */

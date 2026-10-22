@@ -33,9 +33,9 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * An unquoted name is upper case, and a quoted lower-case object of the same letters is another object
  * (docs.snowflake.com identifier requirements: double-quoted identifiers are case-sensitive). GRANT, REVOKE, GRANT
  * OWNERSHIP and SHOW GRANTS ON a stream, a task, a pipe, an alert, a materialized view, a file format or a masking or
- * row access policy named LX_… refuse it as missing (FL-462); so do DESCRIBE, EXECUTE, ALTER and DROP of an alert, a
+ * row access policy named LX_… refuse it as missing; so do DESCRIBE, EXECUTE, ALTER and DROP of an alert, a
  * read, ALTER and DROP of a materialized view, DESCRIBE and DROP of a join policy, COMMENT ON VIEW and a query of a
- * stage's files (FL-463). The quoted name still reaches each one. The refusals are this engine's words for each kind,
+ * stage's files. The quoted name still reaches each one. The refusals are this engine's words for each kind,
  * so the engine alone is asked.
  */
 public class UnquotedNameReachesNoQuotedObjectTest extends BaseDatabaseTest {

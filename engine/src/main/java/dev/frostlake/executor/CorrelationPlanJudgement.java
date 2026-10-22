@@ -423,8 +423,10 @@ public final class CorrelationPlanJudgement {
         RuntimeException earlyInSelectList = null;
         RuntimeException earlyElsewhere = null;
         RuntimeException lateInWhere = null;
+        Token lateInWhereUnplaced = null;
         RuntimeException lateInSelectList = null;
         RuntimeException lateElsewhere = null;
+        int subqueryCount = 0;
         for (final ParseTree judged : judgedClauses()) {
             final boolean selectItem = judged instanceof FrostlakeParser.SelectItemContext;
             final boolean where = !selectItem && !(judged instanceof FrostlakeParser.HavingClauseContext)
@@ -435,9 +437,13 @@ public final class CorrelationPlanJudgement {
                 if (spared && !kept) {
                     continue;
                 }
+                subqueryCount++;
                 final RuntimeException refused = judge(subquery, outerNames, kept);
                 if (refused == null) {
                     continue;
+                }
+                if (!judgedForItsAggregate && where && lateInWhere == null) {
+                    lateInWhereUnplaced = unplacedAt;
                 }
                 if (judgedForItsAggregate) {
                     if (selectItem) {
@@ -459,6 +465,13 @@ public final class CorrelationPlanJudgement {
         }
         if (earlyElsewhere != null) {
             return earlyElsewhere;
+        }
+        if (lateInWhere != null && lateInWhereUnplaced != null && subqueryCount > 1) {
+            // Beside another subquery of the statement, refused or not, a WHERE's depth-two one is placed
+            // (live-verified).
+            return new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be"
+                + " evaluated at line " + lateInWhereUnplaced.getLine() + ", position "
+                + lateInWhereUnplaced.getCharPositionInLine()));
         }
         final RuntimeException late =
             lateInWhere != null ? lateInWhere : lateInSelectList != null ? lateInSelectList : lateElsewhere;
@@ -564,6 +577,9 @@ public final class CorrelationPlanJudgement {
     /** Whether the subquery {@link #judge} refused last is of the shape the account refuses in its earlier pass. */
     private boolean judgedForItsAggregate;
 
+    /** Where the subquery the last judgement refused with no place stands, or null when it gave one. */
+    private Token unplacedAt;
+
     /** The subqueries {@link #refusal()} refused, keyed as {@link PlannedCorrelations} records them. */
     public Set<String> refusedKeys() {
         return refusedKeys;
@@ -588,6 +604,7 @@ public final class CorrelationPlanJudgement {
      *                 refused over a one-row table too, whose every column holds one value
      */
     private RuntimeException judge(final ParseTree node, final Set<String> outerNames, final boolean unpinned) {
+        unplacedAt = null;
         final FrostlakeParser.SelectStatementContext subquery;
         final boolean scalar;
         final Token at;
@@ -653,6 +670,15 @@ public final class CorrelationPlanJudgement {
                 + " evaluated at line " + subquery.getStart().getLine() + ", position "
                 + subquery.getStart().getCharPositionInLine()));
         }
+        final RuntimeException partitioned = scalar && !rule.readsNoOuterName(subquery)
+            ? QualifyPartitionKey.refusal(node, relations) : null;
+        if (partitioned != null) {
+            // As the one partition key of an aggregate window the QUALIFY reads, it groups the window's argument,
+            // which the plan refuses (see QualifyPartitionKey).
+            refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
+            judgedForItsAggregate = false;
+            return partitioned;
+        }
         final FrostlakeParser.InSubqueryExprContext in = node instanceof FrostlakeParser.InSubqueryExprContext
             ? (FrostlakeParser.InSubqueryExprContext) node : null;
         final FrostlakeParser.QuantifiedComparisonExprContext quantified =
@@ -682,7 +708,9 @@ public final class CorrelationPlanJudgement {
         }
         if (rule.outerReadDepth() == 2 && standsInWhere(node)) {
             // A WHERE's subquery whose own subquery reads the outer row is refused with no place given, where one
-            // read from three levels in, and any of a select list or a HAVING, is placed (live-verified).
+            // read from three levels in, and any of a select list or a HAVING, is placed (live-verified) — unless
+            // the statement holds another subquery, see refusal().
+            unplacedAt = at;
             return new UnsupportedSubqueryException(
                 SqlCompilationError.of("Unsupported subquery type cannot be evaluated"));
         }

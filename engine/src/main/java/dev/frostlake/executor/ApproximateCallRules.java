@@ -81,10 +81,18 @@ final class ApproximateCallRules {
 
     private static final String BARE_NAME = "[A-Za-z_$][A-Za-z_$0-9]*(\\.[A-Za-z_$][A-Za-z_$0-9]*)*";
 
+    private final QueryExecutor queryExecutor;
     private final FunctionRegistry functionRegistry;
     private final Catalog catalog;
 
-    ApproximateCallRules(final FunctionRegistry functionRegistry, final Catalog catalog) {
+    /**
+     * @param queryExecutor    the executor that plans a subquery a refusal re-prints, or null to print it as written
+     * @param functionRegistry the functions the calls name
+     * @param catalog          the catalog the names resolve in
+     */
+    ApproximateCallRules(final QueryExecutor queryExecutor, final FunctionRegistry functionRegistry,
+                         final Catalog catalog) {
+        this.queryExecutor = queryExecutor;
         this.functionRegistry = functionRegistry;
         this.catalog = catalog;
     }
@@ -203,8 +211,10 @@ final class ApproximateCallRules {
         }
         final BigDecimal value = ConstantArgumentTexts.numericConstant(written);
         if (value == null) {
+            // A subquery is the query the plan runs: [(SELECT 0.5 AS "0.5" FROM (VALUES (null)) DUAL)] (live-verified).
             refuse(invalidValue(
-                new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog).printPlanned(arg),
+                new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog, queryExecutor)
+                    .printPlanned(arg),
                 PERCENTILE, "2", "Percentile must be a constant numberic value between 0 and 1 inclusive."));
         }
         if (value.signum() < 0 || value.compareTo(BigDecimal.ONE) > 0) {

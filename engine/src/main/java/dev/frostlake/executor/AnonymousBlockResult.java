@@ -62,7 +62,7 @@ public final class AnonymousBlockResult {
         columns.add(new ResultSetColumn(COLUMN, type, null));
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(value));
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, rows).markScriptingAnswer();
     }
 
     /**

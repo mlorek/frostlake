@@ -177,6 +177,11 @@ public final class ShowResultHelpers {
      * {@code 'active'}, not {@code active}).
      */
     public static String renderDefaultExpression(final Object def) {
+        // A default that reads the clock is printed as the account prints it (see ClockDefaultSpelling).
+        final String clock = ClockDefaultSpelling.of(def);
+        if (clock != null) {
+            return clock;
+        }
         if (def instanceof DefaultValueExpression || def instanceof Number || def instanceof Boolean) {
             return def.toString();
         }

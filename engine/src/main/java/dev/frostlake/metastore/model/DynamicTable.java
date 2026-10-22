@@ -38,6 +38,8 @@ public class DynamicTable extends SqlObject {
     private String targetLag;          // e.g. "1 minutes", "DOWNSTREAM"
     private String warehouse;
     private RefreshMode refreshMode;
+    // Why an AUTO refresh mode settled on FULL, or null when it runs incrementally (see getFullRefreshReason).
+    private String fullRefreshReason;
     private Initialize initialize;
     private int dataRetentionDays;
     private boolean dataRetentionSet;
@@ -55,6 +57,8 @@ public class DynamicTable extends SqlObject {
     private long firstRefreshedMillis;
     private Instant lastSuspendedOn;
     private final List<String> clusterKeys = new ArrayList<>();
+    /** The text the statement that set the key wrote after CLUSTER BY, or null where none was kept. */
+    private String clusterByText;
     /** The columns the table declares in its own column list, in order; empty when it has none. */
     private final List<DynamicTableColumn> declaredColumns = new ArrayList<>();
     /** The table's columns as its query and its column list resolved them when it was created; null before. */
@@ -96,6 +100,21 @@ public class DynamicTable extends SqlObject {
     public void setWarehouse(final String warehouse) { this.warehouse = warehouse; }
     public RefreshMode getRefreshMode() { return refreshMode; }
     public void setRefreshMode(final RefreshMode refreshMode) { this.refreshMode = refreshMode; }
+
+    /**
+     * Why the table, created with REFRESH_MODE AUTO, settled on FULL: the sentence SHOW DYNAMIC TABLES tells as its
+     * refresh_mode_reason.
+     *
+     * @return the reason, or null when the table runs incrementally or its mode was not AUTO
+     */
+    public String getFullRefreshReason() { return fullRefreshReason; }
+
+    /**
+     * Records why an AUTO refresh mode settled on FULL.
+     *
+     * @param fullRefreshReason the reason, or null for an incremental table
+     */
+    public void setFullRefreshReason(final String fullRefreshReason) { this.fullRefreshReason = fullRefreshReason; }
     public Initialize getInitialize() { return initialize; }
     public void setInitialize(final Initialize initialize) { this.initialize = initialize; }
     public int getDataRetentionDays() { return dataRetentionDays; }
@@ -201,8 +220,32 @@ public class DynamicTable extends SqlObject {
     /** The CLUSTER BY keys, each as written; empty for an unclustered table. */
     public List<String> getClusterKeys() { return new ArrayList<>(clusterKeys); }
     public void setClusterKeys(final List<String> keys) {
+        setClusterKeys(keys, null);
+    }
+
+    /**
+     * Sets the CLUSTER BY keys with the text the statement wrote after CLUSTER BY, which SHOW and GET_DDL read back.
+     *
+     * @param keys the keys, each as written; empty for no key
+     * @param written the text after CLUSTER BY as written, or null
+     */
+    public void setClusterKeys(final List<String> keys, final String written) {
         clusterKeys.clear();
         clusterKeys.addAll(keys);
+        clusterByText = clusterKeys.isEmpty() ? null : written;
+    }
+
+    /**
+     * The clustering key as written after CLUSTER BY: the statement's own text where it was kept, the keys in
+     * parentheses otherwise.
+     *
+     * @return the text, or null for a table with no key
+     */
+    public String getClusterByText() {
+        if (clusterKeys.isEmpty()) {
+            return null;
+        }
+        return clusterByText != null ? clusterByText : "(" + String.join(", ", clusterKeys) + ")";
     }
 
     /** Whether the table was created TRANSIENT. */

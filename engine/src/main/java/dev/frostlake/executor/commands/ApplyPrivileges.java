@@ -30,7 +30,7 @@ import dev.frostlake.security.SecurityManager;
  * or APPLY TAG, or APPLY on the policy or the tag itself (documented: "This privilege controls who can [un]set masking
  * policies on columns", and a table owner may do so only after {@code GRANT APPLY ON MASKING POLICY … TO ROLE
  * table_owner}). Without it a role that may SELECT from a protected table clones it, owns the clone, and detaches the
- * clone's policies (FL-429). Owning the policy or the tag counts as APPLY on it, as OWNERSHIP counts for every other
+ * clone's policies. Owning the policy or the tag counts as APPLY on it, as OWNERSHIP counts for every other
  * privilege this engine asks. The refusal's wording is the engine's own form for a missing privilege; live's is not
  * measured.
  */

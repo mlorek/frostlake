@@ -136,6 +136,9 @@ public class GrantRevokeHandler implements CommandHandler {
 
     public Object handleGrant(final FrostlakeParser.GrantStatementContext ctx) {
         try {
+            if (ctx.grantCaller() != null) {
+                return new CallerGrantHandler(catalog, queryExecutor).grant(ctx.grantCaller());
+            }
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
                 : AccessControlHandler.databaseRole(catalog,
                     PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
@@ -375,6 +378,9 @@ public class GrantRevokeHandler implements CommandHandler {
 
     public Object handleRevoke(final FrostlakeParser.RevokeStatementContext ctx) {
         try {
+            if (ctx.revokeCaller() != null) {
+                return new CallerGrantHandler(catalog, queryExecutor).revoke(ctx.revokeCaller());
+            }
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
                 : AccessControlHandler.databaseRole(catalog,
                     PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));

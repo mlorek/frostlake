@@ -16,15 +16,19 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
+import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
@@ -68,6 +72,13 @@ final class HavingAggregateSubqueries {
 
     private static final String WHOLE_SUM = "NUMBER(38,0)";
     private static final String COUNT_TYPE = "NUMBER(18,0)";
+
+    /** The text a concatenation converts both sides to, and a cast to a bare VARCHAR reads as. */
+    private static final String PLAN_TEXT = "VARCHAR(134217728)";
+
+    /** The relation and column a per-group query names the subquery's answers by. */
+    private static final String ANSWERED_RELATION = "\"answered\"";
+    private static final String ANSWERED_COLUMN = "\"value\"";
 
     private final QueryExecutor executor;
     private final Map<String, Table> outerRelations;
@@ -179,20 +190,23 @@ final class HavingAggregateSubqueries {
             ((FrostlakeParser.ExprItemContext) select.selectList().selectItem(0)).booleanExpr();
         final ParserRuleContext own = nesting.ownAggregate(item);
         if (own == null) {
-            return null;
+            final String outerOnly = nesting.outerOnly(aggregate, subquery, item, select);
+            return outerOnly == null ? null : SqlCompilationError.withoutPosition(outerOnly);
         }
         final String printed = nesting.printed(aggregate, subquery, item, own);
         return printed == null ? "" : SqlCompilationError.withoutPosition(printed);
     }
 
     /**
-     * Whether a HAVING answers a subquery that is the whole argument of its MAX, MIN, SUM, COUNT or ANY_VALUE and
-     * reads the outer row, group by group: the subquery runs once for each group, over the group's keys, and the
-     * aggregate is taken over the rows it answers — none for a group it finds nothing for (live-verified). So it is
+     * Whether a HAVING answers a subquery that is the whole argument of its MAX, MIN, SUM, COUNT or ANY_VALUE, or the
+     * one subquery of an argument computed from it and constants, and reads the outer row, group by group: the
+     * subquery runs once for each group, over the group's keys, and the aggregate is taken over the rows it answers —
+     * none for a group it finds nothing for, which no COALESCE around it brings back (live-verified). So it is
      * where the subquery reads no aggregate, no LIMIT and nothing of the outer row in its item, and reads the outer row
      * only in conditions of its WHERE that compare one of its columns that holds more than one value with an outer
-     * column; and where the aggregate stands under comparisons, arithmetic, IS NOT NULL, a COALESCE, AND and OR alone
-     * — IS NULL, NOT and an IN list are refused as no decorrelation can take them.
+     * column; and where the aggregate stands under comparisons, arithmetic, IS NOT NULL, a COALESCE, AND, OR and NOT
+     * alone — IS NULL and an IN list are refused as no decorrelation can take them. A NOT is the anti join it
+     * decorrelates into (see PerGroupNegations).
      *
      * @param executor       the executor
      * @param outerRelations the grouped query's relations, by the names they go by
@@ -203,7 +217,7 @@ final class HavingAggregateSubqueries {
     static boolean answered(final QueryExecutor executor, final Map<String, Table> outerRelations,
                             final FrostlakeParser.FunctionCallExprContext aggregate,
                             final FrostlakeParser.ScalarSubqueryExprContext subquery) {
-        if (!wholeArgument(aggregate, subquery) || !answeredWhereItStands(aggregate)) {
+        if (!wholeArgument(executor, aggregate, subquery) || !answeredWhereItStands(aggregate)) {
             return false;
         }
         final FrostlakeParser.SelectStatementContext query = subquery.selectStatement();
@@ -243,7 +257,8 @@ final class HavingAggregateSubqueries {
 
     /**
      * The subquery a HAVING aggregate computes group by group: the whole argument of a MAX, MIN, SUM, COUNT or
-     * ANY_VALUE that reads the outer row and is answered (see {@link #answered}); null for any other call.
+     * ANY_VALUE, or the one subquery of an argument computed from it and constants, that reads the outer row and is
+     * answered (see {@link #answered}); null for any other call.
      *
      * @param executor       the executor
      * @param outerRelations the grouped query's relations, by the names they go by
@@ -253,15 +268,10 @@ final class HavingAggregateSubqueries {
     static FrostlakeParser.ScalarSubqueryExprContext perGroupSubquery(
             final QueryExecutor executor, final Map<String, Table> outerRelations,
             final FrostlakeParser.FunctionCallExprContext aggregate) {
-        if (aggregate.functionArgList() == null || aggregate.functionArgList().functionArg().size() != 1) {
+        final FrostlakeParser.ScalarSubqueryExprContext subquery = soleSubquery(executor, aggregate);
+        if (subquery == null || !wholeArgument(executor, aggregate, subquery)) {
             return null;
         }
-        final ParseTree argument = valueOf(aggregate.functionArgList().functionArg(0).booleanExpr());
-        if (!(argument instanceof FrostlakeParser.ScalarSubqueryExprContext)
-                || !wholeArgument(aggregate, (FrostlakeParser.ScalarSubqueryExprContext) argument)) {
-            return null;
-        }
-        final FrostlakeParser.ScalarSubqueryExprContext subquery = (FrostlakeParser.ScalarSubqueryExprContext) argument;
         final FrostlakeParser.SelectStatementContext query = subquery.selectStatement();
         if (query.selectOperand().size() != 1 || query.selectOperand(0).selectClause() == null
                 || query.selectOperand(0).selectClause().tableExpression() == null) {
@@ -273,16 +283,90 @@ final class HavingAggregateSubqueries {
             && answered(executor, outerRelations, aggregate, subquery) ? subquery : null;
     }
 
-    /** Whether a subquery is the whole argument of a MAX, MIN, SUM, COUNT or ANY_VALUE. */
-    private static boolean wholeArgument(final FrostlakeParser.FunctionCallExprContext aggregate,
+    /**
+     * Whether a subquery is what the argument of a MAX, MIN, SUM, COUNT or ANY_VALUE computes from: the argument
+     * itself, or its one subquery (see {@link #soleSubquery}).
+     */
+    private static boolean wholeArgument(final QueryExecutor executor,
+                                         final FrostlakeParser.FunctionCallExprContext aggregate,
                                          final FrostlakeParser.ScalarSubqueryExprContext subquery) {
         return PER_GROUP_AGGREGATES.contains(aggregate.functionName().getText().toUpperCase(Locale.ROOT))
-            && aggregate.functionArgList() != null && aggregate.functionArgList().functionArg().size() == 1
-            && valueOf(aggregate.functionArgList().functionArg(0).booleanExpr()) == subquery;
+            && soleSubquery(executor, aggregate) == subquery;
     }
 
     /**
-     * Whether the aggregate stands, up to the HAVING, under comparisons, arithmetic, IS NOT NULL, COALESCE, AND, OR.
+     * The subquery an aggregate's single argument computes from: the argument itself, or the one value subquery of
+     * an argument that reads nothing else — no column, no other subquery, no aggregate and no window — beside its
+     * constants: {@code MAX((SELECT …) + 1)}, {@code MAX(COALESCE((SELECT …), 0))} (live-verified); null otherwise.
+     */
+    private static FrostlakeParser.ScalarSubqueryExprContext soleSubquery(
+            final QueryExecutor executor, final FrostlakeParser.FunctionCallExprContext aggregate) {
+        if (aggregate.functionArgList() == null || aggregate.functionArgList().functionArg().size() != 1
+                || aggregate.functionArgList().functionArg(0).booleanExpr() == null) {
+            return null;
+        }
+        final ParseTree argument = valueOf(aggregate.functionArgList().functionArg(0).booleanExpr());
+        if (argument instanceof FrostlakeParser.ScalarSubqueryExprContext) {
+            return (FrostlakeParser.ScalarSubqueryExprContext) argument;
+        }
+        final List<FrostlakeParser.ScalarSubqueryExprContext> found = new ArrayList<>();
+        return readsOnlySubqueries(executor, argument, found) && found.size() == 1 ? found.get(0) : null;
+    }
+
+    /** Whether a tree reads nothing but constants and its value subqueries, which it collects. */
+    private static boolean readsOnlySubqueries(final QueryExecutor executor, final ParseTree node,
+                                               final List<FrostlakeParser.ScalarSubqueryExprContext> found) {
+        if (node instanceof FrostlakeParser.ScalarSubqueryExprContext) {
+            found.add((FrostlakeParser.ScalarSubqueryExprContext) node);
+            return true;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext
+                || node instanceof FrostlakeParser.SelectStatementContext
+                || node instanceof FrostlakeParser.FunctionCallStarExprContext
+                || node instanceof FrostlakeParser.FunctionCallExprContext
+                    && (((FrostlakeParser.FunctionCallExprContext) node).overClause() != null
+                        || executor.getFunctionRegistry().getAggregateFunction(
+                            ((FrostlakeParser.FunctionCallExprContext) node).functionName().getText()) != null)) {
+            return false;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (!readsOnlySubqueries(executor, node.getChild(i), found)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The query whose rows a per-group aggregate folds for one group: the subquery itself where it is the whole
+     * argument, and otherwise the argument computed over each row the subquery answers, the subquery's place in it
+     * read from the parse tree. A row the subquery does not answer is none the aggregate reads.
+     *
+     * @param aggregate the HAVING's aggregate call
+     * @param subquery  the subquery it computes from (see {@link #perGroupSubquery})
+     * @return the query's text
+     */
+    static String perGroupQuery(final FrostlakeParser.FunctionCallExprContext aggregate,
+                                final FrostlakeParser.ScalarSubqueryExprContext subquery) {
+        final String inner = ParseTreeText.getOriginalText(subquery.selectStatement());
+        final FrostlakeParser.BooleanExprContext argument = aggregate.functionArgList().functionArg(0).booleanExpr();
+        if (valueOf(argument) == subquery) {
+            return inner;
+        }
+        final CharStream input = argument.getStart().getInputStream();
+        final String before = subquery.getStart().getStartIndex() > argument.getStart().getStartIndex()
+            ? input.getText(Interval.of(argument.getStart().getStartIndex(), subquery.getStart().getStartIndex() - 1))
+            : "";
+        final String after = argument.getStop().getStopIndex() > subquery.getStop().getStopIndex()
+            ? input.getText(Interval.of(subquery.getStop().getStopIndex() + 1, argument.getStop().getStopIndex()))
+            : "";
+        return "SELECT " + before + ANSWERED_RELATION + "." + ANSWERED_COLUMN + after + " FROM (" + inner + ") AS "
+            + ANSWERED_RELATION + " (" + ANSWERED_COLUMN + ")";
+    }
+
+    /**
+     * Whether the aggregate stands, up to the HAVING, under comparisons, arithmetic, IS NOT NULL, COALESCE, AND, OR,
+     * NOT.
      */
     private static boolean answeredWhereItStands(final FrostlakeParser.FunctionCallExprContext aggregate) {
         for (ParseTree at = aggregate.getParent(); at != null; at = at.getParent()) {
@@ -299,6 +383,7 @@ final class HavingAggregateSubqueries {
                 || at instanceof FrostlakeParser.IsNullExprContext
                     && ((FrostlakeParser.IsNullExprContext) at).NOT() != null
                 || at instanceof FrostlakeParser.AndExprContext || at instanceof FrostlakeParser.OrExprContext
+                || at instanceof FrostlakeParser.NotExprContext
                 || at instanceof FrostlakeParser.FunctionArgContext
                 || at instanceof FrostlakeParser.FunctionArgListContext
                 || at instanceof FrostlakeParser.FunctionCallExprContext && ANSWERED_CALLS.contains(
@@ -456,6 +541,12 @@ final class HavingAggregateSubqueries {
         if (printed == null) {
             return null;
         }
+        if ("SUM".equals(name) && written.DISTINCT() == null && !wholeColumn(argument)) {
+            // A SUM casts what it adds to that value's own type (live-verified for casts the statement writes).
+            final PrintedPlanValue summed = planned(argument, true);
+            return summed != null && (summed.isCast() || summed.isFromBoolean())
+                ? "SUM(" + wrapped(summed).getText() + ")" : null;
+        }
         if ("SUM".equals(name) || "AVG".equals(name)) {
             // A SUM, and the SUM an AVG divides, adds whole numbers as NUMBER(38,0).
             return written.DISTINCT() == null && wholeColumn(argument)
@@ -515,25 +606,288 @@ final class HavingAggregateSubqueries {
 
     /** A value inside the subquery's aggregate as the plan prints it, or null. */
     private String value(final ParseTree node) {
+        final PrintedPlanValue planned = planned(node, true);
+        return planned == null ? null : planned.getText();
+    }
+
+    /**
+     * The nesting of an aggregate the subquery's item takes over the outer row alone, which decorrelates into an
+     * aggregate of the grouped query's own: {@code [MAX(CAST(FZ.ID AS VARCHAR(134217728)))] nested in
+     * [MAX(CORRELATION(MAX(CAST(FZ.ID AS VARCHAR(134217728)))))]} (live-verified). One over a bare column of the outer
+     * row is judged as before unless a WHERE reading nothing of the outer row filters the subquery; null where the
+     * item is no such aggregate under a MAX or a MIN, or the nesting cannot be printed.
+     */
+    private String outerOnly(final FrostlakeParser.FunctionCallExprContext aggregate,
+                             final FrostlakeParser.ScalarSubqueryExprContext subquery,
+                             final FrostlakeParser.BooleanExprContext item,
+                             final FrostlakeParser.SelectClauseContext select) {
+        final String outerName = aggregate.functionName().getText().toUpperCase(Locale.ROOT);
+        if (!innerKnown || aggregate.DISTINCT() != null || !"MAX".equals(outerName) && !"MIN".equals(outerName)
+                || aggregate.functionArgList() == null || aggregate.functionArgList().functionArg().size() != 1
+                || valueOf(aggregate.functionArgList().functionArg(0).booleanExpr()) != subquery
+                || !(valueOf(item) instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) valueOf(item);
+        final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
+        if (call.overClause() != null || call.DISTINCT() != null
+                || executor.getFunctionRegistry().getAggregateFunction(name) == null || call.functionArgList() == null
+                || call.functionArgList().functionArg().size() != 1
+                || call.functionArgList().functionArg(0).booleanExpr() == null
+                || readsInnerColumn(call) || !readsOuterColumn(call)) {
+            return null;
+        }
+        final ParseTree argument = valueOf(call.functionArgList().functionArg(0).booleanExpr());
+        if (argument instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final FrostlakeParser.WhereClauseContext where = ParseTreeText.getWhereClause(select);
+            if (where == null || readsOuterColumn(where)) {
+                return null;
+            }
+        }
+        final PrintedPlanValue planned = planned(argument, false);
+        if (planned == null || "AVG".equals(name) || planned.getType() == null && !planned.isLiteral()) {
+            return null;
+        }
+        final String inner;
+        if ("SUM".equals(name)) {
+            final PrintedPlanValue summed = wrapped(planned);
+            if (summed == null) {
+                return null;
+            }
+            inner = "SUM(" + summed.getText() + ")";
+        } else {
+            inner = name + "(" + planned.getText() + ")";
+        }
+        return "Aggregate functions cannot be nested: [" + inner + "] nested in [" + outerName + "(CORRELATION("
+            + inner + "))]";
+    }
+
+    /**
+     * A value inside the subquery's aggregate as the decorrelated plan prints it, or null where it cannot be printed
+     * (live-verified): a column of the subquery's own by its relation ({@code G.V}), one of the outer row as
+     * {@code CORRELATION(FZ.ID)} where the aggregate is the subquery's own and bare where it is the outer query's; a
+     * cast as {@code CAST(x AS <type>)} — a bare VARCHAR as VARCHAR(134217728), a BOOLEAN to a number through
+     * NUMBER(2,0), a cast or a TO_NUMBER to the type the value has already as the value itself; a minus as NEGATE(x);
+     * arithmetic as {@link #arithmetic} converts it.
+     *
+     * @param written   the value
+     * @param correlate whether the outer row's columns read as CORRELATION
+     * @return the value as printed, or null
+     */
+    private PrintedPlanValue planned(final ParseTree written, final boolean correlate) {
+        final ParseTree node = valueOf(written);
+        if (node instanceof FrostlakeParser.ParenExprContext) {
+            return planned(((FrostlakeParser.ParenExprContext) node).booleanExpr(), correlate);
+        }
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
             final FrostlakeParser.QualifiedNameExprContext name = (FrostlakeParser.QualifiedNameExprContext) node;
             final String inner = innerColumn(name);
             if (inner != null) {
-                return inner;
+                return new PrintedPlanValue(inner, columnType(name), true, false, false, false, null);
             }
             final String outer = outerColumn(name);
-            return outer == null ? null : "CORRELATION(" + outer + ")";
+            if (outer == null) {
+                return null;
+            }
+            return new PrintedPlanValue(correlate ? "CORRELATION(" + outer + ")" : outer, outerColumnType(name), true,
+                false, false, false, correlate ? outer : null);
         }
         if (node instanceof FrostlakeParser.LiteralExprContext) {
-            return node.getText();
+            final String text = node.getText();
+            return new PrintedPlanValue(text, wholeLiteralType(text), true, true, false, false, null);
+        }
+        if (node instanceof FrostlakeParser.CastExpr2Context) {
+            final FrostlakeParser.CastExpr2Context cast = (FrostlakeParser.CastExpr2Context) node;
+            return castTo(planned(cast.expression(), correlate),
+                DataTypeParser.parse(cast.dataTypeName(), cast.typeParameters(), DataTypeParser.CAST_STRING_DEFAULT));
+        }
+        if (node instanceof FrostlakeParser.CastExprContext) {
+            final FrostlakeParser.CastExprContext cast = (FrostlakeParser.CastExprContext) node;
+            if (cast.FIELDS() != null) {
+                return null;
+            }
+            return castTo(planned(cast.expression(), correlate),
+                DataTypeParser.parse(cast.dataTypeName(), cast.typeParameters(), DataTypeParser.CAST_STRING_DEFAULT));
+        }
+        if (node instanceof FrostlakeParser.UnaryExprContext) {
+            final FrostlakeParser.UnaryExprContext unary = (FrostlakeParser.UnaryExprContext) node;
+            final PrintedPlanValue operand = planned(unary.expression(), correlate);
+            if (operand == null || unary.op.getType() != FrostlakeParser.MINUS) {
+                return operand;
+            }
+            return new PrintedPlanValue("NEGATE(" + operand.getText() + ")", operand.getType(), true, false, false,
+                false, null);
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            return elidedConversion((FrostlakeParser.FunctionCallExprContext) node, correlate);
         }
         if (node instanceof FrostlakeParser.AdditiveExprContext
                 || node instanceof FrostlakeParser.MultiplicativeExprContext) {
-            final String left = value(valueOf(node.getChild(0)));
-            final String right = value(valueOf(node.getChild(2)));
-            return left == null || right == null ? null : left + " " + node.getChild(1).getText() + " " + right;
+            return arithmetic((ParserRuleContext) node, correlate);
         }
         return null;
+    }
+
+    /**
+     * A cast as the plan prints it: to the type the value has already, the value itself in parentheses; a BOOLEAN to
+     * a number through NUMBER(2,0); a BOOLEAN target or a structured one not printed.
+     */
+    private static PrintedPlanValue castTo(final PrintedPlanValue source, final DataType target) {
+        if (source == null || target == null || target instanceof BooleanType) {
+            return null;
+        }
+        final String targetName = typeName(target);
+        if (source.getType() instanceof BooleanType) {
+            return target instanceof NumericType && !NumericType.isApproximate(target)
+                ? new PrintedPlanValue("CAST(CAST(" + source.getText() + " AS NUMBER(2,0)) AS " + targetName + ")",
+                    target, false, false, true, true, null)
+                : null;
+        }
+        if (source.getType() != null && targetName.equals(typeName(source.getType()))) {
+            return new PrintedPlanValue(source.getText(), source.getType(), false, false, false, false, null);
+        }
+        return new PrintedPlanValue("CAST(" + source.getText() + " AS " + targetName + ")", target, false, false, true,
+            false, null);
+    }
+
+    /** A TO_NUMBER of a whole number, which converts nothing, as the value itself in parentheses; null otherwise. */
+    private PrintedPlanValue elidedConversion(final FrostlakeParser.FunctionCallExprContext call,
+                                              final boolean correlate) {
+        final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
+        if (!"TO_NUMBER".equals(name) && !"TO_DECIMAL".equals(name) && !"TO_NUMERIC".equals(name)
+                || call.functionArgList() == null || call.functionArgList().functionArg().size() != 1
+                || call.functionArgList().functionArg(0).booleanExpr() == null) {
+            return null;
+        }
+        final PrintedPlanValue source = planned(call.functionArgList().functionArg(0).booleanExpr(), correlate);
+        return source != null && WHOLE_SUM.equals(typeName(source.getType()))
+            ? new PrintedPlanValue(source.getText(), source.getType(), false, false, false, false, null) : null;
+    }
+
+    /**
+     * Arithmetic as the plan prints it, or null where it cannot be printed (live-verified): an operand over a FLOAT
+     * turns both to FLOAT; an addition casts the lower scale's side to the higher scale and, beside a BOOLEAN's
+     * conversion, the other side to its own type; a product of two values that are no literal casts each to its own
+     * type, an outer column inside its CORRELATION ({@code CORRELATION(CAST(FZ.ID AS NUMBER(38,0)))}); a quotient of
+     * whole numbers is SCALED_ROUND_INT_DIVIDE of the two so cast; a concatenation casts both sides to
+     * VARCHAR(134217728); an operand that is no column, CORRELATION, call or literal stands in parentheses.
+     */
+    private PrintedPlanValue arithmetic(final ParserRuleContext node, final boolean correlate) {
+        final PrintedPlanValue left = planned(node.getChild(0), correlate);
+        final PrintedPlanValue right = planned(node.getChild(2), correlate);
+        final String op = node.getChild(1).getText();
+        if (left == null || right == null) {
+            return null;
+        }
+        if ("||".equals(op)) {
+            final PrintedPlanValue a = converted(left, PLAN_TEXT, null);
+            final PrintedPlanValue b = converted(right, PLAN_TEXT, null);
+            return new PrintedPlanValue(a.operand() + " || " + b.operand(), null, false, false, false, false, null);
+        }
+        if (!(left.getType() instanceof NumericType) || !(right.getType() instanceof NumericType)
+                || NumericType.isDecfloat(left.getType()) || NumericType.isDecfloat(right.getType())) {
+            return null;
+        }
+        final NumericType l = (NumericType) left.getType();
+        final NumericType r = (NumericType) right.getType();
+        if (NumericType.isApproximate(l) || NumericType.isApproximate(r)) {
+            final PrintedPlanValue a = NumericType.isApproximate(l) ? left : converted(left, "FLOAT", r);
+            final PrintedPlanValue b = NumericType.isApproximate(r) ? right : converted(right, "FLOAT", l);
+            return "%".equals(op) ? null : new PrintedPlanValue(a.operand() + " " + op + " " + b.operand(),
+                NumericType.isApproximate(l) ? l : r, false, false, false, false, null);
+        }
+        if ("+".equals(op) || "-".equals(op)) {
+            final int scale = Math.max(l.getScale(), r.getScale());
+            PrintedPlanValue a = left;
+            PrintedPlanValue b = right;
+            if (l.getScale() < scale) {
+                a = converted(left, aligned(l, scale), null);
+            } else if (r.getScale() < scale) {
+                b = converted(right, aligned(r, scale), null);
+            } else if (left.isFromBoolean() != right.isFromBoolean()) {
+                final PrintedPlanValue other = left.isFromBoolean() ? right : left;
+                if (other.getCorrelated() != null) {
+                    return null;
+                }
+                if (left.isFromBoolean()) {
+                    b = wrapped(right);
+                } else {
+                    a = wrapped(left);
+                }
+            }
+            final int whole = Math.max(l.getPrecision() - l.getScale(), r.getPrecision() - r.getScale()) + 1;
+            return new PrintedPlanValue(a.operand() + " " + op + " " + b.operand(),
+                new NumericType("NUMBER", Math.min(38, whole + scale), scale), false, false, false, false, null);
+        }
+        if ("*".equals(op)) {
+            final boolean plain = left.isLiteral() || right.isLiteral();
+            final PrintedPlanValue a = plain ? left : wrapped(left);
+            final PrintedPlanValue b = plain ? right : wrapped(right);
+            return new PrintedPlanValue(a.operand() + " * " + b.operand(), new NumericType("NUMBER",
+                Math.min(38, l.getPrecision() + r.getPrecision()), Math.min(37, l.getScale() + r.getScale())), false,
+                false, false, false, null);
+        }
+        if ("/".equals(op) && l.getScale() == 0 && r.getScale() == 0 && !left.isLiteral() && !right.isLiteral()) {
+            return new PrintedPlanValue("SCALED_ROUND_INT_DIVIDE(" + wrapped(left).getText() + ", "
+                + wrapped(right).getText() + ")", null, true, false, false, false, null);
+        }
+        return null;
+    }
+
+    /** A value converted to another type for an operation: as it is where it has that type already. */
+    private static PrintedPlanValue converted(final PrintedPlanValue value, final String target,
+                                              final DataType type) {
+        if (value.getType() != null && target.equals(typeName(value.getType()))) {
+            return value;
+        }
+        return new PrintedPlanValue("CAST(" + value.getText() + " AS " + target + ")", type, false, false, true,
+            false, null);
+    }
+
+    /**
+     * A value cast to its own type, as a product's operands and a SUM's argument are: an outer column inside its
+     * CORRELATION, a BOOLEAN's conversion or a literal as it is.
+     */
+    private static PrintedPlanValue wrapped(final PrintedPlanValue value) {
+        if (value.isLiteral() || value.isFromBoolean()) {
+            return value;
+        }
+        final String own = typeName(value.getType());
+        if (value.getCorrelated() != null) {
+            return new PrintedPlanValue("CORRELATION(CAST(" + value.getCorrelated() + " AS " + own + "))",
+                value.getType(), true, false, false, false, null);
+        }
+        return new PrintedPlanValue("CAST(" + value.getText() + " AS " + own + ")", value.getType(), false, false,
+            true, false, null);
+    }
+
+    /** A number's type at a higher scale, its whole digits kept as far as 38 digits allow. */
+    private static String aligned(final NumericType type, final int scale) {
+        return "NUMBER(" + Math.min(38, type.getPrecision() - type.getScale() + scale) + "," + scale + ")";
+    }
+
+    /** A type as the plan prints a cast to it: a bare VARCHAR as VARCHAR(134217728), every float as FLOAT. */
+    private static String typeName(final DataType type) {
+        if (type == null) {
+            return "";
+        }
+        if (type instanceof NumericType && NumericType.isApproximate(type)) {
+            return "FLOAT";
+        }
+        return SqlTypeNames.canonical(type);
+    }
+
+    /** The type of a whole number written out, NUMBER of its digits; null for any other literal. */
+    private static DataType wholeLiteralType(final String text) {
+        if (text.isEmpty()) {
+            return null;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            if (!Character.isDigit(text.charAt(i))) {
+                return null;
+            }
+        }
+        return new NumericType("NUMBER", text.length(), 0);
     }
 
     /** A name of the subquery's own relations, as the plan prints it ({@code G.V}); null for any other name. */
@@ -564,9 +918,19 @@ final class HavingAggregateSubqueries {
 
     /** The declared type of a column of the subquery's own relations, or null. */
     private DataType columnType(final FrostlakeParser.QualifiedNameExprContext name) {
+        return declaredType(name, innerRelations);
+    }
+
+    /** The declared type of a column of the grouped query's relations, or null. */
+    private DataType outerColumnType(final FrostlakeParser.QualifiedNameExprContext name) {
+        return declaredType(name, outerRelations);
+    }
+
+    private static DataType declaredType(final FrostlakeParser.QualifiedNameExprContext name,
+                                         final Map<String, Table> relations) {
         final String[] parts = ParseTreeText.qualifiedNameParts(name.qualifiedName());
         final String column = parts[parts.length - 1];
-        for (final Map.Entry<String, Table> relation : innerRelations.entrySet()) {
+        for (final Map.Entry<String, Table> relation : relations.entrySet()) {
             if (parts.length == 1 || relation.getKey().equalsIgnoreCase(parts[0])) {
                 final TableColumn held = relation.getValue().getColumn(column);
                 if (held != null) {

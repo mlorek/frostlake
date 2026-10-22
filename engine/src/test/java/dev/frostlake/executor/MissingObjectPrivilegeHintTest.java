@@ -37,12 +37,6 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
 
     private static final String ERROR = "SQL compilation error:\n";
 
-    /** The account privileges any one of which lets a role describe a network rule, in the order live lists them. */
-    private static final String[] NETWORK_RULE_READERS = {"APPLY AGGREGATION POLICY", "APPLY DATA MOVEMENT POLICY",
-        "APPLY PRIVACY POLICY", "APPLY JOIN POLICY", "APPLY MASKING POLICY", "APPLY MULTI PARTY APPROVAL POLICY",
-        "APPLY FEATURE POLICY", "APPLY PROJECTION POLICY", "APPLY ROW ACCESS POLICY",
-        "APPLY STORAGE LIFECYCLE POLICY", "APPLY TOKENIZATION POLICY", "MONITOR", "RESOLVE ALL"};
-
     /** The message a statement fails with. */
     private String refusal(final String sql) {
         return assertThrows(RuntimeException.class, new Executable() {
@@ -146,17 +140,15 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
             refusal("ALTER NETWORK RULE nosuch_nr SET COMMENT = 'x'"));
     }
 
-    /** Describing a rule is the one statement whose hint lists several privileges, one sentence each. */
+    /** Describing a missing rule asks for APPLY MASKING POLICY on the account, however the rule is spelled. */
     @Test
-    public void describingANetworkRuleListsEveryAccountPrivilegeThatWouldDo() {
-        final String subject = " Your primary role " + role() + " must have ";
-        final String onAccount = " granted on ACCOUNT " + account() + ".";
-        final StringBuilder expected = new StringBuilder(ERROR
-            + "Network rule 'TEST_DB.TEST_SCHEMA.NOSUCH_NR' does not exist or not authorized.");
-        for (final String privilege : NETWORK_RULE_READERS) {
-            expected.append(subject).append(privilege).append(onAccount);
-        }
-        assertEquals(expected.toString(), refusal("DESCRIBE NETWORK RULE nosuch_nr"));
+    public void describingANetworkRuleAsksForApplyMaskingPolicy() {
+        final String hint = " Your primary role " + role() + " must have APPLY MASKING POLICY granted on ACCOUNT "
+            + account() + ".";
+        assertEquals(ERROR + "Network rule 'TEST_DB.TEST_SCHEMA.NOSUCH_NR' does not exist or not authorized." + hint,
+            refusal("DESCRIBE NETWORK RULE nosuch_nr"));
+        assertEquals(ERROR + "Network rule 'TEST_DB.TEST_SCHEMA.\"nosuch_nr\"' does not exist or not authorized."
+            + hint, refusal("DESCRIBE NETWORK RULE \"nosuch_nr\""));
     }
 
     /** A statement that grants on a rule, revokes on one or lists its grants asks for MONITOR, then RESOLVE ALL. */

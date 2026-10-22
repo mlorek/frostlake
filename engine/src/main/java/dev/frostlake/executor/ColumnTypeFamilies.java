@@ -84,8 +84,13 @@ public final class ColumnTypeFamilies {
         if (targetFamily == null || sourceFamily == null) {
             return;
         }
+        // A semi-structured value is no structured one: an ARRAY_CONSTRUCT written to an ARRAY(INT) column is
+        // "incompatible types: [ARRAY] and [ARRAY(NUMBER(38,0))]", and an OBJECT or a VARIANT in an OBJECT, a MAP or a
+        // structured ARRAY column likewise (live-verified, for INSERT, UPDATE, MERGE and a CTAS column list).
         if ("TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)
-                || "STRING".equals(targetFamily) && sourceFamily.startsWith(INTERVAL_FAMILY)) {
+                || "STRING".equals(targetFamily) && sourceFamily.startsWith(INTERVAL_FAMILY)
+                || isStructuredFamily(targetFamily) && ("ARRAY".equals(sourceFamily) || "OBJECT".equals(sourceFamily)
+                    || "VARIANT".equals(sourceFamily))) {
             throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
                 + spell(sourceType) + "] and [" + spell(target.getDataType()) + "]"));
         }

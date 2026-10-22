@@ -48,6 +48,13 @@ final class ParameterRegistry {
     private static final Set<String> ALERT = load("alert");
     private static final Set<String> ALERT_UNSETTABLE = load("alert_unsettable");
 
+    /**
+     * Every name the parameter list of some level holds, the account's aside: a database's, a warehouse's or a
+     * session's parameter set on an object of another level is refused for want of access, as an account parameter
+     * is (live-verified), and a user's or a task's is read the same way.
+     */
+    private static final Set<String> SOME_LEVEL = someLevel();
+
     static {
         // ALTER TABLE SET also takes PROPERTIES that are not SHOW PARAMETERS entries — the staged
         // COPY defaults are the ones the generic-key path can reach.
@@ -100,6 +107,16 @@ final class ParameterRegistry {
             : "ALERT".equals(kind) && ALERT_UNSETTABLE.contains(canonicalName);
     }
 
+    /**
+     * Whether a name is a parameter in the list of some level (see {@link #SOME_LEVEL}).
+     *
+     * @param canonicalName the name, canonical
+     * @return whether some level's list holds it
+     */
+    static boolean isSomeLevelParameter(final String canonicalName) {
+        return SOME_LEVEL.contains(canonicalName);
+    }
+
     static boolean isDatabaseParameter(final String canonicalName) {
         return DATABASE.contains(canonicalName);
     }
@@ -128,6 +145,14 @@ final class ParameterRegistry {
             return rawTokenText.substring(1, rawTokenText.length() - 1).replace("\"\"", "\"");
         }
         return rawTokenText.toUpperCase(Locale.ROOT);
+    }
+
+    private static Set<String> someLevel() {
+        final Set<String> names = new HashSet<String>();
+        for (final String scope : new String[] {"session", "database", "schema", "warehouse", "user", "task"}) {
+            names.addAll(load(scope));
+        }
+        return names;
     }
 
     private static Set<String> load(final String scope) {

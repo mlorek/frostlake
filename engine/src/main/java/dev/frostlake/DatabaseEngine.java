@@ -51,6 +51,8 @@ import dev.frostlake.persistence.CheckpointDebt;
 import dev.frostlake.persistence.CounterMark;
 import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
+import dev.frostlake.persistence.QueryPointLog;
+import dev.frostlake.persistence.QueryPointSnapshot;
 import dev.frostlake.persistence.WalRecord;
 import dev.frostlake.persistence.WalRecordType;
 import dev.frostlake.persistence.WalReplayFailure;
@@ -115,6 +117,8 @@ public class DatabaseEngine {
     private final SecurityManager securityManager;
     private final PersistenceManager persistenceManager;
     private WriteAheadLog wal;            // durability.walEnabled: append committed transactions, replay on startup
+    /** Beside the log: the time-travel points of the statements it holds no record of (see QueryPointLog). */
+    private QueryPointLog pointLog;
     private boolean replaying = false;    // true while replaying the WAL on startup (suppresses re-logging)
     /** The logged transactions recovery could not re-apply at startup; see {@link #getWalReplayFailures()}. */
     private final List<WalReplayFailure> walReplayFailures = new ArrayList<>();
@@ -275,6 +279,7 @@ public class DatabaseEngine {
                     + EngineConfig.PROP_DURABILITY_WAL_REPLAY_STRICT + " is true; the first: "
                     + walReplayFailures.get(0));
             }
+            openPointLog();
         }
         // A temporary object ends with the session that created it, and none of the sessions whose state a snapshot
         // restored or the log replayed exists any more: whatever they created TEMPORARY is gone.
@@ -981,6 +986,9 @@ public class DatabaseEngine {
             walStatementStart.remove();
         }
         if (!logged) {
+            if (started != null) {
+                keepUnloggedPoint();
+            }
             return;
         }
         final List<String> statements = new ArrayList<String>();
@@ -1029,7 +1037,9 @@ public class DatabaseEngine {
         if (wal == null) {
             return;
         }
-        if (transactionManager.isLastingTransaction()) {
+        if (transactionManager.isLastingTransaction() || transactionManager.holdsLoggedStatements()) {
+            // Another session's open transaction counts too: its statements replay after the checkpoint, over what
+            // the snapshot holds of the commits made since they ran.
             logger.warn("Skipping WAL checkpoint while a transaction is open");
             return;
         }
@@ -1037,9 +1047,14 @@ public class DatabaseEngine {
             checkpointSeq++;
             final String ref = "cp-" + checkpointSeq;
             final Path dir = checkpointDir().resolve(ref);
+            // The points kept beside the log so far go into the snapshot, which keeps every point the history has.
+            final long pointsKept = pointLog == null ? 0L : pointLog.mark();
             persistenceManager.checkpointTo(dir, catalog, storageEngine);   // 1. durable snapshot
             wal.appendCheckpoint(ref);                                       // 2. marker + fsync = pivot
             wal.truncateToCheckpoint(ref);                                   // 3. bound the log
+            if (pointLog != null) {
+                pointLog.dropBefore(pointsKept);
+            }
             deleteSupersededCheckpoints(ref);
             txnsSinceCheckpoint = 0;
             logger.info("WAL checkpoint {} written; log truncated", ref);
@@ -1055,9 +1070,78 @@ public class DatabaseEngine {
             return;
         }
         final int interval = config.getWalCheckpointInterval();
-        if (interval > 0 && txnsSinceCheckpoint >= interval && !transactionManager.isLastingTransaction()) {
+        // Held while any session's transaction has logged statements, and tried again after the next statement.
+        if (interval > 0 && txnsSinceCheckpoint >= interval && !transactionManager.isLastingTransaction()
+                && !transactionManager.holdsLoggedStatements()) {
             checkpoint();
         }
+    }
+
+    /**
+     * Opens the points log beside the write-ahead log and anchors what it keeps, once the replay has run the logged
+     * statements its places are mapped through: each point at the place the replay gave the last logged statement
+     * visible by it, or at its own place when none was, which the checkpoint the replay began from keeps. The file is
+     * rewritten with exactly those points, so a torn last entry a crash left goes.
+     */
+    private void openPointLog() {
+        try {
+            pointLog = new QueryPointLog(Path.of(config.getWalFile() + ".points"));
+            final List<QueryPointSnapshot> points = pointLog.readAll();
+            for (final QueryPointSnapshot point : points) {
+                queryExecutor.getQueryHistoryTracker().anchor(point.queryId, point.toHistory(
+                    placeThrough(point.startThrough, point.startSequence),
+                    placeThrough(point.visibleThrough, point.visibleSequence)));
+            }
+            pointLog.rewrite(points);
+        } catch (final IOException e) {
+            logger.warn("Could not open the time-travel points beside the write-ahead log", e);
+            pointLog = null;
+        }
+    }
+
+    /**
+     * The place a point keeps from a former engine reads at now: the place the replay gave the logged statement it is
+     * mapped through, or the point's own place when it names none or that statement was not replayed.
+     */
+    private long placeThrough(final String through, final long place) {
+        if (through == null) {
+            return place;
+        }
+        final QueryHistory logged = queryExecutor.getQueryHistoryTracker().getQueryById(through);
+        return logged != null && logged.getVisibleSequence() >= 0 ? logged.getVisibleSequence() : place;
+    }
+
+    /**
+     * Keeps, in the points log, the time-travel point of a statement the write-ahead log holds no record of — a query,
+     * a SHOW — so a point naming its query ID reads where it did after a restart: each of its places mapped through the
+     * last logged statement visible by it, which a restart's replay places anew. A statement inside an open
+     * transaction has no visible place yet and is not kept.
+     */
+    private void keepUnloggedPoint() {
+        if (pointLog == null) {
+            return;
+        }
+        final String queryId = queryExecutor.getResultCache().getLastQueryId();
+        final QueryHistory statement = queryId == null ? null
+            : queryExecutor.getQueryHistoryTracker().getQueryById(queryId);
+        if (statement == null || !queryId.equals(statement.getQueryId()) || statement.getVisibleSequence() < 0) {
+            return;
+        }
+        final QueryPointSnapshot point = QueryPointSnapshot.of(queryId, statement);
+        point.startThrough = loggedAs(queryExecutor.getQueryHistoryTracker()
+            .lastLoggedVisibleBy(statement.getStartSequence()));
+        point.visibleThrough = loggedAs(queryExecutor.getQueryHistoryTracker()
+            .lastLoggedVisibleBy(statement.getVisibleSequence()));
+        try {
+            pointLog.append(point);
+        } catch (final IOException e) {
+            logger.warn("Could not keep a statement's time-travel point beside the write-ahead log", e);
+        }
+    }
+
+    /** The query ID the log holds a statement under, or null for none. */
+    private static String loggedAs(final QueryHistory statement) {
+        return statement == null ? null : statement.getLoggedAs();
     }
 
     /** Directory holding checkpoint snapshots, beside the WAL file. */
@@ -1679,27 +1763,35 @@ public class DatabaseEngine {
     }
 
     /**
-     * Makes a user the one the engine's sessions run as. A session of the user starts with the secondary roles its
-     * DEFAULT_SECONDARY_ROLES names, when a statement wrote it: ('ALL') puts every role granted to the user in use,
-     * () none (documented). A user whose roles were never written leaves the secondary roles as they are.
+     * Makes a user the one the engine's sessions run as: CURRENT_USER() names it - the engine's own SYSTEM session
+     * names the configured user - and no role the user may not use stays in use, the former session's primary role
+     * included, which gives way to PUBLIC until the embedder names the user's with setCurrentRole. A session of the
+     * user starts with the secondary roles its DEFAULT_SECONDARY_ROLES names, when a statement wrote it: ('ALL') puts
+     * every role granted to the user in use, () none (documented); a user whose roles were never written leaves the
+     * secondary roles as they are. Switching to SYSTEM, or to a name no user has, leaves the roles as they are.
      *
      * @param username the user's name
      */
     public void setCurrentUser(final String username) {
         sessionContext.setCurrentUser(username);
         final User user = username == null || !catalog.hasUser(username) ? null : catalog.getUser(username);
-        final String defaults = user == null || !user.isDefaultSecondaryRolesWritten() ? null
-            : user.getDefaultSecondaryRoles();
-        if (defaults != null) {
-            // The primary role is still the previous user's here: the embedder names the new user's with
-            // setCurrentRole next. useSecondaryRoles keeps the primary role active, so a role the new user may not
-            // activate is taken out again, or a user granted nothing but R1 would act with the former user's
-            // SYSADMIN (FL-428).
-            final String former = sessionContext.getCurrentRole();
-            catalog.useSecondaryRoles(defaults.contains("\"ALL\"") ? null : Collections.singletonList("NONE"));
-            if (former != null && !catalog.mayActivate(former)) {
-                sessionContext.removeActiveRole(former);
+        sessionContext.setDisplayUser(username == null || "SYSTEM".equalsIgnoreCase(username) ? config.getDefaultUser()
+            : user != null ? user.getName() : username);
+        if (user == null) {
+            return;
+        }
+        final String former = sessionContext.getCurrentRole();
+        for (final String role : new ArrayList<>(sessionContext.getActiveRoles())) {
+            if (!catalog.mayActivate(role)) {
+                sessionContext.removeActiveRole(role);
             }
+        }
+        if (former != null && !catalog.mayActivate(former)) {
+            sessionContext.setCurrentRole("PUBLIC");
+        }
+        if (user.isDefaultSecondaryRolesWritten()) {
+            catalog.useSecondaryRoles(user.getDefaultSecondaryRoles().contains("\"ALL\"")
+                ? null : Collections.singletonList("NONE"));
         }
     }
 
@@ -1776,6 +1868,9 @@ public class DatabaseEngine {
 
         if (wal != null) {
             wal.close();
+        }
+        if (pointLog != null) {
+            pointLog.close();
         }
 
         dropTemporaryObjects();

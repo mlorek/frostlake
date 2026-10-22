@@ -44,6 +44,10 @@ import org.antlr.v4.runtime.Token;
  *   SELECT 1 x y; SELECT 'abc  'y', then the lexer's line: a fault that stands before the lexer's is told first
  *   SELECT 'abc'def'           a quote that is the text's last character is a token no rule reads, refused where
  *                              it stands and alone
+ *   SELECT `a b` FROM t1       a name between backticks takes the printable ASCII characters but the quotes and
+ *                              the backtick: the lexer tells the first other one, here near '32' at 9, and drops
+ *                              it with the name; b is read on, and the backtick and the blank after it are a
+ *                              token no rule reads, '` ' at 11
  * </pre>
  *
  * <p>The lines after the lexer's are the ones the text reports once it is repaired the way the account's lexer
@@ -56,6 +60,7 @@ public final class UnclosedLiteralLines {
     private static final int STRING = 1;
     private static final int TO_END = 2;
     private static final int LAST_QUOTE = 3;
+    private static final int BACKTICK = 4;
 
     private UnclosedLiteralLines() {
     }
@@ -83,7 +88,8 @@ public final class UnclosedLiteralLines {
             return null;
         }
         final char[] text = sql.toCharArray();
-        final int to = fault[0] == TO_END ? text.length - 1 : fault[1];
+        final int to = fault[0] == TO_END ? text.length - 1
+            : fault[0] == BACKTICK ? Math.min(fault[2], text.length - 1) : fault[1];
         for (int i = fault[1]; i <= to; i++) {
             if (text[i] != '\n' && text[i] != '\r') {
                 text[i] = ' ';
@@ -110,8 +116,103 @@ public final class UnclosedLiteralLines {
             return lines;
         }
         final int[] end = LeadingCommentOffset.rebase(EndOfInput.line(sql), EndOfInput.position(sql));
+        if (fault[0] == BACKTICK && fault[2] < sql.length()) {
+            final int[] stops = placeOf(sql, fault[2]);
+            lines.add("parse error line " + stops[0] + " at position " + stops[1] + " near '"
+                + (int) sql.charAt(fault[2]) + "'.");
+            lines.addAll(rest.subList(taken, rest.size()));
+            return lines;
+        }
+        final boolean escapes = fault[0] == STRING && sql.indexOf('\\', fault[1]) >= 0;
+        // Inside brackets, after a string, the account's parser reads a token past the one it refuses before it tells
+        // it, and when that token is the string left open, its lexer's line is told first: SELECT ABS('x, 'y') is the
+        // end, then 'y', where SELECT 1 FROM t1 x y 'abc is 'y', then the end (live-verified).
+        final String lookedPast = fault[0] == STRING && !escapes && !lines.isEmpty()
+            && namesTokenBefore(sql, fault[1], lines.get(lines.size() - 1)) ? lines.remove(lines.size() - 1) : null;
         lines.add("parse error line " + end[0] + " at position " + end[1] + " near '<EOF>'.");
+        if (escapes) {
+            lines.addAll(escapeLines(sql, fault[1], end));
+            return lines;
+        }
+        if (lookedPast != null) {
+            lines.add(lookedPast);
+        }
         lines.addAll(rest.subList(taken, rest.size()));
+        return lines;
+    }
+
+    /**
+     * Whether a reported line names the token the text holds last before the character at {@code index}, when that
+     * token stands inside brackets straight after a string.
+     */
+    private static boolean namesTokenBefore(final String sql, final int index, final String line) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        Token before = null;
+        Token earlier = null;
+        int depth = 0;
+        for (final Token token : stream.getTokens()) {
+            if (token.getChannel() != Token.DEFAULT_CHANNEL || token.getType() == Token.EOF
+                    || token.getStopIndex() >= index) {
+                continue;
+            }
+            earlier = before;
+            before = token;
+            depth += token.getType() == FrostlakeLexer.LPAREN ? 1 : token.getType() == FrostlakeLexer.RPAREN ? -1 : 0;
+        }
+        final int[] named = SyntaxErrorListener.sentenceCoordinates(line);
+        if (before == null || named == null || depth < 1 || earlier == null
+                || earlier.getType() != FrostlakeLexer.STRING_LITERAL) {
+            return false;
+        }
+        final int[] stands = LeadingCommentOffset.rebase(before.getLine(), before.getCharPositionInLine());
+        return named[0] == stands[0] && named[1] == stands[1];
+    }
+
+    /**
+     * The lines the account's lexer adds for the escapes of a string it never closes, after its own line (all
+     * live-verified): each backslash is told at the character after it, by that character's code — or at the end of the
+     * input when nothing follows — but for a backslash before a blank, which escapes nothing told; and when the text
+     * ends in a told escape, the end of the input is refused as well, unless the string follows a comma.
+     *
+     * <pre>
+     *   SELECT 'a\bc          the lexer's line, then near '98' at 10
+     *   SELECT 'abc\n         the lexer's line, near '110' at 12, then '&lt;EOF&gt;' at 13
+     *   SELECT 'abc\          the lexer's line twice, then '&lt;EOF&gt;' at 12
+     *   SELECT 1, 'abc\       the lexer's line twice: after a comma the end is not refused
+     *   SELECT 'abc\ x        the lexer's line alone
+     * </pre>
+     */
+    private static List<String> escapeLines(final String sql, final int quote, final int[] end) {
+        final List<String> lines = new ArrayList<>();
+        boolean endsInEscape = false;
+        for (int i = quote + 1; i < sql.length(); i++) {
+            endsInEscape = false;
+            if (sql.charAt(i) != '\\') {
+                continue;
+            }
+            if (i + 1 >= sql.length()) {
+                lines.add("parse error line " + end[0] + " at position " + end[1] + " near '<EOF>'.");
+                endsInEscape = true;
+                break;
+            }
+            final char escaped = sql.charAt(i + 1);
+            if (!Character.isWhitespace(escaped)) {
+                final int[] at = placeOf(sql, i + 1);
+                lines.add("parse error line " + at[0] + " at position " + at[1] + " near '" + (int) escaped + "'.");
+                endsInEscape = i + 2 >= sql.length();
+            }
+            i++;
+        }
+        int before = quote - 1;
+        while (before >= 0 && Character.isWhitespace(sql.charAt(before))) {
+            before--;
+        }
+        if (endsInEscape && (before < 0 || sql.charAt(before) != ',')) {
+            lines.add("syntax error line " + end[0] + " at position " + end[1] + " unexpected '<EOF>'.");
+        }
         return lines;
     }
 
@@ -135,8 +236,25 @@ public final class UnclosedLiteralLines {
     }
 
     /**
-     * What the lexer gives up on first, and where: an unclosed string at its quote, a quote that ends the text, or
-     * a quoted name, a comment or a binary literal from its first character.
+     * Whether the backtick at {@code at} opens a name: a character a name between backticks holds follows it.
+     *
+     * @param sql the text
+     * @param at  the backtick's index
+     * @return whether it does
+     */
+    static boolean opensBacktickName(final String sql, final int at) {
+        return at + 1 < sql.length() && isBacktickNameCharacter(sql.charAt(at + 1));
+    }
+
+    /** A printable ASCII character other than a quote or a backtick, as a name between backticks holds them. */
+    private static boolean isBacktickNameCharacter(final char character) {
+        return character > ' ' && character < 127 && character != '"' && character != '\'' && character != '`';
+    }
+
+    /**
+     * What the lexer gives up on first, and where: an unclosed string at its quote, a quote that ends the text, a
+     * quoted name, a comment or a binary literal from its first character, or a name between backticks the text never
+     * closes from its backtick, with the character it stops at (the length of the text when it reaches the end).
      *
      * @return the kind and the index, the kind NONE when the text holds no such fault
      */
@@ -166,6 +284,16 @@ public final class UnclosedLiteralLines {
         final char opens = sql.charAt(at);
         if (opens == '"') {
             return new int[] {TO_END, at};
+        }
+        if (opens == '`') {
+            if (!opensBacktickName(sql, at)) {
+                return new int[] {NONE, -1};
+            }
+            int stops = at + 1;
+            while (stops < sql.length() && isBacktickNameCharacter(sql.charAt(stops))) {
+                stops++;
+            }
+            return new int[] {BACKTICK, at, stops};
         }
         if (opens != '\'') {
             return new int[] {NONE, -1};

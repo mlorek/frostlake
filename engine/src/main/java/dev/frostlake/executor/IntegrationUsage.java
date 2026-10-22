@@ -25,7 +25,7 @@ import dev.frostlake.security.SecurityManager;
  * EXTERNAL_ACCESS_INTEGRATIONS and an external function's API_INTEGRATION (documented, each statement's access control
  * table). The owner holds it, as does a role granted USAGE; ACCOUNTADMIN holds only what it was granted, as for every
  * object. An integration the session may not use is refused as one that is not there, in the sentence live words a
- * missing integration in: {@code Integration 'SI' does not exist or not authorized.} (FL-430).
+ * missing integration in: {@code Integration 'SI' does not exist or not authorized.}.
  */
 public final class IntegrationUsage {
 

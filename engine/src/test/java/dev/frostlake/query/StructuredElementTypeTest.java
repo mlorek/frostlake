@@ -114,7 +114,7 @@ public class StructuredElementTypeTest extends BaseDatabaseTest {
     /**
      * A FLATTEN of a MAP that is not RECURSIVE answers KEY as the map's key type (documented: "the key column matches
      * the MAP's key type"), so a NUMBER-keyed map's keys sort 1, 2, 10, compare and add as numbers and a CTAS declares
-     * them NUMBER, as MAP_KEYS answers them (FL-479). A text-keyed map's KEY stays VARCHAR, as a RECURSIVE one's does.
+     * them NUMBER, as MAP_KEYS answers them. A text-keyed map's KEY stays VARCHAR, as a RECURSIVE one's does.
      */
     @Test
     public void aFlattenOfANumberKeyedMapHasNumberKeys() {

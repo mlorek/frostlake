@@ -362,11 +362,9 @@ public class BeginEndBlockHandler implements CommandHandler {
         // block in the session.
         RoutineStatementRules.judgeNestedTypesAndRoutines(ctx);
         // A procedure's own block has its parameters in scope, and only those: the variables of a block that
-        // called it are another scope.
-        final Set<String> parameters = new HashSet<String>();
-        for (final String name : proceduralExecutor().ownBlockParameterNames()) {
-            parameters.add(ScriptingNameValidator.canonical(name));
-        }
+        // called it are another scope. A parameter's name is held as its declaration spelled it, a quoted one with
+        // its own case.
+        final Set<String> parameters = new HashSet<String>(proceduralExecutor().ownBlockParameterNames());
         // The DECLARE sections finish compiling next: a DECLARE item repeating a parameter's name is refused after
         // the pass above, and before an unnamed bind (live-verified).
         ScriptingNameValidator.rejectRedeclaration(ctx, parameters, true);
@@ -386,6 +384,17 @@ public class BeginEndBlockHandler implements CommandHandler {
         // nothing is refused even on a branch this run will not take. Seeded with what is already in
         // scope — a stored procedure's parameters, or an enclosing block's variables.
         final Set<String> inScope = new HashSet<String>(proceduralExecutor().getAllVariables().keySet());
+        // A quoted parameter is read by its own name alone: "low" is no LOW, and LOW no "low" (live-verified). The
+        // names in scope are read as written, so it goes in quoted.
+        for (final String parameter : parameters) {
+            final String folded = parameter.toUpperCase(Locale.ROOT);
+            if (!parameter.equals(folded)) {
+                if (!parameters.contains(folded)) {
+                    inScope.remove(folded);
+                }
+                inScope.add('"' + parameter + '"');
+            }
+        }
         inScope.addAll(proceduralExecutor().saveCursorNames());
         inScope.addAll(proceduralExecutor().declaredExceptionNames());
         // A block nested in a FOR loop over a cursor reads the loop's record as the loop's own statements do.

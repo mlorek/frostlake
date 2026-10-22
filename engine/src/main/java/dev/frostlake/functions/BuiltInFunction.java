@@ -321,6 +321,19 @@ public abstract class BuiltInFunction {
     }
 
     /**
+     * Whether this position holds a BINARY value to the width its argument's type declares, refusing a longer one
+     * where the function reads it: HEX_ENCODE of a table function's BINARY(1) column holding two bytes is {@code
+     * Binary value 'ABCD' is too long and would be truncated in 'HEX_ENCODE'} (live-verified). By default no position
+     * does; the value is read whole.
+     *
+     * @param position the argument's position, counted from zero
+     * @return whether the position is held to its declared width
+     */
+    public boolean holdsDeclaredWidth(final int position) {
+        return false;
+    }
+
+    /**
      * The refusal this position gives a declared UUID argument. A UUID is its own type on the account,
      * and the ordering aggregates refuse it — "Function MAX does not support UUID argument type" — while
      * the text functions read it as the text it holds.

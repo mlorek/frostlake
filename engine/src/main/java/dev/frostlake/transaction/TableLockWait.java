@@ -55,31 +55,39 @@ public final class TableLockWait extends RuntimeException {
      */
     public void await(final TransactionManager transactions, final long timeoutSeconds, final long waitingSince,
                       final LockWaitStop stop) {
+        // The refusal names the waiting statement by the ID it runs under.
+        final String running = stop.waitingQueryId();
+        final String waitingQueryId = running != null ? running : UUID.randomUUID().toString();
         if (timeoutSeconds <= 0) {
-            throw refusal("is currently not allowed.", UUID.randomUUID().toString());
+            throw refusal("is currently not allowed.", waitingQueryId);
         }
         final long deadline = waitingSince + TimeUnit.SECONDS.toNanos(timeoutSeconds);
         // The waiting statement's lock shows as WAITING in SHOW LOCKS for as long as it waits.
         final Transaction waiter = transactions.getCurrentTransaction();
-        final String waitingQueryId = UUID.randomUUID().toString();
         if (waiter != null) {
             waiter.beginWaiting(fullyQualifiedName, waitingQueryId);
         }
         final EngineLockRelease release = TableLockGate.release();
         release.release();
+        boolean interrupted = false;
         try {
             while (stillHeld(transactions) && System.nanoTime() < deadline) {
                 stop.check();
                 Thread.sleep(Math.max(1L, Math.min(POLL_MILLIS,
                     TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))));
             }
-        } catch (final InterruptedException interrupted) {
+        } catch (final InterruptedException interruption) {
             Thread.currentThread().interrupt();
+            interrupted = true;
         } finally {
             if (waiter != null) {
                 waiter.endWaiting();
             }
             release.reacquire();
+        }
+        // An interrupted wait ends the statement as a cancel does, not as the timeout running out.
+        if (interrupted) {
+            throw stop.interrupted();
         }
         if (stillHeld(transactions)) {
             throw refusal("is limited to " + timeoutSeconds + " seconds.", waitingQueryId);

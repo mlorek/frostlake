@@ -35,8 +35,8 @@ and the grant listings' names are answered as SHOW lists them.
   no body and no request id, and nothing runs; a request with no `Content-Type` is read as JSON. A property the
   schema does not define is ignored.
 - **Authentication.** `Authorization` and `X-Snowflake-Authorization-Token-Type` are accepted and **not
-  checked** — the server is unauthenticated by design ([scope.md](scope.md)), so no request is ever answered
-  `401`.
+  checked** — the server is unauthenticated by design ([scope.md](scope.md)), so no request is answered `401` for
+  its credentials; a fetch of a schema of the SNOWFLAKE database is, as the account answers its access refusal.
 - **Sessions.** The account keeps one session per token, so a call carrying an `Authorization` header runs in the
   session kept for that header's value: what one call changes in it — the warehouse `:use` selects, the one a
   create makes current — carries over to the caller's next call. `X-Sfc-Session: <session id>` runs a call in a
@@ -65,6 +65,7 @@ and the grant listings' names are answered as SHOW lists them.
 | `200` | success: a listing (array) or an object, or `{"status": "…"}` for a create, delete or action, carrying the sentence the statement answered |
 | `202` | the operation is still running — see *Asynchronous execution* |
 | `400` | a statement the engine refused for a reason not below; a missing required `name` (code `390400`); an invalid identifier (`Invalid SQL Identifier found in the request: <text>`). A request that cannot be read at all — malformed JSON, a body or property of the wrong type (other than a grant's `securable` or `containing_scope`, which answer the missing-property `400`), a query parameter that is not the integer it should be — is a `400` with an **empty** body |
+| `401` | a fetch of a schema of the SNOWFLAKE database, refused as DESCRIBE SCHEMA refuses it (code `003001`) |
 | `403` | the statement was refused for insufficient privileges |
 | `404` | the object does not exist; or the path matches no endpoint, or uses a method the API never uses (`PATCH`) — then bare: no body, no request id, as the account's edge answers |
 | `405` | the path is an endpoint under another of the API's methods (a `PUT` on a view, a `POST` on a warehouse) — bare |

@@ -23,10 +23,12 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.model.AccountTags;
 import dev.frostlake.metastore.model.AggregationPolicy;
+import dev.frostlake.metastore.model.CloneContent;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
@@ -74,6 +76,8 @@ public class Catalog {
     private final IntegrationRegistry integrations = new IntegrationRegistry();
     /** The files COPY has loaded, for LOAD_HISTORY and COPY_HISTORY. */
     private final LoadHistory loadHistory = new LoadHistory();
+    /** The account's query history, whose time-travel points a restored state keeps; the executor shares it. */
+    private QueryHistoryTracker queryHistory;
     /**
      * The files each permanent table has loaded, by the table's storage key: what a COPY skips unless FORCE = TRUE,
      * kept with the catalog so a snapshot, a clone and a restored state carry it.
@@ -179,6 +183,12 @@ public class Catalog {
             schema.setComment(seeded.comment());
             system.addSchema(schema);
         }
+        // Its database roles are the share's, which no role owns.
+        for (final String name : SystemDatabase.roles()) {
+            final DatabaseRole role = new DatabaseRole(SystemDatabase.NAME, name);
+            role.setOwner(null);
+            system.putDatabaseRole(role);
+        }
         system.setReadOnly(true);
         this.currentDatabase = "SNOWFLAKE";
         this.currentSchema = "PUBLIC";
@@ -198,13 +208,13 @@ public class Catalog {
         GrantNames.created(this, "DATABASE", name);
     }
 
-    public void cloneDatabase(final String sourceName, final String targetName) {
+    public void cloneDatabase(final String sourceName, final String targetName, final CloneContent content) {
         if (databases.containsKey(targetName)) {
             throw new RuntimeException(alreadyExists(targetName));
         }
 
         final Database sourceDb = databaseExact(sourceName);
-        final Database targetDb = sourceDb.clone(targetName);
+        final Database targetDb = sourceDb.clone(targetName, content);
         for (final Schema schema : sourceDb.getAllSchemas()) {
             if (targetDb.hasSchema(schema.getName())) {
                 StreamSources.carryClonedStates(this, schema, targetDb.getSchema(schema.getName()));
@@ -1161,6 +1171,24 @@ public class Catalog {
     /** The files COPY has loaded into the account's tables. */
     public LoadHistory getLoadHistory() {
         return loadHistory;
+    }
+
+    /**
+     * The history the account's statements are kept in, whose time-travel points a snapshot keeps.
+     *
+     * @return the history, or null before an executor shares one
+     */
+    public QueryHistoryTracker getQueryHistory() {
+        return queryHistory;
+    }
+
+    /**
+     * Share an executor's query history with the catalog's snapshots.
+     *
+     * @param history the history
+     */
+    public void useQueryHistory(final QueryHistoryTracker history) {
+        this.queryHistory = history;
     }
 
     /**
@@ -2195,16 +2223,19 @@ public class Catalog {
     }
 
     /**
-     * Check if a role is a system role
+     * Whether a role's canonical name is a system role's: a quoted name is that name alone, so {@code "sysadmin"}
+     * names a role of its own beside SYSADMIN, as every quoted identifier names exactly what it spells.
+     *
+     * @param roleName the role's canonical name
+     * @return whether it is a system role's
      */
     public boolean isSystemRole(final String roleName) {
-        final String upperName = roleName.toUpperCase(Locale.ROOT);
-        return upperName.equals("ORGADMIN") ||
-               upperName.equals("ACCOUNTADMIN") ||
-               upperName.equals("SECURITYADMIN") ||
-               upperName.equals("USERADMIN") ||
-               upperName.equals("SYSADMIN") ||
-               upperName.equals("PUBLIC");
+        return "ORGADMIN".equals(roleName)
+            || "ACCOUNTADMIN".equals(roleName)
+            || "SECURITYADMIN".equals(roleName)
+            || "USERADMIN".equals(roleName)
+            || "SYSADMIN".equals(roleName)
+            || "PUBLIC".equals(roleName);
     }
 
     /**

@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ClonePoint;
+import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.DynamicTableRefreshOutcome;
 import dev.frostlake.executor.ExpressionColumns;
@@ -972,7 +973,8 @@ public class DDLCommandHandler implements CommandHandler {
             recluster(mv, action.SUSPEND() != null);
         } else if (action.clusterByClause() != null) {
             mv.setClusterKeys(MaterializedViewKeys.read(action.clusterByClause().expressionList(),
-                mv.getResolvedColumns(), this, queryExecutor));
+                mv.getResolvedColumns(), this, queryExecutor), ClusteringKeySpelling.written(
+                action.clusterByClause().clusterKeyOrder(), action.clusterByClause().expressionList()));
             mv.setReclusterSuspended(false);
         } else if (action.CLUSTERING() != null) {
             // Dropping the key of a view that has none is no fault (live-verified).
@@ -1152,7 +1154,7 @@ public class DDLCommandHandler implements CommandHandler {
             recluster(mv, action.SUSPEND() != null);
         } else if (action.CLUSTER() != null && action.expressionList() != null) {
             mv.setClusterKeys(MaterializedViewKeys.read(action.expressionList(), mv.getResolvedColumns(), this,
-                queryExecutor));
+                queryExecutor), ClusteringKeySpelling.written(action.clusterKeyOrder(), action.expressionList()));
             mv.setReclusterSuspended(false);
         } else if (action.DROP() != null && action.CLUSTERING() != null) {
             mv.setClusterKeys(null);
@@ -1190,11 +1192,8 @@ public class DDLCommandHandler implements CommandHandler {
             }
             dt.setReclusterSuspended(action.SUSPEND() != null);
         } else if (action.CLUSTER() != null && action.expressionList() != null) {
-            final List<String> keys = new ArrayList<>();
-            for (final FrostlakeParser.ExpressionContext key : action.expressionList().expression()) {
-                keys.add(getOriginalText(key));
-            }
-            dt.setClusterKeys(keys);
+            dt.setClusterKeys(ClusteringKeySpelling.keys(action.expressionList()),
+                ClusteringKeySpelling.written(action.clusterKeyOrder(), action.expressionList()));
         } else if (action.CLUSTERING() != null) {
             dt.setClusterKeys(new ArrayList<String>());
         } else if (action.SET() != null && action.COMMENT() != null && action.STRING_LITERAL() != null) {
@@ -1256,6 +1255,12 @@ public class DDLCommandHandler implements CommandHandler {
             }
             dt.setReclusterSuspended(action.SUSPEND() != null);
             logger.trace("{} reclustering of dynamic table: {}", action.SUSPEND() != null ? "Suspended" : "Resumed", qn);
+        } else if (action.clusterByClause() != null) {
+            dt.setClusterKeys(ClusteringKeySpelling.keys(action.clusterByClause().expressionList()),
+                ClusteringKeySpelling.written(action.clusterByClause().clusterKeyOrder(),
+                    action.clusterByClause().expressionList()));
+        } else if (action.CLUSTERING() != null) {
+            dt.setClusterKeys(new ArrayList<String>());
         } else if (action.SWAP() != null) {
             swapDynamicTables(schema, dt, action.qualifiedName());
             logger.trace("Swapped dynamic table {} with {}", qn, getText(action.qualifiedName()));

@@ -17,7 +17,9 @@
 package dev.frostlake.persistence;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.LoadRecord;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.CheckConstraint;
@@ -202,6 +204,18 @@ final class CatalogSnapshotWriter {
         for (final Map.Entry<String, Set<String>> loaded : catalog.getCopyLoadedFiles().entrySet()) {
             snapshot.copyLoadedFiles.put(loaded.getKey(), new ArrayList<>(loaded.getValue()));
         }
+        // And what each load did, which LOAD_HISTORY and COPY_HISTORY list after the restore as before it.
+        snapshot.loadHistory = new ArrayList<>();
+        for (final LoadRecord load : catalog.getLoadHistory().records()) {
+            snapshot.loadHistory.add(LoadRecordSnapshot.of(load));
+        }
+        // And the statements a time-travel point may name by query ID, at the places the histories saved here keep.
+        snapshot.queryPoints = new ArrayList<>();
+        if (catalog.getQueryHistory() != null) {
+            for (final Map.Entry<String, QueryHistory> point : catalog.getQueryHistory().pointsById().entrySet()) {
+                snapshot.queryPoints.add(QueryPointSnapshot.of(point.getKey(), point.getValue()));
+            }
+        }
 
         // Every history saved above drew its numbers by now.
         snapshot.snapshotSequence = SnapshotSequence.current();
@@ -380,6 +394,8 @@ final class CatalogSnapshotWriter {
             viewSnapshot.rowAccessPolicyName = view.getRowAccessPolicyName();
             viewSnapshot.rowAccessPolicyColumns = view.hasRowAccessPolicy()
                 ? new ArrayList<>(view.getRowAccessPolicyColumns()) : null;
+            viewSnapshot.dataMetrics = DataMetricSnapshots.of(view.dataMetricAttachments());
+            viewSnapshot.dataMetricSchedule = view.dataMetricAttachments().getSchedule();
             viewSnapshot.columns = derivedColumnSnapshots(view.getResolvedColumns());
             schemaSnapshot.views.add(viewSnapshot);
         }
@@ -437,6 +453,7 @@ final class CatalogSnapshotWriter {
             serviceSnapshot.requestLogging = service.isRequestLogging();
             serviceSnapshot.autoSuspend = service.getAutoSuspend();
             serviceSnapshot.tags = new LinkedHashMap<>(service.getTagValues());
+            serviceSnapshot.scoringProfiles = new LinkedHashMap<>(service.getScoringProfiles());
             schemaSnapshot.cortexSearchServices.add(serviceSnapshot);
         }
 
@@ -715,6 +732,7 @@ final class CatalogSnapshotWriter {
             dtSnapshot.targetLag = dt.getTargetLag();
             dtSnapshot.warehouse = dt.getWarehouse();
             dtSnapshot.refreshMode = dt.getRefreshMode() != null ? dt.getRefreshMode().name() : null;
+            dtSnapshot.fullRefreshReason = dt.getFullRefreshReason();
             dtSnapshot.initialize = dt.getInitialize() != null ? dt.getInitialize().name() : null;
             dtSnapshot.state = dt.getState() != null ? dt.getState().name() : null;
             dtSnapshot.comment = dt.getComment();
@@ -723,6 +741,7 @@ final class CatalogSnapshotWriter {
             dtSnapshot.lastDdlAt = dt.getLastDdlTime();
             dtSnapshot.lastDdlBy = dt.getLastDdlBy();
             dtSnapshot.clusterKeys = dt.getClusterKeys();
+            dtSnapshot.clusterByText = dt.getClusterByText();
             dtSnapshot.refreshedRows = Long.valueOf(dt.getRefreshedRows());
             dtSnapshot.lastRefreshedTime = dt.getLastRefreshedTime();
             dtSnapshot.firstRefreshedSequence = Long.valueOf(dt.getFirstRefreshedSequence());

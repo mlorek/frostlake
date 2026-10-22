@@ -325,7 +325,7 @@ public final class BlockCallStatementReading {
     }
 
     /** Whether a call's name may be the token: one word, not a statement's own. */
-    private static boolean isCallName(final Token token) {
+    static boolean isCallName(final Token token) {
         final String text = token.getText();
         if (text == null || text.isEmpty() || STATEMENT_WORDS.contains(Integer.valueOf(token.getType()))) {
             return false;

@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
  * 1.255 as {@code Decimal('1.26')} and a FLOAT one reads 2 and '1.5' as {@code float}s. A VECTOR arrives as the
  * {@code memoryview} Snowflake's SQL-Python type mapping names (docs.snowflake.com/en/developer-guide/
  * udf-stored-procedure-data-type-mapping), of its 32-bit elements, on both backends: a function and a procedure index
- * it, measure it and read it as a list (#2391; the memoryview's format is unmeasured).
+ * it, measure it and read it as a list (the memoryview's format is unmeasured).
  */
 public class PythonFunctionArgumentTypesTest extends MeasuredCellsTestSupport {
 

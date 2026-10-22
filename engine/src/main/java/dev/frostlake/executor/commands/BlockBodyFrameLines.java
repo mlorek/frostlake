@@ -177,13 +177,15 @@ final class BlockBodyFrameLines {
      * <ul>
      *   <li>a quantifier no predicate takes, and the token that opens its list, as at the frame's own level —
      *       {@code nosuch(a NOT LIKE ANY ('x', 'y'))} names the {@code a}, the ANY and the {@code 'x'};</li>
-     *   <li>a second test after a finished IS test, which ends the reading — {@code nosuch(a IS NULL IS NULL)}
-     *       and {@code nosuch(a + 1 IS NULL IS NULL)} name the second IS, and nothing after it;</li>
+     *   <li>a second test after a finished IS test, which ends the reading — {@code nosuch(a IS NULL IS NULL)},
+     *       {@code nosuch(a + 1 IS NULL IS NULL)} and {@code nosuch(a IS DISTINCT FROM 1 + 1 IS NULL)} name the
+     *       second IS, and nothing after it;</li>
      *   <li>once an operator or a sign has its operand, an IS NULL or IS DISTINCT FROM test is finished, a LIKE
      *       has its pattern or a query in parentheses is read, the next comma or the bracket's closing parenthesis,
      *       which ends the reading: {@code nosuch(a.b.c + 1)} and {@code nosuch(a.b.c, -1)} name the {@code )},
      *       {@code nosuch(a.b.c + 1, 2)} the comma, {@code nosuch(EXISTS (SELECT 1) IS NULL)} the
-     *       {@code )}; an operator still owed its operand there asks nothing, {@code RETURN (1 +);}.</li>
+     *       {@code )}; an IN list is such an operand, {@code nosuch(a.b.c IN (1, 2))} names the {@code )}; an
+     *       operator still owed its operand there asks nothing, {@code RETURN (1 +);}.</li>
      * </ul>
      * Names, dots, commas, literals and calls in parentheses ask nothing: {@code nosuch(a.b.c, 1)} and
      * {@code nosuch(SUBSTRING('abc' FROM 1 FOR 2))} report nothing more, and neither does a truth test,
@@ -235,7 +237,8 @@ final class BlockBodyFrameLines {
                         delimiterDue = true;
                     }
                     operandOwed = false;
-                } else if (operandOwed || j + 1 < last && isQueryStart(framed.get(j + 1).getType())) {
+                } else if (operandOwed || framed.get(j - 1).getType() == FrostlakeLexer.IN
+                        || j + 1 < last && isQueryStart(framed.get(j + 1).getType())) {
                     delimiterDue = true;
                     operandOwed = false;
                 }
@@ -348,7 +351,7 @@ final class BlockBodyFrameLines {
 
     /**
      * Whether the IS at {@code at} follows a finished test of the same operand: {@code IS [NOT] NULL}, or
-     * {@code IS [NOT] DISTINCT FROM} and a single-token operand.
+     * {@code IS [NOT] DISTINCT FROM} and its operand, one token or operands joined by operators ({@code 1 + 1}).
      */
     private static boolean isSecondTest(final List<Token> framed, final int at) {
         if (framed.get(at).getType() != FrostlakeLexer.IS || at < 2) {
@@ -357,8 +360,13 @@ final class BlockBodyFrameLines {
         if (framed.get(at - 1).getType() == FrostlakeLexer.NULL) {
             return completesTest(framed, at - 1);
         }
-        return at >= 4 && framed.get(at - 2).getType() == FrostlakeLexer.FROM
-            && framed.get(at - 3).getType() == FrostlakeLexer.DISTINCT && completesTest(framed, at - 3);
+        int operand = at - 1;
+        while (operand >= 2 && isOperator(framed.get(operand - 1).getType())
+                && isOperand(framed.get(operand - 2).getType())) {
+            operand -= 2;
+        }
+        return operand >= 3 && framed.get(operand - 1).getType() == FrostlakeLexer.FROM
+            && framed.get(operand - 2).getType() == FrostlakeLexer.DISTINCT && completesTest(framed, operand - 2);
     }
 
     /** Whether the IS at {@code at} opens a truth test, {@code IS [NOT] TRUE} or {@code IS [NOT] FALSE}. */

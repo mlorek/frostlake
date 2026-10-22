@@ -22,6 +22,8 @@ import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionAstBuilder;
+import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.IsNullExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.SubqueryExpression;
@@ -40,6 +42,7 @@ import dev.frostlake.values.ValueRange;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -99,9 +102,103 @@ final class CountStatisticsBound {
         return table;
     }
 
+    /** The clause whose bound this is. */
+    FrostlakeParser.SelectClauseContext clause() {
+        return ctx;
+    }
+
+    /**
+     * Whether the account answers the clause from its table's statistics alone, with no warehouse running it, which
+     * the query history lists (live-verified): an aggregate query within the statistics bound whose items are COUNT,
+     * MIN and MAX and the arithmetic over them, over a view as over a table — {@code COUNT(*) + 1},
+     * {@code MAX(a) + MIN(a)}, a COUNT under a WHERE the statistics prove true — and a query of no aggregate whose
+     * WHERE they prove false of every row, {@code SELECT a FROM t WHERE a > 100} over a column holding 1 to 8. A SUM,
+     * an AVG, a COUNT of distinct values, a join, a grouping key or a filter they leave open takes a warehouse, and so
+     * does a COUNT under a WHERE they prove false.
+     *
+     * @return whether the statistics answer the clause
+     */
+    boolean answersFromStatistics() {
+        if (joined || table == null || ctx.selectList() == null) {
+            return false;
+        }
+        if (!table.isCatalogResident()) {
+            final RelationStatistics beneath = table.getRelationStatistics();
+            if (beneath == null || !beneath.readsWithinStatistics()) {
+                return false;
+            }
+        }
+        boolean aggregates = false;
+        boolean fromStatistics = true;
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            final FrostlakeParser.ExpressionContext expr = SelectItemAccessors.isExprItem(item)
+                ? SelectItemAccessors.getItemValueExpr(item) : null;
+            if (expr == null) {
+                fromStatistics = false;
+                continue;
+            }
+            aggregates |= executor.hasAggregateFunctionInExpression(expr);
+            fromStatistics &= readFromStatistics(new ExpressionAstBuilder().visit(expr));
+        }
+        return aggregates ? fromStatistics && !isUnbounded() : prunesEveryRow();
+    }
+
+    /** Whether the statistics answer an item: a COUNT, a MIN or a MAX, a constant, and arithmetic over those. */
+    private static boolean readFromStatistics(final Expression item) {
+        if (item instanceof LiteralExpression) {
+            return true;
+        }
+        if (item instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression arithmetic = (BinaryOperationExpression) item;
+            final BinaryOperator op = arithmetic.getOperator();
+            return (op == BinaryOperator.ADD || op == BinaryOperator.SUBTRACT || op == BinaryOperator.MULTIPLY
+                || op == BinaryOperator.DIVIDE) && readFromStatistics(arithmetic.getLeft())
+                && readFromStatistics(arithmetic.getRight());
+        }
+        if (!(item instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) item;
+        final String name = call.getFunctionName() == null ? "" : call.getFunctionName().toUpperCase(Locale.ROOT);
+        return "COUNT".equals(name) && !call.isDistinct() || "MIN".equals(name) || "MAX".equals(name);
+    }
+
+    /** Whether the clause's WHERE is one the statistics prove false of every row, so that the clause reads none. */
+    private boolean prunesEveryRow() {
+        if (whereExpr == null || deciding) {
+            return false;
+        }
+        deciding = true;
+        try {
+            return Boolean.FALSE.equals(verdict(ExpressionEvaluator.parse(whereExpr)));
+        } catch (final RuntimeException unprovable) {
+            return false;
+        } finally {
+            deciding = false;
+        }
+    }
+
     /** The clause's relations by alias. */
     Map<String, Table> aliases() {
         return aliasToTable;
+    }
+
+    /**
+     * Whether the clause's WHERE is no condition the statistics prove true of every row, so that a value they give
+     * an expression may be one no row reaching the select list holds.
+     */
+    boolean filtersPastStatistics() {
+        if (whereExpr == null || deciding) {
+            return whereExpr != null;
+        }
+        deciding = true;
+        try {
+            return !Boolean.TRUE.equals(verdict(ExpressionEvaluator.parse(whereExpr)));
+        } catch (final RuntimeException unprovable) {
+            return true;
+        } finally {
+            deciding = false;
+        }
     }
 
     /** Whether the clause reads past its table's statistics bound. */

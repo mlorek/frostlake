@@ -117,9 +117,10 @@ final class GeneratorBounds {
             }
             final BoundFold fold = bounds.fold(argument.expression());
             if (!fold.isConstant()) {
+                // What is left of it is echoed as the plan holds it: NORMAL(2.0, 0.0, RANDOM()) (live-verified).
                 throw new RuntimeException(SqlCompilationError.of("argument " + position
-                    + " to function GENERATOR needs to be constant, found '"
-                    + ParseTreeText.getOriginalText(fold.residual()).toUpperCase(Locale.ROOT) + "'"));
+                    + " to function GENERATOR needs to be constant, found '" + values.planText(fold.residual())
+                    + "'"));
             }
         }
     }

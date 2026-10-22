@@ -19,6 +19,7 @@ package dev.frostlake.security;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.CallerGrant;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
@@ -335,7 +336,57 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
+        if (restricted()) {
+            return callerGranted(privilege.name(), objectType, objectName)
+                && callerHolds(privilege, objectType, objectName, owner);
+        }
         final Set<String> roles = askedRoles();
+        return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)
+            || holdsExactly(holdersUnder(roles), objectType, GrantNames.of(catalog, objectType, objectName),
+                privilege);
+    }
+
+    /**
+     * Whether a caller grant the restricted body's owner holds names a privilege on an object (see
+     * {@link #restricted}): granted on the object itself, on every object of its kind in its schema, its database or
+     * the account, or with ALL CALLER PRIVILEGES.
+     *
+     * @param privilege  the privilege, by its enumeration name, or null for any one
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @return whether one does
+     */
+    private boolean callerGranted(final String privilege, final String objectType, final String objectName) {
+        final String owner = sessionContext.getRestrictedOwner();
+        final String ownerRole = owner == null ? null : catalog.resolveRoleName(owner);
+        if (ownerRole == null || !catalog.roleExists(ownerRole)) {
+            return false;
+        }
+        final String recorded = GrantNames.of(catalog, objectType, objectName);
+        final String[] containers = GrantNames.containers(objectType, recorded);
+        final String database = containers.length > 0 ? containers[0] : null;
+        final String schema = containers.length > 1 ? QualifiedName.join(containers[0], containers[1]) : null;
+        for (final CallerGrant grant : catalog.getRoleExact(ownerRole).getCallerGrants()) {
+            if (grant.covers(privilege == null ? grant.getPrivilege() : privilege, objectType, recorded, database,
+                    schema)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the caller of a restricted body holds a privilege on an object by its own rights, which a caller grant
+     * lets the body use: the session's roles, PUBLIC among them, own it or were granted it; the SYSTEM user holds
+     * every one.
+     */
+    private boolean callerHolds(final Privilege privilege, final String objectType, final String objectName,
+                                final String owner) {
+        if ("SYSTEM".equals(sessionContext.getCurrentUser()) || owner == null) {
+            return true;
+        }
+        final Set<String> roles = getEffectiveRoles();
+        roles.add("PUBLIC");
         return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)
             || holdsExactly(holdersUnder(roles), objectType, GrantNames.of(catalog, objectType, objectName),
                 privilege);
@@ -354,7 +405,19 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
+        if (restricted()) {
+            return callerGranted(null, objectType, objectName)
+                && ("SYSTEM".equals(sessionContext.getCurrentUser()) || holdAny(callerRights(), objectType,
+                    objectName, owner));
+        }
         return holdAny(askedRoles(), objectType, objectName, owner);
+    }
+
+    /** The roles the caller of a restricted body holds its own privileges through: the session's, with PUBLIC. */
+    private Set<String> callerRights() {
+        final Set<String> roles = getEffectiveRoles();
+        roles.add("PUBLIC");
+        return roles;
     }
 
     /**
@@ -427,10 +490,10 @@ public class SecurityManager {
     /**
      * Whether a RESTRICTED CALLER procedure's body runs on this thread. Restricted caller's rights let a body use only
      * those of its caller's privileges a caller grant names ("every privilege required by the executable must be
-     * specified in one or more caller grants", documented), and this engine models no caller grant: such a body holds
-     * no privilege at all, PUBLIC's and the SYSTEM user's included, and a statement that needs one is refused. It ran
-     * with every privilege of its caller, so a procedure an untrusted role owns read whatever its caller could
-     * (FL-434).
+     * specified in one or more caller grants", documented): a privilege on an object, USAGE on its database and schema
+     * included, is held when a caller grant the procedure's owner holds names it and the caller holds it (see
+     * {@link #callerGranted} and {@link #callerHolds}). No other privilege is held - none on the account, none to
+     * create - PUBLIC's and the SYSTEM user's included.
      */
     private boolean restricted() {
         return sessionContext.isRestrictedCaller();
@@ -634,11 +697,24 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled()) {
             return null;
         }
+        if (restricted()) {
+            // A restricted body uses a container by a caller grant of USAGE on it, its caller holding that USAGE.
+            if (!usesByCallerGrant("DATABASE", databaseName)) {
+                return "DATABASE";
+            }
+            return usesByCallerGrant("SCHEMA", databaseName + "." + schemaName) ? null : "SCHEMA";
+        }
         final Set<String> roles = askedRoles();
         if (!uses(roles, "DATABASE", databaseName)) {
             return "DATABASE";
         }
         return uses(roles, "SCHEMA", databaseName + "." + schemaName) ? null : "SCHEMA";
+    }
+
+    /** Whether a restricted body uses a container: a caller grant names USAGE on it, and its caller may use it. */
+    private boolean usesByCallerGrant(final String containerType, final String containerName) {
+        return callerGranted(Privilege.USAGE.name(), containerType, containerName)
+            && ("SYSTEM".equals(sessionContext.getCurrentUser()) || uses(callerRights(), containerType, containerName));
     }
 
     private boolean uses(final Set<String> roles, final String containerType, final String containerName) {

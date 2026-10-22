@@ -225,7 +225,7 @@ public final class SharedFunctionHelpers {
      * TO_VARCHAR, ||, a value embedded in a VARIANT) differed from Snowflake's.
      */
     public static String timestampText(final LocalDateTime dt) {
-        return yearText(dt.getYear()) + String.format("-%02d-%02d %02d:%02d:%02d.%03d",
+        return yearText(dt.getYear()) + String.format(Locale.ROOT, "-%02d-%02d %02d:%02d:%02d.%03d",
             dt.getMonthValue(), dt.getDayOfMonth(),
             dt.getHour(), dt.getMinute(), dt.getSecond(), dt.getNano() / 1_000_000);
     }
@@ -240,7 +240,7 @@ public final class SharedFunctionHelpers {
      * @return the year's text
      */
     public static String yearText(final int prolepticYear) {
-        return String.format("%04d", prolepticYear > 0 ? prolepticYear : 1 - prolepticYear);
+        return String.format(Locale.ROOT, "%04d", prolepticYear > 0 ? prolepticYear : 1 - prolepticYear);
     }
 
     /**
@@ -256,7 +256,8 @@ public final class SharedFunctionHelpers {
         if (date.getYear() > 0) {
             return textOf(date);
         }
-        return signedYearText(date.getYear()) + String.format("-%02d-%02d", date.getMonthValue(), date.getDayOfMonth());
+        return signedYearText(date.getYear()) + String.format(Locale.ROOT, "-%02d-%02d", date.getMonthValue(),
+            date.getDayOfMonth());
     }
 
     /** A year before the first as a VARIANT's text spells it: its proleptic number, {@code 0000} for the year 0. */
@@ -362,13 +363,13 @@ public final class SharedFunctionHelpers {
             return "Z";
         }
         final int absolute = Math.abs(seconds);
-        return String.format("%s%02d%02d", seconds < 0 ? "-" : "+",
+        return String.format(Locale.ROOT, "%s%02d%02d", seconds < 0 ? "-" : "+",
             absolute / 3600, absolute % 3600 / 60);
     }
 
     /** Snowflake's default TIME output text — {@code HH24:MI:SS}, no fractional part. */
     public static String timeText(final LocalTime t) {
-        return String.format("%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
+        return String.format(Locale.ROOT, "%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
     }
 
     /**
@@ -383,7 +384,7 @@ public final class SharedFunctionHelpers {
         }
         if (value instanceof LocalDate) {
             final LocalDate date = (LocalDate) value;
-            return yearText(date.getYear()) + String.format("-%02d-%02d", date.getMonthValue(),
+            return yearText(date.getYear()) + String.format(Locale.ROOT, "-%02d-%02d", date.getMonthValue(),
                 date.getDayOfMonth());
         }
         if (value instanceof ZonedDateTime) {

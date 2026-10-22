@@ -25,10 +25,10 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SessionParameterCatalog;
-import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -62,6 +62,7 @@ import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.DataMetricAttachment;
+import dev.frostlake.metastore.model.DataMetricAttachments;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.JoinPolicy;
@@ -618,7 +619,10 @@ public class AlterCommandHandler implements CommandHandler {
                 branchHandlesIfExists = true;
                 // What the statement sets is judged before the service is looked for (live-verified).
                 rejectCortexSearchSettings(ctx.cortexSearchAction());
-                if (ifExists && !catalog.hasCortexSearchService(serviceParts)) {
+                // DROP SCORING PROFILE IF EXISTS forgives the service's absence too (live-verified).
+                final boolean forgiven = ifExists || ctx.cortexSearchAction().SCORING() != null
+                    && ctx.cortexSearchAction().DROP() != null && ctx.cortexSearchAction().if_exists() != null;
+                if (forgiven && !catalog.hasCortexSearchService(serviceParts)) {
                     // A service that is not there is named in the statement's answer.
                     ConditionalDdlOutcome.alterSkipped();
                     logger.debug("Cortex search service does not exist (IF EXISTS): {}", serviceParts[serviceParts.length - 1]);
@@ -1490,6 +1494,9 @@ public class AlterCommandHandler implements CommandHandler {
                     if (AlteredViewProperties.unsetsChangeTracking(ctx.viewAction().optionKey())) {
                         view.setChangeTracking(false);
                     }
+                    if (AlteredViewProperties.unsetsDataMetricSchedule(ctx.viewAction().optionKey())) {
+                        view.dataMetricAttachments().setSchedule(null);
+                    }
                 } else if (!ctx.viewAction().viewSetItem().isEmpty()) {
                     final List<FrostlakeParser.ViewSetItemContext> items = ctx.viewAction().viewSetItem();
                     final Boolean tracking = AlteredViewProperties.changeTrackingOf(items);
@@ -1502,6 +1509,16 @@ public class AlterCommandHandler implements CommandHandler {
                         view.setComment(AlteredViewProperties.commentOf(items));
                         logger.trace("Set comment on view: {}", viewName);
                     }
+                    final String schedule = AlteredViewProperties.dataMetricScheduleOf(items);
+                    if (schedule != null) {
+                        // Recorded so DATA_METRIC_FUNCTION_REFERENCES can render it as cron.
+                        view.dataMetricAttachments().setSchedule(schedule);
+                    }
+                } else if (ctx.viewAction().METRIC() != null) {
+                    final FrostlakeParser.ViewActionContext action = ctx.viewAction();
+                    applyDataMetricAction(view.dataMetricAttachments(), viewColumns(view), "View",
+                        action.qualifiedName(), action.identifierList(), action.ADD() != null,
+                        action.MODIFY() != null, action.SUSPEND() != null);
                 } else if (ctx.viewAction().ROW() != null && ctx.viewAction().ADD() != null) {
                     // ADD ROW ACCESS POLICY policyName ON (col1, col2)
                     final String policyName = visitor.getText(ctx.viewAction().qualifiedName());
@@ -2668,9 +2685,11 @@ public class AlterCommandHandler implements CommandHandler {
     /** The type an ALTER COLUMN … SET DATA TYPE writes: an Iceberg table's column takes the one the format holds. */
     private DataType alteredColumnType(final Table table, final FrostlakeParser.AlterColumnItemContext item) {
         final FrostlakeParser.AlterColumnItemActionContext action = item.alterColumnItemAction();
-        return table.getIcebergMetadata() == null
-            ? visitor.parseDataType(action.dataTypeName(), action.typeParameters())
-            : IcebergTypes.tableType(alteredFormatType(item));
+        if (table.getIcebergMetadata() != null) {
+            return IcebergTypes.tableType(alteredFormatType(item));
+        }
+        IcebergColumnTypes.refuseFormatWords(action.dataTypeName());
+        return visitor.parseDataType(action.dataTypeName(), action.typeParameters());
     }
 
     /** The type in the Iceberg format's own terms an ALTER COLUMN … SET DATA TYPE gives an Iceberg table's column. */
@@ -3179,7 +3198,19 @@ public class AlterCommandHandler implements CommandHandler {
         }
         final FrostlakeParser.SessionActionContext action = ctx.sessionAction();
         if (action == null) {
-            // The account's tags: a named account is looked for before its tags are.
+            // The account's tags: a named account is looked for before its tags are, and under IF EXISTS another
+            // account's are the organization's to change, refused before the account is looked for (live-verified).
+            if (ifExists && !isThisAccount(named, true)) {
+                final SecurityManager security = queryExecutor.getSecurityManager();
+                if (security != null) {
+                    throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("ACCOUNT",
+                        visitor.getText(named.qualifiedName()).toUpperCase(Locale.ROOT),
+                        security.getSessionContext().getCurrentRole(),
+                        security.getSessionContext().isSecondaryRolesInUse(), "MANAGE ORGANIZATION ACCOUNTS",
+                        catalog.getAccountLocator()));
+                }
+                return;
+            }
             if (!isThisAccount(named, ifExists)) {
                 return;
             }
@@ -3335,7 +3366,7 @@ public class AlterCommandHandler implements CommandHandler {
     /**
      * Refuses an ALTER USER … SET TAG or UNSET TAG the session may not make. MODIFY on the user is not what it asks:
      * setting or unsetting a tag on an object takes APPLY TAG on the account, or APPLY on the tag and OWNERSHIP of
-     * the object (documented, "Tag privileges"). A role with neither was let tag and untag any user (FL-441).
+     * the object (documented, "Tag privileges"). A role with neither was let tag and untag any user.
      *
      * @param user the user tagged
      * @param tags the tags named, each one there
@@ -3684,6 +3715,34 @@ public class AlterCommandHandler implements CommandHandler {
      * or on both when none is; REFRESH asks for a refresh, which changes nothing the catalog keeps. The engine
      * holds no index, so nothing is rebuilt.
      */
+    /**
+     * ADD or DROP a named scoring profile of a service. A profile added twice, or one dropped that the service does
+     * not have, is refused unless IF NOT EXISTS or IF EXISTS forgives it; the words of both refusals are this
+     * engine's own, since no service can be created on the account the forms were measured on.
+     */
+    private void applyScoringProfile(final CortexSearchService service,
+                                     final FrostlakeParser.CortexSearchActionContext action) {
+        final String profile = visitor.getText(action.identifier());
+        if (action.ADD() != null) {
+            if (service.getScoringProfiles().containsKey(profile)) {
+                if (action.if_not_exists() == null) {
+                    throw new RuntimeException(SqlCompilationError.of("Scoring profile '" + profile
+                        + "' already exists."));
+                }
+                return;
+            }
+            final String dollarQuoted = action.DOLLAR_QUOTED_STRING() == null ? null
+                : action.DOLLAR_QUOTED_STRING().getText();
+            service.addScoringProfile(profile, dollarQuoted == null
+                ? visitor.extractStringLiteral(action.STRING_LITERAL())
+                : dollarQuoted.substring(2, dollarQuoted.length() - 2));
+            return;
+        }
+        if (!service.dropScoringProfile(profile) && action.if_exists() == null) {
+            throw new RuntimeException(SqlCompilationError.of("Scoring profile '" + profile + "' does not exist."));
+        }
+    }
+
     private void applyCortexSearchAction(final CortexSearchService service,
                                          final FrostlakeParser.CortexSearchActionContext action) {
         if (action.tagSet() != null) {
@@ -3695,6 +3754,10 @@ public class AlterCommandHandler implements CommandHandler {
             return;
         }
         if (action.REFRESH() != null) {
+            return;
+        }
+        if (action.SCORING() != null) {
+            applyScoringProfile(service, action);
             return;
         }
         if (action.UNSET() != null) {
@@ -4058,12 +4121,11 @@ public class AlterCommandHandler implements CommandHandler {
                         + "' which belongs to a clustering key\n");
                 }
                 if (table.hasRowAccessPolicy() && table.getRowAccessPolicyColumns().contains(keyed)) {
-                    // A column the row access policy reads stays while the policy is attached: dropped, it would
-                    // leave every read of the table failing on the policy's argument. The rule and the account's
-                    // sentence are not documented or measured; refusing is the conservative choice.
-                    throw new RuntimeException(SqlCompilationError.of("Cannot drop column '" + keyed
-                        + "' because it is referenced by row access policy '" + table.getRowAccessPolicyName()
-                        + "'. Drop the row access policy from the table first."));
+                    // A column the row access policy reads stays while the policy is attached, refused in one line
+                    // whatever else the statement drops; a masking or a projection policy on the column itself
+                    // does not keep it (live-verified).
+                    throw new RuntimeException(SqlCompilationError.inline("Cannot drop column '" + keyed
+                        + "' which is associated with a Row access policy."));
                 }
             }
         }
@@ -4085,16 +4147,15 @@ public class AlterCommandHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("cannot drop all the columns of a table"));
         }
         for (final TableColumn masked : table.columnsView()) {
-            if (!masked.hasMaskingPolicy() || dropping.contains(masked.getName())) {
+            if (!masked.hasMaskingPolicy()) {
                 continue;
             }
-            // A column a conditional masking policy reads through USING stays too, while the column it masks does:
-            // dropped, it would leave every read of that column failing (not documented or measured, as above).
+            // A column a conditional masking policy reads through USING stays too, even when the column it masks goes
+            // in the same statement, where the masked column alone may go (live-verified).
             for (final String argument : masked.getMaskingPolicyArguments()) {
                 if (!argument.equals(masked.getName()) && dropping.contains(argument)) {
-                    throw new RuntimeException(SqlCompilationError.of("Cannot drop column '" + argument
-                        + "' because it is referenced by masking policy '" + masked.getMaskingPolicyName()
-                        + "' on column '" + masked.getName() + "'. Unset the masking policy first."));
+                    throw new RuntimeException(SqlCompilationError.inline("Cannot drop column '" + argument
+                        + "' which is associated with a Masking policy."));
                 }
             }
         }
@@ -4198,22 +4259,40 @@ public class AlterCommandHandler implements CommandHandler {
         new ForeignKeyDependents(catalog).releaseKey(keyOwner.getDatabaseName(), keyOwner, table, key, primaryKey);
     }
 
-    /**
-     * The three DATA METRIC FUNCTION actions. The metric must be a system one — live resolves only
-     * SNOWFLAKE.CORE names and refuses a bare one — every named column must exist, and a DROP that
-     * finds no attachment is refused while a repeated ADD is silently ignored.
-     */
+    /** A table's DATA METRIC FUNCTION action. */
     private void applyDataMetricAction(final Table table,
                                        final FrostlakeParser.TableActionContext action) {
-        final String metric = visitor.getText(action.qualifiedName());
+        applyDataMetricAction(table.dataMetricAttachments(), table, "Table", action.qualifiedName(),
+            action.identifierList(), action.ADD() != null, action.MODIFY() != null, action.SUSPEND() != null);
+    }
+
+    /**
+     * The three DATA METRIC FUNCTION actions of a table or a view. The metric must be a system one — live resolves
+     * only SNOWFLAKE.CORE names and refuses a bare one — every named column must exist, and a DROP that finds no
+     * attachment is refused while a repeated ADD is silently ignored.
+     *
+     * @param attachments the object's attachments
+     * @param table       the object's columns
+     * @param kind        the object's kind, as a refused DROP names it
+     * @param name        the metric as written
+     * @param columnList  the columns it measures, or null for none
+     * @param add         whether the metric is added
+     * @param modify      whether it is suspended or resumed
+     * @param suspend     whether a MODIFY suspends it
+     */
+    private void applyDataMetricAction(final DataMetricAttachments attachments, final Table table, final String kind,
+                                       final FrostlakeParser.QualifiedNameContext name,
+                                       final FrostlakeParser.IdentifierListContext columnList, final boolean add,
+                                       final boolean modify, final boolean suspend) {
+        final String metric = visitor.getText(name);
         if (!DataMetricFunctions.exists(metric)) {
             // A metric that is not a system one is refused without a privilege hint (live-verified).
             throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Function",
                 metric.toUpperCase(Locale.ROOT)));
         }
         final List<String> columns = new ArrayList<>();
-        if (action.identifierList() != null) {
-            for (final FrostlakeParser.IdentifierContext id : action.identifierList().identifier()) {
+        if (columnList != null) {
+            for (final FrostlakeParser.IdentifierContext id : columnList.identifier()) {
                 final String colName = visitor.getText(id);
                 if (!table.hasColumn(colName)) {
                     throw new RuntimeException(SqlCompilationError.columnDoesNotExist(
@@ -4222,21 +4301,20 @@ public class AlterCommandHandler implements CommandHandler {
                 columns.add(colName);
             }
         }
-        if (action.ADD() != null) {
-            table.addDataMetric(new DataMetricAttachment(metric.toUpperCase(Locale.ROOT), columns));
+        if (add) {
+            attachments.add(new DataMetricAttachment(metric.toUpperCase(Locale.ROOT), columns));
             return;
         }
-        if (action.MODIFY() != null) {
-            final DataMetricAttachment attachment = table.findDataMetric(
-                metric.toUpperCase(Locale.ROOT), columns);
+        if (modify) {
+            final DataMetricAttachment attachment = attachments.find(metric.toUpperCase(Locale.ROOT), columns);
             if (attachment != null) {
-                attachment.setSuspended(action.SUSPEND() != null);
+                attachment.setSuspended(suspend);
             }
             return;
         }
-        if (!table.dropDataMetric(metric.toUpperCase(Locale.ROOT), columns)) {
+        if (!attachments.drop(metric.toUpperCase(Locale.ROOT), columns)) {
             throw new RuntimeException(SqlCompilationError.PREFIX + " Data metric function "
-                + DataMetricFunctions.bareName(metric) + " is not attached to Table "
+                + DataMetricFunctions.bareName(metric) + " is not attached to " + kind + " "
                 + table.getName().toUpperCase(Locale.ROOT) + ".");
         }
     }

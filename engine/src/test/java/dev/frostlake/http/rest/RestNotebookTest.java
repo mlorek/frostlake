@@ -35,6 +35,10 @@ public class RestNotebookTest extends BaseRestTest {
         sql("CREATE SCHEMA nb_db.s");
         sql("CREATE SCHEMA nb_db.other");
         sql("CREATE WAREHOUSE nb_wh INITIALLY_SUSPENDED = TRUE");
+        // A notebook created FROM a location copies its files, so the stage holds the main file first.
+        sql("CREATE STAGE nb_db.s.stg");
+        sql("COPY INTO @nb_db.s.stg/nb/nb.ipynb FROM (SELECT '{}')"
+            + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE");
     }
 
     @Test

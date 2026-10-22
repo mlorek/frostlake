@@ -21,11 +21,17 @@ import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionAstBuilder;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.VariantType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -103,7 +109,9 @@ public final class BlockExpressionTypes {
      * refuses is refused in the cast's own words — {@code LET x DATE := TRUE} is {@code invalid type [CAST(TRUE
      * AS DATE)] for parameter 'TO_DATE'}, and a BOOLEAN into a TIMESTAMP, a TIME, a BINARY or a FLOAT, a number
      * into a DATE and a DATE into a BOOLEAN alike — while a pair the matrix does not govern keeps the conversion
-     * it had (all live-verified). Either refusal is that expression's EXPRESSION_ERROR.
+     * it had. A ROW converts to no declared type: {@code LET x INT := (1, 2)} is {@code invalid type [CAST(ROW(1, 2)
+     * AS NUMBER(38,0))] for parameter 'TO_NUMBER'}, into a text, a DATE and a VARIANT alike (all live-verified).
+     * Either refusal is that expression's EXPRESSION_ERROR.
      *
      * @param expression    the expression as parsed in the block
      * @param types         the types of the names in scope, keyed as the resolver folds them
@@ -163,7 +171,8 @@ public final class BlockExpressionTypes {
         final SourcePosition displaced = ExpressionSource.begin(new SourcePosition(1, 0));
         try {
             final ExpressionEvaluator typer = DeclarationTypes.scriptTyper(types, queryExecutor);
-            if (!ExpressionEvaluatorVisitor.castMatrixRefuses(typer.inferStaticType(sql), target)) {
+            if (!(sql instanceof RowExpression)
+                    && !ExpressionEvaluatorVisitor.castMatrixRefuses(typer.inferStaticType(sql), target)) {
                 return null;
             }
             final Expression rendered = rendered(expression, types, values, false);
@@ -379,7 +388,20 @@ public final class BlockExpressionTypes {
             return 0;
         }
         final String cast = type instanceof StringType ? "" : "::" + SqlTypeNames.refusalSpelling(type);
-        return writtenOut.length() + cast.length() - writtenWidth;
+        return writtenOut.length() + jsonReading(type).length() + cast.length() - writtenWidth;
+    }
+
+    /**
+     * The call a VARIANT, OBJECT or ARRAY variable is read back through where it is written out, its JSON text bound:
+     * {@code RETURN IS_DOUBLE(v) || ' ' || TRUE} over a VARIANT is refused twelve columns further on than the
+     * variable's cast alone would place it, over an OBJECT and an ARRAY too, whatever the value holds, where a
+     * NUMBER's and a VARCHAR's places take the cast alone (live-verified).
+     */
+    private static String jsonReading(final DataType type) {
+        final boolean semiStructured = type instanceof VariantType
+            || type instanceof ObjectType && !(type instanceof StructuredObjectType)
+            || type instanceof ArrayType && !(type instanceof StructuredArrayType);
+        return semiStructured ? "PARSE_JSON()" : "";
     }
 
     /**

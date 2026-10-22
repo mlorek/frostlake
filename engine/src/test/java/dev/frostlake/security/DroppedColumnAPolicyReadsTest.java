@@ -28,10 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * ALTER TABLE ... DROP COLUMN keeps a column a policy still reads: a column in the ON list of the table's row access
- * policy, or one a conditional masking policy reads through USING while the column it masks stays. Dropped, the
- * column left the policy naming nothing, and every read of the table failed on it (FL-440). Neither the rule nor
- * the account's sentence is documented or measured, so the refusal is the conservative choice; the column goes once
- * the policy is detached.
+ * policy, or one a conditional masking policy reads through USING, even beside the column it masks. Dropped, the
+ * column left the policy naming nothing, and every read of the table failed on it. The account refuses both in one
+ * line, "Cannot drop column 'REG' which is associated with a Row access policy." and "… with a Masking policy."
+ * (live-verified); the column goes once the policy is detached or its masked column dropped.
  */
 public class DroppedColumnAPolicyReadsTest {
 
@@ -74,9 +74,9 @@ public class DroppedColumnAPolicyReadsTest {
         engine.execute("ALTER TABLE t ADD ROW ACCESS POLICY rp ON (region)");
         // A rename is followed, and the renamed column is the one kept.
         engine.execute("ALTER TABLE t RENAME COLUMN region TO reg");
-        assertTrue(refusal("ALTER TABLE t DROP COLUMN reg")
-            .contains("Cannot drop column 'REG' because it is referenced by row access policy 'DC_DB.PUBLIC.RP'"));
-        assertTrue(refusal("ALTER TABLE t DROP COLUMN IF EXISTS nosuch, reg").contains("row access policy"));
+        assertEquals("SQL compilation error: Cannot drop column 'REG' which is associated with a Row access policy.",
+            refusal("ALTER TABLE t DROP COLUMN reg"));
+        assertTrue(refusal("ALTER TABLE t DROP COLUMN IF EXISTS nosuch, reg").contains("Row access policy"));
         // Nothing went: the table still reads, filtered, with all its columns.
         assertEquals("[1, 111, EU]", rows("SELECT * FROM t"));
         // Another column goes, and the policy's own column does once the policy is detached.
@@ -93,11 +93,14 @@ public class DroppedColumnAPolicyReadsTest {
         engine.execute("CREATE MASKING POLICY cmp AS (v STRING, r STRING) RETURNS STRING"
             + " -> CASE WHEN r = 'EU' THEN v ELSE '***' END");
         engine.execute("ALTER TABLE m MODIFY COLUMN ssn SET MASKING POLICY cmp USING (ssn, region)");
-        assertTrue(refusal("ALTER TABLE m DROP COLUMN region")
-            .contains("Cannot drop column 'REGION' because it is referenced by masking policy"));
+        assertEquals("SQL compilation error: Cannot drop column 'REGION' which is associated with a Masking policy.",
+            refusal("ALTER TABLE m DROP COLUMN region"));
+        assertTrue(refusal("ALTER TABLE m DROP COLUMN ssn, region").contains("Masking policy"),
+            "not beside the column it masks either");
         assertEquals("[1, 111, EU]", rows("SELECT * FROM m"));
-        // The masked column and the column it reads may go together, and the masked column alone.
-        engine.execute("ALTER TABLE m DROP COLUMN ssn, region");
+        // The masked column alone may go, and then the column it read.
+        engine.execute("ALTER TABLE m DROP COLUMN ssn");
+        engine.execute("ALTER TABLE m DROP COLUMN region");
         assertEquals("[1]", rows("SELECT * FROM m"));
     }
 }

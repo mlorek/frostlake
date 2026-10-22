@@ -632,10 +632,11 @@ final class TaskProperties {
 
     /**
      * The tasks an AFTER list names, refused when one does not exist (every name is looked up first), when the
-     * task has a finalizer, and then per name when it is the task itself, lives in another schema, is a
-     * finalizer task, which no task may follow, or follows from the task, which would close a loop: a task graph
-     * "starts with a scheduled root task and is linked together by dependencies" (documented), so no task is its
-     * own ancestor. A name given twice is kept once.
+     * task has a finalizer, and then per name when it is the task itself, lives in another schema or is a
+     * finalizer task, which no task may follow. A predecessor that already runs after the task is taken: the
+     * account lets a graph close a loop through other tasks ({@code ALTER TASK b ADD AFTER c} over r, b after r
+     * and c after b), and every task of the loop then has a predecessor, so EXECUTE TASK refuses each as a
+     * non-root task (live-verified). A name given twice is kept once.
      *
      * @param task  the task that would run after them
      * @param names the predecessors as written
@@ -673,11 +674,6 @@ final class TaskProperties {
             if (predecessor.isFinalizer()) {
                 throw new RuntimeException("Task " + qualified(predecessor)
                     + " cannot have children as a finalizer task.");
-            }
-            if (TaskGraphs.descendsFrom(schema, predecessor, task.getName())) {
-                // The account's sentence is not measured.
-                throw new RuntimeException("Task " + qualified(predecessor) + " cannot be a predecessor of task "
-                    + qualified(task) + " because it already runs after it: a task graph cannot have a cycle.");
             }
             if (!resolved.contains(predecessor.getName())) {
                 resolved.add(predecessor.getName());

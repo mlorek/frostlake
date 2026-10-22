@@ -100,7 +100,7 @@ final class OverCallRules {
      * @param functions the registry that tells a window function or an aggregate from any other name
      */
     static void requireOperands(final ParseTree script, final FunctionRegistry functions) {
-        final OperandRefusal refusal = OperandRefusals.first(script);
+        final OperandRefusal refusal = OperandRefusals.firstOfStatement(script);
         if (refusal == null) {
             return;
         }

@@ -214,6 +214,28 @@ public final class UntypedNullFold {
     }
 
     /**
+     * Whether an expression is MAX, MIN or ANY_VALUE over an untyped NULL: an aggregate that answers one of the values
+     * it is given, and so, over the bare word, an untyped NULL. The call stays an aggregate, but beside an operator and
+     * among a conditional's values it is read as the bare word is: {@code MAX(NULL) + 1} is typed as {@code NULL + 1},
+     * NUMBER(19,0), {@code ANY_VALUE(NULL) * 1.25} as NUMBER(21,2), {@code -MIN(NULL)} as NUMBER(18,0) and
+     * {@code COALESCE(MAX(NULL), 1)} as NUMBER(1,0) (live-verified).
+     *
+     * @param expr the expression
+     * @return whether it is such a call
+     */
+    public static boolean picksAnUntypedNull(final Expression expr) {
+        if (isExtremeOfUntypedNull(expr)) {
+            return true;
+        }
+        if (!(expr instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expr;
+        return call.getFunctionName() != null && call.getNameExpression() == null && call.getArguments().size() == 1
+            && call.getFunctionName().equalsIgnoreCase("ANY_VALUE") && isUntypedNull(call.getArguments().get(0));
+    }
+
+    /**
      * @param expr the expression
      * @return whether it has no type at all: the bare word NULL, or a call that folds to one
      */

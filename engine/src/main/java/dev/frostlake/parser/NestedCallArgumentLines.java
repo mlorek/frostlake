@@ -34,8 +34,11 @@ import org.antlr.v4.runtime.Token;
  *   SELECT ABS(ABS(ABS(T.x y))) FROM T      'y', then the ')' of the call inside the outermost
  *   SELECT ABS(ABS(1 y)) FROM T             'y' alone: no name opens the argument
  *   SELECT ABS(ABS(1 x y)) FROM T           'x', then the outermost call's ')'
+ *   SELECT ABS(ABS((1 x y)))                'x', then the outermost call's ')': a bracket around it is read through
  *   SELECT ABS(ABS(x) y) FROM T             'y' alone: the argument is a call
  *   SELECT x FROM T WHERE ABS(1 y) = 1      'y' alone, in a WHERE too
+ *   SELECT ABS((x y)) FROM T                'y', then 'x' and 'y': a bracketed name is read again from the name
+ *   SELECT ABS(ABS(T.x.)) FROM T            the ')' after the trailing dot, then the dot
  * </pre>
  *
  * <p>A name written with its relation reads one call shallower than a bare one: directly in a select item's call it
@@ -56,17 +59,43 @@ final class NestedCallArgumentLines {
      * @return the lines, or null
      */
     static List<String> lines(final List<Token> spoken, final int fault) {
-        if (fault < 4 || fault >= spoken.size() - 1 || spoken.get(0).getType() != FrostlakeLexer.SELECT
-                || !StarModifierResync.isName(spoken.get(fault)) || nullTreatment(spoken, fault)) {
+        if (fault < 4 || fault >= spoken.size() - 1 || spoken.get(0).getType() != FrostlakeLexer.SELECT) {
             return null;
         }
-        // The brackets open at the word, each a call's or a CAST's, and the clause the outermost stands in.
+        if (fault == 5 && StarModifierResync.isName(spoken.get(1)) && spoken.get(2).getType() == FrostlakeLexer.LPAREN
+                && spoken.get(3).getType() == FrostlakeLexer.LPAREN && StarModifierResync.isName(spoken.get(4))
+                && StarModifierResync.isName(spoken.get(fault)) && fault + 2 < spoken.size()
+                && spoken.get(fault + 1).getType() == FrostlakeLexer.RPAREN
+                && spoken.get(fault + 2).getType() == FrostlakeLexer.RPAREN) {
+            // A name in a bracket that is the first item's call's whole argument: the word, then the bracket read
+            // again from its name.
+            final List<String> lines = new ArrayList<>();
+            lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+            lines.add(SyntaxErrorListener.sentence(spoken.get(4)));
+            lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+            return lines;
+        }
+        if (spoken.get(fault).getType() == FrostlakeLexer.RPAREN) {
+            return trailingDot(spoken, fault);
+        }
+        if (!StarModifierResync.isName(spoken.get(fault)) || nullTreatment(spoken, fault)) {
+            return null;
+        }
+        // The brackets open at the word, each a call's or a CAST's, and the clause the outermost stands in. A plain
+        // bracket right inside a call around a literal argument is read through: the outermost call's ')' is still
+        // the one refused.
         final List<Integer> open = new ArrayList<>();
         boolean filter = false;
+        boolean bracketed = false;
         for (int i = 1; i < fault; i++) {
             final int type = spoken.get(i).getType();
             if (type == FrostlakeLexer.LPAREN) {
                 final Token before = spoken.get(i - 1);
+                if (before.getType() == FrostlakeLexer.LPAREN && i == fault - 2 && !open.isEmpty()
+                        && open.get(open.size() - 1).intValue() == i - 1 && isLiteral(spoken.get(i + 1))) {
+                    bracketed = true;
+                    continue;
+                }
                 if (!StarModifierResync.isName(before) && before.getType() != FrostlakeLexer.CAST
                         || typeNamed(spoken, i - 1)) {
                     return null;
@@ -98,25 +127,26 @@ final class NestedCallArgumentLines {
                 argument = i + 1;
             }
         }
+        if (bracketed) {
+            argument = fault - 1;
+        }
         if (argument >= fault) {
             return null;
         }
         final List<String> lines = new ArrayList<>();
         lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
-        final int first = spoken.get(argument).getType();
-        final boolean literal = first == FrostlakeLexer.INTEGER_LITERAL || first == FrostlakeLexer.FLOAT_LITERAL
-            || first == FrostlakeLexer.STRING_LITERAL;
+        final boolean literal = isLiteral(spoken.get(argument));
         final boolean closed = spoken.get(fault - 1).getType() == FrostlakeLexer.RPAREN;
         if (literal && argument == fault - 1 && (open.size() >= 2 || filter) || closed && !filter && !literal) {
             // No name opens the argument: the word is refused, and nothing after it — but for a second word that
             // ends the argument, after which the outermost call's parenthesis is refused as after a name.
             if (literal && !filter && open.size() >= 2 && StarModifierResync.isName(spoken.get(fault + 1))
                     && fault + 2 < spoken.size() && spoken.get(fault + 2).getType() == FrostlakeLexer.RPAREN) {
-                add(lines, closerOf(spoken, fault, open.size(), 0));
+                add(lines, closerOf(spoken, fault, open.size() + (bracketed ? 1 : 0), 0));
             }
             return lines;
         }
-        if (filter || open.size() < 2) {
+        if (filter || open.size() < 2 || bracketed) {
             return null;
         }
         final boolean bare = argument == fault - 1 && StarModifierResync.isName(spoken.get(argument));
@@ -138,6 +168,40 @@ final class NestedCallArgumentLines {
             add(lines, closerOf(spoken, fault, open.size(), 1));
         }
         return lines;
+    }
+
+    /**
+     * A qualified name ending in a dot as the argument of a call inside another call of the first select item: the
+     * ')' after the dot, then the dot.
+     */
+    private static List<String> trailingDot(final List<Token> spoken, final int fault) {
+        if (fault < 7 || spoken.get(fault - 1).getType() != FrostlakeLexer.DOT
+                || !StarModifierResync.isName(spoken.get(fault - 2))
+                || spoken.get(fault - 3).getType() != FrostlakeLexer.DOT
+                || !StarModifierResync.isName(spoken.get(fault - 4))
+                || spoken.get(fault - 5).getType() != FrostlakeLexer.LPAREN) {
+            return null;
+        }
+        int calls = 0;
+        for (int i = 1; i < fault - 4; i += 2) {
+            if (!StarModifierResync.isName(spoken.get(i)) || spoken.get(i + 1).getType() != FrostlakeLexer.LPAREN) {
+                return null;
+            }
+            calls++;
+        }
+        if (calls < 2) {
+            return null;
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault - 1)));
+        return lines;
+    }
+
+    private static boolean isLiteral(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.STRING_LITERAL;
     }
 
     /** Whether the word opens a null treatment, whose lines are that construct's own. */

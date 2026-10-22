@@ -32,6 +32,8 @@ public class DynamicTableSnapshot implements Serializable {
     public String targetLag;
     public String warehouse;
     public String refreshMode;
+    /** Why an AUTO refresh mode settled on FULL, or null. */
+    public String fullRefreshReason;
     public String initialize;
     public String state;
     public String comment;
@@ -40,6 +42,8 @@ public class DynamicTableSnapshot implements Serializable {
     public String owner;
     /** The CLUSTER BY keys as written; null in a snapshot taken before they were kept. */
     public List<String> clusterKeys;
+    /** The text written after CLUSTER BY; null in a snapshot taken before it was kept, and for no key. */
+    public String clusterByText;
     /**
      * The table's own column list — names, declared types (null where the query's is kept) and comments, in
      * step; null in a snapshot taken before it was kept, and for a table that declares none.

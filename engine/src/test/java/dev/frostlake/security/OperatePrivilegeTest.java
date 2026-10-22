@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * OPERATE on a task "Grants the ability to suspend or resume a task", and on a dynamic table it is what a role needs to
  * "suspend, resume, refresh, or change the warehouse or target lag" (documented). A role granted OPERATE does those, a
  * manual refresh reading with the table owner's rights; every other change stays the owner's, and a role holding only
- * MONITOR or SELECT does none of them (FL-437). Engine only: GRANT and the switch of user are not run on the live
+ * MONITOR or SELECT does none of them. Engine only: GRANT and the switch of user are not run on the live
  * account.
  */
 public class OperatePrivilegeTest extends BaseDatabaseTest {

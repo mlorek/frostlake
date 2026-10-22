@@ -20,6 +20,7 @@ import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
@@ -42,8 +43,13 @@ public class ArrayInsert extends BuiltInFunction {
         if (src == null) return null;
         if (args.get(1) == null) return null;
         final int n = src.size();
-        // A position is read as the whole number it gives, a fraction rounded: 0.6 is 1 (see wholeNumber).
-        final int pos = wholeNumber(args.get(1));
+        // A position is read as the 32-bit whole number it gives, a fraction rounded: 0.6 is 1 (see
+        // WholeNumberArgument#part). The array it makes holds at most 2,147,483,647 elements, its padding counted
+        // (live-verified).
+        final int pos = WholeNumberArgument.part(args.get(1));
+        if ((pos >= 0 ? Math.max(n, (long) pos) : Math.max(n, -(long) pos)) + 1 > Integer.MAX_VALUE) {
+            throw new RuntimeException("Result array of (" + getName() + ") is too large");
+        }
         // Live: ARRAY_INSERT([1], 4, 9) is [1,undefined,undefined,undefined,9] — both the
         // inserted SQL NULL and the padding are VARIANT `undefined`, whose TYPEOF is SQL NULL.
         final JsonNode element = ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, args.get(2));
@@ -66,8 +72,10 @@ public class ArrayInsert extends BuiltInFunction {
                 result.add(element);
                 for (int i = target; i < n; i++) result.add(src.get(i));
             } else {
+                // A position before the first element pads the gap after the element: ARRAY_INSERT([1,2], -3, 9) is
+                // [9,undefined,1,2] (live-verified).
                 result.add(element);
-                for (int i = target; i < -1; i++) result.add(VariantUndefined.node());
+                for (int i = target; i < 0; i++) result.add(VariantUndefined.node());
                 for (int i = 0; i < n; i++) result.add(src.get(i));
             }
         }

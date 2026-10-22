@@ -33,8 +33,10 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * EXPLAIN in the account's shapes (live-verified). The statement compiles first, so a missing object is refused as the
@@ -122,7 +124,7 @@ final class ExplainPlan {
                 plan = ctx.selectStatement() != null ? builder.query(ctx.selectStatement())
                     : builder.dml(ctx.dmlStatement());
             }
-            number(plan, null, 0, new int[1], operators);
+            number(plan, null, 0, new int[1], operators, new IdentityHashMap<PlanNode, PlanOperator>());
         } finally {
             PLANNING.get()[0]--;
         }
@@ -161,9 +163,18 @@ final class ExplainPlan {
             compileStatementQuery(executor, ctx.selectStatement());
             return;
         }
-        final FrostlakeParser.ObjectNameContext target = dmlTarget(ctx.dmlStatement());
-        if (target != null) {
-            executor.getCatalog().resolveTableAsWritten(executor.resolveObjectName(target), "Table");
+        // An INSERT, an UPDATE, a DELETE and a MERGE compile as they do before they read a row — every refusal of
+        // theirs is the plan's, at the statement's own place (live-verified); their executors stop there while a
+        // plan is asked for (see planning).
+        final FrostlakeParser.DmlStatementContext dml = ctx.dmlStatement();
+        if (dml.insertStatement() != null) {
+            executor.executeInsertFromContext(dml.insertStatement());
+        } else if (dml.updateStatement() != null) {
+            executor.executeUpdateFromContext(dml.updateStatement());
+        } else if (dml.deleteStatement() != null) {
+            executor.executeDeleteFromContext(dml.deleteStatement());
+        } else if (dml.mergeStatement() != null) {
+            executor.executeMergeFromContext(dml.mergeStatement());
         }
     }
 
@@ -301,34 +312,35 @@ final class ExplainPlan {
         return false;
     }
 
-    /** The table a DML statement writes, or null for a statement this does not read a target from. */
-    private static FrostlakeParser.ObjectNameContext dmlTarget(final FrostlakeParser.DmlStatementContext dml) {
-        if (dml.insertStatement() != null) {
-            return dml.insertStatement().objectName();
-        }
-        if (dml.updateStatement() != null) {
-            return dml.updateStatement().objectName();
-        }
-        if (dml.deleteStatement() != null) {
-            return dml.deleteStatement().objectName();
-        }
-        return null;
-    }
-
     /**
      * Numbers a plan's operators from the top, each before the operators under it, as the account lists them. An
      * operator a plan does not list takes a number all the same, and the operators under it stand no deeper for it.
+     * Where a recursive term reads its own common table expression no operator is numbered: the operator over it is
+     * listed among the RecursiveWithClause's parents instead.
      */
     private static void number(final PlanNode node, final Integer parent, final int depth, final int[] next,
-                               final List<PlanOperator> into) {
+                               final List<PlanOperator> into, final Map<PlanNode, PlanOperator> numbered) {
+        if (node.isUntold()) {
+            final PlanOperator recursion = node.getLoop() == null ? null : numbered.get(node.getLoop());
+            if (recursion != null && parent != null) {
+                recursion.feedsBack(parent.intValue());
+            }
+            return;
+        }
         final int id = next[0]++;
         if (!node.isHidden()) {
             final Long held = !node.isScan() ? null : Long.valueOf(node.getRows().longValue() > 0 ? 1 : 0);
-            into.add(new PlanOperator(id, parent, depth, node.getOperation(), node.getObjects(), node.getAlias(),
-                node.getExpressions(), held, held == null || !node.isUnread() ? held : Long.valueOf(0)));
+            final Long assigned = held == null || !node.isUnread() ? held : Long.valueOf(0);
+            final PlanOperator operator = new PlanOperator(id, parent, depth, node.getOperation(), node.getObjects(),
+                node.getAlias(), node.getExpressions(), held, assigned);
+            if (node.isCountedTwice()) {
+                operator.countedTwice();
+            }
+            into.add(operator);
+            numbered.put(node, operator);
         }
         for (final PlanNode child : node.getChildren()) {
-            number(child, Integer.valueOf(id), node.isHidden() ? depth : depth + 1, next, into);
+            number(child, Integer.valueOf(id), node.isHidden() ? depth : depth + 1, next, into, numbered);
         }
     }
 
@@ -351,7 +363,9 @@ final class ExplainPlan {
         for (final PlanOperator operator : operators) {
             final Long assigned = operator.getPartitionsAssigned();
             rows.add(new Row(Arrays.<Object>asList(Long.valueOf(1), Long.valueOf(operator.getId()),
-                operator.getParent() == null ? null : "[" + operator.getParent() + "]", operator.getOperation(),
+                operator.getParent() == null ? null : "[" + operator.getParent()
+                    + (operator.getLoopParent() == null ? "" : ", " + operator.getLoopParent()) + "]",
+                operator.getOperation(),
                 operator.getObjects().isEmpty() ? null : String.join(", ", operator.getObjects()),
                 operator.getAlias(),
                 operator.getExpressions().isEmpty() ? null : String.join(", ", operator.getExpressions()),
@@ -369,8 +383,8 @@ final class ExplainPlan {
         final long[] partitions = new long[2];
         for (final PlanOperator operator : operators) {
             if (operator.getPartitionsTotal() != null) {
-                partitions[0] += operator.getPartitionsTotal().longValue();
-                partitions[1] += operator.getPartitionsAssigned().longValue();
+                partitions[0] += operator.getPartitionsTotal().longValue() * operator.counted();
+                partitions[1] += operator.getPartitionsAssigned().longValue() * operator.counted();
             }
         }
         return partitions;
@@ -453,7 +467,8 @@ final class ExplainPlan {
                     .append(operator.getPartitionsAssigned().longValue() * PARTITION_BYTES);
             }
             if (operator.getParent() != null) {
-                plan.append(",\"parentOperators\":[").append(operator.getParent()).append(']');
+                plan.append(",\"parentOperators\":[").append(operator.getParent())
+                    .append(operator.getLoopParent() == null ? "" : "," + operator.getLoopParent()).append(']');
             }
             plan.append('}');
         }
@@ -472,7 +487,7 @@ final class ExplainPlan {
             } else if (c == '\t') {
                 quoted.append("\\t");
             } else if (c < 0x20) {
-                quoted.append(String.format("\\u%04x", (int) c));
+                quoted.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
             } else {
                 quoted.append(c);
             }

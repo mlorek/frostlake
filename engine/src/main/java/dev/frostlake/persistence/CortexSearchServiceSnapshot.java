@@ -48,6 +48,8 @@ public class CortexSearchServiceSnapshot implements Serializable {
     public boolean requestLogging;
     public Integer autoSuspend;
     public Map<String, String> tags = new LinkedHashMap<>();
+    // The named scoring profiles, each its JSON text. Null on snapshots written before they were saved.
+    public Map<String, String> scoringProfiles = new LinkedHashMap<>();
     // When the object was created. Null on snapshots written before it was saved, which restore it as new.
     public LocalDateTime createdAt;
 }

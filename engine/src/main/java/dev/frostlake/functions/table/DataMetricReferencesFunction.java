@@ -23,9 +23,12 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DataMetricFunctions;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.DataMetricAttachment;
+import dev.frostlake.metastore.model.DataMetricAttachments;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -68,6 +71,10 @@ public class DataMetricReferencesFunction extends TableFunction {
     /** Every system metric answers a NUMBER, and the domain is spelled in mixed case. */
     private static final String METRIC_DATA_TYPE = "NUMBER(38,0)";
     private static final String DOMAIN = "Table";
+    private static final String VIEW_DOMAIN = "View";
+
+    /** How a schedule given as a cron expression is written: the expression and its time zone follow. */
+    private static final String CRON_PREFIX = "USING CRON ";
 
     /** The blob live builds from the same defaults, keys in alphabetical order. */
     private static final String PROPERTIES = "{\n"
@@ -94,17 +101,22 @@ public class DataMetricReferencesFunction extends TableFunction {
      * underscore between its words; any other word is an unknown domain, as written (live-verified word by word).
      */
     private static final Set<String> REFUSED_DOMAINS = new HashSet<String>(Arrays.asList("ACCOUNT",
-        "AGGREGATION POLICY", "ALERT", "APPLICATION", "APPLICATION PACKAGE", "AUTHENTICATION POLICY", "BUDGET",
-        "CATALOG", "CLASS", "COLUMN", "COMPUTE POOL", "CONNECTION", "CONSTRAINT", "CONTACT", "CORTEX AGENT",
+        "AGGREGATION POLICY", "ALERT", "APPLICATION", "APPLICATION PACKAGE", "APPLICATION ROLE", "APPLICATION SERVICE",
+        "APPLICATION SPECIFICATION", "ARTIFACT REPOSITORY", "AUTHENTICATION POLICY", "BUDGET", "CATALOG", "CHANNEL",
+        "CLASS", "COLUMN", "COMPUTE POOL", "CONNECTION", "CONSTRAINT", "CONTACT", "CORTEX AGENT",
         "CORTEX SEARCH SERVICE", "DATA EXCHANGE", "DATA METRIC FUNCTION", "DATABASE", "DATABASE ROLE", "DATASET",
-        "DBT PROJECT", "EXPERIMENT", "EXTERNAL VOLUME", "FAILOVER GROUP", "FILE FORMAT", "FUNCTION",
-        "GIT REPOSITORY", "IMAGE REPOSITORY", "INSTANCE", "INTEGRATION", "INTERACTIVE TABLE", "JOB", "JOIN POLICY",
-        "MANAGED ACCOUNT", "MASKING POLICY", "MODEL", "NETWORK POLICY", "NETWORK RULE", "NOTEBOOK", "NOTIFICATION",
-        "OBJECT", "ONLINE FEATURE TABLE", "ORGANIZATION", "PACKAGES POLICY", "PASSWORD POLICY", "PIPE", "POLICY",
-        "PRIVACY POLICY", "PROCEDURE", "PROJECTION POLICY", "REPLICATION GROUP", "RESOURCE MONITOR", "ROLE",
-        "ROW ACCESS POLICY", "SECRET", "SEMANTIC VIEW", "SEQUENCE", "SERVICE", "SESSION", "SESSION POLICY",
-        "SNOWFLAKE INTELLIGENCE", "STAGE", "STORAGE LIFECYCLE POLICY", "STREAM", "STREAMLIT", "TABLE FUNCTION",
-        "TAG", "TASK", "USER", "VOLUME", "WAREHOUSE", "WORKSPACE"));
+        "DBT PROJECT", "DCM PROJECT", "DELEGATED AUTHORIZATION", "DEPLOYMENT", "EVENT ROUTING TABLE", "EXPERIMENT",
+        "EXTERNAL VOLUME", "FAILOVER GROUP", "FEATURE POLICY", "FILE", "FILE FORMAT", "FUNCTION", "GIT BRANCH",
+        "GIT REPOSITORY", "GIT TAG", "GLOBAL ACCOUNT", "IMAGE REPOSITORY", "INSTANCE", "INTEGRATION",
+        "INTERACTIVE TABLE", "JOB", "JOIN POLICY", "LOCK", "MAINTENANCE POLICY", "MANAGED ACCOUNT", "MASKING POLICY",
+        "MFA METHOD", "MODEL", "MULTI PARTY APPROVAL POLICY", "NETWORK POLICY", "NETWORK RULE", "NOTEBOOK",
+        "NOTEBOOK PROJECT", "NOTIFICATION", "OBJECT", "ONLINE FEATURE TABLE", "ORGANIZATION", "ORGANIZATION PROFILE",
+        "ORGANIZATION USER", "ORGANIZATION USER GROUP", "PACKAGES POLICY", "PARAMETER", "PASSWORD POLICY", "PIPE",
+        "POLICY", "POSTGRES", "PRIVACY POLICY", "PROCEDURE", "PROJECTION POLICY", "PROVISIONED THROUGHPUT",
+        "REPLICATION GROUP", "RESOURCE MONITOR", "RESULT", "ROLE", "ROW ACCESS POLICY", "SECRET", "SEMANTIC VIEW",
+        "SEQUENCE", "SERVICE", "SERVICE CONTAINER", "SERVICE VOLUME", "SESSION", "SESSION POLICY",
+        "SNOWFLAKE INTELLIGENCE", "STAGE", "STORAGE LIFECYCLE POLICY", "STREAM", "STREAMLIT", "TABLE FUNCTION", "TAG",
+        "TASK", "TRANSACTION", "USER", "VARIABLE", "VOLUME", "WAREHOUSE", "WORKSPACE"));
 
     private final Catalog catalog;
 
@@ -175,7 +187,12 @@ public class DataMetricReferencesFunction extends TableFunction {
         for (final Database database : catalog.getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
-                    appendRows(schema, table, parts[parts.length - 1], rows);
+                    appendRows(schema, table.getName(), DOMAIN, table.dataMetricAttachments(), table,
+                        parts[parts.length - 1], rows);
+                }
+                for (final View view : schema.getViews()) {
+                    appendRows(schema, view.getName(), VIEW_DOMAIN, view.dataMetricAttachments(), columnsOf(view),
+                        parts[parts.length - 1], rows);
                 }
             }
         }
@@ -183,11 +200,12 @@ public class DataMetricReferencesFunction extends TableFunction {
     }
 
     /**
-     * Adds the attachments of the entity a name and a domain name; a view and a schema carry none here. The domain
-     * is judged first, as written: a table-like kind looks the name up as any table or view; a
-     * schema is looked up as one; another kind of object is no value for the argument; and a word that names no
-     * kind is an unknown domain. A name that resolves to nothing is refused in the domain's own noun — by the bare
-     * name where a table, a view or a materialized view was named bare, by the full path otherwise (live-verified).
+     * Adds the attachments of the entity a name and a domain name; a schema carries none here. The domain is judged
+     * first, as written: a table-like kind looks the name up as any table or view, a view's rows naming the View
+     * domain whichever kind was asked; a schema is looked up as one; another kind of object is no value for the
+     * argument; and a word that names no kind is an unknown domain. A name that resolves to nothing is refused in the
+     * domain's own noun — by the bare name where a table, a view or a materialized view was named bare, by the full
+     * path otherwise (live-verified).
      */
     private void appendEntityRows(final String entityName, final String entityDomain, final List<Row> rows) {
         // A kind of two words may be written with an underscore between them.
@@ -215,10 +233,13 @@ public class DataMetricReferencesFunction extends TableFunction {
         final String name = parts[parts.length - 1];
         final Table table = schema.tableExact(name);
         if (table != null) {
-            appendRows(schema, table, null, rows);
+            appendRows(schema, table.getName(), DOMAIN, table.dataMetricAttachments(), table, null, rows);
             return;
         }
         if (schema.hasView(name) && schema.getView(name).getName().equals(name)) {
+            final View view = schema.getView(name);
+            appendRows(schema, view.getName(), VIEW_DOMAIN, view.dataMetricAttachments(), columnsOf(view), null,
+                rows);
             return;
         }
         final boolean bare = parts.length == 1 && BARE_NAMED_DOMAINS.contains(domain);
@@ -232,26 +253,36 @@ public class DataMetricReferencesFunction extends TableFunction {
             + " (metric_name=>'metricName') or (ref_entity_name=>'name', ref_entity_domain=>'domain').";
     }
 
-    /** One row per attachment, ordered by metric name and then by signature, as live orders them. */
-    private void appendRows(final Schema schema, final Table table, final String onlyMetric,
+    /**
+     * One row per attachment of a table or a view, ordered by metric name and then by signature, as live orders
+     * them. A view's rows differ from a table's in their domain alone: their level is the table's (live-verified).
+     */
+    private void appendRows(final Schema schema, final String entityName, final String domain,
+                            final DataMetricAttachments attachments, final Table columns, final String onlyMetric,
                             final List<Row> rows) {
         final Map<String, Row> ordered = new TreeMap<>();
-        for (final DataMetricAttachment attachment : table.getDataMetrics()) {
+        for (final DataMetricAttachment attachment : attachments.list()) {
             final String metric = DataMetricFunctions.bareName(attachment.getMetricName());
             if (onlyMetric != null && !onlyMetric.equalsIgnoreCase(metric)) {
                 continue;
             }
-            final String signature = signatureOf(table, attachment);
-            ordered.put(metric + " " + signature, new Row(Arrays.asList(
+            final String signature = signatureOf(columns, attachment);
+            ordered.put(metric + "\0" + signature, new Row(Arrays.asList(
                 "SNOWFLAKE", "CORE", metric, signature, METRIC_DATA_TYPE,
-                schema.getDatabaseName(), schema.getName(), table.getName(), DOMAIN,
+                schema.getDatabaseName(), schema.getName(), entityName, domain,
                 renderArguments(attachment.getColumns()),
                 // The account's per-attachment UUID: nothing here can stand in for it.
                 null,
-                schedule(table), attachment.isSuspended() ? "SUSPENDED_BY_USER_ACTION" : "STARTED",
+                schedule(attachments.getSchedule()), attachment.isSuspended() ? "SUSPENDED_BY_USER_ACTION" : "STARTED",
                 "DISABLED", "DISABLED", "MEDIUM", "", "Table", "", PROPERTIES)));
         }
         rows.addAll(ordered.values());
+    }
+
+    /** A view's columns as it resolved them, held as a table's are so a metric's overload can be read off them. */
+    private static Table columnsOf(final View view) {
+        return new Table(view.getName(), view.hasResolvedColumns() ? view.getResolvedColumns()
+            : new ArrayList<TableColumn>(), false);
     }
 
     /**
@@ -285,11 +316,16 @@ public class DataMetricReferencesFunction extends TableFunction {
         return out.append("]").toString();
     }
 
-    /** DATA_METRIC_SCHEDULE as a cron string: minutes below an hour, whole hours above. */
-    private String schedule(final Table table) {
-        final String schedule = table.getDataMetricSchedule();
+    /**
+     * DATA_METRIC_SCHEDULE as a cron string: minutes below an hour, whole hours above, and a cron expression given as
+     * {@code USING CRON 0 0 1 1 * UTC} as the expression and its time zone (live-verified).
+     */
+    private String schedule(final String schedule) {
         if (schedule == null || schedule.isEmpty()) {
             return null;
+        }
+        if (schedule.regionMatches(true, 0, CRON_PREFIX, 0, CRON_PREFIX.length())) {
+            return schedule.substring(CRON_PREFIX.length()).trim();
         }
         final String[] parts = schedule.trim().split("\\s+");
         if (parts.length < 2 || !parts[0].matches("[0-9]+")) {

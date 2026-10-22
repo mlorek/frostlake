@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.CodePointText;
 
@@ -48,8 +49,9 @@ public class RegexpReplace extends TextArgumentFunction {
         final String pattern = args.get(1) == null ? "" : SharedFunctionHelpers.textOf(args.get(1));
         final String replacement = args.size() > 2 && args.get(2) != null
             ? SharedFunctionHelpers.textOf(args.get(2)) : "";
-        final int position = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
-        final int occurrence = args.size() > 4 && args.get(4) != null ? wholeNumber(args.get(4)) : 0;
+        final int position = args.size() > 3 && args.get(3) != null ? WholeNumberArgument.widePosition(args.get(3)) : 1;
+        final int occurrence = args.size() > 4 && args.get(4) != null
+            ? WholeNumberArgument.widePosition(args.get(4)) : 0;
         final String parameters = args.size() > 5 && args.get(5) != null
             ? SharedFunctionHelpers.textOf(args.get(5)) : null;
         RegexpHelper.requirePosition(position);

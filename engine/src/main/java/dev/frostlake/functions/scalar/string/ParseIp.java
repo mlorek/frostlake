@@ -194,7 +194,7 @@ public class ParseIp extends TextArgumentFunction {
     }
 
     private static String toHex128(final BigInteger value) {
-        return String.format("%032x", value);
+        return String.format(Locale.ROOT, "%032x", value);
     }
 
     private Object onError(final String message, final boolean permissive) {

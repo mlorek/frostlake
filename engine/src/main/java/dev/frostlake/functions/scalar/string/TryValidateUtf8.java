@@ -14,50 +14,16 @@
  * limitations under the License.
  */
 
-package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.SemiStructuredRejection;
-import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.StringType;
-import dev.frostlake.values.BinaryValue;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
+package dev.frostlake.functions.scalar.string;
 
 /**
  * TRY_VALIDATE_UTF8(x) — the input as a string when its bytes are valid UTF-8, else NULL.
  *
  * <p>It reads its argument as TEXT, so a BINARY is an argument-type error rather than the obvious
  * input: live refuses {@code TRY_VALIDATE_UTF8(bn)} at compile time and answers over a VARCHAR and
- * even over a NUMBER. The byte path below therefore only ever sees a value the static channel could
- * not type.
+ * even over a NUMBER. It answers as {@link ValidateUtf8} does on every input it can be handed.
  */
-public class TryValidateUtf8 extends TextArgumentFunction {
-    public TryValidateUtf8() { super("TRY_VALIDATE_UTF8", StringType.VARCHAR); }
-
-    @Override
-    public SemiStructuredRejection binaryRejection(final int position) {
-        return SemiStructuredRejection.ARGUMENT_TYPES;
-    }
-
-    @Override
-    public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        if (args.get(0) instanceof BinaryValue) {
-            try {
-                return StandardCharsets.UTF_8.newDecoder()
-                    .decode(ByteBuffer.wrap(((BinaryValue) args.get(0)).bytes())).toString();
-            } catch (final CharacterCodingException invalid) {
-                return null;
-            }
-        }
-        return SharedFunctionHelpers.textOf(args.get(0));
-    }
-
-    @Override
-    public int getMinArgCount() { return 1; }
-    @Override
-    public int getMaxArgCount() { return 1; }
+public class TryValidateUtf8 extends ValidateUtf8 {
+    public TryValidateUtf8() { super("TRY_VALIDATE_UTF8"); }
 }

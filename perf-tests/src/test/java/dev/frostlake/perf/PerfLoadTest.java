@@ -32,6 +32,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -127,7 +128,7 @@ public class PerfLoadTest {
             final long ms = (System.nanoTime() - start) / 1_000_000L;
             final double perRowUs = (ms * 1000.0) / n;
             log.info("PERF | insert.scaling | rows={} totalMs={} perRowUs={}",
-                n, ms, String.format("%.2f", perRowUs));
+                n, ms, String.format(Locale.ROOT, "%.2f", perRowUs));
             assertEquals(n, rowCount(engine.executeQuery("SELECT id FROM ins")));
         }
     }
@@ -228,7 +229,8 @@ public class PerfLoadTest {
         }
         final long concMs = (System.nanoTime() - start) / 1_000_000L;
         log.info("PERF | concurrency.reads | serialMs={} concurrentMs={} threads={} speedup={}",
-            serialMs, concMs, threads, String.format("%.2f", concMs == 0 ? 0.0 : (double) serialMs / concMs));
+            serialMs, concMs, threads, String.format(Locale.ROOT, "%.2f",
+                concMs == 0 ? 0.0 : (double) serialMs / concMs));
         assertEquals(totalReads, done.get());
     }
 
@@ -294,12 +296,14 @@ public class PerfLoadTest {
         log.info("PERF | groupby.card.10 | ms={}", ms(benchNanos("SELECT grp, COUNT(*) c FROM g GROUP BY grp")));
         log.info("PERF | groupby.card.1000 | ms={}", ms(benchNanos("SELECT n, COUNT(*) c FROM g GROUP BY n")));
         log.info("PERF | groupby.card.allDistinct | ms={}", ms(benchNanos("SELECT id, COUNT(*) c FROM g GROUP BY id")));
-        log.info("PERF | groupby.multikey grp,n | ms={}", ms(benchNanos("SELECT grp, n, COUNT(*) c FROM g GROUP BY grp, n")));
+        log.info("PERF | groupby.multikey grp,n | ms={}",
+            ms(benchNanos("SELECT grp, n, COUNT(*) c FROM g GROUP BY grp, n")));
         // Per-aggregate cost: fixed 10 groups, vary the aggregate.
         log.info("PERF | groupby.agg.count | ms={}", ms(benchNanos("SELECT grp, COUNT(*) FROM g GROUP BY grp")));
         log.info("PERF | groupby.agg.sum | ms={}", ms(benchNanos("SELECT grp, SUM(n) FROM g GROUP BY grp")));
         log.info("PERF | groupby.agg.avg | ms={}", ms(benchNanos("SELECT grp, AVG(n) FROM g GROUP BY grp")));
-        log.info("PERF | groupby.agg.countDistinct | ms={}", ms(benchNanos("SELECT grp, COUNT(DISTINCT n) FROM g GROUP BY grp")));
+        log.info("PERF | groupby.agg.countDistinct | ms={}",
+            ms(benchNanos("SELECT grp, COUNT(DISTINCT n) FROM g GROUP BY grp")));
     }
 
     /** Min of 3 timed runs (after a warm-up) — min is the most GC/scheduling-stable timing estimate. */
@@ -316,7 +320,7 @@ public class PerfLoadTest {
     }
 
     private static String ms(final long nanos) {
-        return String.format("%.2f", nanos / 1_000_000.0);
+        return String.format(Locale.ROOT, "%.2f", nanos / 1_000_000.0);
     }
 
     // ---- 8. large-scale stats: 100k / 200k / 500k rows ----------------------
@@ -347,17 +351,26 @@ public class PerfLoadTest {
                 n, loadMs, loadMs == 0 ? 0 : n * 1000L / loadMs);
             log.info("PERF | large.scan | rows={} ms={}", n, ms(benchNanos(e, "SELECT id FROM big")));
             log.info("PERF | large.where.eq | rows={} ms={}", n, ms(benchNanos(e, "SELECT id FROM big WHERE n = 7")));
-            log.info("PERF | large.where.like | rows={} ms={}", n, ms(benchNanos(e, "SELECT id FROM big WHERE payload LIKE 'row_1%'")));
-            log.info("PERF | large.limit | rows={} ms={}", n, ms(benchNanos(e, "SELECT id FROM big WHERE n >= 0 LIMIT 10")));
-            log.info("PERF | large.groupby.10 | rows={} ms={}", n, ms(benchNanos(e, "SELECT grp, COUNT(*) c FROM big GROUP BY grp")));
-            log.info("PERF | large.groupby.1000 | rows={} ms={}", n, ms(benchNanos(e, "SELECT n, COUNT(*) c FROM big GROUP BY n")));
-            log.info("PERF | large.groupby.highcard | rows={} ms={}", n, ms(benchNanos(e, "SELECT id, COUNT(*) c FROM big GROUP BY id")));
-            log.info("PERF | large.groupby.sum | rows={} ms={}", n, ms(benchNanos(e, "SELECT grp, SUM(n) FROM big GROUP BY grp")));
-            log.info("PERF | large.groupby.countDistinct | rows={} ms={}", n, ms(benchNanos(e, "SELECT grp, COUNT(DISTINCT n) FROM big GROUP BY grp")));
+            log.info("PERF | large.where.like | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT id FROM big WHERE payload LIKE 'row_1%'")));
+            log.info("PERF | large.limit | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT id FROM big WHERE n >= 0 LIMIT 10")));
+            log.info("PERF | large.groupby.10 | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT grp, COUNT(*) c FROM big GROUP BY grp")));
+            log.info("PERF | large.groupby.1000 | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT n, COUNT(*) c FROM big GROUP BY n")));
+            log.info("PERF | large.groupby.highcard | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT id, COUNT(*) c FROM big GROUP BY id")));
+            log.info("PERF | large.groupby.sum | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT grp, SUM(n) FROM big GROUP BY grp")));
+            log.info("PERF | large.groupby.countDistinct | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT grp, COUNT(DISTINCT n) FROM big GROUP BY grp")));
             log.info("PERF | large.distinct | rows={} ms={}", n, ms(benchNanos(e, "SELECT DISTINCT grp FROM big")));
             log.info("PERF | large.orderby | rows={} ms={}", n, ms(benchNanos(e, "SELECT id FROM big ORDER BY n, id")));
-            log.info("PERF | large.join.hash | rows={} ms={}", n, ms(benchNanos(e, "SELECT b.id FROM big b JOIN dim d ON b.id = d.id")));
-            log.info("PERF | large.subquery.uncorr | rows={} ms={}", n, ms(benchNanos(e, "SELECT id FROM big WHERE n IN (SELECT id FROM dim)")));
+            log.info("PERF | large.join.hash | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT b.id FROM big b JOIN dim d ON b.id = d.id")));
+            log.info("PERF | large.subquery.uncorr | rows={} ms={}", n, ms(benchNanos(e,
+                "SELECT id FROM big WHERE n IN (SELECT id FROM dim)")));
         }
         e.shutdown();
     }

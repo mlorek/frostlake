@@ -70,13 +70,13 @@ public class TemporalTextTest {
     }
 
     private void assertTheMeasuredShapes(final ResultSet rs) throws Exception {
-        assertEquals("2026-08-07", rs.getString("d"));
+        assertEquals("2026-08-07", rs.getString("D"));
         // TIME drops its fraction entirely — .789 is not reported.
-        assertEquals("12:34:56", rs.getString("tm"));
+        assertEquals("12:34:56", rs.getString("TM"));
         // Exactly three fractional digits, space-separated, no 'T'.
-        assertEquals("2026-08-07 12:34:56.789", rs.getString("ntz"));
+        assertEquals("2026-08-07 12:34:56.789", rs.getString("NTZ"));
         // The zoned one adds the session's offset: numeric, or Z when it is zero.
-        final String ltz = rs.getString("ltz");
+        final String ltz = rs.getString("LTZ");
         assertTrue(ltz.startsWith("2026-08-07 12:34:56.789 "), ltz);
         assertTrue(ltz.matches(".* ([+-]\\d{4}|Z)$"), ltz);
     }
@@ -90,8 +90,8 @@ public class TemporalTextTest {
     @Test
     public void aRenderedTimestampStillReadsBackAsATimestamp() throws Exception {
         final ResultSet rs = temporalRow("jdbc:frostlake:direct:temporal_roundtrip");
-        assertEquals("2026-08-07 12:34:56.789", rs.getTimestamp("ltz").toString());
-        assertEquals("2026-08-07", rs.getDate("d").toString());
+        assertEquals("2026-08-07 12:34:56.789", rs.getTimestamp("LTZ").toString());
+        assertEquals("2026-08-07", rs.getDate("D").toString());
     }
 
     /** Three fractional digits: PADDED for a shorter value, TRUNCATED for a longer one. */
@@ -108,9 +108,9 @@ public class TemporalTextTest {
             + " '2026-08-07 12:34:56.123456789')");
         try (ResultSet rs = st.executeQuery("SELECT a, b, c FROM tf")) {
             rs.next();
-            assertEquals("2026-08-07 12:34:56.100", rs.getString("a"));
-            assertEquals("2026-08-07 12:34:56.000", rs.getString("b"));
-            assertEquals("2026-08-07 12:34:56.123", rs.getString("c"));
+            assertEquals("2026-08-07 12:34:56.100", rs.getString("A"));
+            assertEquals("2026-08-07 12:34:56.000", rs.getString("B"));
+            assertEquals("2026-08-07 12:34:56.123", rs.getString("C"));
         }
     }
 
@@ -127,8 +127,8 @@ public class TemporalTextTest {
         st.execute("INSERT INTO tn VALUES (42)");
         try (ResultSet rs = st.executeQuery("SELECT n FROM tn")) {
             rs.next();
-            assertEquals("42", rs.getString("n"));
-            assertEquals(42, rs.getInt("n"));
+            assertEquals("42", rs.getString("N"));
+            assertEquals(42, rs.getInt("N"));
         }
     }
 }

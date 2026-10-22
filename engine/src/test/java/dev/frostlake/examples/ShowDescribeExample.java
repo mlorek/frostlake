@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 /**
  * Example demonstrating SHOW and DESCRIBE commands
  */
@@ -125,7 +127,7 @@ public final class ShowDescribeExample {
         // Print column headers
         final StringBuilder header = new StringBuilder("   ");
         for (int i = 0; i < rs.getColumnCount(); i++) {
-            header.append(String.format("%-25s", rs.getColumns().get(i).getName()));
+            header.append(String.format(Locale.ROOT, "%-25s", rs.getColumns().get(i).getName()));
         }
         logger.info(header.toString());
 
@@ -139,7 +141,7 @@ public final class ShowDescribeExample {
                 if (strValue.length() > 22) {
                     strValue = strValue.substring(0, 19) + "...";
                 }
-                line.append(String.format("%-25s", strValue));
+                line.append(String.format(Locale.ROOT, "%-25s", strValue));
             }
             logger.info(line.toString());
         }

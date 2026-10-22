@@ -31,17 +31,20 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The packages a Java routine's PACKAGES may name: the account's list of them, a package by its group and artifact
- * at one of its versions or at {@code latest}, in any case and around any spaces ({@code java-packages.tsv}, the
- * account's {@code INFORMATION_SCHEMA.PACKAGES} for Java). Anything else is refused as the routine is created, ahead
- * of its handler, the first one named as written: {@code Package 'com.snowflake:snowpark' is not supported.} for a
- * package without a version, an unknown version, an unknown package, or a name of more or fewer parts
- * (live-verified).
+ * The packages a Java or a Scala routine's PACKAGES may name: the account's list of them for the language, a package
+ * by its group and artifact at one of its versions or at {@code latest}, in any case and around any spaces
+ * ({@code java-packages.tsv} and {@code scala-packages.tsv}, the account's {@code INFORMATION_SCHEMA.PACKAGES} for each
+ * language). Anything else is refused as the routine is created, ahead of its handler, the first one named as written:
+ * {@code Package 'com.snowflake:snowpark' is not supported.} for a package without a version, an unknown version, an
+ * unknown package, or a name of more or fewer parts (live-verified).
  */
 public final class JavaPackages {
 
-    /** The versions of each package, by its group and artifact, lower-cased. */
-    private static final Map<String, Set<String>> VERSIONS = load();
+    /** The versions of each Java package, by its group and artifact, lower-cased. */
+    private static final Map<String, Set<String>> VERSIONS = load("/java-packages.tsv");
+
+    /** The versions of each Scala package, by its group and artifact, lower-cased. */
+    private static final Map<String, Set<String>> SCALA_VERSIONS = load("/scala-packages.tsv");
 
     private JavaPackages() {
     }
@@ -52,30 +55,43 @@ public final class JavaPackages {
      * @param packages the packages as written, or null when the routine names none
      */
     public static void requireSupported(final List<String> packages) {
+        requireListed(packages, VERSIONS);
+    }
+
+    /**
+     * Refuse the first package a Scala routine names that the account does not offer.
+     *
+     * @param packages the packages as written, or null when the routine names none
+     */
+    public static void requireSupportedForScala(final List<String> packages) {
+        requireListed(packages, SCALA_VERSIONS);
+    }
+
+    private static void requireListed(final List<String> packages, final Map<String, Set<String>> offered) {
         if (packages == null) {
             return;
         }
         for (final String written : packages) {
-            if (written != null && !isSupported(written)) {
+            if (written != null && !isSupported(written, offered)) {
                 throw new RuntimeException(SqlCompilationError.inline("Package '" + written + "' is not supported."));
             }
         }
     }
 
-    private static boolean isSupported(final String written) {
+    private static boolean isSupported(final String written, final Map<String, Set<String>> offered) {
         final String[] parts = written.trim().toLowerCase(Locale.ROOT).split(":", -1);
         if (parts.length != 3) {
             return false;
         }
-        final Set<String> versions = VERSIONS.get(parts[0] + ":" + parts[1]);
+        final Set<String> versions = offered.get(parts[0] + ":" + parts[1]);
         return versions != null && ("latest".equals(parts[2]) || versions.contains(parts[2]));
     }
 
-    private static Map<String, Set<String>> load() {
+    private static Map<String, Set<String>> load(final String resource) {
         final Map<String, Set<String>> versions = new HashMap<>();
-        try (InputStream in = JavaPackages.class.getResourceAsStream("/java-packages.tsv")) {
+        try (InputStream in = JavaPackages.class.getResourceAsStream(resource)) {
             if (in == null) {
-                throw new IllegalStateException("missing Java package list");
+                throw new IllegalStateException("missing package list " + resource);
             }
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
                 String line = reader.readLine();
@@ -94,7 +110,7 @@ public final class JavaPackages {
                 }
             }
         } catch (final IOException e) {
-            throw new IllegalStateException("cannot load the Java package list", e);
+            throw new IllegalStateException("cannot load the package list " + resource, e);
         }
         return versions;
     }

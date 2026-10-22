@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * ALTER USER ... SET TAG and UNSET TAG take APPLY TAG on the account, or APPLY on each tag and OWNERSHIP of the user
  * (documented, "Tag privileges"); MODIFY on the user is not what they ask. They asked nothing, so any role tagged and
- * untagged any user (FL-441). The refusal's wording is not measured. Engine only: the live account allows no CREATE
+ * untagged any user. The refusal's wording is not measured. Engine only: the live account allows no CREATE
  * ROLE, CREATE USER or GRANT.
  */
 public class UserTagPrivilegeTest {

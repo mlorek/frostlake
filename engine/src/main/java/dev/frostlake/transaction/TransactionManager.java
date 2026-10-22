@@ -541,6 +541,22 @@ public class TransactionManager {
     }
 
     /**
+     * Rolls back a transaction its session left open as the session ends, from whichever thread ends it: its writes
+     * undone and its locks released, and nothing kept of it, since no session is left to hold it. The thread's own
+     * session records nothing of it.
+     *
+     * @param left the transaction
+     */
+    public void rollBackLeft(final Transaction left) {
+        try {
+            left.rollback();
+            left.setState(TransactionState.ROLLED_BACK);
+        } finally {
+            activeTransactions.remove(left.getId());
+        }
+    }
+
+    /**
      * Roll back the current transaction without recording it as the session's last: the transaction was begun
      * for a statement that then never ran.
      */
@@ -680,6 +696,21 @@ public class TransactionManager {
 
     public Collection<Transaction> getActiveTransactions() {
         return activeTransactions.values();
+    }
+
+    /**
+     * Whether a transaction of any session is open and has statements in the log: a checkpoint taken now would hold
+     * what other sessions committed since, and those statements would replay over it at recovery.
+     *
+     * @return whether such a transaction is open
+     */
+    public boolean holdsLoggedStatements() {
+        for (final Transaction open : activeTransactions.values()) {
+            if (!open.getWalStatements().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -150,7 +150,8 @@ final class UdfInvoker {
      * runs, so date arithmetic inside the body stays in the timestamp domain and OBJECT/VARIANT output
      * renders it in full timestamp form rather than date-only.
      */
-    private List<Object> coerceArgsToParameterTypes(final Function function, final List<Object> args) {
+    private List<Object> coerceArgsToParameterTypes(final Function function, final List<Object> args,
+                                                    final List<DataType> argTypes) {
         final List<Parameter> params = function.getParameters();
         final boolean sqlBody = function.getUdfLanguage() == UdfLanguage.SQL;
         List<Object> coerced = null;
@@ -187,7 +188,9 @@ final class UdfInvoker {
                 // arrives - the same conversion a CAST to that type performs, refusing in the same
                 // words where the value will not convert (live-verified). Without it the argument
                 // reached the body as its text and the declared type never spoke.
-                if (keepsItsOwnNumber(paramType, value)) {
+                // A DECFLOAT is no NUMBER of its own: it converts to the parameter's type and rounds to its scale,
+                // f(CAST(1.5 AS DECFLOAT)) into NUMBER reading 2 (live-verified).
+                if (keepsItsOwnNumber(paramType, value) && !isDecfloat(argTypes, i)) {
                     // An exact number reaches an exact NUMBER parameter unconverted, so the parameter's
                     // SCALE never rounds it: num_p(1.257) into NUMBER(10,2) answers 1.257. One of a smaller
                     // scale is read at the parameter's where the body names it — 1 is 1.00 there — which is
@@ -624,6 +627,34 @@ final class UdfInvoker {
     }
 
     /**
+     * The arguments' static types, with a DECFLOAT that converted to an exact NUMBER parameter given that parameter's
+     * type: the body reads the converted value (see coerceArgsToParameterTypes).
+     */
+    private static List<DataType> decfloatsConverted(final Function function, final List<DataType> argTypes) {
+        if (argTypes == null) {
+            return null;
+        }
+        List<DataType> converted = null;
+        final List<Parameter> params = function.getParameters();
+        for (int i = 0; i < argTypes.size() && i < params.size(); i++) {
+            final DataType param = params.get(i).getDataType();
+            if (NumericType.isDecfloat(argTypes.get(i)) && param instanceof NumericType
+                    && !NumericType.isApproximate(param) && !NumericType.isDecfloat(param)) {
+                if (converted == null) {
+                    converted = new ArrayList<>(argTypes);
+                }
+                converted.set(i, param);
+            }
+        }
+        return converted == null ? argTypes : converted;
+    }
+
+    /** Whether the argument at {@code index} is a DECFLOAT by its static type. */
+    private static boolean isDecfloat(final List<DataType> argTypes, final int index) {
+        return argTypes != null && index < argTypes.size() && NumericType.isDecfloat(argTypes.get(index));
+    }
+
+    /**
      * {@link #evaluateUserDefinedFunction(Function, List)} with each argument's own static type, which a SQL
      * function's parameter takes its exact type and its binary width from (see SqlArgumentText).
      *
@@ -637,7 +668,7 @@ final class UdfInvoker {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         RoutineSecretsCheck.require(catalog, function.getEnvironment());
         final List<Object> given = withParameterDefaults(function, rawArgs);
-        final List<Object> args = coerceArgsToParameterTypes(function, given);
+        final List<Object> args = coerceArgsToParameterTypes(function, given, argTypes);
         // RETURNS NULL ON NULL INPUT (a.k.a. STRICT): a NULL in ANY argument short-circuits to NULL and the
         // body is NEVER entered. The clause was parsed and stored but not enforced, so a handler written on
         // that guarantee ran anyway and blew up on the null — e.g. `for k, v in OBJ.items()` raised
@@ -663,11 +694,17 @@ final class UdfInvoker {
         if (language != UdfLanguage.SQL && !Volatility.IMMUTABLE.name().equals(function.getVolatility())) {
             CheckpointDebt.owe();
         }
+        if (language == UdfLanguage.JAVASCRIPT && !Volatility.IMMUTABLE.name().equals(function.getVolatility())) {
+            // A subquery that calls a JavaScript function not declared IMMUTABLE is evaluated again for each outer
+            // row however uncorrelated it is, the function's state kept; a Python function's call is evaluated
+            // once (live-verified).
+            visitor.drawnAfresh();
+        }
 
         if (language == UdfLanguage.JAVA) {
             return evaluateJavaFunction(function, args);
         } else if (language == UdfLanguage.SQL) {
-            return evaluateSqlFunction(function, args, given, argTypes);
+            return evaluateSqlFunction(function, args, given, decfloatsConverted(function, argTypes));
         } else if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
                 || language == UdfLanguage.SCALA) {
             // A handler loaded from IMPORTS finds a file an internal named stage keeps where the engine keeps it.

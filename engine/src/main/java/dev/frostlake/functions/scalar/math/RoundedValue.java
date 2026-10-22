@@ -16,9 +16,11 @@
 
 package dev.frostlake.functions.scalar.math;
 
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.values.Decfloats;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.List;
 
@@ -45,7 +47,7 @@ import java.util.List;
  */
 final class RoundedValue {
 
-    /** The widest scale span a NUMBER is rounded across, and the scale arguments a DECFLOAT is rounded to. */
+    /** The widest scale span a NUMBER is rounded across. */
     private static final int MAX_SPAN = 38;
 
     private RoundedValue() {
@@ -56,10 +58,12 @@ final class RoundedValue {
         if (args.get(0) == null || args.size() > 1 && args.get(1) == null) {
             return null;
         }
-        final int scale = args.size() > 1 ? scaleOf(args.get(1)) : 0;
         if (args.get(0) instanceof Double || args.get(0) instanceof Float) {
-            return approximatelyRounded(((Number) args.get(0)).doubleValue(), scale, mode);
+            // A FLOAT's scale is no fixed-point slot: past the double's range it rounds to NaN (live-verified).
+            return approximatelyRounded(((Number) args.get(0)).doubleValue(),
+                args.size() > 1 ? approximateScaleOf(args.get(1)) : 0, mode);
         }
+        final int scale = args.size() > 1 ? scaleOf(args.get(1)) : 0;
         final BigDecimal num = new BigDecimal(args.get(0).toString());
         if (num.scale() - scale > MAX_SPAN) {
             throw new RuntimeException(
@@ -72,18 +76,15 @@ final class RoundedValue {
     /**
      * The rounded value of a DECFLOAT, or null when the input or the scale is null. The scale span NUMBER refuses
      * as "Scale too large" is a rule of a declared width, which a DECFLOAT does not have: its last digit's exponent
-     * goes down to -16383, so {@code ROUND(DECFLOAT '1e-50')} is 0 and {@code ROUND(DECFLOAT '1e-50', 2)} is 0
-     * (FL-491). The result is held as a DECFLOAT holds it (see Decfloats). A scale argument outside -38..38 keeps
-     * NUMBER's rule, since what the account answers there (say {@code ROUND(d, -7000)}) is unmeasured.
+     * goes down to -16383, so {@code ROUND(DECFLOAT '1e-50')} is 0, {@code ROUND(DECFLOAT '1e-100', 50)} is 0 and
+     * {@code ROUND(DECFLOAT '1e6000', -5999)} is 1e6000, any scale the scale's slot holds taken (live-verified). The
+     * result is held as a DECFLOAT holds it (see Decfloats).
      */
     static Object ofDecfloat(final List<Object> args, final RoundingMode mode) {
         if (args.get(0) == null || args.size() > 1 && args.get(1) == null) {
             return null;
         }
         final int scale = args.size() > 1 ? scaleOf(args.get(1)) : 0;
-        if (scale < -MAX_SPAN || scale > MAX_SPAN) {
-            return of(args, mode);
-        }
         return Decfloats.held(new BigDecimal(args.get(0).toString()).setScale(scale, mode));
     }
 
@@ -113,7 +114,9 @@ final class RoundedValue {
         } else if (mode == RoundingMode.DOWN) {
             rounded = shifted < 0 ? Math.ceil(shifted) : Math.floor(shifted);
         } else {
-            rounded = Math.round(shifted);
+            // An infinity stays one, so a scale past the double's range ends as NaN as the other modes do
+            // (live-verified: ROUND(1.25::FLOAT, 32768) is NaN), where Math.round would hand back a long's bound.
+            rounded = Double.isInfinite(shifted) ? shifted : Math.round(shifted);
         }
         // CEIL and TRUNC of a small negative give a POSITIVE zero on the account — CEIL(-0.4::FLOAT)
         // and TRUNC(-0.04::FLOAT, 1) are both 0 there — where IEEE ceiling hands back -0.0. Adding a
@@ -124,13 +127,38 @@ final class RoundedValue {
     }
 
     /**
-     * The scale argument as a whole number: a fraction rounds, and a string spells one. A string that
-     * spells no number at all is live's ordinary numeric-conversion refusal — {@code TRUNC(n, 'MONTH')}
-     * over a NUMBER is not the date form, it is a bad scale.
+     * The scale argument as a whole number, read through the FIXED[SB2](4,0) slot an exact number is rounded to
+     * (live-verified): a fraction rounds, a string spells one, a whole number outside -32768..32767 is "Numeric value
+     * '32768' is out of range" and one past 64 bits "... is not recognized", and a FLOAT the slot cannot hold is
+     * refused as WholeNumberArgument#requireFittingFloat says. A string that spells no number at all is live's
+     * ordinary numeric-conversion refusal — {@code TRUNC(n, 'MONTH')} over a NUMBER is not the date form, it is a bad
+     * scale.
      */
     private static int scaleOf(final Object arg) {
+        WholeNumberArgument.requireFittingFloat(arg, WholeNumberArgument.SCALE, false);
+        final BigInteger whole = wholeScale(arg);
+        if (whole.bitLength() > Long.SIZE - 1) {
+            throw new RuntimeException("Numeric value '" + whole + "' is not recognized");
+        }
+        if (whole.bitLength() > Short.SIZE - 1) {
+            throw new RuntimeException("Numeric value '" + whole + "' is out of range");
+        }
+        return whole.intValue();
+    }
+
+    /** The scale a FLOAT is rounded to: the whole number it gives, held to the range of an int. */
+    private static int approximateScaleOf(final Object arg) {
+        final BigInteger whole = wholeScale(arg);
+        if (whole.bitLength() > Integer.SIZE - 1) {
+            return whole.signum() < 0 ? Integer.MIN_VALUE : Integer.MAX_VALUE;
+        }
+        return whole.intValue();
+    }
+
+    /** The scale argument's nearest whole number, half away from zero. */
+    private static BigInteger wholeScale(final Object arg) {
         try {
-            return new BigDecimal(arg.toString()).setScale(0, RoundingMode.HALF_UP).intValue();
+            return new BigDecimal(arg.toString()).setScale(0, RoundingMode.HALF_UP).toBigInteger();
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + arg + "' is not recognized");
         }

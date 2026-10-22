@@ -40,6 +40,8 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.values.ValueRange;
+import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -769,6 +771,11 @@ final class SubqueryEvaluator {
             if (!SqlCompilationError.isCompilationError(refused.getMessage())) {
                 return null;
             }
+            if (groupsBesideOuterAggregate(expr, outerNames, refused.getMessage())) {
+                // The outer query's aggregate is a value here, so the subquery groups nothing of its own: the
+                // statement's correlation judgement refuses it, not its own grouping.
+                return null;
+            }
             if (refusesAName(refused.getMessage()) || refusesACorrelatedWindow(refused.getMessage())
                     || refusesAnAggregatePlace(refused.getMessage())
                     || ranksTypes && SubqueryTypeRanking.ranksAheadOfEnclosingTypes(refused.getMessage())) {
@@ -782,6 +789,40 @@ final class SubqueryEvaluator {
             RelationShapeOnly.end(shapeOnly);
             ExpressionSource.end(displaced);
         }
+    }
+
+    /**
+     * Whether a grouping refusal of a subquery stands beside an aggregate over the outer row alone in its own select
+     * list: {@code (SELECT MAX(fz.id) + g.v FROM g)} is refused as a subquery live cannot evaluate, not for its
+     * {@code g.v} (live-verified).
+     */
+    private boolean groupsBesideOuterAggregate(final SubqueryExpression expr, final Map<String, Object> names,
+                                               final String message) {
+        if (message == null || !message.contains("is not a valid group by expression") || expr.isExistence()) {
+            return false;
+        }
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(expr.getSubquery());
+        if (parsed == null || parsed.selectOperand().size() != 1 || parsed.selectOperand(0).selectClause() == null) {
+            return false;
+        }
+        final FrostlakeParser.SelectClauseContext own = parsed.selectOperand(0).selectClause();
+        final Set<String> outerNames = new HashSet<>();
+        for (final String name : names.keySet()) {
+            outerNames.add(name.toUpperCase(Locale.ROOT));
+        }
+        for (final ParserRuleContext call : new CorrelatedSubqueryRule(queryExecutor, outerNames,
+                visitor.scopeRelations()).outerAggregates(parsed)) {
+            ParseTree at = call.getParent();
+            while (at != null && !(at instanceof FrostlakeParser.SelectListContext)
+                    && !(at instanceof FrostlakeParser.SelectClauseContext)) {
+                at = at.getParent();
+            }
+            if (at instanceof FrostlakeParser.SelectListContext && at.getParent() == own) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

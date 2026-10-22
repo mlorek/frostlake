@@ -392,7 +392,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
             final String product = pivotResult.getRows().get(i).getValue(0).toString();
             final Object q1 = pivotResult.getRows().get(i).getValue(1);
             final Object q2 = pivotResult.getRows().get(i).getValue(2);
-            engine.execute(String.format("INSERT INTO pivoted VALUES ('%s', %s, %s)", product, q1, q2));
+            engine.execute(String.format(Locale.ROOT, "INSERT INTO pivoted VALUES ('%s', %s, %s)", product, q1, q2));
         }
 
         // Now unpivot

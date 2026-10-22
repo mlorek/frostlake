@@ -249,8 +249,9 @@ public class TagReferencesFunction extends TableFunction {
     }
 
     /**
-     * SYSTEM$GET_TAG(tag, object, domain): {@link #valueOf} of three arguments, none of them NULL and each a text
-     * — a number is "argument needs to be a string: 'SYSTEM$GET_TAG'". The domain is judged first and as it is
+     * SYSTEM$GET_TAG(tag, object, domain): {@link #valueOf} of three arguments, none of them NULL and each a text,
+     * as is any written after them — a number is "argument needs to be a string: 'SYSTEM$GET_TAG'", a fourth
+     * argument's too. The domain is judged first and as it is
      * written, with no blank about it: {@code 'nosuch_domain'} is "Unknown domain: nosuch_domain." whatever tag
      * is named, {@code 'TABLE '} is unknown too, and {@code 'tag'} is "Object tagging not supported for object
      * type TAG." A name of more parts than its kind has is "Object does not exist, or operation cannot be
@@ -270,7 +271,7 @@ public class TagReferencesFunction extends TableFunction {
         if (args.size() < 3) {
             return null;
         }
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < args.size(); i++) {
             if (!(args.get(i) instanceof String)) {
                 throw new RuntimeException(SqlCompilationError.of("argument needs to be a string: 'SYSTEM$GET_TAG'"));
             }

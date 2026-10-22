@@ -22,6 +22,8 @@ import com.snowflake.snowpark_java.types.StructField;
 import com.snowflake.snowpark_java.types.StructType;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.types.GeoTypes;
+import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.TypeCategory;
 
@@ -281,11 +283,12 @@ public class DataFrame {
             }
             return DataTypes.TimestampType;
         }
+        // The geospatial types carry the semi-structured category, and each is a Snowpark type of its own.
+        if (GeoTypes.isGeo(type)) {
+            return type instanceof GeometryType ? DataTypes.GeometryType : DataTypes.GeographyType;
+        }
         if (category == TypeCategory.SEMI_STRUCTURED) {
             return DataTypes.VariantType;
-        }
-        if (category == TypeCategory.GEOSPATIAL) {
-            return DataTypes.GeographyType;
         }
         return DataTypes.StringType;
     }

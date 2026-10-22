@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
  * a VARIANT a {@code Decimal}, {@code bytes} and a {@code datetime} are their {@code str()}. A NUMBER with a scale
  * rounds half to even, and an answer its type does not take is refused naming the function and its handler. A
  * VECTOR answer is a list, a tuple or a memoryview of its elements, cast as {@code ::VECTOR} casts it, with its
- * refusals (#2391; unmeasured on an account).
+ * refusals (unmeasured on an account).
  */
 public class PythonFunctionAnswerTypesTest extends MeasuredCellsTestSupport {
 
@@ -223,14 +223,15 @@ public class PythonFunctionAnswerTypesTest extends MeasuredCellsTestSupport {
             + "memoryview(array.array('i', [5, 6])), [1, 2, 3], [1.5, 2], 'abc', None][k]\n$$");
         assertCells(new String[][] {
             {"SELECT vf(), TYPEOF(vf()::VARIANT), vf() = [1,2.5]::VECTOR(FLOAT,2)", "[1.000000,2.500000]|VECTOR|true"},
-            {"SELECT vi(0), vi(1), vi(2), vi(6)", "[1,2]|[3,4]|[5,6]|null"},
+            {"SELECT vi(0), vi(2), vi(4), vi(6)", "[1,2]|[5,6]|[1,2]|null"},
             {"SELECT VECTOR_INNER_PRODUCT(vi(0), [1,1]::VECTOR(INT,2))", "3.0"},
-            {"SELECT vi(3)", "REFUSED Vector value being cast to a vector is not an array or vector, or has incorrect "
-                + "dimension or element type in function VI with handler h"},
-            {"SELECT vi(4)", "REFUSED Array-like value being cast to an integer vector has elements that are not "
-                + "integers in function VI with handler h"},
-            {"SELECT vi(5)", "REFUSED Vector value being cast to a vector is not an array or vector, or has incorrect "
-                + "dimension or element type in function VI with handler h"},
+            // Only a list or what answers tolist() is a vector, of the declared length.
+            {"SELECT vi(1)", "REFUSED Vectors returned from Python must be lists or array-like in function VI with "
+                + "handler h"},
+            {"SELECT vi(3)", "REFUSED Returned list dimension, 3, does not match the expected vector dimension, 2 in "
+                + "function VI with handler h"},
+            {"SELECT vi(5)", "REFUSED Vectors returned from Python must be lists or array-like in function VI with "
+                + "handler h"},
         });
     }
 }

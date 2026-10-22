@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * SHOW SECRETS, SHOW NETWORK RULES, SHOW PASSWORD POLICIES and SHOW SESSION POLICIES list, and DESCRIBE answers, only
  * the security objects the role holds a privilege on, with USAGE on their database and schema, as for every other
  * schema object (the SHOW usage note: "only returns objects for which the current user's current role has been
- * granted at least one access privilege"). DESCRIBE of one the role does not see refuses it as a missing one (FL-433).
+ * granted at least one access privilege"). DESCRIBE of one the role does not see refuses it as a missing one.
  * Engine only: GRANT and USE ROLE are not run on the live account.
  */
 public class SecurityObjectVisibilityTest extends BaseDatabaseTest {

@@ -1348,6 +1348,16 @@ public class Schema extends SqlObject {
      * Note: Table data cloning must be handled separately at the storage engine level
      */
     public Schema clone() {
+        return clone(CloneContent.DEFAULT);
+    }
+
+    /**
+     * This schema's clone, copying what the CLONE clause asks for beyond its own objects (see CloneContent).
+     *
+     * @param content what the clause asks for
+     * @return the clone, under this schema's name
+     */
+    public Schema clone(final CloneContent content) {
         final Schema clonedSchema = new Schema(this.getName());
         clonedSchema.setComment(this.getComment());
         clonedSchema.getParameters().copyFrom(parameters);
@@ -1361,6 +1371,9 @@ public class Schema extends SqlObject {
         // the children of a cloned container keep their grants. A clone suspends automatic clustering
         // (documented).
         for (final Table table : getNonTemporaryTables()) {
+            if (table.isHybrid() && content.ignoresHybridTables()) {
+                continue;
+            }
             final Table clonedTable = table.copyAs(table.getName(), false, table.isTransient());
             clonedTable.setOwner(table.getOwner());
             clonedTable.setLastDdlBy(table.getLastDdlBy());
@@ -1616,11 +1629,13 @@ public class Schema extends SqlObject {
             clonedSchema.rowAccessPolicies.put(withPolicyDetails(policy, clonedPolicy));
         }
 
-        // Clone stages — the DEFINITION carries over (Snowflake's CLONE keeps stage definitions), its
-        // file format options, copy options and directory setting included (Stage.copy). Dropping them
-        // silently broke every jar-backed UDF in a cloned database ("Stage does not exist" at first
-        // invocation).
+        // Clone stages: a named external stage always, a named internal one only when the clause includes internal
+        // stages, a temporary one never (live-verified). The DEFINITION carries over, its file format options, copy
+        // options and directory setting included (Stage.copy); an internal stage carries no files.
         for (final Stage stage : stages.all()) {
+            if (stage.isTemporary() || (!isExternal(stage) && !content.includesInternalStages())) {
+                continue;
+            }
             clonedSchema.stages.put(stage.copy());
         }
 
@@ -1639,6 +1654,11 @@ public class Schema extends SqlObject {
         }
 
         return clonedSchema;
+    }
+
+    /** Whether a stage is an external one: it names a location of its own. */
+    private static boolean isExternal(final Stage stage) {
+        return stage.getUrl() != null && !stage.getUrl().isEmpty();
     }
 
     /** Copies one object's tag assignments onto its clone. */

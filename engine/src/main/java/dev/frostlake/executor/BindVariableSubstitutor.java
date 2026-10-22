@@ -23,6 +23,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StructuredArrayType;
@@ -35,6 +36,7 @@ import dev.frostlake.values.VariantValue;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -118,6 +120,9 @@ public class BindVariableSubstitutor {
 
         // The variables named in a SELECT … INTO target list are ASSIGNMENT TARGETS, not values.
         final Set<Integer> intoTargets = intoTargetColonIndices(toks);
+        // Date arithmetic over a variable holding NULL is the bare word NULL (see NullDateOperations).
+        final Map<Integer, DateOperandKind> dateOperands = dateOperandKinds(toks, intoTargets);
+        final Map<Integer, Integer> folded = NullDateOperations.spans(toks, dateOperands);
 
         final StringBuilder out = new StringBuilder(sql.length());
         int cursor = 0;
@@ -125,6 +130,19 @@ public class BindVariableSubstitutor {
             final Token t = toks.get(i);
             if (t.getType() == Token.EOF) {
                 break;
+            }
+            final Integer foldedEnd = folded.get(i);
+            if (foldedEnd != null) {
+                requireReadableInHandler(toks, dateOperands, i, foldedEnd.intValue());
+                out.append(sql, cursor, t.getStartIndex()).append("NULL");
+                final Token last = toks.get(foldedEnd.intValue());
+                if (binds != null) {
+                    binds.add(new int[] {t.getLine(), t.getCharPositionInLine(),
+                        last.getStopIndex() + 1 - t.getStartIndex(), "NULL".length()});
+                }
+                cursor = last.getStopIndex() + 1;
+                i = foldedEnd.intValue();
+                continue;
             }
 
             // :name — a COLON immediately followed by an identifier is a bind variable. An unknown name
@@ -249,6 +267,48 @@ public class BindVariableSubstitutor {
      * separated by commas, is a target list; {@code INSERT INTO t} is unaffected because the token after INTO
      * is an identifier rather than a colon.
      */
+    /**
+     * What each variable a text binds is to date arithmetic, by the index of its colon: a DATE, a time or a timestamp
+     * holding NULL, or an exact number, each as it holds NULL or a value. A variable of any other type takes no part,
+     * and neither does a name with no declaration.
+     */
+    private Map<Integer, DateOperandKind> dateOperandKinds(final List<Token> toks, final Set<Integer> intoTargets) {
+        final Map<Integer, DateOperandKind> kinds = new HashMap<>();
+        if (declarations == null) {
+            return kinds;
+        }
+        for (int i = 0; i + 1 < toks.size(); i++) {
+            final Token nameTok = toks.get(i + 1);
+            if (toks.get(i).getType() != FrostlakeLexer.COLON || isVariantPathColon(toks, i) || intoTargets.contains(i)
+                    || !SqlTokens.isWord(nameTok) || nameTok.getStartIndex() != toks.get(i).getStopIndex() + 1) {
+                continue;
+            }
+            final DataType declared = declarations.getDeclaredVariableType(nameTok.getText());
+            final boolean holdsNull = variables.get(nameTok.getText().toUpperCase(Locale.ROOT)) == null;
+            DateOperandKind kind = null;
+            if (declared instanceof DateTimeType) {
+                kind = "DATE".equals(declared.getName()) ? holdsNull ? DateOperandKind.NULL_DATE : DateOperandKind.DATE
+                    : holdsNull ? DateOperandKind.NULL_TEMPORAL : null;
+            } else if (declared instanceof NumericType && !NumericType.isApproximate(declared)) {
+                kind = holdsNull ? DateOperandKind.NULL_NUMBER : DateOperandKind.NUMBER;
+            }
+            if (kind != null) {
+                kinds.put(Integer.valueOf(i), kind);
+            }
+        }
+        return kinds;
+    }
+
+    /** Asks, of each variable a folded operation binds, whether a handler may read it (see HandlerLets). */
+    private void requireReadableInHandler(final List<Token> toks, final Map<Integer, DateOperandKind> kinds,
+                                          final int from, final int to) {
+        for (int i = from; i <= to; i++) {
+            if (kinds.containsKey(Integer.valueOf(i))) {
+                declarations.requireReadableInHandler(toks.get(i + 1).getText());
+            }
+        }
+    }
+
     private static Set<Integer> intoTargetColonIndices(final List<Token> toks) {
         final Set<Integer> targets = new HashSet<>();
         for (int i = 0; i < toks.size(); i++) {

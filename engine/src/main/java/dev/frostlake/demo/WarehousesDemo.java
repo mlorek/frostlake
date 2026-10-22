@@ -21,6 +21,7 @@ import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.storage.ResultSet;
 import java.time.LocalDateTime;
+import java.util.Locale;
 
 /**
  * Demonstration of Compute WAREHOUSES - Virtual compute clusters for query execution
@@ -264,12 +265,12 @@ public class WarehousesDemo extends AbstractDemo {
             System.out.println("╚════════════════════════════════════════════════════╝\n");
 
             System.out.println("=== 14. List All Warehouses ===");
-            System.out.println(String.format("%-20s %-12s %-12s %-10s",
+            System.out.println(String.format(Locale.ROOT, "%-20s %-12s %-12s %-10s",
                 "Name", "Size", "State", "Credits/Hr"));
             System.out.println("------------------------------------------------------------");
 
             for (final Warehouse wh : engine.getCatalog().getAllWarehouses()) {
-                System.out.println(String.format("%-20s %-12s %-12s %-10d",
+                System.out.println(String.format(Locale.ROOT, "%-20s %-12s %-12s %-10d",
                     wh.getName(),
                     wh.getSize().getDisplayName(),
                     wh.getState(),

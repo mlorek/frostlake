@@ -33,8 +33,11 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorElementType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VectorValue;
 import net.snowflake.client.api.statement.SnowflakeStatement;
+import net.snowflake.client.internal.jdbc.SnowflakeTimestampWithTimezone;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -51,6 +54,7 @@ import java.math.BigDecimal;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -71,7 +75,8 @@ import java.util.Locale;
  * ones the embedded engine itself would execute. Text the engine cannot parse is submitted as-is.
  *
  * <p>JDBC values are coerced toward the engine's runtime shapes so assertions written against
- * Frostlake keep working: temporals become {@code java.time} locals, BINARY becomes
+ * Frostlake keep working: temporals become {@code java.time} values (locals, and a zoned timestamp the offset
+ * value the engine hands back, see {@link #zonedCell}), BINARY becomes
  * {@link BinaryValue}, whole {@code BigDecimal}s become {@code Long}, and semi-structured columns'
  * pretty-printed JSON is re-serialized compactly (Snowflake pretty-prints VARIANT output over
  * JDBC; the engine's canonical text is compact). Every statement is read through
@@ -481,12 +486,18 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
         final boolean[] semiStructured = new boolean[columnCount];
         final boolean[] interval = new boolean[columnCount];
+        final boolean[] vector = new boolean[columnCount];
+        final boolean[] localZone = new boolean[columnCount];
+        final boolean[] writtenZone = new boolean[columnCount];
         for (int i = 1; i <= columnCount; i++) {
             columns.add(new ResultSetColumn(metaData.getColumnLabel(i), declaredType(metaData, i)));
             final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase(Locale.ROOT);
             semiStructured[i - 1] = typeName.equals("VARIANT") || typeName.equals("OBJECT")
                 || typeName.equals("ARRAY");
             interval[i - 1] = typeName.startsWith("INTERVAL");
+            vector[i - 1] = typeName.equals("VECTOR");
+            localZone[i - 1] = typeName.equals("TIMESTAMPLTZ") || typeName.equals("TIMESTAMP_LTZ");
+            writtenZone[i - 1] = typeName.equals("TIMESTAMPTZ") || typeName.equals("TIMESTAMP_TZ");
         }
         final List<Row> rows = new ArrayList<Row>();
         while (rs.next()) {
@@ -494,11 +505,51 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             for (int i = 1; i <= columnCount; i++) {
                 // Over JSON results the driver cannot materialize an interval as an object — getObject refuses
                 // it — so its text is read: the nanoseconds or months the wire carries.
-                values.add(interval[i - 1] ? rs.getString(i) : coerce(rs.getObject(i), semiStructured[i - 1]));
+                values.add(interval[i - 1] ? rs.getString(i)
+                    : vector[i - 1] ? floatVectorText(rs.getString(i))
+                    : localZone[i - 1] || writtenZone[i - 1] ? zonedCell(rs.getObject(i), localZone[i - 1])
+                    : coerce(rs.getObject(i), semiStructured[i - 1]));
             }
             rows.add(new Row(values));
         }
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * A VECTOR cell as the engine displays it. The account's driver writes a FLOAT vector's elements itself, at six
+     * decimals in one run and as Java's shortest float text in the next - [1.000000,2.000000] or [1.0,2.0] for the
+     * same cell - so the elements are read back as the float32 values they name and printed at six decimals; an INT
+     * vector's text is the same on both sides.
+     */
+    private static String floatVectorText(final String cell) {
+        if (cell == null || cell.length() < 2 || !cell.startsWith("[") || !cell.endsWith("]")
+                || cell.indexOf('.') < 0 && cell.indexOf('E') < 0 && cell.indexOf('e') < 0) {
+            return cell;
+        }
+        final String[] elements = cell.substring(1, cell.length() - 1).split(",");
+        final double[] values = new double[elements.length];
+        try {
+            for (int i = 0; i < elements.length; i++) {
+                values[i] = Float.parseFloat(elements[i].trim().replace("\"", ""));
+            }
+            return VectorValue.of(VectorElementType.FLOAT, values).toString();
+        } catch (final RuntimeException noFloatVector) {
+            return cell;
+        }
+    }
+
+    /**
+     * A TIMESTAMP_LTZ or TIMESTAMP_TZ cell in the carrier the engine hands it back in. The driver's timestamp keeps
+     * the zone it was read in, the session's for an LTZ and the cell's own offset for a TZ, so an LTZ becomes the
+     * OffsetDateTime at the session's offset for that instant and a TZ the ZonedDateTime at its fixed offset. Read as
+     * a plain timestamp, either one lost its offset and compared as a wall clock alone.
+     */
+    private Object zonedCell(final Object value, final boolean localZone) {
+        if (!(value instanceof SnowflakeTimestampWithTimezone)) {
+            return coerce(value, false);
+        }
+        final ZonedDateTime zoned = ((SnowflakeTimestampWithTimezone) value).toZonedDateTime();
+        return localZone ? zoned.toOffsetDateTime() : zoned.withFixedOffsetZone();
     }
 
     private Object coerce(final Object value, final boolean semiStructured) {
@@ -624,6 +675,8 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             case "DECIMAL":
                 // The one column the driver names so is a file transfer's size, which the client answers itself.
                 return new NumericType("DECIMAL", precision, scale);
+            case "DECFLOAT":
+                return NumericType.DECFLOAT;
             case "DOUBLE":
             case "DOUBLE PRECISION":
             case "FLOAT":

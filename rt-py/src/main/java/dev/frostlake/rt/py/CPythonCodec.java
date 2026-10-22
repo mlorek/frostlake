@@ -17,6 +17,7 @@
 package dev.frostlake.rt.py;
 
 import dev.frostlake.executor.SessionZone;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
@@ -44,6 +45,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -97,6 +99,10 @@ final class CPythonCodec {
     private static Object semiStructured(final Object value) {
         if (value instanceof VariantValue) {
             return value;
+        }
+        if (value instanceof TemporalAccessor || value instanceof BinaryValue) {
+            // A DATE, a TIME, a timestamp or a BINARY a VARIANT holds is the text the VARIANT shows (live-verified).
+            return ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value).asText();
         }
         if (value instanceof CharSequence) {
             final String text = value.toString();

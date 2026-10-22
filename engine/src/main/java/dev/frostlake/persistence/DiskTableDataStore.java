@@ -23,6 +23,7 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 
 /** {@link TableDataStore} over a checkpoint's tables directory — one serialized file per table. */
 public final class DiskTableDataStore implements TableDataStore {
@@ -80,6 +81,6 @@ public final class DiskTableDataStore implements TableDataStore {
     }
 
     private static Path fileFor(final Path dir, final String database, final String schema, final String table) {
-        return dir.resolve(String.format("%s_%s_%s.dat", database, schema, table));
+        return dir.resolve(String.format(Locale.ROOT, "%s_%s_%s.dat", database, schema, table));
     }
 }

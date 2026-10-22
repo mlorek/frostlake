@@ -20,7 +20,6 @@ import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
-import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -34,33 +33,25 @@ public class RegexpCount extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
-        for (int i = 0; i < args.size(); i++) {
-            if (i < args.size() && args.get(i) == null) {
-                return null;
-            }
-        }
-        if (args.get(0) == null || args.get(1) == null) {
-            return 0L;
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
         }
         final String subject = SharedFunctionHelpers.textOf(args.get(0));
         final String pattern = SharedFunctionHelpers.textOf(args.get(1));
-        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
-        final String parameters = args.size() > 3 && args.get(3) != null
-            ? SharedFunctionHelpers.textOf(args.get(3)) : null;
+        final int position = RegexpHelper.wholeArgument(args, 2, 1);
+        final String parameters = RegexpHelper.textArgument(args, 3);
         RegexpHelper.requirePosition(position);
         if (RegexpHelper.matchesNothing(pattern, parameters)) {
             return 0L;
         }
-
-        // The position counts characters, a supplementary one included (live-verified).
-        final int start = Math.max(0, position - 1);
-        if (start > CodePointText.length(subject)) {
+        final int start = RegexpHelper.searchStart(subject, position);
+        if (start < 0) {
             return 0L;
         }
         final Matcher matcher = RegexpHelper.compile(pattern, parameters).matcher(subject);
         long count = 0;
-        if (matcher.find(CodePointText.offset(subject, start))) {
+        if (matcher.find(start)) {
             count = 1;
             while (matcher.find()) {
                 count++;

@@ -308,6 +308,17 @@ open. The connection's properties or URL turn it on (`CLIENT_SESSION_KEEP_ALIVE=
 session's own `ALTER SESSION`, which takes precedence once it sets the parameter. Closing the connection stops the
 heartbeat, and a session the server no longer holds stops it too.
 
+### Column labels
+
+A session that sets `CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE` with `ALTER SESSION` reports it on every
+`/api/execute` answer, as `clientResultColumnCaseInsensitive: true`; the field is absent while the session has not set
+it TRUE.
+
+Frostlake's JDBC driver reads a column label the way the account's driver does: by its exact spelling, so
+`getInt("x")` over a column named `X` is `Column not found: x`. Once an answer reports the parameter, a label names
+the first column it matches ignoring case for the rest of the connection; a later `FALSE` or `UNSET` leaves it so, as
+it leaves the account's driver.
+
 ### `GET /api/sessions`
 
 `{"activeSessions": 3}`.

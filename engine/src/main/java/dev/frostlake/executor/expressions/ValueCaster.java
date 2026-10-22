@@ -23,6 +23,7 @@ import dev.frostlake.executor.SignedStorageWidth;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.conversion.TimestampFlavourConversion;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.DecfloatRangeException;
@@ -34,6 +35,8 @@ import dev.frostlake.values.VariantBooleans;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.YearMonthInterval;
+
+import tools.jackson.databind.JsonNode;
 
 import java.util.Locale;
 import java.util.Set;
@@ -63,6 +66,22 @@ public final class ValueCaster {
      * from a literal. Every other caller reads as not-null, which is what live answers for one.
      */
     public static Object castValue(final Object value, final String targetType, final boolean nullableSource) {
+        return castValue(value, targetType, nullableSource, 0);
+    }
+
+    /**
+     * A cast whose source the plan knows no interval of — a recursive term's column of its own CTE — so that an
+     * out-of-range number is tagged by the width the caller gives and printed at the target's scale: {@code (n *
+     * 3)::NUMBER(2,1)} in such a term is refused as {@code FIXED[SB16](2,1)…, value 15.0} (live-verified).
+     *
+     * @param value           the value
+     * @param targetType      the type cast to, as written
+     * @param nullableSource  whether the source may be NULL
+     * @param sourcePrecision the precision the source is tagged by, or 0 where the plan knows its interval
+     * @return the value cast
+     */
+    public static Object castValue(final Object value, final String targetType, final boolean nullableSource,
+                                   final int sourcePrecision) {
         if (value == null) {
             return null;
         }
@@ -100,6 +119,7 @@ public final class ValueCaster {
             case INTEGER:
                 // INTEGER/INT/BIGINT are aliases of NUMBER(38,0); a fractional value is rounded
                 // HALF_AWAY_FROM_ZERO (2.5->3, -2.5->-3, 3.9->4) to match Snowflake, not truncated.
+                rejectNonFinite(value, targetType, nullableSource);
                 return toIntegerCast(value, nullableSource);
 
             case FLOAT:
@@ -140,8 +160,9 @@ public final class ValueCaster {
                 }
 
             case DECIMAL:
+                rejectNonFinite(value, targetType, nullableSource);
                 return applyNumberScaleAndPrecision(toBigDecimalCast(value, "FIXED"), targetType,
-                    value, nullableSource);
+                    value, nullableSource, sourcePrecision);
 
             case UUID:
                 // The canonical lower-case text, and the conversion's own sentence for anything else,
@@ -241,7 +262,8 @@ public final class ValueCaster {
     }
 
     private static BigDecimal applyNumberScaleAndPrecision(final BigDecimal number, final String targetType,
-                                                           final Object source, final boolean nullableSource) {
+                                                           final Object source, final boolean nullableSource,
+                                                           final int sourcePrecision) {
         final int open = targetType.indexOf('(');
         final int close = targetType.indexOf(')');
         if (open < 0 || close <= open) {
@@ -250,7 +272,8 @@ public final class ValueCaster {
             // used to pass unchecked, so a NUMBER(38,0) held thirty-nine digits that the next arithmetic
             // then refused.
             if (NumericRangeRefusal.exceeds(number, MAX_NUMBER_PRECISION, 0)) {
-                throw new RuntimeException(rangeRefusal(number, source, MAX_NUMBER_PRECISION, 0, nullableSource));
+                throw new RuntimeException(rangeRefusal(number, source, MAX_NUMBER_PRECISION, 0, nullableSource,
+                    sourcePrecision));
             }
             return number.setScale(0, RoundingMode.HALF_UP);
         }
@@ -266,7 +289,8 @@ public final class ValueCaster {
         final BigDecimal scaled = number.setScale(scale, RoundingMode.HALF_UP);
         // (precision - scale) is the maximum number of digits allowed left of the decimal point.
         if (scaled.precision() - scaled.scale() > precision - scale) {
-            throw new RuntimeException(rangeRefusal(number, source, precision, scale, nullableSource));
+            throw new RuntimeException(rangeRefusal(number, source, precision, scale, nullableSource,
+                sourcePrecision));
         }
         return scaled;
     }
@@ -306,13 +330,29 @@ public final class ValueCaster {
     }
 
     /**
+     * A NaN or an infinity cast to an exact number, refused naming the target's width and the source's nullability
+     * (see {@link NonFiniteCastRefusal}): {@code f::NUMBER(10,2)} over a nullable FLOAT column holding NaN is
+     * "Number out of representable range: type FIXED[SB8](10,2){nullable}, value nan" (live-verified).
+     */
+    private static void rejectNonFinite(final Object value, final String targetType, final boolean nullableSource) {
+        final NumericType declared = TypeInferencer.numberTargetWithParameters(targetType);
+        final boolean sized = declared != null && declared.getPrecision() > 0;
+        final RuntimeException nonFinite = NonFiniteCastRefusal.refusalFor(value, "FIXED",
+            sized ? declared.getPrecision() : MAX_NUMBER_PRECISION, sized ? Math.max(0, declared.getScale()) : 0,
+            nullableSource);
+        if (nonFinite != null) {
+            throw nonFinite;
+        }
+    }
+
+    /**
      * Which of the three out-of-range sentences a source earns. A STRING never reaches the typed one —
      * live names the text and stops — and a VARIANT reaches a typed sentence with no type in it. An
      * APPROXIMATE source (a FLOAT) has no unscaled integer to measure, so its class comes from the
      * target's own precision rather than from the value.
      */
     private static String rangeRefusal(final BigDecimal number, final Object source, final int precision,
-                                       final int scale, final boolean nullableSource) {
+                                       final int scale, final boolean nullableSource, final int sourcePrecision) {
         if (source instanceof CharSequence) {
             // Two sentences, and which one depends on whether ANY number could have held the value:
             // one that overflows only this target is out of range, one that overflows them all was
@@ -322,12 +362,23 @@ public final class ValueCaster {
                 : NumericRangeRefusal.unconvertibleText(source);
         }
         if (source instanceof VariantValue) {
-            return NumericRangeRefusal.untyped(number);
+            // A double the VARIANT holds is printed as the VARIANT prints it, 1.2345678e+39 (live-verified).
+            final JsonNode held = ((VariantValue) source).node();
+            return held != null && held.isFloatingPointNumber() && !held.isBigDecimal()
+                ? NumericRangeRefusal.untypedText(NumericRangeRefusal.variantDoubleText(held.doubleValue()))
+                : NumericRangeRefusal.untyped(number);
         }
-        final String tag = source instanceof Double || source instanceof Float
-            ? SignedStorageWidth.tagOfPrecision(precision)
-            : SignedStorageWidth.tagOf(number, scale);
-        return NumericRangeRefusal.typed(tag, precision, scale, nullableSource, number);
+        if (source instanceof Double || source instanceof Float) {
+            // A FLOAT is printed as a double, six significant digits: 1e+39, 1.23457e+39, 123457 (live-verified).
+            return NumericRangeRefusal.typedDouble(SignedStorageWidth.tagOfPrecision(precision), precision, scale,
+                nullableSource, number);
+        }
+        if (sourcePrecision > 0) {
+            return NumericRangeRefusal.typedText(SignedStorageWidth.tagOfPrecision(sourcePrecision), precision, scale,
+                nullableSource, number.setScale(scale, RoundingMode.HALF_UP).toPlainString());
+        }
+        return NumericRangeRefusal.typed(SignedStorageWidth.tagOf(number, scale), precision, scale, nullableSource,
+            number);
     }
 
     /**
@@ -346,7 +397,7 @@ public final class ValueCaster {
         final BigDecimal decimal = value instanceof BigDecimal
             ? (BigDecimal) value
             : toBigDecimalCast(value, "FIXED");
-        final BigDecimal whole = applyNumberScaleAndPrecision(decimal, "NUMBER", value, nullableSource);
+        final BigDecimal whole = applyNumberScaleAndPrecision(decimal, "NUMBER", value, nullableSource, 0);
         return whole.unscaledValue().bitLength() < Long.SIZE ? (Object) whole.longValueExact() : whole;
     }
 
@@ -371,6 +422,14 @@ public final class ValueCaster {
             // is 0.10000000000000000555 on the account and (1e37::FLOAT)::NUMBER(38,0) is
             // 9999999999999999538762658202121142272 — the digits of the double itself.
             return new BigDecimal(((Number) value).doubleValue());
+        }
+        if (value instanceof VariantValue) {
+            final JsonNode held = ((VariantValue) value).node();
+            if (held != null && held.isFloatingPointNumber() && !held.isBigDecimal()) {
+                // A VARIANT's double too: PARSE_JSON('2.675e0')::NUMBER(10,2) is 2.67 and PARSE_JSON('1e38')::INT is
+                // 99999999999999997748809823456034029568 (live-verified).
+                return new BigDecimal(held.doubleValue());
+            }
         }
         if (value instanceof Number) {
             return new BigDecimal(value.toString());

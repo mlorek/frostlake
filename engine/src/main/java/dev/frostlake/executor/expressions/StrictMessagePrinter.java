@@ -41,6 +41,9 @@ import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -99,6 +102,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     private boolean columnsAsWritten;
     /** Whether what the plan folds early prints as its value — see {@link #foldingConstants()}. */
     private boolean foldingConstants;
+    /** Whether a literal's planned conversion prints as the value it folds to — see {@link #foldingConversions()}. */
+    private boolean foldingConversions;
     /** Whether DATE_PART and EXTRACT print as EXTRACT(part from …) — see {@link #extractingParts()}. */
     private boolean extractingParts;
     /** The functions whose answer a column default's echo converts, by name — see {@link #echoingDefault}. */
@@ -218,6 +223,21 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      */
     StrictMessagePrinter foldingConstants() {
         this.foldingConstants = true;
+        return this;
+    }
+
+    /**
+     * Prints a GENERATOR bound as the account's refusal echoes its folded plan (live-verified): a number literal a
+     * FLOAT function converts as the FLOAT it folds to, {@code SQRT(9.0)}, {@code POWER(2.5, 3.0)},
+     * {@code (LN(1.0)) + 2.0}, NORMAL's mean and deviation alike; a text cast to DATE as its date,
+     * {@code DATE_DIFFDATEINDAYS('2024-01-01', '2024-01-03')}; LEN as LENGTH; and a call answering a machine integer
+     * cast to its NUMBER where arithmetic or ABS reads it, {@code (CAST(SIGN(-3) AS NUMBER(2,0))) + 3},
+     * {@code ABS(CAST(HASH(1) AS NUMBER(19,0)))} (see {@link #machineIntegerType}).
+     *
+     * @return this printer
+     */
+    StrictMessagePrinter foldingConversions() {
+        this.foldingConversions = true;
         return this;
     }
 
@@ -602,6 +622,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             if (intervalOperation != null) {
                 return intervalOperation;
             }
+            final String intervalShift = quotedIntervalShift(operator, left, leftType, right);
+            if (intervalShift != null) {
+                return intervalShift;
+            }
             final String dayShift = dayShift(operator, left, leftType, right, rightType);
             if (dayShift != null) {
                 return dayShift;
@@ -627,6 +651,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 return met;
             }
         }
+        if (foldingConversions && isArithmetic(operator)
+                && (machineIntegerType(left) != null || machineIntegerType(right) != null)) {
+            return operand(left) + " " + symbol(operator) + " " + operand(right);
+        }
         if (leftType instanceof NumericType && rightType instanceof NumericType
                 && (isArithmetic(operator) || isComparison(operator))) {
             final NumericType l = (NumericType) leftType;
@@ -649,7 +677,26 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 }
             }
         }
+        if (planShaped() && isComparison(operator)) {
+            return comparedOperand(left) + " " + symbol(operator) + " " + comparedOperand(right);
+        }
         return operand(left) + " " + symbol(operator) + " " + operand(right);
+    }
+
+    /**
+     * An operand of a comparison as the plan holds it: a predicate compared as a value is converted to the
+     * BOOLEAN it yields first, {@code (CAST(FZ.ID > 5 AS BOOLEAN)) = TRUE} (live-verified); anything else is
+     * {@link #operand}.
+     */
+    private String comparedOperand(final Expression expression) {
+        return isPlainPredicate(expression) ? "(CAST(" + expression.accept(this) + " AS BOOLEAN))"
+            : operand(expression);
+    }
+
+    /** A comparison, LIKE, IS NULL, IN or BETWEEN itself — no NOT, AND or OR over one. */
+    private static boolean isPlainPredicate(final Expression expression) {
+        return spellsOutAPredicate(expression) && !isLogicalOperator(expression)
+            && !(expression instanceof UnaryOperationExpression);
     }
 
     /**
@@ -675,6 +722,63 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             return operand(left) + " INTERVAL DAY TIME DIVIDE " + operand(right);
         }
         return null;
+    }
+
+    /**
+     * A DATE or a timestamp moved by a quoted-unit interval literal, as the plan holds it: each part of the literal is
+     * a shift of its own, applied in the order written, its amount a decimal converted to the whole number an
+     * interval takes and negated for a subtraction (all live-verified):
+     *
+     * <pre>
+     *   d + INTERVAL '1 DAY'            DATE_ADDDAYSTODATE(CAST(1.0 AS NUMBER(9,0)), FT.D)
+     *   d - INTERVAL '1 DAY'            DATE_ADDDAYSTODATE(CAST(-1.0 AS NUMBER(9,0)), FT.D)
+     *   d + INTERVAL '1 HOUR'           DATE_ADDHOURSTOTIMESTAMP(CAST(1.0 AS NUMBER(9,0)),
+     *                                       CAST(FT.D AS TIMESTAMP_NTZ(9)))
+     *   d + INTERVAL '1 DAY, 12 HOURS'  DATE_ADDHOURSTOTIMESTAMP(CAST(12.0 AS NUMBER(9,0)),
+     *                                       CAST(DATE_ADDDAYSTODATE(CAST(1.0 AS NUMBER(9,0)), FT.D)
+     *                                       AS TIMESTAMP_NTZ(9)))
+     *   ts + INTERVAL '1 DAY'           DATE_ADDDAYSTOTIMESTAMP(CAST(1.0 AS NUMBER(9,0)), FT.TS)
+     * </pre>
+     *
+     * <p>Null for any other shape, and in an invalid-type sentence, which prints a shift only where no conversion is
+     * planned beside it.
+     */
+    private String quotedIntervalShift(final BinaryOperator operator, final Expression left, final DataType leftType,
+                                       final Expression right) {
+        if (conversionShaped() || operator != BinaryOperator.ADD && operator != BinaryOperator.SUBTRACT
+                || !(right instanceof IntervalExpression) || !((IntervalExpression) right).isUnitInString()
+                || !isDate(leftType) && !isTimestamp(leftType)) {
+            return null;
+        }
+        boolean date = isDate(leftType);
+        String shifted = left.accept(this);
+        for (IntervalExpression part = (IntervalExpression) right; part != null; part = part.getRest()) {
+            final BigDecimal amount = writtenAmount(part);
+            if (amount == null || part.getUnit() == null) {
+                return null;
+            }
+            final BigDecimal signed = operator == BinaryOperator.SUBTRACT ? amount.negate() : amount;
+            if (date && isTimeUnit(part.getUnit())) {
+                shifted = "CAST(" + shifted + " AS " + TIMESTAMP_TARGET + ")";
+                date = false;
+            }
+            shifted = "DATE_ADD" + part.getUnit().shiftName() + "TO" + (date ? "DATE" : "TIMESTAMP") + "(CAST("
+                + (signed.scale() > 0 ? signed : signed.setScale(1)).toPlainString() + " AS " + WHOLE_NUMBER_TYPE
+                + "), " + shifted + ")";
+        }
+        return shifted;
+    }
+
+    /** The amount of a quoted interval's part as written, {@code +01} read as 1, or null where it is no number. */
+    private static BigDecimal writtenAmount(final IntervalExpression part) {
+        if (part.getWrittenAmount() == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(part.getWrittenAmount().trim());
+        } catch (final NumberFormatException notANumber) {
+            return null;
+        }
     }
 
     /**
@@ -785,6 +889,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      * variable, bracketed otherwise — {@code COUNT(*) + 1} beside {@code (MAX(RT.G)) > 'a'}.
      */
     private String operand(final Expression expression) {
+        final String machineInteger = foldingConversions ? machineIntegerType(expression) : null;
+        if (machineInteger != null) {
+            return "(CAST(" + expression.accept(this) + " AS " + machineInteger + "))";
+        }
         if (expression instanceof BindVariableExpression
                 && blockExpressionConversion((BindVariableExpression) expression) != null
                 || convertedCallType(expression) != null) {
@@ -934,6 +1042,37 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
     }
 
+    /**
+     * A conversion to a number of a column that holds nothing but an untyped NULL — DUAL's — as the plan types it:
+     * {@code $1::INT} is {@code SYSTEM$NULL_TO_FIXED(DUAL.$1)} and a cast to FLOAT {@code SYSTEM$NULL_TO_REAL(…)}
+     * (live-verified). Null for any other source or target.
+     */
+    private String untypedColumnConversion(final Expression source, final DataType target) {
+        if (!planShaped() || context == null || !(source instanceof ColumnReferenceExpression)
+                || !(target instanceof NumericType) || NumericType.isDecfloat(target)
+                || !context.readsUntypedNull((ColumnReferenceExpression) source)) {
+            return null;
+        }
+        return "SYSTEM$NULL_TO_" + (NumericType.isApproximate(target) ? "REAL" : "FIXED") + "(" + source.accept(this)
+            + ")";
+    }
+
+    /**
+     * TO_NUMBER, TO_DECIMAL, TO_NUMERIC or TO_DOUBLE of such a column (see {@link #untypedColumnConversion}), which
+     * drops the precision written after it: {@code TO_NUMBER($1, 10, 2)} is {@code SYSTEM$NULL_TO_FIXED(DUAL.$1)}
+     * (live-verified). Null for any other call.
+     */
+    private String untypedColumnCall(final FunctionCallExpression call) {
+        if (call.getFunctionName() == null || call.getNameExpression() != null || call.getArguments().isEmpty()) {
+            return null;
+        }
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        final DataType target = "TO_DOUBLE".equals(name) ? NumericType.FLOAT
+            : "TO_NUMBER".equals(name) || "TO_DECIMAL".equals(name) || "TO_NUMERIC".equals(name) ? NumericType.NUMBER
+            : null;
+        return target == null ? null : untypedColumnConversion(call.getArguments().get(0), target);
+    }
+
     /** A call with no argument at all, {@code PI()}, which the plan prints bare as an operand. */
     private static boolean isNiladicCall(final Expression expression) {
         return expression instanceof FunctionCallExpression && !((FunctionCallExpression) expression).isStar()
@@ -1007,6 +1146,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     }
 
     private String asFloat(final Expression expression) {
+        if (foldingConversions && isNumericLiteral(expression)) {
+            return floatLiteral((LiteralExpression) expression);
+        }
         return doublesAsConversions()
             ? "(TO_DOUBLE(" + expression.accept(this) + "))"
             : "(CAST(" + expression.accept(this) + " AS FLOAT))";
@@ -1620,10 +1762,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     /**
      * A column part as the plan prints it: its canonical name, quoted only when it needs the quotes — a
      * quoted {@code "c"} stays {@code "c"} beside its relation ({@code T1."c"}), where folding it would
-     * name a different column, C.
+     * name a different column, C — and a column written {@code $1} as written, {@code DUAL.$1} (live-verified).
      */
     private static String spelledColumn(final ColumnReferenceExpression expr) {
-        return SqlIdentifiers.spellCanonical(expr.getColumnName());
+        return expr.getPositionalOrdinal() > 0 ? "$" + expr.getPositionalOrdinal()
+            : SqlIdentifiers.spellCanonical(expr.getColumnName());
     }
 
     /**
@@ -1815,6 +1958,12 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (mode == StrictPrintMode.WRITTEN) {
             return super.visitCast(expr);
         }
+        if (foldingConversions && !expr.isTryMode()) {
+            final String date = foldedDateLiteral(expr);
+            if (date != null) {
+                return date;
+            }
+        }
         if (expr instanceof PlannedCastExpression) {
             return "CAST(" + expr.getExpression().accept(this) + " AS " + expr.getTargetType() + ")";
         }
@@ -1869,6 +2018,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             if (family != null) {
                 return "SYSTEM$NULL_TO_" + family + "(null)";
             }
+        }
+        final String untypedColumn = expr.isTryMode() ? null : untypedColumnConversion(source, targetType);
+        if (untypedColumn != null) {
+            return untypedColumn;
         }
         if (!isUntypedNull(source) && isNullValue(source)) {
             // A call folding to NULL is the typed null too, a conditional with its text inside, TRY_CAST alike:
@@ -2180,6 +2333,16 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         if (mode == StrictPrintMode.WRITTEN) {
             return super.visitFunctionCall(expr);
+        }
+        if (foldingConversions && expr.getNameExpression() == null) {
+            final String folded = foldedConversionCall(expr);
+            if (folded != null) {
+                return folded;
+            }
+        }
+        final String untypedColumn = untypedColumnCall(expr);
+        if (untypedColumn != null) {
+            return untypedColumn;
         }
         final DataType converted = convertedCallType(expr);
         if (converted instanceof NumericType) {
@@ -3145,6 +3308,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (isUntypedNull(argument)) {
             return "SYSTEM$NULL_TO_REAL(null)";
         }
+        if (foldingConversions && isNumericLiteral(argument)) {
+            return floatLiteral((LiteralExpression) argument);
+        }
         final DataType type = argumentType(argument);
         return isExactNumber(type) || type instanceof StringType || type instanceof VariantType
             ? "CAST(" + argument.accept(this) + " AS FLOAT)" : argument.accept(this);
@@ -3746,7 +3912,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         final String printedTarget = convertTarget
             ? "CAST(" + target.accept(this) + " AS " + TIMESTAMP_TARGET + ")" : target.accept(this);
-        return "DATE_ADD" + IntervalCallArguments.shiftUnitName(unit) + "TO" + kind + "(" + wholeAmount + ", " + printedTarget + ")";
+        return "DATE_ADD" + unit.shiftName() + "TO" + kind + "(" + wholeAmount + ", " + printedTarget + ")";
     }
 
     /**
@@ -3999,6 +4165,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      *   BOOLOR_AGG(MAX(n))        MAX(CAST((MAX(T.N)) &lt;&gt; (CAST(0 AS NUMBER(10,2))) AS BOOLEAN))
      *   BOOLOR_AGG(MAX(t))        MAX(CAST(MAX(T.T) AS BOOLEAN))
      *   APPROX_COUNT_DISTINCT(x)  HLL_ACCUMULATE(x)                   one argument only
+     *   REGR_COUNT(n, f)          COUNT(IFF(T.N IS NULL, SYSTEM$NULL_TO_REAL(null), T.F))
+     *   REGR_AVGX(n, f)           (SUM(IFF(…))) / (CAST(COUNT(IFF(…)) AS FLOAT))       the same pairs
      * </pre>
      *
      * <p>What takes NO cast is measured too: ARRAY_AGG, HASH_AGG, MAX, MIN, COUNT, ANY_VALUE, MODE and
@@ -4007,8 +4175,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      * its cast, and a DISTINCT BITOR_AGG or BITAND_AGG drops it. The zero a boolean aggregate compares a number with is
      * cast to the number's type only when that type carries a scale. A call this does not know, or an
      * argument whose type does not resolve, prints as written — BOOLXOR_AGG's null-guarded sum, the
-     * variance family's formulas and the refusals live raises instead (COUNT_IF over a non-boolean,
-     * OBJECT_AGG with a text or DATE value) are not echoes to reproduce.
+     * variance family's formulas, a regression over an exact independent value and the refusals live raises
+     * instead (COUNT_IF over a non-boolean, OBJECT_AGG with a text or DATE value) are not echoes to reproduce.
      */
     private String withArgumentCasts(final FunctionCallExpression expr, final String name) {
         final List<Expression> args = expr.getArguments();
@@ -4136,6 +4304,19 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             case "ARRAY_UNION_AGG":
                 return args.size() == 1 && type instanceof VariantType
                     ? name + "(CAST(" + printed + " AS ARRAY))" : null;
+            case "REGR_COUNT":
+            case "REGR_AVGX": {
+                // A regression aggregate reads the pairs whose values are both there: the independent value,
+                // with the dependent one's IS NULL guarding it. Measured over a FLOAT independent value only.
+                if (args.size() != 2 || expr.isDistinct() || !(argumentType(args.get(1)) instanceof NumericType)
+                        || !NumericType.isApproximate(argumentType(args.get(1)))) {
+                    return null;
+                }
+                final String pair = "IFF(" + operand(first) + " IS NULL, SYSTEM$NULL_TO_REAL(null), "
+                    + args.get(1).accept(this) + ")";
+                return name.equals("REGR_COUNT") ? "COUNT(" + pair + ")"
+                    : "(SUM(" + pair + ")) / (CAST(COUNT(" + pair + ") AS FLOAT))";
+            }
             default:
                 return null;
         }
@@ -4433,6 +4614,82 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         return expression instanceof IsNullExpression || expression instanceof InExpression
             || expression instanceof BetweenExpression || expression instanceof LikeAnyAllExpression;
+    }
+
+    /** A number literal as the FLOAT it folds to: 9 as {@code 9.0}, 2.5 as {@code 2.5}. */
+    private static String floatLiteral(final LiteralExpression literal) {
+        final BigDecimal value = new BigDecimal(String.valueOf(literal.getValue())).stripTrailingZeros();
+        return value.scale() <= 0 ? value.toBigInteger() + ".0" : value.toPlainString();
+    }
+
+    /**
+     * The NUMBER a call answering a machine integer is cast to where arithmetic or ABS reads it in a folded plan:
+     * SIGN's NUMBER(2,0), LENGTH's NUMBER(18,0), HASH's NUMBER(19,0) and a day difference of dates' NUMBER(9,0)
+     * (live-verified); null for any other operand.
+     */
+    private String machineIntegerType(final Expression expression) {
+        if (expression instanceof BinaryOperationExpression
+                && ((BinaryOperationExpression) expression).getOperator() == BinaryOperator.SUBTRACT) {
+            final BinaryOperationExpression difference = (BinaryOperationExpression) expression;
+            final String days = dateDifference(difference.getLeft(), argumentType(difference.getLeft()),
+                difference.getRight(), argumentType(difference.getRight()));
+            return days != null && days.startsWith("DATE_DIFFDATEINDAYS(") ? "NUMBER(9,0)" : null;
+        }
+        if (!(expression instanceof FunctionCallExpression)
+                || ((FunctionCallExpression) expression).getNameExpression() != null) {
+            return null;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expression;
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        if ("SIGN".equals(name)) {
+            return "NUMBER(2,0)";
+        }
+        if ("LENGTH".equals(name) || "LEN".equals(name)) {
+            return "NUMBER(18,0)";
+        }
+        if ("HASH".equals(name)) {
+            return "NUMBER(19,0)";
+        }
+        final String days = plannedDateDiff(call, name);
+        return days != null && days.startsWith("DATE_DIFFDATEINDAYS(") ? "NUMBER(9,0)" : null;
+    }
+
+    /**
+     * A call a folded plan holds otherwise than it is written, or null: LEN as LENGTH, NORMAL over its FLOAT mean and
+     * deviation, ABS over a machine integer cast to its NUMBER (see {@link #foldingConversions()}).
+     */
+    private String foldedConversionCall(final FunctionCallExpression expr) {
+        final String name = expr.getFunctionName().toUpperCase(Locale.ROOT);
+        final List<Expression> args = expr.getArguments();
+        if ("LEN".equals(name)) {
+            return new FunctionCallExpression("LENGTH", args).accept(this);
+        }
+        if ("NORMAL".equals(name) && args.size() == 3) {
+            return expr.getFunctionName() + "(" + floatArgument(args.get(0)) + ", " + floatArgument(args.get(1)) + ", "
+                + args.get(2).accept(this) + ")";
+        }
+        if ("ABS".equals(name) && args.size() == 1) {
+            final String machineInteger = machineIntegerType(args.get(0));
+            return machineInteger == null ? null
+                : expr.getFunctionName() + "(CAST(" + args.get(0).accept(this) + " AS " + machineInteger + "))";
+        }
+        return null;
+    }
+
+    /** A text literal cast to DATE as the date a folded plan holds, {@code '2024-01-01'}; null for any other cast. */
+    private String foldedDateLiteral(final CastExpression expr) {
+        final DataType target = argumentType(expr);
+        if (!(expr.getExpression() instanceof LiteralExpression) || target == null
+                || !"DATE".equals(target.getName())
+                || ((LiteralExpression) expr.getExpression()).getType() != LiteralType.STRING) {
+            return null;
+        }
+        try {
+            return "'" + LocalDate.parse(String.valueOf(((LiteralExpression) expr.getExpression()).getValue()).trim())
+                + "'";
+        } catch (final DateTimeParseException notIso) {
+            return null;
+        }
     }
 
     /** A number written as a literal — not a conversion the plan folded, which a minus before it NEGATEs. */

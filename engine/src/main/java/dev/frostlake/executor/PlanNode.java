@@ -34,10 +34,17 @@ final class PlanNode {
     private final List<String> expressions;
     private final List<PlanNode> children = new ArrayList<>();
     private final Set<String> names = new LinkedHashSet<>();
+    private final Set<String> readColumns = new LinkedHashSet<>();
+    private final List<String> conjuncts = new ArrayList<>();
+    private List<PlanColumn> answered;
     private Long rows;
     private boolean scan;
     private boolean unread;
     private boolean hidden;
+    private boolean untold;
+    private boolean countedTwice;
+    private final List<String> sortColumns = new ArrayList<>();
+    private PlanNode loop;
 
     PlanNode(final String operation, final List<String> objects, final String alias,
              final List<String> expressions) {
@@ -69,6 +76,122 @@ final class PlanNode {
     PlanNode with(final String expression) {
         expressions.add(expression);
         return this;
+    }
+
+    /**
+     * Replaces this operator's expressions.
+     *
+     * @param replaced the expressions
+     * @return this operator
+     */
+    PlanNode expressed(final List<String> replaced) {
+        final List<String> kept = new ArrayList<>(replaced);
+        expressions.clear();
+        expressions.addAll(kept);
+        return this;
+    }
+
+    /**
+     * An operator like this one, with its expressions and its conditions, over none of its children.
+     *
+     * @return the operator
+     */
+    PlanNode alike() {
+        final PlanNode copy = new PlanNode(operation, objects, alias, expressions);
+        copy.conjuncts.addAll(conjuncts);
+        return copy;
+    }
+
+    /**
+     * Adds conditions to a Filter's, which it lists as one expression: a condition as it is, several each in
+     * parentheses joined with AND.
+     *
+     * @param added the conditions' texts
+     * @return this operator
+     */
+    PlanNode filtering(final List<String> added) {
+        conjuncts.addAll(added);
+        expressions.clear();
+        if (!conjuncts.isEmpty()) {
+            expressions.add(PlanExpressionText.conjoined(conjuncts));
+        }
+        return this;
+    }
+
+    /**
+     * Lists this scan as a Sort with no row limit reads it: its objects twice, the columns the sort keys read before
+     * its own expressions, and its partitions counted twice in GlobalStats (live-verified: EXPLAIN SELECT a FROM et
+     * ORDER BY b lists ET twice and B, A, B, under GlobalStats of 2, 2 and 2048).
+     *
+     * @param keyColumns the columns the sort keys read, in the order the scan reads them
+     * @return this scan
+     */
+    PlanNode readForSort(final List<String> keyColumns) {
+        if (!countedTwice) {
+            final List<String> once = new ArrayList<>(objects);
+            objects.addAll(once);
+            countedTwice = true;
+        }
+        sortColumns.clear();
+        sortColumns.addAll(keyColumns);
+        return this;
+    }
+
+    /**
+     * Lists this scan as read once again: a Sort with a row limit that replaces the Sort over it reads it so
+     * (live-verified: an ORDER BY … LIMIT over a derived table's ORDER BY lists the table once).
+     *
+     * @return this scan
+     */
+    PlanNode readOnce() {
+        if (countedTwice) {
+            final List<String> once = new ArrayList<>(objects.subList(0, objects.size() / 2));
+            objects.clear();
+            objects.addAll(once);
+            sortColumns.clear();
+            countedTwice = false;
+        }
+        return this;
+    }
+
+    /** The columns a Sort's keys read, which this scan lists before its own (see {@link #readForSort}). */
+    List<String> getSortColumns() {
+        return sortColumns;
+    }
+
+    /** Whether GlobalStats counts this scan's partitions twice (see {@link #readForSort}). */
+    boolean isCountedTwice() {
+        return countedTwice;
+    }
+
+    /**
+     * Records a column a scan reads.
+     *
+     * @param column the column's canonical name
+     */
+    void reads(final String column) {
+        readColumns.add(column);
+    }
+
+    /** The columns a scan reads, by canonical name, in the order first read. */
+    Set<String> getReadColumns() {
+        return readColumns;
+    }
+
+    /**
+     * Records the columns this operator's rows answer, as a query or a derived table answers them.
+     *
+     * @param columns the columns, or null where they are not known
+     * @return this operator
+     */
+    PlanNode answering(final List<PlanColumn> columns) {
+        answered = columns == null ? null : new ArrayList<>(columns);
+        return this;
+    }
+
+    /** The columns this operator's rows answer; null where they are not known. */
+    List<PlanColumn> getAnswered() {
+        return answered;
     }
 
     /**
@@ -177,6 +300,29 @@ final class PlanNode {
 
     boolean isUnread() {
         return unread;
+    }
+
+    /**
+     * Makes this operator one the plan neither lists nor numbers, standing where a recursive term reads its own
+     * common table expression: the operator over it feeds the RecursiveWithClause back.
+     *
+     * @param recursion the RecursiveWithClause the term reads
+     * @return this operator
+     */
+    PlanNode readingRecursion(final PlanNode recursion) {
+        untold = true;
+        loop = recursion;
+        return this;
+    }
+
+    /** Whether the plan neither lists nor numbers this operator (see {@link #readingRecursion}). */
+    boolean isUntold() {
+        return untold;
+    }
+
+    /** The RecursiveWithClause this operator reads back, or null. */
+    PlanNode getLoop() {
+        return loop;
     }
 
     boolean isHidden() {

@@ -55,6 +55,8 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.task.TaskGraphs;
 
+import org.antlr.v4.runtime.CharStream;
+import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
@@ -131,7 +133,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final Task task = new Task(taskName, null, null, sqlText, null);
             // The owner is worked out here, for the checks that read it; the future grants apply only once the
             // task is added, so CREATE OR ALTER and a refused CREATE OR REPLACE leave the grants on the task that
-            // stays as they were (FL-436).
+            // stays as they were.
             final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TASK", schema, task.getName());
             task.setOwner(grantsOfNew.owner());
             String runAs = null;
@@ -278,6 +280,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             catalog.beginSessionScope(pipeSchema.getDatabaseName(), pipeSchema.getName());
             final Stage pipeStage;
             try {
+                requirePipeCopyParses(ctx.copyStatement());
                 pipeStage = validatePipeCopyBody(ctx.copyStatement());
                 requirePipeCopyPrivileges(ctx.copyStatement(), pipeStage);
             } finally {
@@ -370,6 +373,33 @@ public class CreateInfrastructureHandler implements CommandHandler {
      * values, unknown format options) belongs to the engine-wide option-value surface and is not
      * pipe-specific.
      */
+    /**
+     * A pipe's COPY read as the COPY statement it is, at its own place in the statement: the body is kept as text
+     * where the pipe is parsed, and a fault in it refuses the pipe as it refuses the COPY on its own, {@code CREATE
+     * PIPE pp AS COPY INTO ct FROM @cs FILE_FORMAT = (, TYPE = CSV)} at the comma and then at the list's closing
+     * parenthesis (live-verified). The text before the COPY is read as blanks, its line breaks kept, so each place
+     * the parse names is the statement's own.
+     */
+    private void requirePipeCopyParses(final FrostlakeParser.CopyStatementContext copyCtx) {
+        if (copyCtx == null || copyCtx.getStart() == null || copyCtx.getStop() == null) {
+            return;
+        }
+        final CharStream source = copyCtx.getStart().getInputStream();
+        final int start = copyCtx.getStart().getStartIndex();
+        final int stop = copyCtx.getStop().getStopIndex();
+        if (source == null || start < 0 || stop < start) {
+            return;
+        }
+        final StringBuilder placed = new StringBuilder(stop + 1);
+        final String before = start == 0 ? "" : source.getText(Interval.of(0, start - 1));
+        for (int i = 0; i < before.length(); i++) {
+            final char written = before.charAt(i);
+            placed.append(written == '\n' || written == '\r' ? written : ' ');
+        }
+        placed.append(source.getText(Interval.of(start, stop)));
+        QueryExecutor.requireParses(placed.toString());
+    }
+
     private Stage validatePipeCopyBody(final FrostlakeParser.CopyStatementContext copyCtx) {
         if (copyCtx == null) {
             return null;

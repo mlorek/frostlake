@@ -34,8 +34,9 @@ import java.util.Set;
  * lateral-value reads, and a subquery whose first execution reads zero is provably row-independent
  * (any branch decision that depended on an outer value would itself have read one). The classification
  * is therefore exact and conservative — anything that touches the outer context is treated as
- * correlated and never cached. A subquery that DRAWS a value afresh per row (RANDOM, UUID_STRING) is
- * classified the same way, by a second counter, and is likewise never cached.
+ * correlated and never cached. A subquery that DRAWS a value afresh per row (RANDOM, UUID_STRING, a call of a
+ * JavaScript function not declared IMMUTABLE) is classified the same way, by a second counter, and is likewise never
+ * cached.
  *
  * <p>The key is one COPY of a subquery, not its text: two copies of the same text are two subqueries
  * and the account evaluates each — {@code (SELECT s1.nextval) = (SELECT s1.nextval)} is FALSE there,

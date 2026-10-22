@@ -21,6 +21,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
+import java.util.Locale;
 
 /**
  * Python's {@code str()} of a temporal value, which is how Snowflake stores one inside a VARIANT a handler returns.
@@ -33,22 +34,22 @@ public final class PythonValueText {
 
     /** {@code str(datetime)} — {@code 2024-10-16 19:47:11.488000}; no fraction when the microsecond is 0. */
     public static String pythonDatetimeStr(final LocalDateTime dt) {
-        return String.format("%04d-%02d-%02d %s",
+        return String.format(Locale.ROOT, "%04d-%02d-%02d %s",
             dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(), pythonTimeStr(dt.toLocalTime()));
     }
 
     /** {@code str(time)} — {@code 19:47:11.488000}; no fraction when the microsecond is 0. */
     public static String pythonTimeStr(final LocalTime t) {
         final int micro = t.getNano() / 1000;
-        final String base = String.format("%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
-        return micro == 0 ? base : base + String.format(".%06d", micro);
+        final String base = String.format(Locale.ROOT, "%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
+        return micro == 0 ? base : base + String.format(Locale.ROOT, ".%06d", micro);
     }
 
     /** {@code str()} of an aware datetime — {@code 2024-01-02 03:04:05+05:00}. */
     public static String pythonDatetimeStr(final OffsetDateTime dt) {
         final int seconds = dt.getOffset().getTotalSeconds();
         final int abs = Math.abs(seconds);
-        return pythonDatetimeStr(dt.toLocalDateTime()) + String.format("%s%02d:%02d",
+        return pythonDatetimeStr(dt.toLocalDateTime()) + String.format(Locale.ROOT, "%s%02d:%02d",
             seconds < 0 ? "-" : "+", abs / 3600, abs / 60 % 60);
     }
 

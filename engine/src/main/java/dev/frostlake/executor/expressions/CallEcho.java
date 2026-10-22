@@ -30,4 +30,17 @@ public interface CallEcho {
      * @return the text, or null
      */
     String spell(FunctionCallExpression call, ParsedEchoPrinter printer);
+
+    /**
+     * An operand's text beside its operator, its own parentheses included, or null to print it as parsed.
+     *
+     * @param operation the operation the operand stands in
+     * @param operand   the operand
+     * @param printer   the printer, which prints the operand's parts
+     * @return the text, or null
+     */
+    default String spellOperand(final BinaryOperationExpression operation, final Expression operand,
+                                final ParsedEchoPrinter printer) {
+        return null;
+    }
 }

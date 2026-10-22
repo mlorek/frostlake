@@ -28,7 +28,6 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import dev.frostlake.values.BinaryValue;
-import dev.frostlake.values.VectorCastRefusal;
 import dev.frostlake.values.VectorValue;
 import org.graalvm.polyglot.Value;
 
@@ -48,8 +47,13 @@ import java.util.Locale;
  * which truncates, {@code float(value)}, {@code str(value)}, {@code bool(value)} — and judges the classes a DATE,
  * a TIMESTAMP, an ARRAY, an OBJECT and a BINARY take, a TIMESTAMP_NTZ and a TIMESTAMP_LTZ a {@code datetime}
  * without an offset; this side builds the SQL value from the text it reports, rounds a NUMBER with a scale half to
- * even, and words the refusals as the account does, each naming the routine and its handler. A VECTOR takes its
- * elements as a list, a tuple or a memoryview, cast as {@code ::VECTOR} casts them (unmeasured on an account).
+ * even, and words the refusals as the account does, each naming the routine and its handler. A VECTOR takes a list
+ * or what answers {@code tolist()} - a memoryview, an {@code array.array} - of its declared length, each element
+ * converted by {@code int(element)} (which truncates) or {@code float(element)} and held to the vector's 32-bit
+ * elements; a tuple or a text is no vector, a None element and a conversion's own failure are refused. A NaN or an
+ * infinity, a float or a {@code Decimal}, is no exact NUMBER whatever its scale: {@code ValueError: cannot convert NaN
+ * to integer} and {@code OverflowError: cannot convert Infinity to integer}; a time with an offset is a TIME of its
+ * wall clock.
  *
  * <p>A semi-structured answer is the value's JSON with every float marked as a DOUBLE (see {@link HandlerJson}),
  * a tuple as a list, and a date, a time, a datetime, a {@code Decimal} and {@code bytes} as {@code str(value)};
@@ -67,12 +71,19 @@ final class PythonReturn {
     /**
      * Defines {@code __fl_converted(value, kind, scale)}, answering a pair: what became of the value ({@code null},
      * {@code value}, {@code int}, {@code decimal}, {@code python}, {@code refuse}, {@code raise}, {@code pass}) and its
-     * text.
+     * text. A dict is keyed by the text of each key, a tuple's {@code (1, 2)} included (live-verified), as the CPython
+     * worker keys one.
      */
     static final String CONVERT = """
         import datetime as __fl_datetime
         import decimal as __fl_decimal
         import json as __fl_json
+        def __fl_key(k):
+            if isinstance(k, bool):
+                return 'true' if k else 'false'
+            if k is None:
+                return 'null'
+            return k if isinstance(k, str) else str(k)
         def __fl_spell(v):
             if v is None or isinstance(v, (bool, int, str)):
                 return v
@@ -81,7 +92,7 @@ final class PythonReturn {
             if isinstance(v, (list, tuple)):
                 return [__fl_spell(e) for e in v]
             if isinstance(v, dict):
-                return dict((k, __fl_spell(e)) for k, e in v.items())
+                return dict((__fl_key(k), __fl_spell(e)) for k, e in v.items())
             if isinstance(v, (__fl_datetime.date, __fl_datetime.time, __fl_decimal.Decimal, bytes)):
                 return str(v)
             raise TypeError('Object of type ' + type(v).__name__ + ' is not serializable')
@@ -89,6 +100,10 @@ final class PythonReturn {
             if v is None:
                 return ('value', 'null') if kind == 'VARIANT' else ('null', '')
             if kind == 'NUMBER':
+                if isinstance(v, (float, __fl_decimal.Decimal)) and v != v:
+                    raise ValueError('cannot convert NaN to integer')
+                if isinstance(v, (float, __fl_decimal.Decimal)) and v in (float('inf'), float('-inf')):
+                    raise OverflowError('cannot convert Infinity to integer')
                 if scale == 0:
                     return ('int', str(int(v)))
                 if isinstance(v, __fl_decimal.Decimal):
@@ -108,7 +123,7 @@ final class PythonReturn {
                 return ('refuse', 'Return value should be a date object')
             if kind == 'TIME':
                 if isinstance(v, __fl_datetime.time):
-                    return ('value', v.isoformat())
+                    return ('value', v.replace(tzinfo=None).isoformat())
                 return ('pass', '')
             if kind.startswith('TIMESTAMP'):
                 if not isinstance(v, __fl_datetime.datetime):
@@ -126,11 +141,33 @@ final class PythonReturn {
                 return ('refuse', 'python value needs to be a dict to convert to Snowflake OBJECT')
             if kind == 'VARIANT':
                 return ('value', __fl_json.dumps(__fl_spell(v)))
-            if kind == 'VECTOR':
-                elements = v.tolist() if isinstance(v, memoryview) or hasattr(v, 'tolist') else v
-                if isinstance(elements, (list, tuple)):
-                    return ('value', __fl_json.dumps(list(elements)))
-                return ('value', __fl_json.dumps(str(v)))
+            if kind in ('VECTOR_INT', 'VECTOR_FLOAT'):
+                if not isinstance(v, list) and not hasattr(v, 'tolist'):
+                    return ('refuse', 'Vectors returned from Python must be lists or array-like')
+                elements = v if isinstance(v, list) else v.tolist()
+                if len(elements) != scale:
+                    return ('refuse', 'Returned list dimension, ' + str(len(elements))
+                            + ', does not match the expected vector dimension, ' + str(scale))
+                spelled = []
+                for e in elements:
+                    if e is None:
+                        return ('refuse', "Vector elements cannot be 'None'")
+                    try:
+                        x = int(e) if kind == 'VECTOR_INT' else float(e)
+                        if kind == 'VECTOR_INT' and not -9223372036854775808 <= x <= 9223372036854775807:
+                            raise OverflowError('Python int too large to convert to C long')
+                    except Exception as fault:
+                        return ('refuse', 'Invalid element in returned vector: Python Interpreter Error:\\n'
+                                + type(fault).__name__ + ': ' + str(fault))
+                    if kind == 'VECTOR_INT':
+                        if not -2147483648 <= x <= 2147483647:
+                            return ('refuse', 'Invalid element in returned vector: OverflowError: int too big to '
+                                    + 'convert to int32')
+                        spelled.append(str(x))
+                    else:
+                        spelled.append('NaN' if x != x else 'Infinity' if x == float('inf')
+                                       else '-Infinity' if x == float('-inf') else repr(x))
+                return ('value', ' '.join(spelled))
             if kind == 'BINARY':
                 if not isinstance(v, (bytes, bytearray)):
                     raise TypeError("cannot convert '" + type(v).__name__ + "' object to bytes")
@@ -170,7 +207,7 @@ final class PythonReturn {
             return "VARIANT";
         }
         if (declared instanceof VectorType) {
-            return "VECTOR";
+            return "VECTOR_" + ((VectorType) declared).getElementType().name();
         }
         final String written = declared == null || declared.getName() == null ? ""
             : declared.getName().toUpperCase(Locale.ROOT);
@@ -186,8 +223,11 @@ final class PythonReturn {
         return name.endsWith("_TZ") ? "TIMESTAMP_TZ" : name.endsWith("_LTZ") ? "TIMESTAMP_LTZ" : "TIMESTAMP_NTZ";
     }
 
-    /** The scale {@link #CONVERT} is told: a NUMBER's declared scale, zero for any other type. */
+    /** The scale {@link #CONVERT} is told: a NUMBER's declared scale, a VECTOR's dimension, zero for any other type. */
     static int scaleOf(final DataType declared) {
+        if (declared instanceof VectorType) {
+            return ((VectorType) declared).getDimension();
+        }
         return declared instanceof NumericType ? ((NumericType) declared).getScale() : 0;
     }
 
@@ -300,13 +340,14 @@ final class PythonReturn {
             return Boolean.valueOf("true".equals(text));
         }
         if (declared instanceof VectorType) {
-            // The elements' JSON, cast as ::VECTOR casts it: the dimension and each element judged, with the cast's
-            // own refusals; anything but a list, a tuple, a memoryview or what answers tolist() is no vector (#2391).
-            try {
-                return VectorValue.cast(text, (VectorType) declared);
-            } catch (final VectorCastRefusal refused) {
-                throw new PythonReturnRefusal(refused.getMessage() + where);
+            // The elements CONVERT judged and converted, space-separated, narrowed to the vector's 32-bit elements:
+            // a FLOAT past float32 is infinite, as on the account.
+            final String[] spelled = text.split(" ");
+            final double[] elements = new double[spelled.length];
+            for (int i = 0; i < spelled.length; i++) {
+                elements[i] = Double.parseDouble(spelled[i]);
             }
+            return VectorValue.of(((VectorType) declared).getElementType(), elements);
         }
         if (declared instanceof BinaryType) {
             return HandlerResults.binary(BinaryValue.fromHex(text.toUpperCase(Locale.ROOT)), (BinaryType) declared,

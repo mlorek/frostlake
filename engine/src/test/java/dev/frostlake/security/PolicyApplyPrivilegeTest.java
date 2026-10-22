@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * Setting or unsetting a masking policy on a column, and adding or dropping a row access policy, takes APPLY MASKING
  * POLICY or APPLY ROW ACCESS POLICY on the account, or APPLY on the policy: owning the table is not enough
  * (documented). A role that may only SELECT from a protected table clones it and owns the clone, which keeps the
- * policies; without APPLY it cannot strip them and read the rows in clear (FL-429). The refusal's wording is not
+ * policies; without APPLY it cannot strip them and read the rows in clear. The refusal's wording is not
  * measured. Engine only: the live account allows no CREATE ROLE or GRANT.
  */
 public class PolicyApplyPrivilegeTest {

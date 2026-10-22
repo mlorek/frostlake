@@ -22,6 +22,7 @@ import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.scalar.AutoTemporalParser;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.storage.Row;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -45,10 +46,17 @@ final class PivotValue {
 
     private final Object value;
     private final String name;
+    /** The expression each row computes the column's value from, or null for a value the list fixes. */
+    private final Expression rowValue;
 
     PivotValue(final Object value, final String name) {
+        this(value, name, null);
+    }
+
+    private PivotValue(final Object value, final String name, final Expression rowValue) {
         this.value = value;
         this.name = name;
+        this.rowValue = rowValue;
     }
 
     /**
@@ -86,6 +94,19 @@ final class PivotValue {
     }
 
     /**
+     * A column for a value the IN list wrote as an expression over the row's own columns, named as the plan prints
+     * it: each row meets the value it computes from itself, so {@code FOR id IN (id)} gives every row its own id and
+     * {@code IN (id + 1)} none (live-verified).
+     *
+     * @param written the expression as written
+     * @param alias the alias written after it, or null
+     * @return the column
+     */
+    static PivotValue fromRow(final Expression written, final String alias) {
+        return new PivotValue(null, alias != null ? alias : ParsedEchoPrinter.print(written), written);
+    }
+
+    /**
      * A column for a value read from the rows.
      *
      * @param value the value, null for the rows that hold none
@@ -119,6 +140,28 @@ final class PivotValue {
 
     Object value() {
         return value;
+    }
+
+    /** Whether each row computes this column's value from itself (see {@link #fromRow}). */
+    boolean readsRow() {
+        return rowValue != null;
+    }
+
+    /**
+     * Whether a row belongs to this column, by the value it computes from itself where the column reads the row; a
+     * NULL on either side meets none.
+     *
+     * @param cell      the row's FOR-column value
+     * @param row       the row
+     * @param evaluator an evaluator over the pivoted relation
+     * @return whether the row belongs to this column
+     */
+    boolean holds(final Object cell, final Row row, final ExpressionEvaluator evaluator) {
+        if (rowValue == null) {
+            return holds(cell);
+        }
+        final Object computed = evaluator.evaluate(rowValue, row);
+        return cell != null && computed != null && new PivotValue(computed, name).holds(cell);
     }
 
     /**

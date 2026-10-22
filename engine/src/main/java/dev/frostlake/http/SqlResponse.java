@@ -44,6 +44,9 @@ public class SqlResponse {
     // them: the driver keeps the session alive by them. Absent when the session sets none.
     private Boolean clientSessionKeepAlive;
     private Integer clientSessionKeepAliveHeartbeatFrequency;
+    // TRUE once the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE: the driver then matches a column
+    // label ignoring case. Absent otherwise.
+    private Boolean clientResultColumnCaseInsensitive;
     // The SQLSTATE and vendor code of a failed statement, where the account's are known: a canceled statement's
     // 57014, with 604 for a cancel or a query timeout and 630 for the session's STATEMENT_TIMEOUT_IN_SECONDS.
     private String sqlState;
@@ -166,6 +169,16 @@ public class SqlResponse {
         this.clientSessionKeepAliveHeartbeatFrequency = clientSessionKeepAliveHeartbeatFrequency;
     }
 
+    /** TRUE when the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, or null. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Boolean getClientResultColumnCaseInsensitive() {
+        return clientResultColumnCaseInsensitive;
+    }
+
+    public void setClientResultColumnCaseInsensitive(final Boolean clientResultColumnCaseInsensitive) {
+        this.clientResultColumnCaseInsensitive = clientResultColumnCaseInsensitive;
+    }
+
     /** The failed statement's SQLSTATE, or null when the answer carries none. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public String getSqlState() {
@@ -230,6 +243,18 @@ public class SqlResponse {
             } catch (final NumberFormatException unreadable) {
                 // Left out: the driver keeps the frequency it had.
             }
+        }
+    }
+
+    /**
+     * Reports that the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, after which the driver matches
+     * a column label ignoring case for the rest of the connection; while it has not, nothing is reported.
+     *
+     * @param session the session the statement ran in
+     */
+    public void reportResultColumnCase(final SessionContext session) {
+        if (session.getSettings().resultColumnsCaseInsensitive()) {
+            this.clientResultColumnCaseInsensitive = Boolean.TRUE;
         }
     }
 

@@ -16,11 +16,13 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.DefaultMarkerExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
+import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.operators.JoinOperator;
 import dev.frostlake.executor.operators.Operator;
 import dev.frostlake.executor.operators.OperatorContext;
@@ -31,6 +33,7 @@ import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
@@ -49,6 +52,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -84,10 +88,14 @@ final class UpdateDeleteExecutor {
      * FROM sources), and the UPDATE stage that writes every row reaching it.
      */
     Object executeUpdateFromContext(final FrostlakeParser.UpdateStatementContext ctx) {
-        executor.checkNotReadOnly();
+        // An EXPLAIN compiles the statement and changes nothing (see ExplainPlan).
+        final boolean planning = ExplainPlan.planning();
+        if (!planning) {
+            executor.checkNotReadOnly();
+        }
         try {
             // Auto-start transaction if not active
-            if (!executor.getTransactionManager().hasActiveTransaction()) {
+            if (!planning && !executor.getTransactionManager().hasActiveTransaction()) {
                 executor.getTransactionManager().beginTransaction();
             }
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
@@ -138,6 +146,9 @@ final class UpdateDeleteExecutor {
             }
             if (ctx.tableReference() == null || ctx.tableReference().isEmpty()) {
                 executor.rejectRestrictedAssignments(assignedValues, table, null, null);
+            }
+            if (planning) {
+                return null;
             }
             // Get all rows - use fully qualified name
             final String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
@@ -193,10 +204,14 @@ final class UpdateDeleteExecutor {
      * the match against the USING sources), and the DELETE stage that removes every row reaching it.
      */
     Object executeDeleteFromContext(final FrostlakeParser.DeleteStatementContext ctx) {
-        executor.checkNotReadOnly();
+        // An EXPLAIN compiles the statement and changes nothing (see ExplainPlan).
+        final boolean planning = ExplainPlan.planning();
+        if (!planning) {
+            executor.checkNotReadOnly();
+        }
         try {
             // Auto-start transaction if not active
-            if (!executor.getTransactionManager().hasActiveTransaction()) {
+            if (!planning && !executor.getTransactionManager().hasActiveTransaction()) {
                 executor.getTransactionManager().beginTransaction();
             }
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
@@ -221,6 +236,9 @@ final class UpdateDeleteExecutor {
                 new ArrayList<FrostlakeParser.AssignmentContext>(), ctx.whereClause(), ctx.tableReference(),
                 ctx.joinClause());
             CalledRoutineSources.require(ctx, executor);
+            if (planning) {
+                return null;
+            }
             // Get all rows - use fully qualified name
             final String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
             // The PARTITIONS lock registers per STATEMENT KIND, not per matched row — a DELETE
@@ -282,6 +300,40 @@ final class UpdateDeleteExecutor {
     }
 
     /** Each SET column's index — a per-STATEMENT fact, resolved once rather than per row. */
+    /**
+     * The columns a SET writes from an expression that can be NULL, judged over the table as a select item is (see
+     * {@link ResultNullability}): a number too wide for a NOT NULL column prints its type {@code {nullable}} then, as
+     * an INSERT's does (see {@link QueryExecutor#enforceColumnConstraintsForDml}) — {@code SET n = m} over a nullable
+     * column, {@code SET n = IFF(TRUE, 12345, NULL)} — where a literal, an expression over NOT NULL columns and a
+     * scalar subquery of a literal print {@code {not null}} (live-verified). One flag per column; null when none.
+     */
+    private static boolean[] nullableAssignments(final Table table, final String targetAlias,
+                                                 final Map<String, String> assignments,
+                                                 final Map<String, Integer> setIndexes) {
+        final Map<String, Table> aliases = new HashMap<>();
+        aliases.put(targetAlias != null ? targetAlias : table.getName(), table);
+        final ResultNullability judge = new ResultNullability(table, aliases);
+        boolean[] nullable = null;
+        for (final Map.Entry<String, String> assignment : assignments.entrySet()) {
+            final Integer index = setIndexes.get(assignment.getKey());
+            if (index == null) {
+                continue;
+            }
+            final Expression value;
+            try {
+                value = ExpressionEvaluator.parse(assignment.getValue());
+            } catch (final RuntimeException unparsed) {
+                continue;
+            }
+            if (!(value instanceof DefaultMarkerExpression) && !(value instanceof SubqueryExpression)
+                    && judge.of(value)) {
+                nullable = nullable != null ? nullable : new boolean[table.getColumns().size()];
+                nullable[index.intValue()] = true;
+            }
+        }
+        return nullable;
+    }
+
     private Map<String, Integer> setIndexes(final Table table, final Map<String, String> assignments) {
         final Map<String, Integer> setIndexes = new HashMap<>();
         for (final String setColumn : assignments.keySet()) {
@@ -332,6 +384,7 @@ final class UpdateDeleteExecutor {
         final boolean[] jsonColumns = jsonReadColumns(table, targetAlias, assignments, setIndexes);
         final DataType[] decfloatColumns = decfloatColumns(table, targetAlias, assignments, setIndexes);
         final boolean[] kept = JsonTextWrites.keptAsWritten(table, jsonColumns, setIndexes.values());
+        final boolean[] nullableSources = nullableAssignments(table, targetAlias, assignments, setIndexes);
         final RowPositions rowPositions = new RowPositions(rows);
         plan.add(new StageOperator(updateDescription(table, assignments)) {
             @Override
@@ -374,15 +427,17 @@ final class UpdateDeleteExecutor {
                                 // A plain UPDATE's SET value that cannot be computed is a DML failure on
                                 // that column, live-verified: "DML operation to table UPD failed on column
                                 // D with error: Failed to cast variant value 1 to DATE". (UPDATE … FROM
-                                // and a MERGE's UPDATE leave the same sentence bare.)
-                                throw DmlWriteTarget.isRowTimeFailure(failed)
+                                // and a MERGE's UPDATE leave the same sentence bare, and so does a value whose
+                                // query reads a stream — see readsAStream.)
+                                throw DmlWriteTarget.isRowTimeFailure(failed) && !readsAStream(valueExpr)
                                     ? DmlWriteTarget.failedOnColumn(tableName, colName, failed) : failed;
                             } finally {
                                 ExpressionSource.end(displaced);
                             }
                             updatedRow.setValue(colIndex, newValue);
                         }
-                        executor.enforceColumnConstraintsForDml(table, updatedRow, false, tableName, null, kept);
+                        executor.enforceColumnConstraintsForDml(table, updatedRow, false, tableName, null, kept,
+                            nullableSources);
                         oldRows.add(row);
                         written.add(updatedRow);
                         rowIndexes.add(rowPositions.take(row));
@@ -472,6 +527,7 @@ final class UpdateDeleteExecutor {
                     final Map<String, Integer> setIndexes = setIndexes(table, assignments);
                     final boolean[] jsonColumns = jsonReadColumns(table, targetAlias, assignments, setIndexes);
                     final DataType[] decfloatColumns = decfloatColumns(table, targetAlias, assignments, setIndexes);
+                    final boolean[] nullableSources = nullableAssignments(table, targetAlias, assignments, setIndexes);
                     // Every row's new image is computed before the write set takes any, so a subquery over the
                     // table sees it as the statement began (live-verified).
                     final List<Row> written = new ArrayList<>();
@@ -483,7 +539,7 @@ final class UpdateDeleteExecutor {
                         final Integer idx = pending ? pendingPositions.take(row) : effectivePositions.take(row);
                         if (idx != null) {
                             images.add(buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes,
-                                jsonColumns, decfloatColumns, writtenName, targetAlias));
+                                jsonColumns, decfloatColumns, nullableSources, writtenName, targetAlias));
                             pendingAt.add(pending ? idx : null);
                             idsAt.add(pending ? null : effectiveIds.get(idx.intValue()));
                             written.add(row);
@@ -674,7 +730,7 @@ final class UpdateDeleteExecutor {
         final Map<Integer, Expression> setByColumn = new HashMap<>();
         for (final Map.Entry<String, String> assignment : assignments.entrySet()) {
             final TableColumn column = table.getColumns().get(setIndexes.get(assignment.getKey()).intValue());
-            if (DecfloatWrites.holdsOwnForm(column.getDataType())) {
+            if (DecfloatWrites.receives(column.getDataType())) {
                 setByColumn.put(setIndexes.get(assignment.getKey()), ExpressionEvaluator.parse(assignment.getValue()));
             }
         }
@@ -738,7 +794,8 @@ final class UpdateDeleteExecutor {
     private Row buildUpdatedRow(final Row source, final Table table, final Map<String, String> assignments,
                                 final Map<String, SourcePosition> origins,
                                 final Map<String, Integer> setIndexes, final boolean[] jsonColumns,
-                                final DataType[] decfloatColumns, final String writtenName, final String alias) {
+                                final DataType[] decfloatColumns, final boolean[] nullableSources,
+                                final String writtenName, final String alias) {
         final Row newRow = source.copy();
         // Every value reads the row as it was, in the table's column order (see inColumnOrder).
         for (final String column : inColumnOrder(assignments, setIndexes)) {
@@ -760,7 +817,7 @@ final class UpdateDeleteExecutor {
                     ? JsonTextWrites.stored(computed, executor.getFunctionRegistry())
                     : DecfloatWrites.stored(computed, decfloatColumns, colIndex);
             } catch (final RuntimeException failed) {
-                throw DmlWriteTarget.isRowTimeFailure(failed)
+                throw DmlWriteTarget.isRowTimeFailure(failed) && !readsAStream(valueExpr)
                     ? DmlWriteTarget.failedOnColumn(writtenName, column, failed) : failed;
             } finally {
                 ExpressionSource.end(displaced);
@@ -768,7 +825,7 @@ final class UpdateDeleteExecutor {
             newRow.setValue(colIndex, newValue);
         }
         executor.enforceColumnConstraintsForDml(table, newRow, false, writtenName, null,
-            JsonTextWrites.keptAsWritten(table, jsonColumns, setIndexes.values()));
+            JsonTextWrites.keptAsWritten(table, jsonColumns, setIndexes.values()), nullableSources);
         return newRow;
     }
 
@@ -1494,5 +1551,55 @@ final class UpdateDeleteExecutor {
     private SourcePosition originOf(final FrostlakeParser.WhereClauseContext where) {
         return new SourcePosition(where.booleanExpr().getStart().getLine(),
             where.booleanExpr().getStart().getCharPositionInLine());
+    }
+
+    /**
+     * Whether a SET value reads a stream through a query in it. Such a value's failure is its own, with no column
+     * named: {@code UPDATE sink SET id = 1/(SELECT MIN(id) FROM sts)} over a stream holding a 0 is "Division by zero",
+     * in a transaction or not, where the same value over a table is the DML sentence (live-verified).
+     *
+     * @param valueExpr the SET value as written
+     * @return whether a query in it names a stream
+     */
+    private boolean readsAStream(final String valueExpr) {
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(valueExpr);
+        } catch (final RuntimeException unread) {
+            return false;
+        }
+        final List<String> queries = new ArrayList<>();
+        parsed.accept(new AstPrinterVisitor() {
+            @Override
+            public String visitSubquery(final SubqueryExpression expr) {
+                queries.add(expr.getSubquery());
+                return "";
+            }
+        });
+        for (final String query : queries) {
+            final ParseTree tree = SyntaxErrorListener.cleanParse(query);
+            if (tree != null && namesAStream(tree)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a relation a query reads is a stream. */
+    private boolean namesAStream(final ParseTree node) {
+        if (node instanceof FrostlakeParser.TableQualifiedNameContext) {
+            try {
+                return executor.getCatalog().resolveStream(
+                    ParseTreeText.getQualifiedName((FrostlakeParser.TableQualifiedNameContext) node)) != null;
+            } catch (final RuntimeException unresolved) {
+                return false;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (namesAStream(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -17,7 +17,10 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.StringType;
+
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Random;
 
@@ -25,6 +28,8 @@ import java.util.Random;
 public class RandStr extends TextArgumentFunction {
 
     private static final String ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    /** The longest text RANDSTR makes. */
+    private static final int MAX_LENGTH = 134_217_728;
 
     public RandStr() { super("RANDSTR", StringType.VARCHAR); }
 
@@ -35,11 +40,17 @@ public class RandStr extends TextArgumentFunction {
         if (args.get(0) == null) {
             throw new RuntimeException("Invalid parameter value: NULL. Reason: length must not be NULL");
         }
-        // A text is read as the number it spells and a fraction goes to the nearest whole number.
-        final int length = wholeNumber(args.get(0));
-        if (length < 0) {
-            throw new RuntimeException("Invalid parameter value: " + length + ". Reason: length must not be negative");
+        // A text is read as the number it spells and a fraction goes to the nearest whole number, through the 64-bit
+        // slot (see WholeNumberArgument#wideWhole); past 134217728 characters the length is refused (live-verified).
+        final BigInteger asked = WholeNumberArgument.wideWhole(args.get(0));
+        if (asked.signum() < 0) {
+            throw new RuntimeException("Invalid parameter value: " + asked + ". Reason: length must not be negative");
         }
+        if (asked.compareTo(BigInteger.valueOf(MAX_LENGTH)) > 0) {
+            throw new RuntimeException("Invalid parameter value: " + asked + ". Reason: length must be at most "
+                + MAX_LENGTH);
+        }
+        final int length = asked.intValue();
         if (args.get(1) == null) return null;
         final long seed = (long) Double.parseDouble(args.get(1).toString());
         final Random random = new Random(seed);

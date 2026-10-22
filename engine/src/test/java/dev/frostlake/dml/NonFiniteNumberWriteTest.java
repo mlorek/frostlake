@@ -45,11 +45,15 @@ public class NonFiniteNumberWriteTest extends MeasuredCellsTestSupport {
         assertAnswer(NI_REFUSED + "inf", "INSERT INTO nfw_ni SELECT 'inf'::FLOAT");
         assertAnswer(NI_REFUSED + "-inf", "INSERT INTO nfw_ni VALUES ('-inf'::FLOAT)");
         assertAnswer("0|null|null", "SELECT COUNT(*), SUM(n), MAX(n) FROM nfw_ni");
-        // The column's own width, scale and nullability are what the sentence prints.
+        // The column's own width and scale are what the sentence prints, nullable when the column or the value's
+        // source is: a nullable FLOAT column's NaN is {nullable} in a NOT NULL column, a literal's {not null}.
         engine.execute("CREATE TABLE nfw_nd (n NUMBER(10,2) NOT NULL)");
         assertAnswer("REFUSED DML operation to table NFW_ND failed on column N with error: "
-            + "Number out of representable range: type FIXED[SB8](10,2){not null}, value nan",
+            + "Number out of representable range: type FIXED[SB8](10,2){nullable}, value nan",
             "INSERT INTO nfw_nd SELECT f FROM nfw_fl");
+        assertAnswer("REFUSED DML operation to table NFW_ND failed on column N with error: "
+            + "Number out of representable range: type FIXED[SB8](10,2){not null}, value inf",
+            "INSERT INTO nfw_nd SELECT 'inf'::FLOAT");
         // A FLOAT column takes them as before.
         engine.execute("CREATE TABLE nfw_f2 (f FLOAT)");
         assertAnswer("1", "INSERT INTO nfw_f2 SELECT 'inf'::FLOAT");

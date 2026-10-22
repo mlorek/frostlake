@@ -67,7 +67,7 @@ public final class DateTimeUnitSlot {
      * written, or null when the argument is neither and the caller must refuse it. A qualified
      * reference contributes only its last part — the relation it names is never looked up.
      */
-    static String unitTextOf(final Expression arg) {
+    public static String unitTextOf(final Expression arg) {
         if (arg instanceof ColumnReferenceExpression) {
             return ((ColumnReferenceExpression) arg).getColumnName().toUpperCase(Locale.ROOT);
         }

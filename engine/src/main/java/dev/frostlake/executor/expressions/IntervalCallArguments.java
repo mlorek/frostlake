@@ -96,7 +96,7 @@ final class IntervalCallArguments {
         } else {
             kind = "TIMESTAMP";
         }
-        return "Invalid argument types for function 'DATE_ADD" + shiftUnitName(unit) + "TO" + kind + "': ("
+        return "Invalid argument types for function 'DATE_ADD" + unit.shiftName() + "TO" + kind + "': ("
             + amountText + ", " + listedTarget + ")";
     }
 
@@ -199,26 +199,6 @@ final class IntervalCallArguments {
             return !"TIME".equals(kind);
         }
         return true;
-    }
-
-    /**
-     * A unit as a planned shift names it: in the plural, and MILLIS, MICROS and NANOS for the three
-     * smallest — where a difference spells all three out in full.
-     *
-     * @param unit the unit
-     * @return its name inside {@code DATE_ADD…TO…}
-     */
-    static String shiftUnitName(final IntervalUnit unit) {
-        switch (unit) {
-            case MILLISECOND:
-                return "MILLIS";
-            case MICROSECOND:
-                return "MICROS";
-            case NANOSECOND:
-                return "NANOS";
-            default:
-                return unit.name() + "S";
-        }
     }
 
     /**

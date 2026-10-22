@@ -58,6 +58,8 @@ public class AppObjectCommandHandler {
 
     /** The main file a Streamlit app runs when its statement names none. */
     private static final String DEFAULT_MAIN_FILE = "streamlit_app.py";
+    /** The main file a notebook created FROM a location without MAIN_FILE is taken to run. */
+    private static final String DEFAULT_NOTEBOOK_FILE = "notebook_app.ipynb";
 
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
@@ -90,6 +92,17 @@ public class AppObjectCommandHandler {
                 if (option.SECRETS() != null) {
                     actions.checkSecrets(option.appSecretList(), true);
                 }
+            }
+            if (ctx.FROM() != null) {
+                // A notebook copies its location's files as an app does, and is refused in the same words but for
+                // its main file's (live-verified).
+                String mainFile = DEFAULT_NOTEBOOK_FILE;
+                for (final FrostlakeParser.NotebookOptionContext option : ctx.notebookOption()) {
+                    if (option.MAIN_FILE() != null) {
+                        mainFile = literal(option.STRING_LITERAL());
+                    }
+                }
+                requireCopiedSource(literal(ctx.STRING_LITERAL()), mainFile, "Notebook MAIN_FILE cannot be found.");
             }
             final AppObject object = startCreate(kind, nameCtx, ctx.or_replace() != null,
                 ctx.if_not_exists() != null);
@@ -193,7 +206,8 @@ public class AppObjectCommandHandler {
                         mainFile = literal(option.STRING_LITERAL(0));
                     }
                 }
-                requireStreamlitSource(literal(ctx.STRING_LITERAL()), mainFile);
+                requireCopiedSource(literal(ctx.STRING_LITERAL()), mainFile,
+                    SqlCompilationError.of("Missing MAIN_FILE."));
             }
             final AppObject object = startCreate(kind, nameCtx, ctx.or_replace() != null,
                 ctx.if_not_exists() != null);
@@ -254,14 +268,16 @@ public class AppObjectCommandHandler {
     }
 
     /**
-     * Judge the location a Streamlit app is created FROM. The app copies the location's files as it is created, so
-     * the location names a stage, a named one that exists, and the app's main file is among the files under it;
-     * a ROOT_LOCATION is taken as written and never looked at (live-verified).
+     * Judge the location a Streamlit app or a notebook is created FROM. The object copies the location's files as it
+     * is created, so the location names a stage, a named one that exists, and the object's main file is among the
+     * files under it; a ROOT_LOCATION is taken as written and never looked at (live-verified). A stage that is not
+     * there is refused in the app's words for a notebook too.
      *
-     * @param from     the location as written
-     * @param mainFile the app's main file, relative to the location
+     * @param from            the location as written
+     * @param mainFile        the object's main file, relative to the location
+     * @param missingMainFile the refusal of a main file the location does not hold
      */
-    private void requireStreamlitSource(final String from, final String mainFile) {
+    private void requireCopiedSource(final String from, final String mainFile, final String missingMainFile) {
         if (StatementClock.isReplay()) {
             // A replayed statement was judged when it first ran, against the files the stage held then.
             return;
@@ -295,7 +311,7 @@ public class AppObjectCommandHandler {
         final String path = slash >= 0 ? reference.substring(slash + 1) : "";
         final String folder = path.isEmpty() || path.endsWith("/") ? path : path + "/";
         if (!files.occupied(folder + mainFile)) {
-            throw new RuntimeException(SqlCompilationError.of("Missing MAIN_FILE."));
+            throw new RuntimeException(missingMainFile);
         }
     }
 

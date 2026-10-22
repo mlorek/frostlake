@@ -71,6 +71,8 @@ public class Stream implements Named, Taggable {
     private List<StreamRecord> initialRecords;
     /** The same moment in the order table snapshots are taken in, which tells apart moments one millisecond holds. */
     private long offsetSequence = SnapshotSequence.mark();
+    /** The versions of the tables the stream reads that commits wrote past its offset, the oldest first. */
+    private final List<StreamVersion> versions = new ArrayList<>();
     /** A dynamic-table stream's image of the table's rows at the last refresh it saw. */
     private List<List<Object>> refreshImage;
 
@@ -371,6 +373,35 @@ public class Stream implements Named, Taggable {
         // Consuming a stream advances the offset
         currentOffset = records.size();
         offsetSequence = SnapshotSequence.mark();
+        dropConsumedVersions();
+    }
+
+    /**
+     * Notes a version a commit wrote of a table the stream reads.
+     *
+     * @param version the version
+     */
+    public void addVersion(final StreamVersion version) {
+        versions.add(version);
+    }
+
+    /** @return the versions past the stream's offset, the oldest first, as SYSTEM$STREAM_BACKLOG lists them */
+    public List<StreamVersion> getPendingVersions() {
+        final List<StreamVersion> pending = new ArrayList<>();
+        for (final StreamVersion version : versions) {
+            if (version.getSequence() > offsetSequence) {
+                pending.add(version);
+            }
+        }
+        return pending;
+    }
+
+    private void dropConsumedVersions() {
+        for (int i = versions.size() - 1; i >= 0; i--) {
+            if (versions.get(i).getSequence() <= offsetSequence) {
+                versions.remove(i);
+            }
+        }
     }
 
     /** Total records ever captured (consumed + unconsumed) — the read-time cut for scoped consumption. */
@@ -394,6 +425,7 @@ public class Stream implements Named, Taggable {
             return;
         }
         offsetSequence = SnapshotSequence.mark();
+        dropConsumedVersions();
         for (final StreamRecord seen : seenTransient) {
             // Only records at/after the cut can be this transaction's own re-emitted changes; matching
             // below it would eat an identical-valued committed record and then over-advance the offset.
@@ -614,6 +646,8 @@ public class Stream implements Named, Taggable {
         currentOffset = source.currentOffset;
         stale = source.stale;
         offsetSequence = source.offsetSequence;
+        versions.clear();
+        versions.addAll(source.versions);
     }
 
     /** Takes over another stream's pending changes and offset, as a clone of that stream does. */
@@ -623,6 +657,8 @@ public class Stream implements Named, Taggable {
         currentOffset = source.currentOffset;
         stale = source.stale;
         offsetSequence = source.offsetSequence;
+        versions.clear();
+        versions.addAll(source.versions);
         initialRecords = source.initialRecords == null ? null : new ArrayList<>(source.initialRecords);
         refreshImage = source.refreshImage == null ? null : new ArrayList<>(source.refreshImage);
     }

@@ -35,6 +35,7 @@ import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -159,9 +160,9 @@ public final class PythonRuntime {
      * the same, function for function. {@code parse} builds an argument's Python value from its text through the
      * runtime's own references to {@code json}, {@code decimal}, {@code datetime} and {@code array}, bound as it is
      * made, as the worker decodes one: a routine that replaced {@code json.loads} or {@code decimal.Decimal} then
-     * changes no argument a routine it calls receives, as no routine's change reaches another on the account (#2389).
+     * changes no argument a routine it calls receives, as no routine's change reaches another on the account.
      * The standard library's modules imported by then are put back too, but only
-     * in part (#2387): a member a routine replaced or deleted comes back - a dunder one aside, which the import system
+     * in part: a member a routine replaced or deleted comes back - a dunder one aside, which the import system
      * sets ({@code import importlib} renames {@code _frozen_importlib}) -, and the module on {@code sys.modules}, while
      * one added stays, as the modules gain members as they run (a package its submodules, a cache its entries). The
      * runtime imports {@code array}, {@code datetime}, {@code decimal} and {@code json} first, as the worker does for
@@ -781,6 +782,12 @@ public final class PythonRuntime {
                 && bindJson(name, value)) {
             return;
         }
+        if (semiStructured && (value instanceof TemporalAccessor || value instanceof BinaryValue)) {
+            // A semi-structured argument holding a DATE, a TIME, a timestamp or a BINARY is the text the VARIANT
+            // shows, '2024-01-02 10:11:12.000', as a member of an ARRAY or an OBJECT is (live-verified).
+            bind(name, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value).asText());
+            return;
+        }
         if (value instanceof BinaryValue) {
             bindBytes(name, ((BinaryValue) value).toHex());
             return;
@@ -827,7 +834,7 @@ public final class PythonRuntime {
      * {@code VECTOR(FLOAT, n)} and of 32-bit ints ({@code 'i'}) for a {@code VECTOR(INT, n)}, which a handler indexes,
      * iterates, measures and turns into a list ({@code tolist()}) as it would the elements themselves. The cpython
      * worker builds the same from its {@code $vec}. Binding the engine's value instead handed the handler a foreign
-     * object it could not index (#2391).
+     * object it could not index.
      */
     static void bindVector(final String name, final VectorValue vector) {
         final boolean integral = vector.getElementType() == VectorElementType.INT;

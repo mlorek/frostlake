@@ -28,7 +28,8 @@ import org.antlr.v4.runtime.Token;
  * fault stands, and for the word only when the rest of it parses (live-verified):
  *
  * <pre>
- *   CREATE TABLE t (n nosuch, m other)        Unsupported data type 'NOSUCH'.
+ *   CREATE TABLE t (n nosuch, m other)        Unsupported data type 'NOSUCH'. — a word this grammar keeps as a
+ *                                             keyword but reads as a name, OTHER, is a word like any other
  *   CREATE TABLE t (n nosuch,)                syntax error ... unexpected ')'.
  *   CREATE TABLE t (n x.nosuch(5))            syntax error ... unexpected '('.
  *   SELECT CAST(1 AS "nosuch"(5))             syntax error ... unexpected '('. and ... unexpected '5'.
@@ -134,8 +135,7 @@ public final class UnknownTypeWords {
                 // the first within it that stands where a member's type does.
                 index = memberWordWithin(all, structuredTypeAt(all, index));
             }
-            if (index < 0 || !SyntaxErrorListener.isIdentifierToken(all.get(index))
-                    || !standsWhereATypeDoes(all, index)) {
+            if (index < 0 || !isWord(all.get(index)) || !standsWhereATypeDoes(all, index)) {
                 break;
             }
             // The written name may be a dotted chain.
@@ -181,7 +181,7 @@ public final class UnknownTypeWords {
             }
             final int to = all.get(end).getStopIndex() + 1;
             if (to - from < STAND_IN.length()) {
-                return null;
+                return shortWord(sql, words, all.get(index), from, to);
             }
             String name = lastPart.getText();
             final boolean lastQuoted = lastPart.getType() == FrostlakeLexer.QUOTED_IDENTIFIER;
@@ -220,6 +220,14 @@ public final class UnknownTypeWords {
     }
 
     /**
+     * Whether a token may be a type's word: an identifier, or a keyword of this grammar the account reads as a plain
+     * name there, OTHER; LANGUAGE and SESSION are refused where they stand (all live-verified).
+     */
+    private static boolean isWord(final Token token) {
+        return SyntaxErrorListener.isIdentifierToken(token) || token.getType() == FrostlakeLexer.OTHER;
+    }
+
+    /**
      * Whether a word stands where a type does, told from the tokens before it alone — which is all there is to go
      * by while the text does not parse: after a cast's {@code ::} or {@code AS}, after RETURNS, and — in a
      * statement that defines or alters an object — after the name of a column written in a list or after ADD
@@ -238,7 +246,11 @@ public final class UnknownTypeWords {
             return closesACastValue(all, before);
         }
         if (!definesAnObject(all, index)) {
-            return false;
+            // A LET names its variable's type after the variable in a block run on its own too: BEGIN LET q nosuch;
+            // … END is refused for the type (live-verified).
+            final int variable = SyntaxErrorListener.isIdentifierToken(all.get(before))
+                ? previousDefaultChannel(all, before) : -1;
+            return variable >= 0 && all.get(variable).getType() == FrostlakeLexer.LET;
         }
         if (type == FrostlakeLexer.LPAREN || type == FrostlakeLexer.COMMA) {
             // A member of a structured type: ARRAY(nosuch), MAP(VARCHAR, nosuch). A VECTOR's element is one of
@@ -458,6 +470,26 @@ public final class UnknownTypeWords {
             paramTo = i;
         }
         return -1;
+    }
+
+    /**
+     * The reading of a statement whose one word is shorter than any known type, {@code LET q r;}: the stand-in is
+     * written in its place, the rest of the text moved along, and the statement is taken as read where the text
+     * then parses cleanly; null otherwise, where the places of a later fault would no longer be the written ones.
+     */
+    private static UnknownTypeWords shortWord(final String sql, final List<UnknownTypeWord> words, final Token word,
+                                              final int from, final int to) {
+        if (!words.isEmpty() || word.getType() == FrostlakeLexer.QUOTED_IDENTIFIER) {
+            return null;
+        }
+        final String widened = sql.substring(0, from) + STAND_IN + sql.substring(to);
+        if (SyntaxErrorListener.cleanParse(widened) == null || !TypeSlotSubstitution.readsAsType(widened, from)) {
+            return null;
+        }
+        final List<UnknownTypeWord> read = new ArrayList<>();
+        read.add(new UnknownTypeWord(from, word.getText(), word.getText(), false, null, false));
+        return new UnknownTypeWords(new UnknownTypeReading(widened, read,
+            SyntaxErrorListener.inIcebergTableStatement(tokensOf(sql), tokenStartingAt(tokensOf(sql), from))), null);
     }
 
     /** A known type that takes no parameters and fits in {@code length} characters, or null when none does. */

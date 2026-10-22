@@ -176,6 +176,20 @@ public class DatabaseRoleTest extends BaseDatabaseTest {
             "TAG_NAME"));
     }
 
+    @Test
+    public void aGrantClosingALoopOfDatabaseRolesIsRefused() {
+        engine.executeQuery("CREATE DATABASE ROLE test_db.dr_c1");
+        engine.executeQuery("CREATE DATABASE ROLE test_db.dr_c2");
+        engine.executeQuery("CREATE DATABASE ROLE test_db.dr_c3");
+        engine.executeQuery("GRANT DATABASE ROLE test_db.dr_c1 TO DATABASE ROLE test_db.dr_c2");
+        engine.executeQuery("GRANT DATABASE ROLE test_db.dr_c2 TO DATABASE ROLE test_db.dr_c3");
+        assertEquals("Cannot grant database role: would create circular role hierarchy",
+            refusal("GRANT DATABASE ROLE test_db.dr_c3 TO DATABASE ROLE test_db.dr_c1"));
+        assertEquals("Cannot grant database role: would create circular role hierarchy",
+            refusal("GRANT DATABASE ROLE test_db.dr_c2 TO DATABASE ROLE test_db.dr_c1"));
+        engine.executeQuery("GRANT DATABASE ROLE test_db.dr_c1 TO DATABASE ROLE test_db.dr_c3");
+    }
+
     private static List<String> sorted(final List<String> rows) {
         final List<String> out = new ArrayList<>(rows);
         Collections.sort(out);

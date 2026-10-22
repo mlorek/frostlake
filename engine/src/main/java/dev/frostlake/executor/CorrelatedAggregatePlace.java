@@ -149,7 +149,7 @@ final class CorrelatedAggregatePlace {
                 aggregates.removeAll(rule.unreadDerivedOuterCalls(subquery));
                 // A call over the outer row alone is typed over the outer query's relations, which its arguments
                 // read: one its types send to a scalar overload beside an aggregate one runs for each outer row
-                // and aggregates nothing (FL-443).
+                // and aggregates nothing.
                 final CallTypingScope enclosing = executor.beginCallTyping(table, aliasToTable);
                 try {
                     for (final Iterator<ParserRuleContext> each = aggregates.iterator(); each.hasNext();) {
@@ -164,9 +164,13 @@ final class CorrelatedAggregatePlace {
                 }
                 if (!aggregates.isEmpty()) {
                     // Each call's arguments are typed before its place is judged, in the order written: an AVG
-                    // over a BOOLEAN is refused for the type whichever call stands first (live-verified).
+                    // over a BOOLEAN is refused for the type whichever call stands first, and so are a percentile's
+                    // own rules, MEDIAN over a DATE and a fraction that is no constant (live-verified).
+                    final PercentileCallRules percentiles = new PercentileCallRules(executor,
+                        executor.getFunctionRegistry(), executor.getCatalog());
                     for (final ParserRuleContext aggregate : aggregates) {
-                        echo.refuseArgumentFamilies(aggregate);
+                        percentiles.validate(aggregate, table, aliasToTable, allTables);
+                        echo.refuseArgumentTypes(aggregate, true);
                     }
                     throw new RuntimeException(SqlCompilationError.of("Subquery containing correlated aggregate function ["
                         + echo.printPlannedCall(aggregates.get(0)) + "] can only appear in having or select clause"));

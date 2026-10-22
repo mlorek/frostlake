@@ -509,7 +509,15 @@ public final class PositionNeedleSyntax {
      * the parenthesis POSITION opened is set aside, so every one opened before it still closes normally.
      */
     static Token unmatchedClose(final TokenStream tokens, final Token refused) {
-        int enclosing = -1;
+        return unmatchedClose(tokens, refused, 0);
+    }
+
+    /**
+     * As {@link #unmatchedClose(TokenStream, Token)}, with {@code opensNothing} more of the parentheses opened before
+     * {@code refused} set aside: a parenthesis the recovery refused as a token opens nothing.
+     */
+    static Token unmatchedClose(final TokenStream tokens, final Token refused, final int opensNothing) {
+        int enclosing = -1 - opensNothing;
         for (int i = 0; i < refused.getTokenIndex(); i++) {
             final Token token = tokens.get(i);
             if (token.getChannel() != Token.DEFAULT_CHANNEL) {

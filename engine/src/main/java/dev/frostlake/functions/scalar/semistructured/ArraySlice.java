@@ -20,6 +20,7 @@ import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.node.ArrayNode;
@@ -38,9 +39,10 @@ public class ArraySlice extends BuiltInFunction {
         }
         final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
-        // A text bound is read as the number it spells, and a fraction rounds (see wholeNumber).
-        int from = isCount(args.get(1)) ? wholeNumber(args.get(1)) : 0;
-        int to = args.size() > 2 && isCount(args.get(2)) ? wholeNumber(args.get(2)) : src.size();
+        // A text bound is read as the number it spells, and a fraction rounds, to a 32-bit whole number (see
+        // WholeNumberArgument#part).
+        int from = isCount(args.get(1)) ? WholeNumberArgument.part(args.get(1)) : 0;
+        int to = args.size() > 2 && isCount(args.get(2)) ? WholeNumberArgument.part(args.get(2)) : src.size();
         if (from < 0) from = Math.max(0, src.size() + from);
         if (to < 0) to = Math.max(0, src.size() + to);
         from = Math.min(from, src.size());

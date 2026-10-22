@@ -17,9 +17,12 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.functions.WholeNumbers;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.IntegerResultWidths;
 
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.List;
 
 /**
@@ -29,6 +32,9 @@ import java.util.List;
  * a negative position is an error. Uses {@link BigInteger#testBit} so positions well past 64 bits are safe.
  */
 public class Getbit extends NumericArgumentFunction {
+    /** The last of the 128 places a bit is read from. */
+    private static final int LAST_PLACE = 127;
+
     public Getbit() { super("GETBIT", IntegerResultWidths.WIDEST); }
 
     @Override
@@ -36,12 +42,18 @@ public class Getbit extends NumericArgumentFunction {
         if (args.get(0) == null || args.get(1) == null) return null;
         // The bits of all 128, as the shifts that set them keep them (live-verified).
         final BigInteger value = BitwiseOperand.wide(args.get(0));
-        // A bit's place is read as the whole number it gives, a fraction rounded (live-verified).
-        final int position = wholeNumber(args.get(1));
-        if (position < 0) {
-            throw new RuntimeException("GETBIT bit_position must be non-negative: " + position);
+        // A bit's place is read as the whole number it gives, a fraction rounded, through the 64-bit slot; one past
+        // the 128 places is refused naming it as written: "Bit index 3000000000 out of range; Should be between 0
+        // and 127" (live-verified).
+        WholeNumberArgument.requireFittingFloat(args.get(1), WholeNumberArgument.WIDE, false);
+        final BigInteger place = WholeNumbers.decimalOf(args.get(1)).setScale(0, RoundingMode.HALF_UP).toBigInteger();
+        if (place.signum() < 0) {
+            throw new RuntimeException("GETBIT bit_position must be non-negative: " + place);
         }
-        return value.testBit(position) ? 1L : 0L;
+        if (place.compareTo(BigInteger.valueOf(LAST_PLACE)) > 0) {
+            throw new RuntimeException("Bit index " + place + " out of range; Should be between 0 and " + LAST_PLACE);
+        }
+        return value.testBit(place.intValue()) ? 1L : 0L;
     }
 
     @Override

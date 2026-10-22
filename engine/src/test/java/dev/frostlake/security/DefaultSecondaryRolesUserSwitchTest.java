@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Switching the session to a user whose DEFAULT_SECONDARY_ROLES a statement wrote puts the user's defaults in use, and
  * the primary role the previous user's session had stays behind: a user granted nothing but R1 holds R1 and PUBLIC,
- * with ('ALL') the roles granted to it too, and never the SYSADMIN the switch started from (FL-428). Engine only: the
+ * with ('ALL') the roles granted to it too, and never the SYSADMIN the switch started from. Engine only: the
  * live account allows no CREATE USER or CREATE ROLE.
  */
 public class DefaultSecondaryRolesUserSwitchTest {

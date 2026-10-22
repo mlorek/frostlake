@@ -22,7 +22,7 @@ package dev.frostlake.metastore.model;
  * {@code RESTRICTED CALLER}, which runs as its caller with only those of the caller's privileges a caller grant
  * names (documented: "an executable cannot run with a specific privilege unless an administrator expressly allows
  * it"). This engine models no caller grant ({@code GRANT CALLER …}), so such a procedure runs with none of its
- * caller's privileges at all (FL-434).
+ * caller's privileges at all.
  */
 public enum ExecuteAs {
     OWNER("OWNER"), CALLER("CALLER"), RESTRICTED_CALLER("RESTRICTED CALLER");

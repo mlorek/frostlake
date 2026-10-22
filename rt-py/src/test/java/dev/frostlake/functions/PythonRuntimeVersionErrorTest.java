@@ -153,6 +153,7 @@ public class PythonRuntimeVersionErrorTest extends BaseDatabaseTest {
             RETURNS VARCHAR
             LANGUAGE PYTHON
             RUNTIME_VERSION = '3.11'
+            PACKAGES = ('snowflake-snowpark-python')
             HANDLER = 'run'
             AS
             $$

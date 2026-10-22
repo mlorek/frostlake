@@ -1441,7 +1441,12 @@ public class ProceduralExecutor {
             return refused;
         }
         String message = refused.getMessage();
+        // A variable inside an argument's arithmetic is bound as one standing alone is (see boundArithmetic).
+        final List<BaseExpression> bound = new ArrayList<>();
         for (final BaseExpression argument : funcExpr.getArguments()) {
+            collectBoundOperands(argument, bound);
+        }
+        for (final BaseExpression argument : bound) {
             if (!(argument instanceof VariableExpression)
                     || !hasVariable(((VariableExpression) argument).getName())) {
                 continue;
@@ -1463,6 +1468,17 @@ public class ProceduralExecutor {
             message = message.replace(printed, cast);
         }
         return message.equals(refused.getMessage()) ? refused : new RuntimeException(message, refused.getCause());
+    }
+
+    /** An argument and the operands of its arithmetic and negations, in the order written. */
+    private static void collectBoundOperands(final BaseExpression argument, final List<BaseExpression> out) {
+        out.add(argument);
+        if (argument instanceof BinaryExpression) {
+            collectBoundOperands(((BinaryExpression) argument).getLeft(), out);
+            collectBoundOperands(((BinaryExpression) argument).getRight(), out);
+        } else if (argument instanceof UnaryExpression) {
+            collectBoundOperands(((UnaryExpression) argument).getOperand(), out);
+        }
     }
 
     private String declaredNullOf(final BaseExpression argument) {
@@ -2088,22 +2104,38 @@ public class ProceduralExecutor {
     }
 
     /**
-     * Arithmetic over numbers and the block's NUMBER and FLOAT variables as the SQL that computes it: each variable
-     * written as its value's conversion to its declared type (see {@link #boundConversion}), each number as written,
-     * each operation in parentheses. Null for anything else, which is written out from its value.
+     * Arithmetic and concatenation over literals and the block's variables as the SQL that computes it: a NUMBER or
+     * FLOAT variable written as its value's conversion to its declared type (see {@link #boundConversion}), a text one
+     * as the literal of its value, each literal as written, each operation in parentheses and a negation as one. A
+     * refusal of the call then echoes the expression as the account does —
+     * {@code ABS(ALL (CAST('5' AS NUMBER(38,0))) + 1)}, {@code ABS(ALL NEGATE(CAST('5' AS NUMBER(38,0))))},
+     * {@code UPPER(DISTINCT 'a' || 'b')} (live-verified). Null for anything else, which is written out from its value.
      */
     private String boundArithmetic(final BaseExpression argument) {
         if (argument instanceof VariableExpression) {
             if (!hasVariable(((VariableExpression) argument).getName())) {
                 return null;
             }
-            final String bound = boundConversion(argument, evaluateExpression(argument));
+            final Object value = evaluateExpression(argument);
+            final String bound = boundConversion(argument, value);
+            if (bound == null && value instanceof String && variableTypes.get(
+                    ((VariableExpression) argument).getName().toUpperCase(Locale.ROOT)) instanceof StringType) {
+                return SqlStringLiterals.encode((String) value);
+            }
             return bound == null ? null : "(" + bound + ")";
         }
         if (argument instanceof LiteralExpression) {
             final Object value = ((LiteralExpression) argument).getValue();
+            if (value instanceof String) {
+                return SqlStringLiterals.encode((String) value);
+            }
             return value instanceof BigDecimal || value instanceof Long || value instanceof Integer
                 ? numberLiteral((Number) value) : null;
+        }
+        if (argument instanceof UnaryExpression
+                && ((UnaryExpression) argument).getOperator() == UnaryOperator.NEGATE) {
+            final String operand = boundArithmetic(((UnaryExpression) argument).getOperand());
+            return operand == null ? null : "(-" + operand + ")";
         }
         if (!(argument instanceof BinaryExpression)) {
             return null;
@@ -2115,7 +2147,7 @@ public class ProceduralExecutor {
         return right == null ? null : "(" + left + " " + symbol + " " + right + ")";
     }
 
-    /** The symbol of an arithmetic operator, or null for any other. */
+    /** The symbol of an arithmetic or concatenation operator, or null for any other. */
     private static String arithmeticSymbol(final BinaryOperator operator) {
         switch (operator) {
             case ADD:
@@ -2128,6 +2160,8 @@ public class ProceduralExecutor {
                 return "/";
             case MODULO:
                 return "%";
+            case CONCAT:
+                return "||";
             default:
                 return null;
         }
@@ -2560,8 +2594,9 @@ public class ProceduralExecutor {
             }
             final String bound = boundConversion(argExprs.get(i), av);
             final String asWritten = av instanceof BigDecimal ? writtenExpressionArgument(funcExpr, i) : null;
-            final String asBound = asWritten == null && av instanceof BigDecimal
-                && argExprs.get(i) instanceof BinaryExpression ? boundArithmetic(argExprs.get(i)) : null;
+            final String asBound = asWritten == null && (av instanceof Number || av instanceof String)
+                && (argExprs.get(i) instanceof BinaryExpression || argExprs.get(i) instanceof UnaryExpression)
+                ? boundArithmetic(argExprs.get(i)) : null;
             if (bound != null) {
                 callExpr.append(bound);
             } else if (asBound != null) {

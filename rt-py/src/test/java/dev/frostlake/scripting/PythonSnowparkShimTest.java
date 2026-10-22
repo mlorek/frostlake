@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * queries, and the DataFrame surface the vendor loaders use (select over col/parse_json/cast/alias,
  * a UDTF applied via select, joins including leftanti, unionAll, drop_duplicates and
  * {@code df.write.save_as_table}) operates on materialized rows. Its rows hold what the Python connector maps each
- * type to, on both backends (#2392): a NUMBER with a scale a {@code Decimal} at that scale, a whole NUMBER an exact
+ * type to, on both backends: a NUMBER with a scale a {@code Decimal} at that scale, a whole NUMBER an exact
  * {@code int} however wide, a TIME a {@code datetime.time}, a TIMESTAMP_TZ an aware {@code datetime} with its own
  * offset and a TIMESTAMP_LTZ one with the session zone's, a VECTOR a list and a NULL {@code None}.
  */
@@ -70,6 +70,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -91,6 +92,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col
@@ -119,6 +121,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             import json
@@ -168,6 +171,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -191,6 +195,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col, coalesce, lit, array_construct, current_timestamp
@@ -222,6 +227,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -244,6 +250,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col
@@ -267,6 +274,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -287,6 +295,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col, lit, max
@@ -312,6 +321,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark import Window
@@ -338,6 +348,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.exceptions import SnowparkSQLException

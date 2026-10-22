@@ -151,7 +151,7 @@ public class JoinViewChangesTest extends MeasuredCellsTestSupport {
     }
 
     /**
-     * FL-445: an APPEND_ONLY stream on a join view reports the rows inserted alone, as CHANGES (INFORMATION =>
+     * an APPEND_ONLY stream on a join view reports the rows inserted alone, as CHANGES (INFORMATION =>
      * APPEND_ONLY) from its offset does and as one on a table or a single-table view does: "Append-only streams track
      * row inserts only. Update, delete, and truncate operations are not captured" (documented). It reported a
      * standard stream's update pairs and deletes. Held by the engine, read inside a transaction that wrote the tables

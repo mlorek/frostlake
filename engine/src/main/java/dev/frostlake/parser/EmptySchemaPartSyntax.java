@@ -263,7 +263,127 @@ public final class EmptySchemaPartSyntax {
             lines.add(name.DOT(0).getSymbol());
             return new EmptyPartFault(EmptyPartShape.COLUMN_IN_CALL, lines, name, null, true);
         }
+        final List<Token> deeper = bracket == null ? null : deeperLines(name, next, bracket, tokens);
+        if (deeper != null) {
+            return new EmptyPartFault(EmptyPartShape.COLUMN_IN_CALL, deeper, name, null, true);
+        }
         return new EmptyPartFault(EmptyPartShape.COLUMN, one(next), name, null, false);
+    }
+
+    /**
+     * The lines of a three-part column reference whose bracket stands deeper than a select item, each after the token
+     * after the reference (all live-verified):
+     *
+     * <pre>
+     *   SELECT ABS((T..x)) FROM T                    ')', then 'T' and '.': the bracket read again from the name
+     *   SELECT CAST((T..x) AS INT) FROM T            ')', then the CAST's ')'
+     *   SELECT IFF(ABS(T..x) &gt; 0, 1, 2) FROM T      ')', then the ')' of the call around it, past an operator
+     *   SELECT CASE WHEN ABS(T..x) = 1 THEN 1 END     ')' twice, then the THEN
+     *   SELECT (SELECT ABS(T..x) FROM T)             the query's SELECT, then the call's '('
+     *   … WHERE x IN (SELECT ABS(T..x) FROM T)       the query's SELECT, then the token past the call
+     * </pre>
+     *
+     * Null for any other place.
+     */
+    private static List<Token> deeperLines(final FrostlakeParser.QualifiedNameContext name, final Token next,
+                                           final ParserRuleContext bracket, final TokenStream tokens) {
+        if (bracket instanceof FrostlakeParser.ParenExprContext) {
+            if (((FrostlakeParser.ParenExprContext) bracket).RPAREN() == null
+                    || ((FrostlakeParser.ParenExprContext) bracket).RPAREN().getSymbol() != next) {
+                return null;
+            }
+            final ParserRuleContext holder = holderOf(bracket);
+            if (holder instanceof FrostlakeParser.FunctionArgContext && holder.getParent() != null
+                    && holder.getParent().getParent() != null && inSelectItem(holder.getParent().getParent())) {
+                final List<Token> lines = one(next);
+                lines.add(name.getStart());
+                lines.add(name.DOT(0).getSymbol());
+                return lines;
+            }
+            if (holder instanceof FrostlakeParser.CastExprContext && inSelectItem(holder)) {
+                final List<Token> lines = one(next);
+                lines.add(((FrostlakeParser.CastExprContext) holder).RPAREN().getSymbol());
+                return lines;
+            }
+            return null;
+        }
+        if (!(bracket instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) bracket;
+        final ParserRuleContext holder = holderOf(call);
+        // A call that is another call's argument as it stands keeps its one line: ABS(ABS(T..x)) is ')' alone.
+        if (holder instanceof FrostlakeParser.FunctionArgContext && underAnOperator(call) && holder.getParent() != null
+                && holder.getParent().getParent() instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext outer =
+                (FrostlakeParser.FunctionCallExprContext) holder.getParent().getParent();
+            if (inSelectItem(outer) && outer.RPAREN() != null) {
+                final List<Token> lines = one(next);
+                lines.add(outer.RPAREN().getSymbol());
+                return lines;
+            }
+            return null;
+        }
+        if (holder instanceof FrostlakeParser.WhenClauseContext
+                && topOf(call) == ((FrostlakeParser.WhenClauseContext) holder).booleanExpr(0)
+                && holder.getParent() != null
+                && holder.getParent().getParent() instanceof FrostlakeParser.CaseExprContext
+                && inSelectItem(holder.getParent().getParent())) {
+            final List<Token> lines = one(next);
+            lines.add(next);
+            lines.add(((FrostlakeParser.WhenClauseContext) holder).THEN().getSymbol());
+            return lines;
+        }
+        if (!(holder instanceof FrostlakeParser.ExprItemContext) || call.LPAREN() == null || call.RPAREN() == null) {
+            return null;
+        }
+        ParserRuleContext query = holder.getParent();
+        if (!(query instanceof FrostlakeParser.SelectListContext)
+                || ((FrostlakeParser.SelectListContext) query).selectItem(0) != holder) {
+            return null;
+        }
+        while (query != null && !(query instanceof FrostlakeParser.SelectStatementContext)) {
+            query = query.getParent();
+        }
+        if (query == null) {
+            return null;
+        }
+        final ParserRuleContext subquery = query.getParent();
+        if (subquery instanceof FrostlakeParser.ScalarSubqueryExprContext && inSelectItem(subquery)) {
+            final List<Token> lines = one(query.getStart());
+            lines.add(call.LPAREN().getSymbol());
+            return lines;
+        }
+        if (subquery instanceof FrostlakeParser.InSubqueryExprContext) {
+            final List<Token> lines = one(query.getStart());
+            lines.add(nextSpoken(tokens, call.RPAREN().getSymbol().getTokenIndex()));
+            return lines;
+        }
+        return null;
+    }
+
+    /** What holds an expression, through the operators of which it is the left-most operand. */
+    private static ParserRuleContext holderOf(final ParserRuleContext expression) {
+        return topOf(expression).getParent();
+    }
+
+    /** Whether an expression is the left-most operand of an operator, past the pass-throughs between tiers. */
+    private static boolean underAnOperator(final ParserRuleContext expression) {
+        for (ParserRuleContext node = expression; node != topOf(expression); node = node.getParent()) {
+            if (!(node.getParent() instanceof FrostlakeParser.ValueExprContext)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The outermost operator an expression is the left-most operand of, or the expression itself. */
+    private static ParserRuleContext topOf(final ParserRuleContext expression) {
+        ParserRuleContext node = expression;
+        while (node.getParent() != null && isOperator(node.getParent()) && node.getParent().getChild(0) == node) {
+            node = node.getParent();
+        }
+        return node;
     }
 
     private static EmptyPartFault castFault(final Token next, final FrostlakeParser.QualifiedNameContext name,

@@ -472,10 +472,11 @@ final class DriverSurfaceChecks {
         assertTrue(ts.wasNull());
         ts.close();
 
+        // A SQL procedure's VARIANT answer reads laid out, as its result column does (see ScriptingAnswerLayoutTest).
         final CallableStatement variant = c.prepareCall("CALL dss_v()");
         variant.execute();
-        assertEquals("{\"a\":1}", variant.getObject(1));
-        assertEquals("{\"a\":1}", variant.getString(1));
+        assertEquals("{\n\"a\": 1\n}", variant.getObject(1));
+        assertEquals("{\n\"a\": 1\n}", variant.getString(1));
         variant.close();
 
         final CallableStatement named = c.prepareCall("CALL dss_n(:x)");

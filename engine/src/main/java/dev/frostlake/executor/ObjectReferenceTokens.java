@@ -23,10 +23,13 @@ import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -70,6 +73,22 @@ final class ObjectReferenceTokens {
 
     private static final char[] HEX = "0123456789ABCDEF".toCharArray();
 
+    /** How many issued tokens are remembered, the oldest forgotten first. */
+    private static final int REMEMBERED = 10000;
+
+    /**
+     * The tokens issued for a table, a view or a stream, and what each stands for: a name an IDENTIFIER() or a TABLE()
+     * reads as one of them reads the object it stands for (live-verified).
+     */
+    private static final Map<String, ObjectReference> ISSUED = new LinkedHashMap<String, ObjectReference>() {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        protected boolean removeEldestEntry(final Map.Entry<String, ObjectReference> eldest) {
+            return size() > REMEMBERED;
+        }
+    };
+
     private ObjectReferenceTokens() {
     }
 
@@ -103,8 +122,50 @@ final class ObjectReferenceTokens {
             throw new RuntimeException("No default privileges defined for reference domain MATERIALIZED_VIEW. Please"
                 + " provide allowed privileges during reference creation.");
         }
-        requireObject(catalog, domain, args.get(1).toString());
-        return token(domain);
+        final String[] object = requireObject(catalog, domain, args.get(1).toString());
+        final String token = token(domain);
+        if (object != null) {
+            final List<String> privileges = new ArrayList<>();
+            for (int i = 3; i < args.size(); i++) {
+                privileges.add(upper(args.get(i)));
+            }
+            synchronized (ISSUED) {
+                ISSUED.put(token, new ObjectReference(object, privileges));
+            }
+        }
+        return token;
+    }
+
+    /**
+     * The object a name stands for when it is a token SYSTEM$REFERENCE issued for a table, a view or a stream.
+     *
+     * @param name the name as an IDENTIFIER() or a TABLE() reads it
+     * @return the reference, or null for any other name
+     */
+    static ObjectReference issued(final String name) {
+        if (name == null || !name.startsWith("ENT_REF_")) {
+            return null;
+        }
+        synchronized (ISSUED) {
+            return ISSUED.get(name.trim());
+        }
+    }
+
+    /**
+     * Refuses a row change through a reference whose privileges allow none of it: an INSERT through a reference made
+     * for SELECT is {@code Specified object does not exist or not authorized for the reference with allowed
+     * privileges: SELECT.} (live-verified). A reference made with no privileges, and any other name, pass.
+     *
+     * @param name   the name the statement writes through
+     * @param change the privilege the change takes: INSERT, UPDATE or DELETE
+     */
+    static void requireWrite(final String name, final String change) {
+        final ObjectReference reference = issued(name);
+        if (reference == null || reference.getPrivileges().isEmpty() || reference.getPrivileges().contains(change)) {
+            return;
+        }
+        throw new RuntimeException("Specified object does not exist or not authorized for the reference with allowed"
+            + " privileges: " + String.join(", ", reference.getPrivileges()) + ".");
     }
 
     /**
@@ -145,25 +206,30 @@ final class ObjectReferenceTokens {
         }
     }
 
-    /** A table, a view, a stream or a warehouse the reference names is there, of the domain named. */
-    private static void requireObject(final Catalog catalog, final String domain, final String written) {
+    /**
+     * A table, a view, a stream or a warehouse the reference names is there, of the domain named.
+     *
+     * @return the canonical name of the table, the view or the stream, or null for any other domain
+     */
+    private static String[] requireObject(final Catalog catalog, final String domain, final String written) {
         if ("WAREHOUSE".equals(domain)) {
             final String name = SqlIdentifiers.canonicalText(written);
             if (!catalog.hasWarehouseExact(name)) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
             }
-            return;
+            return null;
         }
         final RelationKind wanted = "TABLE".equals(domain) ? RelationKind.TABLE
             : "VIEW".equals(domain) ? RelationKind.VIEW : "STREAM".equals(domain) ? RelationKind.STREAM : null;
         if (wanted == null) {
-            return;
+            return null;
         }
         final String[] parts = SqlIdentifiers.identifierReferenceParts(written);
         final String noun = domain.charAt(0) + domain.substring(1).toLowerCase(Locale.ROOT);
         final RelationKind held;
+        final Schema schema;
         try {
-            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             held = schema.relationKindOf(parts[parts.length - 1]);
         } catch (final RuntimeException noSchema) {
             throw new RuntimeException(SqlCompilationError.doesNotExist(noun, QualifiedName.join(parts)), noSchema);
@@ -175,6 +241,7 @@ final class ObjectReferenceTokens {
             throw new RuntimeException("Object type " + held.spelling() + " does not match the specified type "
                 + domain + " for reference creation");
         }
+        return new String[] {schema.getDatabaseName(), schema.getName(), parts[parts.length - 1]};
     }
 
     /** A new token for a domain: its name, sixteen decimal digits and forty hexadecimal ones. */

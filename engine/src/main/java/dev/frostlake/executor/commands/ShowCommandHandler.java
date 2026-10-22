@@ -31,6 +31,7 @@ import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.Database;
@@ -129,6 +130,14 @@ public class ShowCommandHandler implements CommandHandler {
         final ShowListing listing = ShowListing.of(ctx);
         UnmodelledListings.requireParsed(ctx, listing);
         ShowTailSyntax.requireParsed(ctx, listing);
+        if (ctx.EXCHANGE() != null) {
+            // Only the region listing reads a data exchange's scope; any other listing stops at the word, as before.
+            if (listing != ShowListing.REGIONS) {
+                throw SyntaxAfter.unexpected(ctx.DATA());
+            }
+            throw RegionsListing.dataExchangeRefusal(ctx, ctx.objectName() == null ? null
+                : QualifiedName.join(queryExecutor.resolveObjectNameParts(ctx.objectName())));
+        }
         if (listing == ShowListing.REGIONS && ctx.IN() != null) {
             throw RegionsListing.scopeRefusal(ctx);
         }
@@ -804,6 +813,10 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showObjects(scope.name());
         } else if (ctx.ORGANIZATION() != null && ctx.ACCOUNTS() != null) {
+            if (ctx.LIKE() != null && ctx.showTail() != null && ctx.showTail().STARTS() != null) {
+                // The organization's listing reads a LIKE, and no STARTS WITH after one (live-verified).
+                throw SyntaxAfter.unexpected(ctx.stringText());
+            }
             return showExecutor.showOrganizationAccounts();
         } else if (ctx.ACCOUNTS() != null) {
             if (ctx.showAccountsScope() != null) {
@@ -888,7 +901,10 @@ public class ShowCommandHandler implements CommandHandler {
             if (database == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
             }
-            return showExecutor.showParametersInDatabase(database, like);
+            final ResultSet listing = showExecutor.showParametersInDatabase(database, like);
+            // The SNOWFLAKE database is a share's, and neither it nor a schema of its own lists a parameter
+            // (live-verified).
+            return SystemDatabase.is(database) ? new ResultSet(listing.getColumns(), new ArrayList<Row>()) : listing;
         }
         if (scope.SCHEMA() != null) {
             final String[] parts = catalog.withoutAccount(named, 2);
@@ -900,7 +916,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (database == null || schema == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
             }
-            return showExecutor.showParametersInSchema(database, schema, like);
+            final ResultSet listing = showExecutor.showParametersInSchema(database, schema, like);
+            return SystemSchema.of(database, schema) != null
+                ? new ResultSet(listing.getColumns(), new ArrayList<Row>()) : listing;
         }
         if (scope.TASK() != null) {
             if (scope.objectName() == null) {
@@ -1042,13 +1060,17 @@ public class ShowCommandHandler implements CommandHandler {
 
     /**
      * A schema of the SNOWFLAKE database is not described (live-verified): the share most of them come from lacks
-     * the privilege, and one of the SNOWFLAKE application's asks the session's role for MONITOR. Its
-     * INFORMATION_SCHEMA is described as any database's.
+     * the privilege, one of the SNOWFLAKE application's asks the session's role for MONITOR, and a few are answered
+     * as schemas that are not there. Its INFORMATION_SCHEMA is described as any database's.
      */
     private void refuseSystemSchema(final Schema schema) {
         final SystemSchema system = SystemSchema.of(schema.getDatabaseName(), schema.getName());
         if (system == null) {
             return;
+        }
+        if (system.isHidden()) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema",
+                QualifiedName.join(schema.getDatabaseName(), schema.getName())));
         }
         if (system.owner() == null) {
             throw new PrivilegeRefusal(SqlAccessControlError.insufficientPrivileges("schema", schema.getName())
@@ -1061,6 +1083,16 @@ public class ShowCommandHandler implements CommandHandler {
         throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("SCHEMA", schema.getName(),
             session.getCurrentRole(), session.isSecondaryRolesInUse(), Privilege.MONITOR.name(),
             QualifiedName.join(schema.getDatabaseName(), schema.getName())));
+    }
+
+    /** The SNOWFLAKE database is not described: its application asks the session's role for MONITOR (live-verified). */
+    private void refuseSystemDatabase(final String databaseName) {
+        if (!SystemDatabase.is(databaseName) || queryExecutor.getSecurityManager() == null) {
+            return;
+        }
+        final SessionContext session = queryExecutor.getSecurityManager().getSessionContext();
+        throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("DATABASE", databaseName,
+            session.getCurrentRole(), session.isSecondaryRolesInUse(), Privilege.MONITOR.name(), databaseName));
     }
 
     /** The name parts DESCRIBE SCHEMA or DATABASE names, refused as live refuses a name with too many parts. */
@@ -1198,6 +1230,7 @@ public class ShowCommandHandler implements CommandHandler {
         if (ctx.DATABASE() != null) {
             final String databaseName = describedContainerParts(ctx.objectName(), 1)[0];
             catalog.databaseExact(databaseName);
+            refuseSystemDatabase(databaseName);
             return showExecutor.describeDatabase(databaseName);
         }
         if ((ctx.TABLE() != null || ctx.VIEW() != null) && ctx.EVENT() == null && ctx.ICEBERG() == null

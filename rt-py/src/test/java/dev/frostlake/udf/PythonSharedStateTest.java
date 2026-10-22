@@ -31,10 +31,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * statement ran reaches neither the next statement's routines nor another engine's: a built-in name it added is gone,
  * an environment variable it set is unset, and a snowpark method it replaced is the emulation's own again. So for a
  * member it added to an emulation class or module, a class only a closure of the emulation holds, and a function's
- * code or closure cell, whether the statement succeeded or failed (#2386). So too for the standard library's modules
+ * code or closure cell, whether the statement succeeded or failed. So too for the standard library's modules
  * imported when the interpreter was made: a member a routine replaced or deleted is back, as is the module on
  * {@code sys.modules}, a module a routine made itself or anything else it put there is gone while one it imported
- * stays, and the working directory and the decimal context are as they were (#2387).
+ * stays, and the working directory and the decimal context are as they were.
  */
 public class PythonSharedStateTest {
 
@@ -68,7 +68,7 @@ public class PythonSharedStateTest {
         $$""";
 
     /**
-     * Hijacks the snowpark emulation through what #2287's restore missed: a member added to a guarded class
+     * Hijacks the snowpark emulation through what the first restore missed: a member added to a guarded class
      * ({@code Session.__getattribute__}), classes no module holds ({@code GroupedFrame}, {@code DataFrameWriter}), a
      * function's code and a closure's cell, and a member added to an emulation module; then fails when asked to.
      */

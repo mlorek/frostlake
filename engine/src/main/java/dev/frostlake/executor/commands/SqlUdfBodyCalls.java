@@ -319,7 +319,8 @@ final class SqlUdfBodyCalls {
 
     /**
      * Every call under the node that names a function, inner calls first: the calls {@link #collect} gathers, a
-     * method of a class instance written without OVER, and a leading {@code !} that negates no EXISTS.
+     * method of a class instance written without OVER, a leading {@code !} that negates no EXISTS, and the calls an
+     * ampersand and a leading tilde stand for.
      */
     private static void collectNamed(final ParseTree node, final List<ParserRuleContext> calls) {
         if (node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
@@ -334,7 +335,8 @@ final class SqlUdfBodyCalls {
                 || node instanceof FrostlakeParser.InstanceMethodCallExprContext
                     && ((FrostlakeParser.InstanceMethodCallExprContext) node).overClause() == null
                 || node instanceof FrostlakeParser.BangExprContext
-                    && !BangOperator.negatesExists((FrostlakeParser.BangExprContext) node)) {
+                    && !BangOperator.negatesExists((FrostlakeParser.BangExprContext) node)
+                || node instanceof FrostlakeParser.AmpExprContext || node instanceof FrostlakeParser.TildeExprContext) {
             calls.add((ParserRuleContext) node);
         }
     }

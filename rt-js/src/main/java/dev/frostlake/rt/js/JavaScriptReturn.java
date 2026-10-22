@@ -107,7 +107,9 @@ final class JavaScriptReturn {
             final BinaryValue bytes = BinaryValue.fromHex((String) result);
             final int limit = ((BinaryType) returns).getMaxLength();
             if (limit > 0 && bytes.length() > limit) {
-                throw ColumnLengthException.forBinary(limit, bytes.toHex());
+                // A handler's bytes are spelled in lower-case hex, where a column's are in upper case
+                // (live-verified).
+                throw ColumnLengthException.forBinary(limit, bytes.toHex().toLowerCase(Locale.ROOT));
             }
             return bytes;
         }

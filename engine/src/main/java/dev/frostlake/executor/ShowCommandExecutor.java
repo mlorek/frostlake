@@ -87,7 +87,7 @@ public class ShowCommandExecutor {
         this.infraExecutor = new ShowInfraExecutor(catalog, ownership);
         // The security and session families read securityManager live through this facade, so they receive
         // a reference to it rather than the (still-null-at-construction) SecurityManager value.
-        this.securityExecutor = new ShowSecurityExecutor(catalog, this);
+        this.securityExecutor = new ShowSecurityExecutor(catalog, this, identity);
         this.sessionExecutor = new ShowSessionExecutor(catalog, this, transactionManager,
             queryHistoryTracker, sessionVariables, identity);
     }

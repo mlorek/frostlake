@@ -63,6 +63,14 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
     /** Whether the argument is declared DECFLOAT, interpolated to 38 digits (see DecfloatAggregates). */
     private boolean decfloatArgument;
 
+    /** Whether the call is computed per group, which refuses a DECFLOAT interpolation (see DecfloatAggregates). */
+    private boolean perGroup;
+
+    /** @param computedPerGroup whether a GROUP BY or a PARTITION BY computes the call group by group */
+    public void setPerGroup(final boolean computedPerGroup) {
+        this.perGroup = computedPerGroup;
+    }
+
     @Override
     public void setDecfloatArgument(final boolean decfloat) {
         this.decfloatArgument = decfloat;
@@ -86,11 +94,12 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
 
     @Override
     public Object getResult() {
+        if (decfloatArgument) {
+            // Its double weights are taken over the values as ordered, so a descending order is no complement.
+            return DecfloatAggregates.percentileCont(values, percentile, descending, perGroup);
+        }
         // Interpolation reads the same from either end: a fraction counted downwards is its complement upwards.
         final double upwards = descending ? 1 - percentile : percentile;
-        if (decfloatArgument) {
-            return DecfloatAggregates.percentileCont(values, upwards);
-        }
         return coercedArgument
             ? AggregateNumerics.percentileContOverCoerced(values, upwards, descending ? 0 : jsonNulls)
             : AggregateNumerics.percentileCont(values, upwards, approximateArgument, descending ? 0 : jsonNulls);

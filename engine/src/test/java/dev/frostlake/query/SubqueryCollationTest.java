@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
  * join, as the comparison beside the subquery does; a row-value IN, NOT IN, = ANY and <> ALL against a subquery or
  * a list of rows compare each place under the collation of its two sides; and two collations that differ are
  * refused as incompatible. A LATERAL derived table reads the collation of a column to its left as a correlated
- * subquery does (FL-475).
+ * subquery does.
  */
 public class SubqueryCollationTest extends MeasuredCellsTestSupport {
 

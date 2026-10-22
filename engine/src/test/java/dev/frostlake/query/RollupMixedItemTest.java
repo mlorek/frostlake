@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
  * On a ROLLUP, CUBE or GROUPING SETS super-group row a rolled-up dimension is NULL wherever an item reads it outside
  * an aggregate's argument: SUM(v) + LENGTH(r) and MAX(r) || r are NULL there, IFF(r IS NULL, SUM(v), 0) is the
  * total, while SUM(LENGTH(r)) still reads every row's r (all live-verified). A dimension written as an expression
- * reads as NULL there too, wherever an item computes over it (FL-473).
+ * reads as NULL there too, wherever an item computes over it.
  */
 public class RollupMixedItemTest extends MeasuredCellsTestSupport {
 

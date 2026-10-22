@@ -325,9 +325,9 @@ public class GroupByOperator implements Operator {
         }
 
         if (groupByExpressions.size() <= 3) {
-            return String.format("GROUP BY[%s]", String.join(", ", groupByExpressions));
+            return String.format(Locale.ROOT, "GROUP BY[%s]", String.join(", ", groupByExpressions));
         }
-        return String.format("GROUP BY[%d columns]", groupByExpressions.size());
+        return String.format(Locale.ROOT, "GROUP BY[%d columns]", groupByExpressions.size());
     }
 
     /**

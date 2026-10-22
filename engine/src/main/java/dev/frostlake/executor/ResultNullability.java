@@ -70,8 +70,13 @@ import java.util.Set;
  */
 final class ResultNullability {
 
-    /** The functions that can answer NULL whatever their arguments are. */
+    /**
+     * The functions that can answer NULL whatever their arguments are, a lookup that finds nothing among them:
+     * ARRAY_POSITION, ARRAY_MIN, ARRAY_MAX, ARRAY_SIZE, JSON_EXTRACT_PATH_TEXT, CHECK_XML and GETVARIABLE are
+     * nullable over columns that are not (live-verified).
+     */
     private static final Set<String> ALWAYS = new HashSet<String>(Arrays.asList(
+        "ARRAY_POSITION", "ARRAY_MIN", "ARRAY_MAX", "ARRAY_SIZE", "JSON_EXTRACT_PATH_TEXT", "CHECK_XML", "GETVARIABLE",
         "PARSE_JSON", "TRY_PARSE_JSON", "CHECK_JSON", "PARSE_XML", "XMLGET", "ARRAY_CONSTRUCT",
         "ARRAY_CONSTRUCT_COMPACT", "OBJECT_CONSTRUCT", "OBJECT_CONSTRUCT_KEEP_NULL", "GET", "GET_PATH",
         "GET_IGNORE_CASE", "TO_GEOGRAPHY", "TO_GEOMETRY", "CURRENT_USER", "CURRENT_ROLE", "CURRENT_DATABASE",

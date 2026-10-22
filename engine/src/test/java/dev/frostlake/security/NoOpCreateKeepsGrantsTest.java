@@ -30,8 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A CREATE that adds no object changes no grant. CREATE ... IF NOT EXISTS over an object that is there does nothing
  * (documented), so the privileges on it stay and no future grant applies to it: future grants are for objects created
- * afterwards (FL-435). CREATE OR ALTER TASK alters the task in place and keeps its privileges, and a CREATE OR REPLACE
- * TASK that is refused leaves the task as it was, privileges included (FL-436). The future grants were applied, and
+ * afterwards. CREATE OR ALTER TASK alters the task in place and keeps its privileges, and a CREATE OR REPLACE
+ * TASK that is refused leaves the task as it was, privileges included. The future grants were applied, and
  * the name's grants taken back, as the handler worked out the new object's owner, before it found the object there.
  * Engine only: the live account allows no CREATE ROLE or GRANT.
  */

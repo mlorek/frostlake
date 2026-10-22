@@ -934,7 +934,9 @@ final class ShowSessionExecutor {
             }
             final Object value = e.getValue();
             final String type;
-            if (value instanceof Number) {
+            if (securityManager != null && securityManager.getSessionContext().isDecfloatSessionVariable(e.getKey())) {
+                type = "decfloat";
+            } else if (value instanceof Number) {
                 type = "fixed";
             } else if (value instanceof Boolean) {
                 type = "boolean";

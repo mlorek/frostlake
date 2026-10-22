@@ -210,7 +210,7 @@ def _frostlake_install_snowpark():
             return value
 
     def _from_sql_value(value, sql_type):
-        # A row holds what the Python connector maps each type to (#2392): a NUMBER with a scale a Decimal and a
+        # A row holds what the Python connector maps each type to: a NUMBER with a scale a Decimal and a
         # whole one an int (PythonResultSet hands over the exact text of either where a double would lose digits),
         # a TIME a datetime.time and a TIMESTAMP_TZ or _LTZ an aware datetime, a VECTOR a list. A SQL NULL the
         # engine's row holds reaches GraalPy as a foreign None, which `is None` matches; it is None here.
@@ -1176,7 +1176,7 @@ def _frostlake_install_snowpark():
             self._materialize()
             import pandas
             # Snowpark's to_pandas reads a NUMBER with a scale as float64, as the rows held it before they held a
-            # Decimal (#2392).
+            # Decimal.
             return pandas.DataFrame(data=[[float(v) if isinstance(v, _decimal.Decimal) else v for v in r]
                                           for r in self._rows], columns=list(self._names))
 

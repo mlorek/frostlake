@@ -32,6 +32,7 @@ import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TemporaryObjects;
+import dev.frostlake.metastore.model.CloneContent;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -141,7 +142,7 @@ public class CreateNamespaceHandler implements CommandHandler {
         try {
             if (ctx.CLONE() != null) {
                 final String sourceDbName = getText(ctx.identifier(1));
-                catalog.cloneDatabase(sourceDbName, dbName);
+                catalog.cloneDatabase(sourceDbName, dbName, cloneContent(ctx));
                 made = true;
                 ddl.cloneDatabaseData(sourceDbName, dbName, point);
                 logger.trace("Cloned database: {} from {}", dbName, sourceDbName);
@@ -202,6 +203,28 @@ public class CreateNamespaceHandler implements CommandHandler {
      * @param source the database or schema being cloned
      * @return the point
      */
+    /** What a CLONE clause asks a database or schema clone to copy beyond its own objects (see CloneContent). */
+    private static CloneContent cloneContent(final FrostlakeParser.CreateStatementContext ctx) {
+        final List<FrostlakeParser.CloneContentOptionContext> options =
+            new ArrayList<FrostlakeParser.CloneContentOptionContext>(ctx.cloneContentOption());
+        for (final FrostlakeParser.CloneTimedOptionContext timed : ctx.cloneTimedOption()) {
+            if (timed.cloneContentOption() != null) {
+                options.add(timed.cloneContentOption());
+            }
+        }
+        boolean internalStages = false;
+        boolean hybridTablesIgnored = false;
+        for (final FrostlakeParser.CloneContentOptionContext option : options) {
+            if (option.INTERNAL() != null) {
+                internalStages = true;
+            }
+            if (option.HYBRID() != null) {
+                hybridTablesIgnored = true;
+            }
+        }
+        return new CloneContent(internalStages, hybridTablesIgnored);
+    }
+
     private ClonePoint clonePoint(final FrostlakeParser.CreateStatementContext ctx, final SqlObject source) {
         final ClonePoint point = queryExecutor.clonePoint(ctx.timeTravelClause());
         if (DDLCommandHandler.createdAfter(source, point)) {
@@ -361,7 +384,7 @@ public class CreateNamespaceHandler implements CommandHandler {
                     final Database db = catalog.databaseExact(catalog.getCurrentDatabase());
 
                     if (sourceParts.length == 1) {
-                        schema = db.cloneSchema(sourceParts[0], parts[0]);
+                        schema = db.cloneSchema(sourceParts[0], parts[0], cloneContent(ctx));
                         sourceDbName = catalog.getCurrentDatabase();
                         sourceSchema = sourceParts[0];
                         targetDbName = sourceDbName;
@@ -374,14 +397,14 @@ public class CreateNamespaceHandler implements CommandHandler {
 
                     if (sourceParts.length == 1) {
                         final Database sourceDb = catalog.databaseExact(catalog.getCurrentDatabase());
-                        schema = sourceDb.cloneSchemaTo(sourceParts[0], db, parts[1]);
+                        schema = sourceDb.cloneSchemaTo(sourceParts[0], db, parts[1], cloneContent(ctx));
                         sourceDbName = catalog.getCurrentDatabase();
                         sourceSchema = sourceParts[0];
                         targetDbName = parts[0];
                         targetSchema = parts[1];
                     } else if (sourceParts.length == 2) {
                         final Database sourceDb = catalog.databaseExact(sourceParts[0]);
-                        schema = sourceDb.cloneSchemaTo(sourceParts[1], db, parts[1]);
+                        schema = sourceDb.cloneSchemaTo(sourceParts[1], db, parts[1], cloneContent(ctx));
                         sourceDbName = sourceParts[0];
                         sourceSchema = sourceParts[1];
                         targetDbName = parts[0];

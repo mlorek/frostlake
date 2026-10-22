@@ -20,8 +20,9 @@ package dev.frostlake.values;
  * The largest value a text or a binary can be, and the refusal a function that would build a larger one earns
  * BEFORE it allocates anything. A VARCHAR holds at most 128 MB and a BINARY 64 MB: the account declares a text
  * nothing bounds as VARCHAR(134217728) and an unsized binary as BINARY(67108864) (live-verified, see
- * StringResultWidths and BinaryType), so no function result can be wider. The sentence is Snowflake's LOB-size
- * error; its wording for a function result was not measured.
+ * StringResultWidths and BinaryType), so no function result can be wider. REPEAT, LPAD, RPAD and SPACE refuse a
+ * longer one, text or binary, as {@code String '(padded string)' is too long and would be truncated}
+ * (live-verified).
  *
  * <p>REPEAT, LPAD, RPAD and SPACE used to build whatever their count asked for: a count of 10^10 was held to
  * Integer.MAX_VALUE and the statement died of {@code OutOfMemoryError} rather than of an SQL error, taking the
@@ -58,8 +59,7 @@ public final class LobSize {
 
     private static void require(final long bytes, final long maximum) {
         if (bytes > maximum) {
-            throw new RuntimeException("Max LOB size (" + maximum + ") exceeded, actual size of parsed column is "
-                + bytes);
+            throw new RuntimeException("String '(padded string)' is too long and would be truncated");
         }
     }
 }

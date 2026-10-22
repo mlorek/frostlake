@@ -41,8 +41,11 @@ final class GeneratedCloudIdentity {
     /** The Google Cloud service account every object of the account is reached as. */
     static final String SERVICE_ACCOUNT = "frostlake@frostlake.iam.gserviceaccount.com";
 
-    /** The application an Azure tenant consents to for every object of the account. */
-    static final String APPLICATION_NAME = "frostlake_snowflakepacint_0000000000";
+    /**
+     * The application an Azure tenant consents to for every object of the account, of the account's shape: 21
+     * lower-case letters or digits holding {@code snowflake}, an underscore and 13 digits (live-verified).
+     */
+    static final String APPLICATION_NAME = "frostysnowflakepacint_0000000000000";
 
     /** The application's client id in the consent URL. */
     private static final String APPLICATION_ID = "00000000-0000-0000-0000-000000000000";

@@ -32,9 +32,12 @@ import java.math.BigDecimal;
  *
  * <ul>
  *   <li>a VARIANT holds it as the DECFLOAT member {@code TO_VARIANT} makes, so {@code TYPEOF(v)} over such a row is
- *       DECFLOAT and it equals {@code TO_VARIANT(DECFLOAT '1e-50')} (live-verified for INSERT … SELECT; FL-494);</li>
+ *       DECFLOAT and it equals {@code TO_VARIANT(DECFLOAT '1e-50')} (live-verified for INSERT … SELECT);</li>
  *   <li>a text column holds the text its cast to VARCHAR gives, as every value written there does (live-verified):
- *       DECFLOAT 1e-50 is {@code 1e-50}, five characters, and 1e100 fits a VARCHAR(10) (FL-495).</li>
+ *       DECFLOAT 1e-50 is {@code 1e-50}, five characters, and 1e100 fits a VARCHAR(10);</li>
+ *   <li>an exact NUMBER column holds it at its scale, and one too narrow refuses it naming the conversion, inside the
+ *       write's DML sentence: {@code DML operation to table DN failed on column N with error: Decfloat out of
+ *       representable range, operation: TO_NUMBER(1e38, 38, 0)} (live-verified for INSERT … SELECT and VALUES).</li>
  * </ul>
  *
  * A value of any other column, or of any other type, is written as it was.
@@ -53,7 +56,30 @@ final class DecfloatWrites {
      * @return whether {@link #stored} reshapes it
      */
     static boolean reshapes(final DataType source, final DataType target) {
-        return NumericType.isDecfloat(source) && holdsOwnForm(target);
+        return NumericType.isDecfloat(source) && receives(target);
+    }
+
+    /**
+     * Whether a column of {@code target} takes a DECFLOAT in a way of its own: in its own form (see
+     * {@link #holdsOwnForm}) or narrowed into an exact NUMBER (see {@link #narrows}).
+     *
+     * @param target the column's type
+     * @return whether it does
+     */
+    static boolean receives(final DataType target) {
+        return holdsOwnForm(target) || narrows(target);
+    }
+
+    /**
+     * Whether a column of {@code target} is an exact NUMBER, which holds a DECFLOAT at its scale or refuses it in the
+     * DECFLOAT's words (see {@link Decfloats#toNumber}).
+     *
+     * @param target the column's type
+     * @return whether it is one
+     */
+    static boolean narrows(final DataType target) {
+        return target instanceof NumericType && !NumericType.isApproximate(target) && !NumericType.isDecfloat(target)
+            && ((NumericType) target).getScale() >= 0 && ((NumericType) target).getPrecision() > 0;
     }
 
     /**
@@ -80,7 +106,8 @@ final class DecfloatWrites {
     }
 
     /**
-     * A DECFLOAT as a VARIANT or a text column holds it; any other value as it is.
+     * A DECFLOAT as a VARIANT, a text or an exact NUMBER column holds it; any other value as it is. A DECFLOAT the
+     * NUMBER has no room for is the cell's fault, raised where the write reads the row, inside its DML sentence.
      *
      * @param value  the computed value
      * @param target the column's type
@@ -91,6 +118,14 @@ final class DecfloatWrites {
             return value;
         }
         final BigDecimal held = Decfloats.of((Number) value, "TO_DECFLOAT");
+        if (narrows(target)) {
+            final NumericType number = (NumericType) target;
+            try {
+                return Decfloats.toNumber(held, number.getPrecision(), number.getScale());
+            } catch (final RuntimeException tooWide) {
+                return new DeferredFault(tooWide);
+            }
+        }
         if (target instanceof VariantType) {
             return DecfloatTextNode.variantOf(held);
         }

@@ -103,19 +103,21 @@ final class LeveledParameterSettings {
     }
 
     /**
-     * Orders the names, then refuses a repeated one and one that is no parameter's.
+     * Orders the names, then refuses a repeated one and one that is no parameter's — of several such, the first
+     * written (live-verified: UNSET NOSUCH_A, NOSUCH_2 names NOSUCH_A).
      *
      * @param settings the settings, put in the order they are judged and applied in
      * @param level    ACCOUNT or USER, as the refusal names it
      */
     static void requireNames(final List<SessionParameterSetting> settings, final String level) {
+        final List<SessionParameterSetting> written = new ArrayList<>(settings);
         Collections.sort(settings, new SessionParameterSettingOrder());
         for (int i = 1; i < settings.size(); i++) {
             if (settings.get(i).written().equals(settings.get(i - 1).written())) {
                 throw new RuntimeException(SqlCompilationError.duplicateProperty(settings.get(i).written()));
             }
         }
-        for (final SessionParameterSetting setting : settings) {
+        for (final SessionParameterSetting setting : written) {
             if (setting.key() == null) {
                 throw ParameterRegistry.invalidProperty(setting.written(), level);
             }

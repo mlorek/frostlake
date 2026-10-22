@@ -135,7 +135,7 @@ public class ResultSetData {
                 rowData.add(cell instanceof Number && NumericType.isDecfloat(declared)
                         ? Decfloats.text(Decfloats.of((Number) cell, "TO_DECFLOAT"))
                     : cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
-                    : cell instanceof VariantValue ? variantText((VariantValue) cell)
+                    : cell instanceof VariantValue ? variantText((VariantValue) cell, rs.isScriptingAnswer())
                     : cell instanceof VectorValue ? cell.toString()
                     : cell instanceof String && VariantJsonText.isSemiStructured(declared)
                         ? VariantJsonText.unwrappedStringText((String) cell)
@@ -206,12 +206,13 @@ public class ResultSetData {
      * model instead, and the JSON render below produces that unchanged: the rule reads the CELL, never
      * the values inside a container.</p>
      */
-    private static String variantText(final VariantValue value) {
+    private static String variantText(final VariantValue value, final boolean scriptingAnswer) {
         final JsonNode node = value.node();
         if (XmlVariants.isXmlElement(node)) {
             return XmlVariants.compactXml(node);
         }
-        return VariantJsonFormat.render(node, VariantJsonText.clientTextOf(value));
+        final String laidOut = scriptingAnswer ? VariantJsonFormat.scriptingAnswerText(value) : null;
+        return laidOut != null ? laidOut : VariantJsonFormat.render(node, VariantJsonText.clientTextOf(value));
     }
 
     public Long getJdbcUpdateCount() {

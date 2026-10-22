@@ -1581,9 +1581,17 @@ final class SignatureRecovery {
 
     /**
      * One name = value property of such a list: a value where the '=' is due is read as the value, the '=' named as
-     * missing — {@code (a b)} names the b — and any other token there refused.
+     * missing — {@code (a b)} names the b — and any other token there refused. A ')' right after a comma is refused
+     * where the name is due and taken for it, so the next ')' closes the list: {@code x = ((a = 1,))} names the ')'
+     * and then the end of the text where the outer list's ')' is due, {@code x = ((a = 1,), (b = 2))} the ')' and the
+     * '(' after the comma (live-verified).
      */
     private void nestedProperty() {
+        if (la(1) == RPAREN && la(0) == COMMA) {
+            report(lt(1));
+            consume();
+            return;
+        }
         following.add(bit(COMMA) | bit(RPAREN) | NESTED_NAME);
         try {
             if (!in(la(1), NESTED_NAME)) {

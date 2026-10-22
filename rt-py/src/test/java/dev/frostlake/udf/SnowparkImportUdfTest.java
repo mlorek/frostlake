@@ -55,6 +55,7 @@ public class SnowparkImportUdfTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.10'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.types import *

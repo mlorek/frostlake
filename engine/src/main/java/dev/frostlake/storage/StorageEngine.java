@@ -22,6 +22,7 @@ import dev.frostlake.metastore.StatementSession;
 import dev.frostlake.metastore.model.Table;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -137,6 +138,27 @@ public class StorageEngine {
         }
         writtenTables.clear();
         return total;
+    }
+
+    /**
+     * The tables written since the last call, and start the record again: set aside while a statement that another
+     * one runs counts its own (see {@link #takeWrittenRows}).
+     *
+     * @return the tables
+     */
+    public Set<TableStorage> takeWrittenTables() {
+        final Set<TableStorage> taken = new HashSet<>(writtenTables);
+        writtenTables.clear();
+        return taken;
+    }
+
+    /**
+     * Put tables back on the record {@link #takeWrittenRows} reads.
+     *
+     * @param tables the tables
+     */
+    public void noteWrittenTables(final Set<TableStorage> tables) {
+        writtenTables.addAll(tables);
     }
 
     /** Take one time-travel snapshot of every table mutated since the last call, then reset. */

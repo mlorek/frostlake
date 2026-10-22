@@ -51,7 +51,7 @@ _sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 # The worker's own references to what its protocol is made of, bound before any routine runs: a routine that replaces
 # json.dumps (to give it a default serializer, say), json.loads or decimal.Decimal changes the module's member, not
-# these, and so cannot change the lines the worker writes or the values it reads (#2389). The encoder and decoder are
+# these, and so cannot change the lines the worker writes or the values it reads. The encoder and decoder are
 # the worker's own instances, so json's shared default ones play no part either.
 _ENCODE = _json.JSONEncoder(allow_nan=False, separators=(",", ":")).encode
 _DECODE = _json.JSONDecoder().decode
@@ -83,7 +83,7 @@ _GUARDED = []
 _FUNCTIONS = []
 _GUARDED_IDS = set()
 _MISSING = object()
-# What else routines share, as it stood when the worker started (see _snapshot), and op "restore" puts back (#2387):
+# What else routines share, as it stood when the worker started (see _snapshot), and op "restore" puts back:
 # the standard library's modules then imported - (name, module, class, members) each -, the names then on sys.modules,
 # the working directory and the decimal context. Through the standard library's own functions, bound here.
 _STDLIB = []
@@ -441,7 +441,7 @@ def _decode(value):
         return _DECODE(value["$json"])
     if "$vec" in value:
         # A VECTOR, as Snowflake's type mapping hands one to a Python handler: a memoryview, here of 32-bit floats
-        # ("f") or ints ("i"), which indexes, iterates and answers tolist() as the elements (#2391).
+        # ("f") or ints ("i"), which indexes, iterates and answers tolist() as the elements.
         vector = value["$vec"]
         return memoryview(_ARRAY(vector["t"], [float(v) if vector["t"] == "f" else v for v in vector["v"]]))
     if "$host" in value:
@@ -455,7 +455,7 @@ def _decode(value):
 
 def _error(failure):
     # Never fails, as the reply must go out whatever the exception is: a failure escaping here would end the worker,
-    # or, under a procedure's session.sql, leave the request unanswered (#2388). An exception whose str() fails reads
+    # or, under a procedure's session.sql, leave the request unanswered. An exception whose str() fails reads
     # as GraalPy words it, a type whose name cannot be read by the name type itself holds, or else by its repr.
     kind = type(failure)
     try:

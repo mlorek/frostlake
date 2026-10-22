@@ -18,7 +18,9 @@ package dev.frostlake.metastore;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -144,18 +146,57 @@ public class QueryHistoryTracker {
      * in: what a replay maps that place through, since the replay runs the statement again under another place.
      *
      * @param sequence the place
-     * @return the statement, or null when no logged statement this engine ran was visible by then
+     * @return the statement, or null when no logged statement this engine ran or replayed was visible by then
      */
     public QueryHistory lastLoggedVisibleBy(final long sequence) {
         QueryHistory last = null;
         for (final QueryHistory query : queryHistory) {
-            final long visible = query.getVisibleSequence();
-            if (query.isLogged() && visible >= 0 && visible <= sequence
-                    && (last == null || visible >= last.getVisibleSequence())) {
-                last = query;
-            }
+            last = laterLogged(last, query, sequence);
+        }
+        // A former engine's statements count too: their replays, and those a restored state keeps.
+        for (final QueryHistory query : anchors.values()) {
+            last = laterLogged(last, query, sequence);
         }
         return last;
+    }
+
+    /** The later of two logged statements visible by a place, the first kept where the second is no such statement. */
+    private static QueryHistory laterLogged(final QueryHistory last, final QueryHistory query, final long sequence) {
+        final long visible = query.getVisibleSequence();
+        return query.isLogged() && visible >= 0 && visible <= sequence
+            && (last == null || visible >= last.getVisibleSequence()) ? query : last;
+    }
+
+    /**
+     * Every statement a time-travel point may name, by the query ID it answered with: those a former engine ran (see
+     * {@link #anchor}) and this engine's ended ones, oldest first, at most as many as the history keeps, the newest
+     * kept. It is what a restored state keeps of the history.
+     *
+     * @return the statements, by query ID
+     */
+    public Map<String, QueryHistory> pointsById() {
+        final List<Map.Entry<String, QueryHistory>> former = new ArrayList<>(anchors.entrySet());
+        Collections.sort(former, new Comparator<Map.Entry<String, QueryHistory>>() {
+            @Override
+            public int compare(final Map.Entry<String, QueryHistory> a, final Map.Entry<String, QueryHistory> b) {
+                return a.getValue().getStartTime().compareTo(b.getValue().getStartTime());
+            }
+        });
+        final List<QueryHistory> own = new ArrayList<>();
+        for (final QueryHistory query : queryHistory) {
+            if (query.getQueryId() != null && query.getEndTime() != null) {
+                own.add(query);
+            }
+        }
+        final Map<String, QueryHistory> points = new LinkedHashMap<>();
+        final int room = Math.max(0, maxHistorySize - own.size());
+        for (int i = Math.max(0, former.size() - room); i < former.size(); i++) {
+            points.put(former.get(i).getKey(), former.get(i).getValue());
+        }
+        for (final QueryHistory query : own) {
+            points.put(query.getQueryId(), query);
+        }
+        return points;
     }
 
     /**

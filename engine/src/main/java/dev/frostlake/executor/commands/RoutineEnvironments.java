@@ -326,7 +326,7 @@ final class RoutineEnvironments {
             final String name = ParseTreeText.qualifiedNameParts(item.qualifiedName())[0];
             final Integration integration = catalog.getIntegrations().find(name);
             if (integration == null || !IntegrationUsage.usable(queryExecutor.getSecurityManager(), integration)) {
-                // An integration the role may not use is one it is not told about (FL-430).
+                // An integration the role may not use is one it is not told about.
                 throw new RuntimeException(SqlCompilationError.of("Integration '" + name
                     + "' does not exist or not authorized."));
             }
@@ -350,7 +350,7 @@ final class RoutineEnvironments {
      * string and a secret a name; no variable is named twice; every secret has to exist, and be one the session may
      * read: READ or OWNERSHIP on it, and USAGE on its database and schema (documented, CREATE FUNCTION's access
      * control table). A routine that names a secret hands its value to the handler, so binding one the role was never
-     * granted read the secret (FL-432). A secret the role may not read is refused as one that is not there.
+     * granted read the secret. A secret the role may not read is refused as one that is not there.
      *
      * @param written the value written after SECRETS
      * @return the secrets by variable, in written order

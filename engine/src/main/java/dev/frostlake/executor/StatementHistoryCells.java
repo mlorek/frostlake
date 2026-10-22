@@ -39,7 +39,8 @@ import java.util.Locale;
  *   <li>its kind, in the account's words (see {@link QueryTypeNames}), and for a failure its error's code;</li>
  *   <li>the transaction it ran in: the explicit one, or the one a write under autocommit ran as — a DML statement,
  *       a CREATE TABLE … AS SELECT, a clone, a TRUNCATE, a DML statement that failed as it ran — else 0, a
- *       statement refused while it compiled included;</li>
+ *       statement refused while it compiled included, and a CALL or a block whose statements ran transactions of
+ *       their own;</li>
  *   <li>whether a warehouse ran it: a DML statement, a CREATE TABLE … AS SELECT, a CALL or a block, a query that
  *       reads a relation or a sequence, and anything that failed as it ran; a DDL statement, a SHOW, a constant
  *       query and anything refused while it compiled ran without one. CLUSTER_NUMBER is 1 and WAREHOUSE_SIZE the
@@ -49,8 +50,9 @@ import java.util.Locale;
  *       answered; the rows it inserted, for an INSERT, a MERGE and a CREATE TABLE … AS SELECT.</li>
  * </ul>
  *
- * <p>The account answers some queries over a table from its metadata alone — a COUNT(*), a filter its partitions'
- * ranges rule out — without a warehouse; those are listed as using one here.
+ * <p>The account answers some queries over a table from its statistics alone, without a warehouse: a COUNT, a MIN or
+ * a MAX, and a filter that rules out every row (see CountStatisticsBound#answersFromStatistics). A statement of a
+ * block, of a procedure's body or of an EXECUTE IMMEDIATE's text has its cells as one sent on its own.
  */
 final class StatementHistoryCells {
 
@@ -79,8 +81,8 @@ final class StatementHistoryCells {
         final FrostlakeParser.StatementContext effective = QueryTypeNames.effective(statement, executor);
         final String kind = QueryTypeNames.of(statement, executor);
         row.setQueryTypeName(kind);
-        row.setTransactionId(transactionOf(transactions, lastBefore, lastAfter));
-        final boolean warehouse = usesWarehouse(kind, effective);
+        row.setTransactionId(transactionOf(transactions, lastBefore, lastAfter, kind));
+        final boolean warehouse = usesWarehouse(kind, effective, executor);
         row.setWarehouseSize(warehouse ? warehouseSize(catalog) : null);
         if (!warehouse) {
             row.setRowsProduced(0L);
@@ -110,24 +112,28 @@ final class StatementHistoryCells {
     static void failed(final QueryHistory row, final FrostlakeParser.StatementContext statement,
                        final QueryExecutor executor, final Throwable failure, final String lastBefore,
                        final String lastAfter, final TransactionManager transactions, final Catalog catalog) {
-        if (statement != null) {
-            row.setQueryTypeName(QueryTypeNames.of(statement, executor));
+        final String kind = statement != null ? QueryTypeNames.of(statement, executor) : null;
+        if (kind != null) {
+            row.setQueryTypeName(kind);
         }
         // A statement refused while it compiled ran in no transaction and on no warehouse; one that failed as it ran
         // did both.
         final boolean ran = failure.getMessage() == null || !failure.getMessage().startsWith(COMPILATION_ERROR);
-        row.setTransactionId(ran ? transactionOf(transactions, lastBefore, lastAfter) : 0L);
+        row.setTransactionId(ran ? transactionOf(transactions, lastBefore, lastAfter, kind) : 0L);
         row.setWarehouseSize(ran ? warehouseSize(catalog) : null);
     }
 
     /**
      * The transaction a statement ran in: the one open as it ends — the explicit one, or the one a write under
      * autocommit opened — else the one it ended: a COMMIT's, a ROLLBACK's, or that of a statement that ran as a
-     * transaction of its own; 0 for none.
+     * transaction of its own; 0 for none. A CALL or a block runs in none of its own: its statements ran theirs.
      */
     private static long transactionOf(final TransactionManager transactions, final String lastBefore,
-                                      final String lastAfter) {
+                                      final String lastAfter, final String kind) {
         final Transaction open = transactions.getCurrentTransaction();
+        if ("CALL".equals(kind)) {
+            return open != null && transactions.isLastingTransaction() ? open.getPublicId() : 0L;
+        }
         if (open != null) {
             return open.getPublicId();
         }
@@ -142,7 +148,8 @@ final class StatementHistoryCells {
     }
 
     /** Whether a warehouse runs a statement of this kind. */
-    private static boolean usesWarehouse(final String kind, final FrostlakeParser.StatementContext statement) {
+    private static boolean usesWarehouse(final String kind, final FrostlakeParser.StatementContext statement,
+                                         final QueryExecutor executor) {
         switch (kind) {
             case "INSERT":
             case "UPDATE":
@@ -160,7 +167,7 @@ final class StatementHistoryCells {
                     && statement.ddlStatement().createStatement().TABLE() != null;
             case "SELECT":
             case "SELECT_FOR_UPDATE":
-                return statement != null && readsData(statement);
+                return statement != null && readsData(statement) && !executor.answeredFromStatistics(statement);
             default:
                 return false;
         }
@@ -179,6 +186,25 @@ final class StatementHistoryCells {
             default:
                 return false;
         }
+    }
+
+    /**
+     * The outermost query a statement holds, or null for none.
+     *
+     * @param node the statement, or any part of a parse tree
+     * @return the query
+     */
+    static FrostlakeParser.SelectStatementContext outermostQuery(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return (FrostlakeParser.SelectStatementContext) node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.SelectStatementContext query = outermostQuery(node.getChild(i));
+            if (query != null) {
+                return query;
+            }
+        }
+        return null;
     }
 
     /** Whether a query reads a relation — it has a FROM clause — or a sequence. */

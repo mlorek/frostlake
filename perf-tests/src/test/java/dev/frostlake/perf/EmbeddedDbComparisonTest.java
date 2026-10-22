@@ -34,6 +34,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -376,10 +377,10 @@ public class EmbeddedDbComparisonTest {
     }
 
     private static String ms(final long nanos) {
-        return String.format("%.2f", nanos / 1_000_000.0);
+        return String.format(Locale.ROOT, "%.2f", nanos / 1_000_000.0);
     }
 
     private static String mb(final long bytes) {
-        return String.format("%.1f", bytes / (1024.0 * 1024.0));
+        return String.format(Locale.ROOT, "%.1f", bytes / (1024.0 * 1024.0));
     }
 }

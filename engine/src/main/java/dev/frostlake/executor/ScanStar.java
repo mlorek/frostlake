@@ -29,7 +29,8 @@ import java.util.Locale;
  * A plain star over a CALL's scan, {@code SELECT * FROM TABLE(RESULT_SCAN(…))} and nothing more, hands out the answer
  * the CALL handed out where a cell of the scan holds one its RETURNS type cannot (see
  * {@link DeferredFault#heldAnswer}): a text wider than {@code RETURNS VARCHAR(2)}, what is no object for
- * {@code RETURNS OBJECT}. Every other statement over that scan is refused as it reads the cell — a named column,
+ * {@code RETURNS OBJECT}, the scan named by an alias or not. Every other statement over that scan is refused as it
+ * reads the cell — a named column,
  * {@code $1}, an alias's star, a star beside another item, a WHERE, an ORDER BY, a LIMIT, a DISTINCT, the star of a
  * subquery over the scan (live-verified).
  */
@@ -40,7 +41,7 @@ final class ScanStar {
 
     /**
      * Whether a statement is a plain star over a scan: one SELECT, its list a lone unqualified star with no
-     * modifier, its FROM one {@code TABLE(RESULT_SCAN(…))} with no alias, and no other clause.
+     * modifier, its FROM one {@code TABLE(RESULT_SCAN(…))}, with an alias or none, and no other clause.
      *
      * @param statement the statement as parsed
      * @return whether it is
@@ -65,8 +66,7 @@ final class ScanStar {
             return false;
         }
         final FrostlakeParser.TableReferenceContext reference = from.tableReference(0);
-        if (reference.LATERAL() != null || reference.aliasName() != null || reference.nonJoinKeywordIdentifier() != null
-                || reference.pivotClause() != null || reference.unpivotClause() != null
+        if (reference.LATERAL() != null || reference.pivotClause() != null || reference.unpivotClause() != null
                 || reference.matchRecognizeClause() != null || reference.sampleClause() != null) {
             return false;
         }

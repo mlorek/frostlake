@@ -18,6 +18,7 @@ package dev.frostlake.rt.js;
 
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import dev.frostlake.values.VectorValue;
 import org.graalvm.polyglot.HostAccess;
 
 /**
@@ -70,7 +71,13 @@ public class JavaScriptResultSet {
             return JavaScriptArgumentJson.ofColumn(null);
         }
         final Row row = resultSet.getRows().get(currentRow);
-        return JavaScriptArgumentJson.ofColumn(index < row.size() ? row.getValue(index) : null);
+        final Object value = index < row.size() ? row.getValue(index) : null;
+        if (value instanceof VectorValue) {
+            // A VECTOR column's value is its text, as getColumnValueAsString writes it (live-verified).
+            return JavaScriptArgumentJson.ofColumn(
+                JavaScriptColumns.asString(value, resultSet.getColumns().get(index).getDataType()));
+        }
+        return JavaScriptArgumentJson.ofColumn(value);
     }
 
     /**

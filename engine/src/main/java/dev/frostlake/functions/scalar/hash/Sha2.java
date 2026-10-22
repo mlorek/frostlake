@@ -30,7 +30,10 @@ import java.util.List;
  * {@code SHA2('a')}.
  */
 public class Sha2 extends BuiltInFunction {
-    public Sha2() { super("SHA2", StringType.VARCHAR); }
+    public Sha2() { this("SHA2"); }
+
+    /** SHA2 under another name, SHA2_HEX's. */
+    protected Sha2(final String name) { super(name, StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -46,7 +49,7 @@ public class Sha2 extends BuiltInFunction {
     public int getMaxArgCount() { return 2; }
 
     /**
-     * A predicate as SHA2's first argument is refused by the argument types, where a BOOLEAN
+     * A predicate as the first argument is refused by the argument types, where a BOOLEAN
      * value is read as text (live-verified).
      */
     @Override

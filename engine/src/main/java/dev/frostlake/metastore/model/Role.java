@@ -39,6 +39,7 @@ public class Role implements Taggable {
     private String comment;
     /** Privileges granted on the future objects of a kind in a schema or database. */
     private final List<FutureGrant> futureGrants = new ArrayList<>();
+    private final List<CallerGrant> callerGrants = new ArrayList<>();
     private final Map<String, String> tags = new HashMap<>();
 
     public Role(final String name) {
@@ -266,6 +267,55 @@ public class Role implements Taggable {
                     futureGrants.remove(i);
                 }
                 return;
+            }
+        }
+    }
+
+    /** The caller grants this role holds, in the order they were made. */
+    public List<CallerGrant> getCallerGrants() {
+        return new ArrayList<>(callerGrants);
+    }
+
+    /**
+     * Records a caller grant, or keeps the same one made before.
+     *
+     * @param privilege     the privilege, as the grant names it, or ALL
+     * @param objectKind    the object's kind, singular
+     * @param objectName    the object's name in full, or null for an inherited grant
+     * @param inheritedFrom ACCOUNT, DATABASE or SCHEMA for an inherited grant, or null
+     * @param scopeName     the database or schema an inherited grant covers, or null
+     * @param createdOn     when the grant was made
+     * @return the grant as recorded
+     */
+    public CallerGrant addCallerGrant(final String privilege, final String objectKind, final String objectName,
+                                      final String inheritedFrom, final String scopeName, final Instant createdOn) {
+        for (final CallerGrant existing : callerGrants) {
+            if (existing.matches(privilege, objectKind, objectName, inheritedFrom, scopeName)) {
+                return existing;
+            }
+        }
+        final CallerGrant grant = new CallerGrant(privilege, objectKind, objectName, inheritedFrom, scopeName,
+            createdOn);
+        callerGrants.add(grant);
+        return grant;
+    }
+
+    /**
+     * Takes back a caller grant; ALL takes back every caller grant on those objects.
+     *
+     * @param privilege     the privilege, as the grant names it, or ALL
+     * @param objectKind    the object's kind, singular
+     * @param objectName    the object's name in full, or null for an inherited grant
+     * @param inheritedFrom ACCOUNT, DATABASE or SCHEMA for an inherited grant, or null
+     * @param scopeName     the database or schema an inherited grant covers, or null
+     */
+    public void revokeCallerGrant(final String privilege, final String objectKind, final String objectName,
+                                  final String inheritedFrom, final String scopeName) {
+        for (int i = callerGrants.size() - 1; i >= 0; i--) {
+            final CallerGrant existing = callerGrants.get(i);
+            final String held = "ALL".equals(privilege) ? existing.getPrivilege() : privilege;
+            if (existing.matches(held, objectKind, objectName, inheritedFrom, scopeName)) {
+                callerGrants.remove(i);
             }
         }
     }

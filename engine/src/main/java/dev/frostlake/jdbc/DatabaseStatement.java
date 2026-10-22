@@ -301,6 +301,9 @@ public class DatabaseStatement implements Statement {
 
     @Override
     public void setMaxRows(final int max) throws SQLException {
+        if (max < 0) {
+            throw new SQLException("The maximum row count must be zero or more: " + max);
+        }
         this.maxRows = max;
     }
 

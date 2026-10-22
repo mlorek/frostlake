@@ -263,6 +263,7 @@
         // value is called for it ------------------------------------------------------------------------------
         var objectToString = Object.prototype.toString;
         var errorToString = Error.prototype.toString;
+        var globalObject = globalThis;
         var functionToString = Function.prototype.toString;
         var symbolToString = Symbol.prototype.toString;
         var bigIntToString = BigInt.prototype.toString;
@@ -298,6 +299,10 @@
             }
             if (typeof value !== 'object' || value === null) {
                 return `${value}`;
+            }
+            if (value === globalObject) {
+                // The account's engine tells its global object by the plain tag.
+                return '[object Object]';
             }
             var toString = dataProperty(value, 'toString');
             if (isError(value) || toString === errorToString) {

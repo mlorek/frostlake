@@ -443,7 +443,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
                     break;
                 default:
                     if (c < ' ') {
-                        out.append(String.format("\\u%04x", Integer.valueOf(c)));
+                        out.append(String.format(Locale.ROOT, "\\u%04x", Integer.valueOf(c)));
                     } else {
                         out.append(c);
                     }

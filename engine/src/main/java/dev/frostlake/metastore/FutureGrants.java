@@ -57,7 +57,7 @@ public final class FutureGrants {
      * once the object is in its schema. A statement that adds nothing, as CREATE ... IF NOT EXISTS over an object
      * that is there, CREATE OR ALTER over one, or a CREATE refused after this was asked, leaves every grant on the
      * name as it was: the privileges on the existing object stay, and future grants apply only to objects created
-     * afterwards (documented, FL-435).
+     * afterwards (documented).
      *
      * @param catalog    the catalog holding the roles
      * @param objectKind the object's kind, singular and upper-case (TABLE, VIEW, SEQUENCE, ...)

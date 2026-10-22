@@ -42,7 +42,7 @@ public class QueryHistory {
     // the COMMIT of the explicit transaction it ran in. Null until known, and for a transaction still open.
     private volatile LocalDateTime visibleFrom;
     /** The latest snapshot taken when the statement began, in the order of {@link SnapshotSequence}. */
-    private final long startSequence = SnapshotSequence.current();
+    private final long startSequence;
     /** The latest snapshot taken once the statement's changes became visible; -1 while they are not. */
     private volatile long visibleSequence = -1L;
     /** The query ID the write-ahead log holds the statement under, or null while it holds it not. */
@@ -74,6 +74,7 @@ public class QueryHistory {
 
     public QueryHistory(final String queryText, final String database, final String schema, final String warehouse,
                        final String user, final String role) {
+        this.startSequence = SnapshotSequence.current();
         // Query ID will be set later from QueryResultCache
         this.queryId = null;
         this.queryText = queryText;
@@ -94,6 +95,60 @@ public class QueryHistory {
         this.compilationTimeMs = 0;
         this.queuedTimeMs = 0;
         this.queryType = determineQueryType(queryText);
+    }
+
+    private QueryHistory(final String queryId, final StatementKind queryType, final LocalDateTime startTime,
+                         final LocalDateTime endTime, final LocalDateTime visibleFrom, final long startSequence,
+                         final long visibleSequence) {
+        this.queryId = queryId;
+        this.queryText = null;
+        this.database = null;
+        this.schema = null;
+        this.warehouse = null;
+        this.user = null;
+        this.role = null;
+        this.startTime = startTime;
+        this.endTime = endTime;
+        this.visibleFrom = visibleFrom;
+        this.startSequence = startSequence;
+        this.visibleSequence = visibleSequence;
+        this.status = QueryStatus.SUCCESS;
+        this.queryType = queryType;
+    }
+
+    /**
+     * A statement a former engine ran, as a restored state keeps it: only what a time-travel point naming its query ID
+     * reads, under the places the restored state gives it in the order snapshots are taken in.
+     *
+     * @param queryId             the query ID it answered with
+     * @param queryType           its kind, as {@link #getQueryType} names it
+     * @param startTime           when it began, a UTC wall clock
+     * @param endTime             when it ended, or null
+     * @param visibleFrom         when its changes became visible, or null
+     * @param startSequence       the place it began at
+     * @param visibleSequence     the place its changes became visible at, or -1
+     * @param dynamicTableRefresh whether it refreshed a dynamic table
+     * @param loggedAs            the query ID the write-ahead log holds it under, or null
+     * @return the statement
+     */
+    public static QueryHistory restoredPoint(final String queryId, final String queryType,
+                                             final LocalDateTime startTime, final LocalDateTime endTime,
+                                             final LocalDateTime visibleFrom, final long startSequence,
+                                             final long visibleSequence, final boolean dynamicTableRefresh,
+                                             final String loggedAs) {
+        StatementKind kind = StatementKind.UNKNOWN;
+        if (queryType != null) {
+            try {
+                kind = StatementKind.valueOf(queryType);
+            } catch (final IllegalArgumentException unknown) {
+                kind = StatementKind.UNKNOWN;
+            }
+        }
+        final QueryHistory point = new QueryHistory(queryId, kind, startTime, endTime, visibleFrom, startSequence,
+            visibleSequence);
+        point.dynamicTableRefresh = dynamicTableRefresh;
+        point.loggedAs = loggedAs;
+        return point;
     }
 
     /** The number of the session that ran the statement, or null when none was known. */

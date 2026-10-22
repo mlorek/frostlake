@@ -24,6 +24,7 @@ import dev.frostlake.executor.copy.StageFileReader;
 import dev.frostlake.executor.copy.StageReaderFactory;
 import dev.frostlake.executor.copy.StagedFileIo;
 import dev.frostlake.executor.operators.RowsProvider;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Stage;
@@ -153,16 +154,19 @@ final class StageQueryExecutor {
             long rowNumber = 0;
             try {
                 if (recordReader != null) {
-                    // A JSON file's refusal of a byte that is no UTF-8 names it under its stage's storage path.
+                    // A file's refusal of a byte that is no UTF-8 names it under its stage's storage path, and
+                    // every format reads under its own options.
                     final List<JsonNode> records = recordReader instanceof JsonStageReader
                         ? ((JsonStageReader) recordReader).readRecords(file, options.stripsOuterArray(),
                             options.replacesInvalidCharacters(), storedName(staged, relativeName))
-                        : recordReader.readRecords(file);
+                        : recordReader.readRecords(file, options, storedName(staged, relativeName));
                     for (final JsonNode record : records) {
                         if (options.stripsNullValues()) {
                             JsonNullStripping.strip(record);
                         }
-                        fieldRows.add(new ArrayList<>(Arrays.asList((Object) record.toString())));
+                        // An XML record is the variant PARSE_XML answers, which reads and prints as XML.
+                        fieldRows.add(new ArrayList<>(Arrays.asList("XML".equals(fileFormat)
+                            ? (Object) ArrayFunctionHelper.toCanonicalVariant(record) : (Object) record.toString())));
                         fileNames.add(relativeName);
                         rowNumbers.add(++rowNumber);
                     }

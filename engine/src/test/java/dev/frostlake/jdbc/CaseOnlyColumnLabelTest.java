@@ -30,9 +30,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * A column label two columns share but for case names the first of them in every getter and in findColumn, as the
- * account's driver reads it (live-verified): {@code getDate("A")} and {@code getDate("A", cal)} read the same column,
- * with CLIENT_RESULT_COLUMN_CASE_INSENSITIVE on or off; a label no column has is "Column not found".
+ * Once the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE on, as both test harnesses do, a column label two
+ * columns share but for case names the first of them in every getter and in findColumn, as the account's driver reads
+ * it (live-verified): {@code getDate("A")} and {@code getDate("A", cal)} read the same column, and a later FALSE leaves
+ * it so; a label no column has is "Column not found". The default, exact spelling is ColumnLabelCaseTest's.
  */
 public class CaseOnlyColumnLabelTest extends BaseJdbcTest {
 

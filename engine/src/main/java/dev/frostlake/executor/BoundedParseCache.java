@@ -33,12 +33,16 @@ import java.util.Map;
  * worth a slot. Access is synchronized, but a cache lookup is cheap relative to the parse it avoids, so
  * the shared monitor is not a meaningful contention point.
  */
-final class BoundedParseCache<V> {
+public final class BoundedParseCache<V> {
 
     private final int maxKeyLength;
     private final Map<String, V> entries;
 
-    BoundedParseCache(final int capacity, final int maxKeyLength) {
+    /**
+     * @param capacity     the most entries kept
+     * @param maxKeyLength the longest key kept
+     */
+    public BoundedParseCache(final int capacity, final int maxKeyLength) {
         this.maxKeyLength = maxKeyLength;
         this.entries = new LinkedHashMap<String, V>(capacity * 2, 0.75f, true) {
             @Override
@@ -48,11 +52,21 @@ final class BoundedParseCache<V> {
         };
     }
 
-    synchronized V get(final String key) {
+    /**
+     * @param key the key
+     * @return the value kept for it, or null
+     */
+    public synchronized V get(final String key) {
         return entries.get(key);
     }
 
-    synchronized void put(final String key, final V value) {
+    /**
+     * Keeps a value, unless its key is too long to keep.
+     *
+     * @param key   the key
+     * @param value the value
+     */
+    public synchronized void put(final String key, final V value) {
         if (key.length() <= maxKeyLength) {
             entries.put(key, value);
         }

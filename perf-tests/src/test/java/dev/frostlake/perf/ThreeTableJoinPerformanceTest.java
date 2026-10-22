@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -225,7 +227,8 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
 
         assertTrue(duration < 30000, "Query should complete in under 30 seconds");
 
-        logger.info("Performance: " + String.format("%.2f", ROWS_PER_TABLE / (duration / 1000.0)) + " rows/sec");
+        logger.info("Performance: " + String.format(Locale.ROOT, "%.2f",
+            ROWS_PER_TABLE / (duration / 1000.0)) + " rows/sec");
     }
 
     @Test
@@ -258,7 +261,8 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
         assertTrue(result.getRowCount() < ROWS_PER_TABLE, "Should return fewer rows than total");
         assertTrue(duration < 30000, "Query with filter should complete in under 30 seconds");
 
-        logger.info("Performance: " + String.format("%.2f", result.getRowCount() / (duration / 1000.0)) + " rows/sec");
+        logger.info("Performance: " + String.format(Locale.ROOT, "%.2f",
+            result.getRowCount() / (duration / 1000.0)) + " rows/sec");
     }
 
     @Test
@@ -317,7 +321,8 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             "Should return " + ROWS_PER_TABLE + " rows (all customers with their orders)");
         assertTrue(duration < 30000, "LEFT JOIN query should complete in under 30 seconds");
 
-        logger.info("Performance: " + String.format("%.2f", ROWS_PER_TABLE / (duration / 1000.0)) + " rows/sec");
+        logger.info("Performance: " + String.format(Locale.ROOT, "%.2f",
+            ROWS_PER_TABLE / (duration / 1000.0)) + " rows/sec");
     }
 
     @Test

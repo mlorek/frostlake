@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
  * row by row for the scalar one and over the group for the aggregate, and neither may be called OVER a window. A
  * CREATE OR REPLACE AGGREGATE FUNCTION of a scalar one's signature replaces it (all live-verified). An argument
  * qualified by a lone relation's alias, in a correlated subquery as at the top level, chooses as a bare one does
- * (FL-442).
+ *.
  */
 public class ScalarBesideAggregateOverloadTest extends MeasuredCellsTestSupport {
 
@@ -105,10 +105,12 @@ public class ScalarBesideAggregateOverloadTest extends MeasuredCellsTestSupport 
                 + "finish(self):\n        return 'agg:' + self._s\n$$");
         assertAnswer("1|scalar1 ;; 2|scalar2", "SELECT v, mixq(v) FROM uq ORDER BY 1");
         assertAnswer("1|scalar1 ;; 2|scalar2", "SELECT v, mixq(u2.v) FROM uq u2 ORDER BY 1");
-        assertAnswer("scalar1 ;; scalar2", "SELECT (SELECT mixq(u2.v) FROM uq u2 WHERE u2.v = uq.v) FROM uq ORDER BY 1");
-        assertAnswer("scalar1 ;; scalar2", "SELECT (SELECT mixq(v) FROM uq u2 WHERE u2.v = uq.v) FROM uq ORDER BY 1");
+        // Typed as the scalar, a correlated subquery over a FROM promises no one row and is refused.
+        assertAnswer(unsupportedAt(8), "SELECT (SELECT mixq(u2.v) FROM uq u2 WHERE u2.v = uq.v) FROM uq ORDER BY 1");
+        assertAnswer(unsupportedAt(8), "SELECT (SELECT mixq(v) FROM uq u2 WHERE u2.v = uq.v) FROM uq ORDER BY 1");
         assertAnswer("scalar1", "SELECT (SELECT mixq(u2.v) FROM uq u2 WHERE u2.v = 1)");
-        assertAnswer("1", "SELECT v FROM uq WHERE (SELECT mixq(u2.v) FROM uq u2 WHERE u2.v = uq.v) = 'scalar1'");
+        assertAnswer(unsupportedAt(24),
+            "SELECT v FROM uq WHERE (SELECT mixq(u2.v) FROM uq u2 WHERE u2.v = uq.v) = 'scalar1'");
         assertAnswer("1|scalar1 ;; 2|scalar2",
             "SELECT uq.v, l.m FROM uq, LATERAL (SELECT mixq(u2.v) m FROM uq u2 WHERE u2.v = uq.v) l ORDER BY 1");
         assertAnswer("agg:a ;; agg:b", "SELECT (SELECT mixq(u2.s) FROM uq u2 WHERE u2.v = uq.v) FROM uq ORDER BY 1");
@@ -126,7 +128,7 @@ public class ScalarBesideAggregateOverloadTest extends MeasuredCellsTestSupport 
                 + "@property\n    def aggregate_state(self):\n        return self._s\n    def accumulate(self, x):\n "
                 + "       self._s += str(x)\n    def merge(self, other):\n        self._s += other\n    def "
                 + "finish(self):\n        return 'agg:' + self._s\n$$");
-        // The arguments choose the scalar overload, which runs for each row wherever a scalar may stand (FL-443).
+        // The arguments choose the scalar overload, which runs for each row wherever a scalar may stand.
         assertAnswer("1", "SELECT v FROM uw WHERE mixw(v) = 'scalar1'");
         assertAnswer("1", "SELECT v FROM uw WHERE 'scalar' || v = 'scalar1'");
         assertAnswer("1", "SELECT v FROM uw WHERE v IN (SELECT 1 FROM uw u2 WHERE mixw(u2.v) = 'scalar1')");
@@ -151,8 +153,9 @@ public class ScalarBesideAggregateOverloadTest extends MeasuredCellsTestSupport 
             "SELECT v FROM uw WHERE (SELECT mixw(uw.s)) = 'x'");
         assertAnswer("REFUSED SQL compilation error: | [PSEUDOCOLUMN(VOL_ID)] is not a valid group by expression",
             "UPDATE uw SET s = mixw(s)");
-        // A scalar call over the outer row alone is no correlated aggregate; such a subquery is refused as an
-        // unsupported one, as in the select list (FL-442).
-        assertAnswer(unsupportedAt(24), "SELECT v FROM uw WHERE (SELECT mixw(uw.v)) = 'scalar1'");
+        // A scalar call over the outer row alone is no correlated aggregate: a subquery with no FROM is one row
+        // whatever it reads, answered here as in the select list.
+        assertAnswer("1", "SELECT v FROM uw WHERE (SELECT mixw(uw.v)) = 'scalar1'");
+        assertAnswer("scalar1 ;; scalar2", "SELECT (SELECT mixw(uw.v)) FROM uw ORDER BY 1");
     }
 }

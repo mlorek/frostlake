@@ -26,6 +26,14 @@ import java.time.LocalDate;
 import java.util.List;
 
 public class DateFromParts extends BuiltInFunction {
+    /** The days in 400 Gregorian years. */
+    private static final long DAYS_PER_ERA = 146_097L;
+    /** The days from 0000-03-01 to 1970-01-01. */
+    private static final long DAYS_TO_EPOCH = 719_468L;
+    /** The first and the last day a date can hold. */
+    private static final long MIN_EPOCH_DAY = LocalDate.MIN.toEpochDay();
+    private static final long MAX_EPOCH_DAY = LocalDate.MAX.toEpochDay();
+
     public DateFromParts() { super("DATE_FROM_PARTS", DateTimeType.DATE); }
 
     @Override
@@ -65,7 +73,8 @@ public class DateFromParts extends BuiltInFunction {
     /**
      * The date a year, a month and a day name, a part out of its range rolling over into the next one: month 13 is
      * the January after, month 0 the December before, day 0 the last day of the month before and the 30th of
-     * February the 1st of March (live-verified).
+     * February the 1st of March (live-verified). A date past the years one can hold is refused in the sentence the
+     * account gives a day count it cannot hold, {@code Date <days> is out of range}.
      *
      * @param year  the year
      * @param month the month, 1 for January
@@ -73,7 +82,33 @@ public class DateFromParts extends BuiltInFunction {
      * @return the date
      */
     public static LocalDate rolledOver(final int year, final int month, final int day) {
-        return LocalDate.of(year, 1, 1).plusMonths(month - 1L).plusDays(day - 1L);
+        final long epochDay = epochDay(year, month, day);
+        if (epochDay < MIN_EPOCH_DAY || epochDay > MAX_EPOCH_DAY) {
+            throw new RuntimeException("Date " + epochDay + " is out of range");
+        }
+        return LocalDate.ofEpochDay(epochDay);
+    }
+
+    /**
+     * The days from 1970-01-01 to the date the parts name, the month and the day rolling over, counted in the
+     * proleptic Gregorian calendar whatever the year.
+     *
+     * @param year  the year
+     * @param month the month, 1 for January
+     * @param day   the day of the month, 1 for the first
+     * @return the day count
+     */
+    static long epochDay(final int year, final int month, final int day) {
+        final long months = (long) year * 12 + month - 1;
+        final long whole = Math.floorDiv(months, 12);
+        final int monthOfYear = (int) Math.floorMod(months, 12) + 1;
+        // Counted from March, so a leap day falls at the end of its year.
+        final long marchYear = monthOfYear <= 2 ? whole - 1 : whole;
+        final long era = Math.floorDiv(marchYear, 400);
+        final long yearOfEra = marchYear - era * 400;
+        final long dayOfYear = (153L * (monthOfYear > 2 ? monthOfYear - 3 : monthOfYear + 9) + 2) / 5;
+        final long dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+        return era * DAYS_PER_ERA + dayOfEra - DAYS_TO_EPOCH + day - 1L;
     }
 
     @Override

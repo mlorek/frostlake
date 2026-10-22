@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * QUALIFY clause operator - filters rows based on window function results.
@@ -70,7 +71,7 @@ public class QualifyOperator implements Operator {
 
     @Override
     public String getDescription() {
-        return String.format("QUALIFY[%s]",
+        return String.format(Locale.ROOT, "QUALIFY[%s]",
             qualifyExpression.length() > 50 ? qualifyExpression.substring(0, 47) + "..." : qualifyExpression);
     }
 }

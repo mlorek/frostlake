@@ -38,4 +38,13 @@
     <suppress id="LocaleFreeCaseFold"
               files="[\\/](rt[\\/]js[\\/]JavaScriptHandler|udf[\\/]JavaInlineClassesTest|scripting[\\/](JavaScriptUDFPracticalTest|JavaScriptNoHostObjectTest|JavaScriptUDFTest))\.java$"/>
 
+    <!-- A Java handler's source a test creates calls String.format inside a text block: the handler's own code. -->
+    <suppress id="LocaleFreeFormat"
+              files="[\\/]examples[\\/]ReturnTypeParametersExampleTest\.java$"/>
+
+    <!-- A test builds the statements and the answers it expects from text blocks with formatted(); what it formats
+         is its own, and runs under the build's locale. -->
+    <suppress id="LocaleFreeFormatted"
+              files="[\\/]src[\\/]test[\\/]"/>
+
 </suppressions>

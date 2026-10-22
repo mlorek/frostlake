@@ -18,6 +18,7 @@ package dev.frostlake.executor.udf;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * How an exception a Java handler raises reaches SQL (live-verified): {@code User Error Report: }, a line
@@ -106,11 +107,11 @@ public final class JavaHandlerFailure {
         final int found = level >= 17 ? 445 : 476;
         final int loaded = level >= 21 ? 593 : level >= 17 ? 592 : 589;
         final int delegated = level >= 21 ? 526 : level >= 17 ? 525 : 522;
-        return report("""
+        return report(String.format(Locale.ROOT, """
             java.lang.ClassNotFoundException: %s
             \tat java.base/java.net.URLClassLoader.findClass(URLClassLoader.java:%d)
             \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)
-            \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)""".formatted(className, found, loaded,
+            \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)""", className, found, loaded,
             delegated), where);
     }
 

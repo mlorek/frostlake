@@ -504,7 +504,7 @@ public class Stage extends SqlObject implements SessionScoped {
 
     @Override
     public String toString() {
-        return String.format("Stage{name='%s', type=%s, url='%s', format='%s'}",
+        return String.format(Locale.ROOT, "Stage{name='%s', type=%s, url='%s', format='%s'}",
             name, type, url, fileFormat);
     }
 }

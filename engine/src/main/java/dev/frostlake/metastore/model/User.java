@@ -116,9 +116,14 @@ public class User implements Taggable {
         return defaultRole;
     }
 
+    /**
+     * Sets the role a new session of the user starts in, by its canonical name: a quoted name exactly as written, a
+     * bare one in upper case, as roles are stored.
+     *
+     * @param defaultRole the role's canonical name, or null for none
+     */
     public void setDefaultRole(final String defaultRole) {
-        // Normalise to upper-case to match how roles are stored (CREATE and ALTER both land here).
-        this.defaultRole = defaultRole == null ? null : defaultRole.toUpperCase(Locale.ROOT);
+        this.defaultRole = defaultRole;
     }
 
     /** The roles granted, as a copy. */

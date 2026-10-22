@@ -43,6 +43,18 @@ import org.antlr.v4.runtime.misc.IntervalSet;
  *   … WHERE a = (SELECT 1 x y) OR a = (SELECT 2 z w)   both SELECTs
  * </pre>
  *
+ * <p>A query whose first item is a call is read another way, wherever its fault stands, and with no faulty query
+ * nested in it:
+ *
+ * <pre>
+ *   SELECT (SELECT SUM(n IGNORE NULLS) FROM t)          'SELECT', then the call's '(': in a select list
+ *   SELECT (SELECT ABS(1) 2 3), SELECT (SELECT SUM(n) FROM t u v)    the same, the fault past the call
+ *   … WHERE a = (SELECT ABS(1 2)), … HAVING a = (…)     'SELECT', then '1': compared, the first token in the call
+ *   … WHERE a &gt; (SELECT COUNT(x =&gt; *, 1) FROM t)          'SELECT', 'x', then the ',' after the star
+ *   … WHERE a IN (SELECT SUM(n IGNORE NULLS) FROM t)    'SELECT', then the 'FROM': an IN's list, the token past
+ *                                                       the call
+ * </pre>
+ *
  * <p>A derived table, a common table expression's body and an EXISTS are no such query: their own fault is the
  * line. The readings are rebuilt on the text — the query parsed on its own for the fault inside, the statement
  * with the query replaced by a value for what follows — every position staying where it was written.
@@ -113,6 +125,14 @@ final class ValueSubqueryLines {
         }
         final List<String> lines = new ArrayList<>();
         lines.add(SyntaxErrorListener.sentence(spoken.get(open + 1)));
+        final int firstCall = firstItemCall(spoken, open + 1, close);
+        if (firstCall >= 0 && faultyQuery(sql, spoken, open + 2, close, -1) == null) {
+            final List<String> called = afterCallFirst(spoken, open, close, place, found[4], firstCall);
+            if (called != null) {
+                lines.addAll(called);
+                return lines;
+            }
+        }
         if (place == CLAUSE) {
             // The queries inside it, each refused at its SELECT, then what follows the query.
             addNested(sql, spoken, open, close, lines);
@@ -220,7 +240,7 @@ final class ValueSubqueryLines {
                 final int close = closing(spoken, i, end);
                 if (close > i + 1 && !parses(sql, spoken, i + 1, close - 1)) {
                     final int[] place = placeOf(frames);
-                    return place == null ? null : new int[] {i, close, place[0], place[1]};
+                    return place == null ? null : new int[] {i, close, place[0], place[1], place[2]};
                 }
             }
             final int kind;
@@ -267,12 +287,74 @@ final class ValueSubqueryLines {
             }
         }
         if (clause != FrostlakeLexer.SELECT) {
-            return new int[] {CLAUSE, -1};
+            return new int[] {CLAUSE, -1, clause};
         }
         if (call >= 0) {
-            return new int[] {ARGUMENT, call};
+            return new int[] {ARGUMENT, call, clause};
         }
-        return new int[] {plain > 1 ? DEEP : ITEM, -1};
+        return new int[] {plain > 1 ? DEEP : ITEM, -1, clause};
+    }
+
+    /**
+     * The '(' of the call a query's select list opens with — after its DISTINCT or ALL — or -1 when it opens with
+     * anything else.
+     */
+    private static int firstItemCall(final List<Token> spoken, final int select, final int close) {
+        int at = select + 1;
+        if (at < close && (spoken.get(at).getType() == FrostlakeLexer.DISTINCT
+                || spoken.get(at).getType() == FrostlakeLexer.ALL)) {
+            at++;
+        }
+        if (at + 1 >= close) {
+            return -1;
+        }
+        final int type = spoken.get(at).getType();
+        return (WORDS.contains(type) || type == FrostlakeLexer.QUOTED_IDENTIFIER)
+            && spoken.get(at + 1).getType() == FrostlakeLexer.LPAREN ? at + 1 : -1;
+    }
+
+    /**
+     * The lines after the SELECT of a faulty query whose first item is the call at {@code call}, or null where the
+     * query stands in no place read that way: in a select list the call's '(', compared in a WHERE or a HAVING the
+     * first token in the call's parentheses (and the comma after a named star there), and as an IN's list in one of
+     * them the token past the call.
+     */
+    private static List<String> afterCallFirst(final List<Token> spoken, final int open, final int close,
+                                               final int place, final int clause, final int call) {
+        final List<String> lines = new ArrayList<>();
+        if (place == ITEM) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(call)));
+            return lines;
+        }
+        if (place != CLAUSE || clause != FrostlakeLexer.WHERE && clause != FrostlakeLexer.HAVING || open < 1) {
+            return null;
+        }
+        final int before = spoken.get(open - 1).getType();
+        if (before == FrostlakeLexer.IN) {
+            final int callClose = closing(spoken, call, close);
+            if (callClose + 1 >= close) {
+                return null;
+            }
+            lines.add(SyntaxErrorListener.sentence(spoken.get(callClose + 1)));
+            return lines;
+        }
+        final boolean compared = isComparison(before)
+            || close + 1 < spoken.size() && isComparison(spoken.get(close + 1).getType());
+        if (!compared || spoken.get(call + 1).getType() == FrostlakeLexer.RPAREN) {
+            return null;
+        }
+        lines.add(SyntaxErrorListener.sentence(spoken.get(call + 1)));
+        if (call + 4 < close && spoken.get(call + 2).getType() == FrostlakeLexer.ARROW
+                && spoken.get(call + 3).getType() == FrostlakeLexer.STAR
+                && spoken.get(call + 4).getType() == FrostlakeLexer.COMMA) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(call + 4)));
+        }
+        return lines;
+    }
+
+    private static boolean isComparison(final int type) {
+        return type == FrostlakeLexer.EQ || type == FrostlakeLexer.NEQ || type == FrostlakeLexer.LT
+            || type == FrostlakeLexer.LTE || type == FrostlakeLexer.GT || type == FrostlakeLexer.GTE;
     }
 
     /** The clause last opened at the innermost level that has opened one, or -1. */

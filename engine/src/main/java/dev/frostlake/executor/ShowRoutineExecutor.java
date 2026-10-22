@@ -22,6 +22,7 @@ import dev.frostlake.functions.OperatorFunctionNames;
 import dev.frostlake.functions.UnlistedFunctionNames;
 import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Contact;
@@ -970,7 +971,7 @@ final class ShowRoutineExecutor {
 
     private void appendMaskingPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
-        for (final MaskingPolicy mp : schema.getMaskingPolicies()) {
+        for (final MaskingPolicy mp : byName(schema.getMaskingPolicies())) {
             if (!seen("MASKING_POLICY", schema, mp.getName(), mp.getOwner())) {
                 continue;
             }
@@ -1020,7 +1021,7 @@ final class ShowRoutineExecutor {
 
     private void appendRowAccessPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
-        for (final RowAccessPolicy rap : schema.getRowAccessPolicies()) {
+        for (final RowAccessPolicy rap : byName(schema.getRowAccessPolicies())) {
             if (!seen("ROW_ACCESS_POLICY", schema, rap.getName(), rap.getOwner())) {
                 continue;
             }
@@ -1104,8 +1105,24 @@ final class ShowRoutineExecutor {
         return across != null ? across : showJoinPolicies(null);
     }
 
+    /**
+     * A schema's policies of one kind in the order the account lists them: by name, character for character, so a
+     * quoted lower-case name follows every upper-case one — JPA, JPB, JPC_JP, jpa — and a rename moves the policy
+     * to its new name's place (live-verified for join, masking, row access, aggregation and projection policies).
+     */
+    private static <T extends Named> List<T> byName(final List<T> policies) {
+        final List<T> ordered = new ArrayList<T>(policies);
+        Collections.sort(ordered, new Comparator<T>() {
+            @Override
+            public int compare(final T left, final T right) {
+                return left.getName().compareTo(right.getName());
+            }
+        });
+        return ordered;
+    }
+
     private void appendJoinPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
-        for (final JoinPolicy policy : schema.getJoinPolicies()) {
+        for (final JoinPolicy policy : byName(schema.getJoinPolicies())) {
             if (!seen("JOIN_POLICY", schema, policy.getName(), policy.getOwner())) {
                 continue;
             }
@@ -1176,7 +1193,7 @@ final class ShowRoutineExecutor {
     }
 
     private void appendAggregationPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
-        for (final AggregationPolicy policy : schema.getAggregationPolicies()) {
+        for (final AggregationPolicy policy : byName(schema.getAggregationPolicies())) {
             if (!seen("AGGREGATION_POLICY", schema, policy.getName(), policy.getOwner())) {
                 continue;
             }
@@ -1247,7 +1264,7 @@ final class ShowRoutineExecutor {
     }
 
     private void appendProjectionPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
-        for (final ProjectionPolicy policy : schema.getProjectionPolicies()) {
+        for (final ProjectionPolicy policy : byName(schema.getProjectionPolicies())) {
             if (!seen("PROJECTION_POLICY", schema, policy.getName(), policy.getOwner())) {
                 continue;
             }

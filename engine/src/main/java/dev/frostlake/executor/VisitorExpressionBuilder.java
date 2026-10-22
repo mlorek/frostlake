@@ -515,9 +515,13 @@ public class VisitorExpressionBuilder {
             }
         }
         if (ctx instanceof FrostlakeParser.ParenExprContext) {
-            // Recursively evaluate the expression inside parentheses
-            return evaluateExpression(
-                unwrapValue(((FrostlakeParser.ParenExprContext) ctx).booleanExpr()), scriptingNamesVisible);
+            // A value inside parentheses is evaluated as itself; a predicate there, (NOT TRUE), is evaluated whole
+            // below, as any other construct is.
+            final FrostlakeParser.ExpressionContext inner =
+                unwrapValue(((FrostlakeParser.ParenExprContext) ctx).booleanExpr());
+            if (inner != null) {
+                return evaluateExpression(inner, scriptingNamesVisible);
+            }
         }
         if (ctx instanceof FrostlakeParser.UnaryExprContext) {
             // Handle unary expressions like -20002

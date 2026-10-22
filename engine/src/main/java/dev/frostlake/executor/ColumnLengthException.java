@@ -61,10 +61,10 @@ public final class ColumnLengthException extends RuntimeException {
     /**
      * The same violation for a BINARY column, which live words by the family: {@code Binary value
      * '0AFF' is too long and would be truncated}, the bytes spelled as upper-case hex whatever they
-     * were written as.
+     * were written as; a JavaScript handler's answer spells them in lower case.
      *
      * @param limit the column's declared width in bytes
-     * @param hex   the offending value as upper-case hex
+     * @param hex   the offending value as hex
      * @return the exception the DML envelope then wraps
      */
     public static ColumnLengthException forBinary(final int limit, final String hex) {

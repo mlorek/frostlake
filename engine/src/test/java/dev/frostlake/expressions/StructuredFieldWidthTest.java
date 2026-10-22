@@ -84,7 +84,7 @@ public class StructuredFieldWidthTest {
 
     @Test
     public void aMapKeyIsHeldToItsDeclaredWidth() {
-        // MAP(VARCHAR(3), ...) does not parse yet (FL-060), so the type is built directly.
+        // MAP(VARCHAR(3), ...) does not parse yet, so the type is built directly.
         final MapType map = new MapType(new StringType("VARCHAR", 3), new NumericType("NUMBER", 38, 0));
         String refused = "not refused";
         try {

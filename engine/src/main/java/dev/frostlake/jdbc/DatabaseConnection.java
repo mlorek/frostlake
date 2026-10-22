@@ -44,7 +44,7 @@ import java.util.concurrent.Executor;
 /**
  * JDBC Connection implementation for Frostlake SQL Engine
  */
-public class DatabaseConnection implements Connection {
+public class DatabaseConnection implements Connection, ResultColumnCase {
     private static final Logger logger = LoggerFactory.getLogger(DatabaseConnection.class);
 
     private final HttpClient httpClient;
@@ -198,6 +198,11 @@ public class DatabaseConnection implements Connection {
     @Override
     public boolean isClosed() throws SQLException {
         return closed;
+    }
+
+    @Override
+    public boolean labelsIgnoreCase() {
+        return httpClient.labelsIgnoreCase();
     }
 
     @Override

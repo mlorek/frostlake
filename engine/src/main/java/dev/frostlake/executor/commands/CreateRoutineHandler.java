@@ -272,6 +272,8 @@ public class CreateRoutineHandler implements CommandHandler {
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
         if (functionLanguage(ctx) == UdfLanguage.JAVA) {
             JavaPackages.requireSupported(writtenPackages(ctx));
+        } else if (functionLanguage(ctx) == UdfLanguage.SCALA) {
+            JavaPackages.requireSupportedForScala(writtenPackages(ctx));
         }
         final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
         final RoutineEnvironment environment = environments.read(ctx.functionOption(), functionLanguage(ctx), false,
@@ -607,6 +609,8 @@ public class CreateRoutineHandler implements CommandHandler {
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
         if (procedureLanguage == UdfLanguage.JAVA) {
             JavaPackages.requireSupported(writtenPackages(ctx));
+        } else if (procedureLanguage == UdfLanguage.SCALA) {
+            JavaPackages.requireSupportedForScala(writtenPackages(ctx));
         }
         final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
         final RoutineEnvironment environment = environments.read(ctx.functionOption(), procedureLanguage, true,

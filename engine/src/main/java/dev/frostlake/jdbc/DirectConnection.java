@@ -52,7 +52,7 @@ import java.util.concurrent.Executor;
  * Direct JDBC connection that wraps a DatabaseEngine instance without HTTP.
  * Used for testing and embedded usage.
  */
-public class DirectConnection implements Connection, AbortableSession {
+public class DirectConnection implements Connection, AbortableSession, ResultColumnCase {
 
     private final DatabaseEngine engine;
     private boolean closed = false;
@@ -101,6 +101,9 @@ public class DirectConnection implements Connection, AbortableSession {
 
     /** Set once another statement aborted this connection's session; every later statement is refused. */
     private volatile boolean aborted;
+    // Whether a column label is matched ignoring case: once the session set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to
+    // TRUE, for the rest of the connection (see ResultColumnCase).
+    private volatile boolean labelsIgnoreCase;
     /** Whether the aborted session held an open transaction, for the refusal's report. */
     private volatile boolean abortedInTransaction;
 
@@ -207,6 +210,9 @@ public class DirectConnection implements Connection, AbortableSession {
                 if (sessionTransactionId != null) {
                     CONNECTION_OWNED_TRANSACTIONS.add(sessionTransactionId);
                 }
+                if (session.resultColumnsCaseInsensitive()) {
+                    labelsIgnoreCase = true;
+                }
                 catalog.clearSessionScope();
                 transactions.clearSessionAutoCommit();
                 if (sessionSettings != null) {
@@ -308,6 +314,11 @@ public class DirectConnection implements Connection, AbortableSession {
     @Override
     public boolean isClosed() throws SQLException {
         return closed;
+    }
+
+    @Override
+    public boolean labelsIgnoreCase() {
+        return labelsIgnoreCase;
     }
 
     @Override

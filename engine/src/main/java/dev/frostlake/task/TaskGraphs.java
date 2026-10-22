@@ -135,30 +135,6 @@ public final class TaskGraphs {
         return roots;
     }
 
-    /**
-     * Whether a task of that name is {@code task} itself or one of its ancestors, the tasks its predecessors
-     * follow from: making it a child of {@code task} would close a loop.
-     */
-    public static boolean descendsFrom(final Schema schema, final Task task, final String name) {
-        final Set<String> seen = new HashSet<>();
-        final List<Task> frontier = new ArrayList<>();
-        frontier.add(task);
-        seen.add(task.getName());
-        for (int i = 0; i < frontier.size(); i++) {
-            final Task member = frontier.get(i);
-            if (member.getName().equals(name)) {
-                return true;
-            }
-            for (final String predecessor : member.getPredecessors()) {
-                final Task parent = taskNamed(schema, QualifiedName.parse(predecessor).last());
-                if (parent != null && seen.add(parent.getName())) {
-                    frontier.add(parent);
-                }
-            }
-        }
-        return false;
-    }
-
     /** The task of exactly that name in the schema, or null. */
     private static Task taskNamed(final Schema schema, final String name) {
         return schema.hasTaskExact(name) ? schema.getTaskExact(name) : null;

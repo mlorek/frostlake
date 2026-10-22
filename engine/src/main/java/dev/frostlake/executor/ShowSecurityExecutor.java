@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.config.AccountIdentity;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.model.Database;
@@ -49,10 +50,12 @@ final class ShowSecurityExecutor {
 
     private final Catalog catalog;
     private final ShowCommandExecutor facade;
+    private final AccountIdentity identity;
 
-    ShowSecurityExecutor(final Catalog catalog, final ShowCommandExecutor facade) {
+    ShowSecurityExecutor(final Catalog catalog, final ShowCommandExecutor facade, final AccountIdentity identity) {
         this.catalog = catalog;
         this.facade = facade;
+        this.identity = identity;
     }
 
     public ResultSet showUsers() {
@@ -580,7 +583,25 @@ final class ShowSecurityExecutor {
             }
             rows.addAll(new AccessControlListings(catalog).grantsTo(role, "ROLE", role.getName()).getRows());
         }
-        return new ResultSet(columns, AccessControlListings.sortedGrants(rows));
+        return new ResultSet(columns, AccessControlListings.sortedGrants(namedAccount(rows)));
+    }
+
+    /**
+     * The rows of a grant listing with each grant on the account named by the account's locator, as SHOW GRANTS ON
+     * ACCOUNT names it, where the grant is recorded under the word ACCOUNT (live-verified).
+     */
+    private List<Row> namedAccount(final List<Row> rows) {
+        final List<Row> named = new ArrayList<>(rows.size());
+        for (final Row row : rows) {
+            if ("ACCOUNT".equals(row.getValue(2))) {
+                final List<Object> values = new ArrayList<>(row.getValues());
+                values.set(3, identity.getAccountLocator());
+                named.add(new Row(values));
+            } else {
+                named.add(row);
+            }
+        }
+        return named;
     }
 
     /** Build a two-column (property, value) describe result. */

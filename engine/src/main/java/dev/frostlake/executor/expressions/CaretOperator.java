@@ -24,11 +24,12 @@ import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
- * The caret written between two values, {@code 2 ^ 2}. The account reads it as an operator and has no use for
- * it: the statement is refused while it compiles, before any of its names is looked up, by the operator's own
- * character and with no place — in a select list, in a WHERE clause, in a view's query, in a block's branch that
- * never runs and in a routine's body as it is created. A caret left without an operand never gets that far — it is
- * the syntax error it is, at the token that follows it or at the caret itself (all live-verified):
+ * The caret written between two values, {@code 2 ^ 2}, and the bar, {@code 2 | 2}. The account reads each as an
+ * operator and has no use for it: the statement is refused while it compiles, before any of its names is looked up,
+ * by the operator's own character and with no place — in a select list, in a WHERE clause, in a view's query, in a
+ * block's branch that never runs and in a routine's body as it is created; a bar anywhere is refused before a caret
+ * anywhere. An operator left without an operand never gets that far — it is the syntax error it is, at the token that
+ * follows it or at the operator itself (all live-verified):
  * <pre>
  *   SELECT 2 ^ 2                          Unsupported feature '^'.
  *   SELECT 2 ^ 2 FROM nosuch_table        Unsupported feature '^'.
@@ -37,6 +38,8 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *   … RETURNS INT AS 'a ^ 2'              Compilation of SQL UDF failed: Unsupported feature '^'.
  *   SELECT 2 ^                            syntax error … unexpected '&lt;EOF&gt;'.
  *   SELECT ^ 2                            syntax error … unexpected '^'.
+ *   SELECT 1 ^ 2 | 3                      Unsupported feature '|'.
+ *   SELECT 1 | 2 FROM nosuch_table        Unsupported feature '|'.
  * </pre>
  */
 public final class CaretOperator {
@@ -45,10 +48,17 @@ public final class CaretOperator {
     }
 
     /**
-     * @return the refusal of a statement that writes the operator
+     * @return the refusal of a statement that writes the caret
      */
     public static RuntimeException refusal() {
         return new RuntimeException("Unsupported feature '^'.");
+    }
+
+    /**
+     * @return the refusal of a statement that writes the bar
+     */
+    public static RuntimeException barRefusal() {
+        return new RuntimeException("Unsupported feature '|'.");
     }
 
     /**
@@ -67,19 +77,32 @@ public final class CaretOperator {
     }
 
     /**
-     * Refuse the text {@code node} was parsed from when the operator is written anywhere in it.
+     * Refuse the text {@code node} was parsed from when either operator is written anywhere in it, a bar first.
      *
      * @param node a parse tree, or null
      */
     public static void rejectIn(final ParseTree node) {
-        if (node == null) {
-            return;
+        if (writes(node, FrostlakeParser.BarExprContext.class)) {
+            throw barRefusal();
         }
-        if (node instanceof FrostlakeParser.CaretExprContext) {
+        if (writes(node, FrostlakeParser.CaretExprContext.class)) {
             throw refusal();
         }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            rejectIn(node.getChild(i));
+    }
+
+    /** Whether the tree holds a node of the kind. */
+    private static boolean writes(final ParseTree node, final Class<? extends ParseTree> kind) {
+        if (node == null) {
+            return false;
         }
+        if (kind.isInstance(node)) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (writes(node.getChild(i), kind)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

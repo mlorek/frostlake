@@ -338,7 +338,7 @@ public final class ChangeTrackedQuery {
     }
 
     /** A view's query as its CREATE statement wrote it, so that its places count from that statement's start. */
-    private static FrostlakeParser.SelectStatementContext body(final View view) {
+    static FrostlakeParser.SelectStatementContext body(final View view) {
         if (view.getOriginalDdl() != null) {
             final ParseTree statement = parsed(view.getOriginalDdl(), false);
             final FrostlakeParser.SelectStatementContext written = statement == null ? null : firstQuery(statement);

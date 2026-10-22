@@ -47,9 +47,11 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Casting TO a STRUCTURED type — the legality rules and the value transformation for
@@ -350,6 +352,9 @@ public final class StructuredCast {
         // unchanged map); only the value type is applied, a text key is held to its declared width, and a NUMBER key
         // is converted to its number.
         final ObjectNode out = ArrayFunctionHelper.MAPPER.createObjectNode();
+        // Keys that convert to one number are one entry, the value of the source key that sorts last as text:
+        // {'01':'x', '1':'y', '1.0':'z'}::MAP(INT, VARCHAR) is {1: 'z'} (live-verified).
+        final Map<String, String> sourceOf = new HashMap<>();
         final Iterator<String> keys = value.propertyNames().iterator();
         while (keys.hasNext()) {
             final String key = keys.next();
@@ -358,9 +363,11 @@ public final class StructuredCast {
                 throw new RuntimeException(NON_NULLABLE);
             }
             final String held = numberKey(key, target.getKeyType());
-            if (out.has(held)) {
-                throw new RuntimeException("Duplicate field key '" + held + "'");
+            final String earlier = sourceOf.get(held);
+            if (earlier != null && earlier.compareTo(key) > 0) {
+                continue;
             }
+            sourceOf.put(held, key);
             out.set(held, convert(value.get(key), target.getValueType(), modifier, null));
         }
         return out;
@@ -371,24 +378,15 @@ public final class StructuredCast {
      * converts it: the documentation has a cast convert keys and values that do not match the declared types, and
      * compares a numeric key as a number, so {@code {'01': 'x'}::MAP(INT, VARCHAR)} is the map {1: 'x'} that
      * {@code m[1]} reads, where the key used to stay the text 01 that no numeric lookup ever named. A key that converts
-     * to no number fails the cast as a value that does not convert fails it. A text key, and any other, is kept as
-     * written.
-     *
-     * <p>Two keys that convert to the same number ({@code '01'} and {@code '1'}) are refused as MAP_CONSTRUCT refuses a
-     * duplicate key. What the account does with them is not measured; refusing is the conservative reading, where
-     * keeping either value would silently drop the other.
+     * to no number fails the cast as that text's cast fails: {@code {'abc':'x'}::MAP(INT, VARCHAR)} is
+     * {@code Numeric value 'abc' is not recognized} (live-verified). A text key, and any other, is kept as written.
      */
     private static String numberKey(final String key, final DataType keyType) {
         if (!(keyType instanceof NumericType) || NumericType.isApproximate(keyType)
                 || NumericType.isDecfloat(keyType)) {
             return key;
         }
-        final Object converted;
-        try {
-            converted = ValueCaster.castValue(key, castTypeName(keyType));
-        } catch (final RuntimeException notNumber) {
-            throw new RuntimeException(SCHEMA_MISMATCH);
-        }
+        final Object converted = ValueCaster.castValue(key, castTypeName(keyType));
         return converted instanceof BigDecimal ? ((BigDecimal) converted).stripTrailingZeros().toPlainString()
             : String.valueOf(converted);
     }
@@ -440,6 +438,12 @@ public final class StructuredCast {
             return value;   // VARIANT / plain OBJECT / plain ARRAY fields keep the value as it stands
         }
         if (value.isObject() || value.isArray()) {
+            throw new RuntimeException(SCHEMA_MISMATCH);
+        }
+        if (NumericType.isDecfloat(target) && (value.isNumber() || value.isBoolean())) {
+            // Only a text or a DECFLOAT member converts to a DECFLOAT one: [1.5]::ARRAY(DECFLOAT), a FLOAT member, a
+            // JSON number and TRUE are each "Typed object schema mismatch in conversion", where ['1.5'] and
+            // [DECFLOAT '1.5'] hold the DECFLOAT 1.5 (live-verified).
             throw new RuntimeException(SCHEMA_MISMATCH);
         }
         final Object converted;

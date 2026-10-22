@@ -39,6 +39,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.ValueRange;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,10 +72,13 @@ public class ExpressionEvaluator {
     private Set<String> enclosingQualifiers;
     private Map<String, Table> groupedRelations;
     private Map<String, DataType> outputAliasTypes;
+    private Map<String, ValueRange> outputAliasRanges;
     private Map<String, Object> resultContext;
     private Map<String, Object> subqueryOuterRow;
     private Map<String, DataType> scriptNameTypes;
     private boolean bindsAsParameters;
+    /** The NOT nodes read as IS NOT TRUE, by identity (see PerGroupNegations). */
+    private Set<Expression> notTrueNegations = Collections.emptySet();
     // One memo per evaluator instance (= one outer query's row loop). Evaluators are created per
     // operator-execution and never pooled, so cached uncorrelated-subquery results never leak across
     // queries. See SubqueryMemo.
@@ -220,7 +224,11 @@ public class ExpressionEvaluator {
         visitor.setSubqueryMemo(subqueryMemo);
         visitor.setScriptNameTypes(scriptNameTypes);
         visitor.setBindsAsParameters(bindsAsParameters);
+        visitor.setNotTrueNegations(notTrueNegations);
         visitor.setGroupedRelations(groupedRelations);
+        // An earlier select item's alias is typed from that item while a row is read too (SYSTEM$TYPEOF of it).
+        visitor.setOutputAliasTypes(outputAliasTypes);
+        visitor.setOutputAliasRanges(outputAliasRanges);
         return expression.accept(visitor);
     }
 
@@ -244,6 +252,16 @@ public class ExpressionEvaluator {
      */
     public void setBindsAsParameters(final boolean parameters) {
         this.bindsAsParameters = parameters;
+    }
+
+    /**
+     * The NOT nodes this evaluator reads as IS NOT TRUE, a NULL operand passing: a HAVING's NOTs over an aggregate of
+     * a per-group subquery (see PerGroupNegations).
+     *
+     * @param negations the nodes, by identity
+     */
+    public void setNotTrueNegations(final Set<Expression> negations) {
+        this.notTrueNegations = negations;
     }
 
     /**
@@ -333,6 +351,15 @@ public class ExpressionEvaluator {
      */
     public boolean callsUserFunction(final List<String> parts) {
         return preparedVisitor().callsUserFunction(parts);
+    }
+
+    /**
+     * SYSTEM$GET_TAG's own judgement ahead of its query's names: see {@link ExpressionEvaluatorVisitor#judgeTagLookup}.
+     *
+     * @param call the call
+     */
+    public void judgeTagLookup(final FunctionCallExpression call) {
+        preparedVisitor().judgeTagLookup(call);
     }
 
     /** The plan-time user-defined function argument check alone, over a parsed expression. */
@@ -440,6 +467,7 @@ public class ExpressionEvaluator {
         reusableVisitor.setEnclosingQualifiers(enclosingQualifiers);
         reusableVisitor.setGroupedRelations(groupedRelations);
         reusableVisitor.setOutputAliasTypes(outputAliasTypes);
+        reusableVisitor.setOutputAliasRanges(outputAliasRanges);
         reusableVisitor.setScriptNameTypes(scriptNameTypes);
         reusableVisitor.setBindsAsParameters(bindsAsParameters);
         if (multiTableAllTables != null) {
@@ -504,6 +532,16 @@ public class ExpressionEvaluator {
      */
     public void setOutputAliasTypes(final Map<String, DataType> types) {
         this.outputAliasTypes = types;
+    }
+
+    /**
+     * The intervals the aliased select items' values lie in, so SYSTEM$TYPEOF of an alias tells the storage the
+     * aliased expression takes.
+     *
+     * @param ranges alias name (upper-cased) to interval
+     */
+    public void setOutputAliasRanges(final Map<String, ValueRange> ranges) {
+        this.outputAliasRanges = ranges;
     }
 
     /** {@link #validateStrict} for a WINDOW call re-formed without its OVER clause — the walk runs
@@ -844,6 +882,8 @@ public class ExpressionEvaluator {
         }
         reusableVisitor.setQueryExecutor(queryExecutor);
         reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        reusableVisitor.setOutputAliasTypes(outputAliasTypes);
+        reusableVisitor.setOutputAliasRanges(outputAliasRanges);
         if (multiTableAllTables != null) {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
@@ -959,6 +999,17 @@ public class ExpressionEvaluator {
      */
     public String foldedPlannedText(final Expression expression) {
         return preparedVisitor().strictFoldedPlanText(expression);
+    }
+
+    /**
+     * {@link #foldedPlannedText} for a GENERATOR bound, its literals' conversions folded too - see
+     * {@link ExpressionEvaluatorVisitor#strictBoundPlanText}.
+     *
+     * @param expression the bound
+     * @return the bound as the refusal echoes it
+     */
+    public String boundPlannedText(final Expression expression) {
+        return preparedVisitor().strictBoundPlanText(expression);
     }
 
     /**

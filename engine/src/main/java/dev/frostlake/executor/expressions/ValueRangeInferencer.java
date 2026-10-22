@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.FromlessDual;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
@@ -88,10 +89,17 @@ final class ValueRangeInferencer {
 
     /** The account's bound on the rows a SUM may accumulate: ten to the twelfth, measured at the flip. */
     private static final BigDecimal ACCUMULATED_ROWS = BigDecimal.TEN.pow(12);
+    /** The least value a FROM-less SUM is tagged as holding: past SB4, the eight bytes it sums in. */
+    private static final BigDecimal SUM_ACCUMULATOR = BigDecimal.valueOf(2147483648L);
+    /** The least value a FROM-less AVG is tagged as holding: past SB8, the sixteen bytes it averages in. */
+    private static final BigDecimal AVG_ACCUMULATOR = new BigDecimal("9223372036854775808");
 
-    /** The calls a constant passes through and stays one — see {@link #foldsAsConstant}. */
+    /**
+     * The calls a constant passes through and stays one — see {@link #foldsAsConstant}. TO_DECFLOAT among them:
+     * {@code f(TO_DECFLOAT('2.5'))} over a NUMBER parameter whose body is {@code x + 1} is [SB1] (live-verified).
+     */
     private static final Set<String> CONSTANT_FOLDING_CALLS = new HashSet<>(Arrays.asList(
-        "CONCAT", "UPPER", "TO_VARIANT"));
+        "CONCAT", "UPPER", "TO_VARIANT", "TO_DECFLOAT"));
 
     /** The conversions into an exact number, whose interval {@link #convertedRange} reads. */
     private static final Set<String> NUMERIC_CONVERSIONS = new HashSet<>(Arrays.asList(
@@ -263,6 +271,11 @@ final class ValueRangeInferencer {
             if (visitor.readsUntypedNull((ColumnReferenceExpression) expr)) {
                 // Nothing but an untyped NULL: the empty interval, as the bare word is.
                 return ValueRange.EMPTY;
+            }
+            // An earlier select item's alias is told by the aliased expression's interval.
+            final ValueRange aliased = visitor.outputAliasRange((ColumnReferenceExpression) expr);
+            if (aliased != null) {
+                return aliased;
             }
             final ValueRange read = visitor.declaredColumnRange((ColumnReferenceExpression) expr);
             // A view's column is told at its declared width, except to an aggregate over it.
@@ -843,10 +856,12 @@ final class ValueRangeInferencer {
                 // A SUM over a value nothing may be computed from keeps its interval as it is: live tags
                 // SUM over a derived REDUCE column by the accumulator's width, and AVG by its declared one.
                 final ValueRange summed = firstArgument(args);
-                return aggregated(summed != null && summed.isOpaqueToComputation() ? summed : accumulated(summed),
+                return aggregated(fromlessAccumulator(call,
+                    summed != null && summed.isOpaqueToComputation() ? summed : accumulated(summed), SUM_ACCUMULATOR),
                     false);
             case "AVG":
-                return aggregated(accumulated(args.isEmpty() ? null : computedFrom(args.get(0))), false);
+                return aggregated(fromlessAccumulator(call,
+                    accumulated(args.isEmpty() ? null : computedFrom(args.get(0))), AVG_ACCUMULATOR), false);
             case "MIN":
                 // One end of the argument's interval is the answer only where the statistics give it: under a
                 // grouping key or a filter each MIN may be any value the interval holds.
@@ -1986,6 +2001,20 @@ final class ValueRangeInferencer {
 
     private ValueRange firstArgument(final List<Expression> args) {
         return args == null || args.isEmpty() ? null : infer(args.get(0));
+    }
+
+    /**
+     * A FROM-less select's SUM or AVG, which no table's statistics bound, tagged at least as wide as the accumulator
+     * it is computed in: SUM(NULL) and SUM(1) are SB8, AVG(NULL) and AVG(1) SB16, where over a table, even an empty
+     * one, SUM(NULL) is SB1 (live-verified).
+     */
+    private ValueRange fromlessAccumulator(final FunctionCallExpression call, final ValueRange range,
+                                           final BigDecimal least) {
+        if (range == null || !(visitor.getTable() instanceof FromlessDual)) {
+            return range;
+        }
+        final Integer scale = exactScale(visitor.inferStaticType(call));
+        return scale == null ? range : range.including(least.movePointLeft(scale.intValue()));
     }
 
     private static ValueRange accumulated(final ValueRange addend) {

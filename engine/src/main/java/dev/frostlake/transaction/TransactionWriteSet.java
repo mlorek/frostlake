@@ -16,10 +16,14 @@
 
 package dev.frostlake.transaction;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
+import dev.frostlake.metastore.model.StreamVersion;
+import dev.frostlake.metastore.model.StreamVersionKind;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.stream.StreamManager;
@@ -66,6 +70,9 @@ public class TransactionWriteSet {
     private final Map<String, Map<Long, Row>> updates = new LinkedHashMap<>();
     /** table → stable ids of base rows deleted by this transaction. */
     private final Map<String, Set<Long>> deletes = new LinkedHashMap<>();
+
+    /** The tables a TRUNCATE emptied, which a stream's backlog lists as truncated. */
+    private final Set<String> truncated = new HashSet<>();
     /** table → the PARTITIONS lock the first touching statement took (SHOW LOCKS' rows). */
     private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
     /** Raw (as-passed) table spellings whose lock entry is known to exist — see {@link #recordTableTouch}. */
@@ -94,6 +101,9 @@ public class TransactionWriteSet {
 
     /** The ordinal of the statement begun last, from 1. */
     private long statementOrdinal;
+
+    /** The tables written since {@link #takeWrittenTables} last asked: what one statement wrote. */
+    private final Set<String> writtenTables = new LinkedHashSet<>();
 
     /** The newest ordinal whose savepoint was let go: a point that needs one at or below it cannot be read. */
     private long lastForgotten;
@@ -258,6 +268,7 @@ public class TransactionWriteSet {
     }
 
     private void snapshotForSavepoint(final String table) {
+        writtenTables.add(table);
         if (activeSavepoint == null || activeSavepoint.isTouched(table)) {
             return;
         }
@@ -347,6 +358,7 @@ public class TransactionWriteSet {
         inserts.remove(table);
         updates.remove(table);
         deletes.put(table, new HashSet<>(committedRowIds));
+        truncated.add(table);
         recordTableTouch(table);
     }
 
@@ -622,6 +634,7 @@ public class TransactionWriteSet {
             final List<Stream> capturing = streamManager != null
                 ? streamManager.capturingStreams(table) : Collections.emptyList();
             final boolean captured = !capturing.isEmpty();
+            final long rowsBefore = base.getRowCount();
 
             // 1. Updates first.
             if (upd != null) {
@@ -673,7 +686,34 @@ public class TransactionWriteSet {
                     }
                 }
             }
+            final StreamVersionKind kind = captured ? versionKind(table, upd, del, ins) : null;
+            if (kind != null) {
+                // The version the commit wrote, the table rewritten whole (see StreamVersion).
+                final StreamVersion version = new StreamVersion(table, StatementClock.hostLocal(), kind,
+                    base.getRowCount(), rowsBefore, ins == null ? 0 : ins.size(), SnapshotSequence.mark());
+                for (final Stream stream : capturing) {
+                    stream.addVersion(version);
+                }
+            }
         }
+    }
+
+    /** What a commit changed in a table, or null where it changed nothing. */
+    private StreamVersionKind versionKind(final String table, final Map<Long, Row> upd, final Set<Long> del,
+                                          final List<Row> ins) {
+        final boolean inserted = ins != null && !ins.isEmpty();
+        final boolean updated = upd != null && !upd.isEmpty();
+        final boolean deleted = del != null && !del.isEmpty();
+        if (truncated.contains(table) && deleted && !inserted && !updated) {
+            return StreamVersionKind.TRUNCATE;
+        }
+        if (inserted) {
+            return updated || deleted ? StreamVersionKind.MERGE : StreamVersionKind.INSERT;
+        }
+        if (updated) {
+            return StreamVersionKind.UPDATE;
+        }
+        return deleted ? StreamVersionKind.DELETE : null;
     }
 
     /**
@@ -710,6 +750,29 @@ public class TransactionWriteSet {
         final List<Row> ins = inserts.get(table);
         final Set<Long> del = deletes.get(table);
         return (ins == null ? 0 : ins.size()) - (del == null ? 0 : del.size());
+    }
+
+    /**
+     * The tables written since the last call, by fully-qualified name, and start the record again: what a statement
+     * wrote, whose rows its QUERY_HISTORY row counts — a write inside an explicit transaction produces the rows of the
+     * table it wrote alone, not those of every table the transaction has written (live-verified).
+     *
+     * @return the tables
+     */
+    public Set<String> takeWrittenTables() {
+        final Set<String> taken = new LinkedHashSet<>(writtenTables);
+        writtenTables.clear();
+        return taken;
+    }
+
+    /**
+     * Put tables back on the record {@link #takeWrittenTables} reads: a statement's, set aside while a statement it ran
+     * counted its own.
+     *
+     * @param tables the tables, by fully-qualified name
+     */
+    public void noteWrittenTables(final Set<String> tables) {
+        writtenTables.addAll(tables);
     }
 
     /** The fully-qualified names of every table this write set holds a buffered insert, update, or delete for. */

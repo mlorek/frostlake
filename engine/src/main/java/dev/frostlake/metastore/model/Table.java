@@ -125,10 +125,8 @@ public class Table extends SqlObject implements SessionScoped {
     // never reused, so dropping one leaves the others as they were (live-verified).
     private final List<SearchOptimizationExpression> searchOptimization = new ArrayList<>();
     private int nextSearchOptimizationId = 1;
-    // DATA METRIC FUNCTIONS attached to this table, recorded and never evaluated.
-    private final List<DataMetricAttachment> dataMetrics = new ArrayList<>();
-    // DATA_METRIC_SCHEDULE as written ('60 MINUTE'); the references view renders it as cron.
-    private String dataMetricSchedule;
+    // DATA METRIC FUNCTIONS attached to this table and their DATA_METRIC_SCHEDULE, recorded and never evaluated.
+    private final DataMetricAttachments dataMetrics = new DataMetricAttachments();
     // The columns whose DISTINCT values count as one entity for the policy's minimum group size.
     private List<String> aggregationEntityKey = new ArrayList<>();
     // Contacts attached for a purpose — ALTER TABLE … SET CONTACT support = c. Purpose (upper) to the
@@ -184,6 +182,8 @@ public class Table extends SqlObject implements SessionScoped {
     // Set only on a DERIVED relation that still carries the statistics of the catalog table beneath
     // it — a subquery, CTE or view projecting that table's rows. Null for every other table.
     private RelationStatistics relationStatistics;
+    /** Whether this relation is a recursive CTE's step as its term reads it (see {@link #markRecursiveStep}). */
+    private boolean recursiveStep;
     // Set only on a join's merged relation: the relations it joins and which of them an outer join
     // extends with NULLs. Null for every other table.
     private JoinedRelations joinedRelations;
@@ -229,6 +229,16 @@ public class Table extends SqlObject implements SessionScoped {
 
     public void setQualifiedName(final String qualifiedName) {
         this.qualifiedName = qualifiedName;
+    }
+
+    /** Whether this relation is a recursive CTE's step as its term reads it, no interval known of its values. */
+    public boolean isRecursiveStep() {
+        return recursiveStep;
+    }
+
+    /** Mark this relation as a recursive CTE's step as its term reads it. */
+    public void markRecursiveStep() {
+        this.recursiveStep = true;
     }
 
     /** The statistics a derived relation carries of the catalog table beneath it, or null. */
@@ -403,12 +413,7 @@ public class Table extends SqlObject implements SessionScoped {
             copy.restoreSearchOptimization(expression);
         }
         copy.nextSearchOptimizationId = Math.max(copy.nextSearchOptimizationId, nextSearchOptimizationId);
-        for (final DataMetricAttachment metric : dataMetrics) {
-            final DataMetricAttachment copied = new DataMetricAttachment(metric.getMetricName(), metric.getColumns());
-            copied.setSuspended(metric.isSuspended());
-            copy.dataMetrics.add(copied);
-        }
-        copy.dataMetricSchedule = dataMetricSchedule;
+        dataMetrics.copyInto(copy.dataMetrics);
         copy.contacts.putAll(contacts);
         copy.stageFileFormat.putAll(stageFileFormat);
         copy.stageCopyOptions.putAll(stageCopyOptions);
@@ -1849,13 +1854,7 @@ public class Table extends SqlObject implements SessionScoped {
                 column.setMaskingPolicyArguments(renamedIn(column.getMaskingPolicyArguments(), was, newName));
             }
         }
-        for (int i = 0; i < dataMetrics.size(); i++) {
-            final DataMetricAttachment metric = dataMetrics.get(i);
-            final DataMetricAttachment renamed = new DataMetricAttachment(metric.getMetricName(),
-                renamedIn(metric.getColumns(), was, newName));
-            renamed.setSuspended(metric.isSuspended());
-            dataMetrics.set(i, renamed);
-        }
+        dataMetrics.renameColumn(was, newName);
         return was;
     }
 
@@ -2157,34 +2156,29 @@ public class Table extends SqlObject implements SessionScoped {
         return aggregationPolicyName != null && !aggregationPolicyName.isEmpty();
     }
 
-    public String getDataMetricSchedule() { return dataMetricSchedule; }
-    public void setDataMetricSchedule(final String schedule) { this.dataMetricSchedule = schedule; }
+    public String getDataMetricSchedule() { return dataMetrics.getSchedule(); }
+    public void setDataMetricSchedule(final String schedule) { dataMetrics.setSchedule(schedule); }
+
+    /** The data metric functions attached to this table and their schedule. */
+    public DataMetricAttachments dataMetricAttachments() { return dataMetrics; }
 
     /** The data metric functions attached to this table, in the order they were added. */
-    public List<DataMetricAttachment> getDataMetrics() { return new ArrayList<>(dataMetrics); }
+    public List<DataMetricAttachment> getDataMetrics() { return dataMetrics.list(); }
 
     /** Attach a metric unless the same one over the same columns is already there (live: a repeat
      *  adds nothing). */
     public void addDataMetric(final DataMetricAttachment attachment) {
-        if (findDataMetric(attachment.getMetricName(), attachment.getColumns()) == null) {
-            dataMetrics.add(attachment);
-        }
+        dataMetrics.add(attachment);
     }
 
     /** The attachment for that metric over those columns, or null when there is none. */
     public DataMetricAttachment findDataMetric(final String metricName, final List<String> columns) {
-        for (final DataMetricAttachment attachment : dataMetrics) {
-            if (attachment.matches(metricName, columns)) {
-                return attachment;
-            }
-        }
-        return null;
+        return dataMetrics.find(metricName, columns);
     }
 
     /** Detach that metric; answers whether there was one to detach. */
     public boolean dropDataMetric(final String metricName, final List<String> columns) {
-        final DataMetricAttachment attachment = findDataMetric(metricName, columns);
-        return attachment != null && dataMetrics.remove(attachment);
+        return dataMetrics.drop(metricName, columns);
     }
 
     /** The configured search-optimization expressions, in the order they were added. */

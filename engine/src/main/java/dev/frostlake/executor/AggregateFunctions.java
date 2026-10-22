@@ -27,6 +27,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.values.VariantValue;
 import java.util.ArrayList;
 import java.util.List;
+import org.antlr.v4.runtime.ParserRuleContext;
 
 /**
  * Stateless aggregate-evaluation helpers extracted from {@link QueryExecutor}: WITHIN GROUP parsing,
@@ -88,6 +89,21 @@ public final class AggregateFunctions {
      * @return the continuous (interpolated) or discrete percentile of the group's values, or null for
      *         an empty group
      */
+    /**
+     * Whether an aggregate call is computed group by group: the select it belongs to, the nearest around it, has a
+     * GROUP BY. A call over the whole input has none.
+     *
+     * @param call the call's parse tree
+     * @return whether a GROUP BY computes it per group
+     */
+    static boolean isComputedPerGroup(final ParserRuleContext call) {
+        ParserRuleContext node = call.getParent();
+        while (node != null && !(node instanceof FrostlakeParser.SelectClauseContext)) {
+            node = node.getParent();
+        }
+        return node != null && ((FrostlakeParser.SelectClauseContext) node).groupByClause() != null;
+    }
+
     public static Object evaluatePercentile(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                       final List<Object> orderedValues, final boolean approximateKey,
                                       final boolean coercedKey, final boolean decfloatKey) {
@@ -124,6 +140,9 @@ public final class AggregateFunctions {
         }
         if (acc instanceof DecfloatAwareAccumulator) {
             ((DecfloatAwareAccumulator) acc).setDecfloatArgument(decfloatKey);
+        }
+        if (acc instanceof PercentileContAccumulator) {
+            ((PercentileContAccumulator) acc).setPerGroup(isComputedPerGroup(funcCtx));
         }
         for (final Object v : orderedValues) {
             acc.accumulate(v);

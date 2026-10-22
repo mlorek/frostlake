@@ -123,7 +123,7 @@ public class PythonResultSet {
      *
      * <p>Snowpark's rows hold what the Python connector maps each type to (docs.snowflake.com/en/developer-guide/
      * python-connector/python-connector-api, "Data type mappings"), and the shim builds those from what crosses here
-     * (#2392): a NUMBER with a scale crosses as its exact text at that scale and becomes a {@code decimal.Decimal}, a
+     *: a NUMBER with a scale crosses as its exact text at that scale and becomes a {@code decimal.Decimal}, a
      * whole NUMBER as a long or, past one, as its exact text and becomes an {@code int} - as a double either lost
      * its digits -, a TIME as its text to the microsecond and becomes a {@code datetime.time}, a TIMESTAMP_TZ as its
      * text with its own offset and a TIMESTAMP_LTZ with the session zone's, each becoming an aware

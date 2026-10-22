@@ -127,9 +127,18 @@ final class SelectListResync {
         }
         final Token at = spoken.get(resume);
         if (at.getType() != Token.EOF) {
+            // The rest is read as a text of its own, its first fault judged as a script's first fault is:
+            // SELECT 1 AS 1, (2 x y) is '1', then the bracket's 'x' and 'y' (live-verified).
             final int from = spoken.get(itemEnd).getStartIndex();
-            lines.addAll(StarModifierResync.linesAfter(StarModifierResync.blanked(sql, from, at.getStartIndex()),
-                refused));
+            final int[] place = SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(refused));
+            for (final String line : SyntaxErrorListener.linesReportedAfresh(
+                    StarModifierResync.blanked(sql, from, at.getStartIndex()))) {
+                final int[] where = SyntaxErrorListener.sentenceCoordinates(line);
+                if (where != null && place != null
+                        && (where[0] > place[0] || where[0] == place[0] && where[1] > place[1])) {
+                    lines.add(line);
+                }
+            }
         }
         return lines;
     }

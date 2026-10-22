@@ -66,6 +66,10 @@ public class CatalogObjectPersistenceTest {
     private static final String STAGED_APP = "COPY INTO @stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
         + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE";
 
+    /** The main file a notebook created FROM a location has to find there. */
+    private static final String STAGED_NOTEBOOK = "COPY INTO @stg/nb/nb.ipynb FROM (SELECT '{}')"
+        + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE";
+
     private Path dir;
 
     @BeforeEach
@@ -286,9 +290,10 @@ public class CatalogObjectPersistenceTest {
             "CREATE SCHEMA d1.s1",
             "USE SCHEMA d1.s1",
             "CREATE WAREHOUSE IF NOT EXISTS fl_app_wh1 INITIALLY_SUSPENDED = TRUE",
+            "CREATE STAGE stg",
+            STAGED_NOTEBOOK,
             "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb' QUERY_WAREHOUSE = fl_app_wh1"
                 + " COMMENT = 'first' IDLE_AUTO_SHUTDOWN_TIME_SECONDS = 600",
-            "CREATE STAGE stg",
             STAGED_APP,
             "CREATE STREAMLIT app FROM '@stg/app' MAIN_FILE = 'streamlit_app.py' TITLE = 'My app'"
                 + " QUERY_WAREHOUSE = fl_app_wh1 IMPORTS = ('@stg/lib.py') EXTERNAL_ACCESS_INTEGRATIONS = (ext1)",
@@ -417,8 +422,9 @@ public class CatalogObjectPersistenceTest {
             "CREATE DATABASE d1",
             "CREATE SCHEMA d1.s1",
             "USE SCHEMA d1.s1",
-            "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb'",
             "CREATE STAGE stg",
+            STAGED_NOTEBOOK,
+            "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb'",
             STAGED_APP,
             "CREATE STREAMLIT app FROM '@stg/app' MAIN_FILE = 'streamlit_app.py'",
             "CREATE IMAGE REPOSITORY repo",
@@ -462,8 +468,10 @@ public class CatalogObjectPersistenceTest {
                 "CREATE EXTERNAL VOLUME ev_d " + LOCATIONS + " COMMENT = 'dropped'",
                 "CREATE DATABASE d1",
                 "CREATE SCHEMA d1.s1",
-                "CREATE NOTEBOOK d1.s1.nb_d FROM '@stg/nb' MAIN_FILE = 'nb.ipynb' COMMENT = 'dropped'",
                 "CREATE STAGE d1.s1.stg",
+                "COPY INTO @d1.s1.stg/nb/nb.ipynb FROM (SELECT '{}')"
+                    + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE",
+                "CREATE NOTEBOOK d1.s1.nb_d FROM '@d1.s1.stg/nb' MAIN_FILE = 'nb.ipynb' COMMENT = 'dropped'",
                 "COPY INTO @d1.s1.stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
                     + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE",
                 "CREATE STREAMLIT d1.s1.st_d FROM '@d1.s1.stg/app' MAIN_FILE = 'streamlit_app.py'"),

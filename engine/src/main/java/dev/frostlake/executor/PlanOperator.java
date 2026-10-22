@@ -34,6 +34,8 @@ final class PlanOperator {
     private final List<String> expressions;
     private final Long partitionsTotal;
     private final Long partitionsAssigned;
+    private Integer loopParent;
+    private int counted = 1;
 
     /**
      * @param id                 the operator's id, 0 for the root
@@ -62,6 +64,31 @@ final class PlanOperator {
 
     int getId() {
         return id;
+    }
+
+    /** Counts this scan's partitions twice in GlobalStats, as a Sort with no row limit reads them. */
+    void countedTwice() {
+        counted = 2;
+    }
+
+    /** How many times GlobalStats counts this scan's partitions. */
+    int counted() {
+        return counted;
+    }
+
+    /**
+     * Records the operator of a recursive term that reads this RecursiveWithClause back, which the plan lists as one
+     * more of its parents.
+     *
+     * @param reader the reading operator's id
+     */
+    void feedsBack(final int reader) {
+        loopParent = Integer.valueOf(reader);
+    }
+
+    /** The recursive term's operator this one feeds back (see {@link #feedsBack}), or null. */
+    Integer getLoopParent() {
+        return loopParent;
     }
 
     Integer getParent() {

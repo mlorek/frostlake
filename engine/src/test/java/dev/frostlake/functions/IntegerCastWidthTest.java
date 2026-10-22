@@ -31,6 +31,9 @@ public class IntegerCastWidthTest extends MeasuredCellsTestSupport {
 
     private static final String PAST_38 = "REFUSED Number out of representable range: type FIXED[SB16](38,0){not null}, value ";
 
+    private static final String DECFLOAT_PAST_38 =
+        "REFUSED Decfloat out of representable range, operation: TO_NUMBER(1e38, 38, 0)";
+
     @Test
     public void anIntegerCastKeepsEveryDigitPastSixtyFourBits() {
         assertAnswer("99999999999999999999", "SELECT 99999999999999999999::INT");
@@ -57,31 +60,31 @@ public class IntegerCastWidthTest extends MeasuredCellsTestSupport {
         assertAnswer("123456789012345678901234567890", "SELECT a FROM icw_c");
     }
 
+    /**
+     * A value past thirty-eight digits is refused in its source's sentence: a DECFLOAT names the conversion, a FLOAT
+     * prints the double in six digits and a VARIANT's double as the VARIANT prints it (live-verified).
+     */
     @Test
     public void anIntegerCastPastThirtyEightDigitsIsRefusedAsTheNumberCastIs() {
-        assertAnswer(PAST_38 + "100000000000000000000000000000000000000",
-            "SELECT CAST('1e38' AS DECFLOAT)::INT");
-        assertAnswer(PAST_38 + "999999999999999939709166371603178586112", "SELECT 1e39::FLOAT::INT");
-        assertAnswer("REFUSED Number out of representable range: type FIXED, value "
-            + "100000000000000000000000000000000000000", "SELECT PARSE_JSON('1e38')::INT");
+        assertAnswer(DECFLOAT_PAST_38, "SELECT CAST('1e38' AS DECFLOAT)::INT");
+        assertAnswer(PAST_38 + "1e+39", "SELECT 1e39::FLOAT::INT");
+        // A VARIANT's double converts at its exact binary value, which is under 10^38.
+        assertAnswer("99999999999999997748809823456034029568", "SELECT PARSE_JSON('1e38')::INT");
         assertAnswer("REFUSED Numeric value '1e38' is out of range", "SELECT '1e38'::INT");
         assertAnswer("null", "SELECT TRY_CAST('1e38' AS INT)");
     }
 
     @Test
     public void aBareNumberCastIsRangeCheckedFromEverySource() {
-        assertAnswer(PAST_38 + "999999999999999939709166371603178586112", "SELECT 1e39::FLOAT::NUMBER");
-        assertAnswer("REFUSED Number out of representable range: type FIXED, value "
-            + "1000000000000000000000000000000000000000", "SELECT PARSE_JSON('1e39')::NUMBER");
-        assertAnswer(PAST_38 + "100000000000000000000000000000000000000",
-            "SELECT CAST('1e38' AS DECFLOAT)::NUMBER");
-        assertAnswer(PAST_38 + "100000000000000000000000000000000000000",
-            "SELECT CAST('1e38' AS DECFLOAT)::NUMBER + 1");
+        assertAnswer(PAST_38 + "1e+39", "SELECT 1e39::FLOAT::NUMBER");
+        assertAnswer("REFUSED Number out of representable range: type FIXED, value 1e+39",
+            "SELECT PARSE_JSON('1e39')::NUMBER");
+        assertAnswer(DECFLOAT_PAST_38, "SELECT CAST('1e38' AS DECFLOAT)::NUMBER");
+        assertAnswer(DECFLOAT_PAST_38, "SELECT CAST('1e38' AS DECFLOAT)::NUMBER + 1");
         // The bare spelling and the explicit one agree.
-        assertAnswer(PAST_38 + "100000000000000000000000000000000000000",
-            "SELECT CAST(CAST('1e38' AS DECFLOAT) AS NUMBER(38,0))");
-        assertAnswer("REFUSED DML operation to table TEST_DB.TEST_SCHEMA.ICW_W failed on column X with error: " + PAST_38.substring(8)
-            + "100000000000000000000000000000000000000",
+        assertAnswer(DECFLOAT_PAST_38, "SELECT CAST(CAST('1e38' AS DECFLOAT) AS NUMBER(38,0))");
+        assertAnswer("REFUSED DML operation to table TEST_DB.TEST_SCHEMA.ICW_W failed on column X with error: "
+            + DECFLOAT_PAST_38.substring("REFUSED ".length()),
             "CREATE TABLE icw_w AS SELECT CAST('1e38' AS DECFLOAT)::NUMBER x");
         // Thirty-eight nines still fit.
         assertAnswer("99999999999999999999999999999999999999",

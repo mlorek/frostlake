@@ -81,6 +81,7 @@ public class SessionContext {
     private final ThreadLocal<String> executableOwner = new ThreadLocal<String>();
     /** Whether a RESTRICTED CALLER procedure's body runs on this thread, which holds none of the caller's rights. */
     private final ThreadLocal<Boolean> restrictedCaller = new ThreadLocal<Boolean>();
+    private final ThreadLocal<String> restrictedOwner = new ThreadLocal<String>();
 
     /** The owners of the views and functions whose bodies run on this thread, innermost last; "" for none. */
     private final ThreadLocal<List<String>> bodyOwners = new ThreadLocal<List<String>>();
@@ -234,8 +235,8 @@ public class SessionContext {
     }
 
     /**
-     * Whether a procedure that runs with restricted caller's rights runs on this thread: its statements hold none of
-     * the caller's privileges, since this engine models no caller grant that would let them use one (FL-434).
+     * Whether a procedure that runs with restricted caller's rights runs on this thread: its statements hold only
+     * those of the caller's privileges a caller grant its owner holds names (see {@link #getRestrictedOwner}).
      *
      * @return true inside such a body, and inside a caller's-rights body it calls
      */
@@ -254,6 +255,30 @@ public class SessionContext {
             restrictedCaller.set(Boolean.TRUE);
         } else {
             restrictedCaller.remove();
+        }
+    }
+
+    /**
+     * The role that owns the restricted caller's-rights procedure whose body runs on this thread, whose caller grants
+     * say which of the caller's privileges the body may use.
+     *
+     * @return the owner's name, or null outside such a body
+     */
+    public String getRestrictedOwner() {
+        return isRestrictedCaller() ? restrictedOwner.get() : null;
+    }
+
+    /**
+     * Name the owner of the restricted caller's-rights procedure entered on this thread; a caller puts back what
+     * {@link #getRestrictedOwner} answered before the call.
+     *
+     * @param owner the procedure's owner, or null
+     */
+    public void setRestrictedOwner(final String owner) {
+        if (owner != null) {
+            restrictedOwner.set(owner);
+        } else {
+            restrictedOwner.remove();
         }
     }
 
@@ -425,6 +450,13 @@ public class SessionContext {
         return bound != null ? bound : ownSettings;
     }
 
+    /**
+     * @return whether this thread's session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE
+     */
+    public boolean resultColumnsCaseInsensitive() {
+        return settings().resultColumnsCaseInsensitive();
+    }
+
     public void setSessionParameter(final String name, final Object value) {
         if (name != null) {
             settings().parameters().put(name.toUpperCase(Locale.ROOT), value);
@@ -462,7 +494,28 @@ public class SessionContext {
     public void setSessionVariable(final String name, final Object value) {
         if (name != null) {
             settings().variables().put(name.toUpperCase(Locale.ROOT), value);
+            settings().decfloatVariables().remove(name.toUpperCase(Locale.ROOT));
         }
+    }
+
+    /**
+     * Define, or redefine, a session variable a SET gave a DECFLOAT: the value is the decimal, and the variable is
+     * typed DECFLOAT — {@code SET v = 1.5::DECFLOAT} reads DECFLOAT(38) in SYSTEM$TYPEOF and {@code decfloat} in SHOW
+     * VARIABLES (live-verified).
+     *
+     * @param name  the variable's name
+     * @param value its value
+     */
+    public void setDecfloatSessionVariable(final String name, final Object value) {
+        if (name != null) {
+            setSessionVariable(name, value);
+            settings().decfloatVariables().add(name.toUpperCase(Locale.ROOT));
+        }
+    }
+
+    /** Whether a SET gave the session variable of this name a DECFLOAT. */
+    public boolean isDecfloatSessionVariable(final String name) {
+        return name != null && settings().decfloatVariables().contains(name.toUpperCase(Locale.ROOT));
     }
 
     /** A session variable's value, or null when SET never defined one of that name. */
@@ -477,6 +530,7 @@ public class SessionContext {
     public void unsetSessionVariable(final String name) {
         if (name != null) {
             settings().variables().remove(name.toUpperCase(Locale.ROOT));
+            settings().decfloatVariables().remove(name.toUpperCase(Locale.ROOT));
         }
     }
 
@@ -511,6 +565,7 @@ public class SessionContext {
                                     final Set<String> unkeptParameters, final Set<String> unkeptVariables) {
         restore(settings().parameters(), parameters, unkeptParameters);
         restore(settings().variables(), variables, unkeptVariables);
+        settings().decfloatVariables().retainAll(settings().variables().keySet());
     }
 
     private static void restore(final Map<String, Object> held, final Map<String, Object> logged,

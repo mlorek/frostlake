@@ -607,6 +607,9 @@ public class ColumnDefinitionParser implements CommandHandler {
                                             final boolean addColumn, final boolean iceberg) {
         final String colName = ParseTreeText.namePartText(colDef.columnDefName());
         rejectAnsiReservedColumnName(colName, colDef);
+        if (!iceberg) {
+            IcebergColumnTypes.refuseFormatWords(colDef.dataTypeName());
+        }
         final DataType tableType = parseDataType(colDef.dataTypeName(), colDef.typeParameters());
         rejectNonNullableMember(tableType, colName.toUpperCase(Locale.ROOT), false);
         final DataType formatType = iceberg ? IcebergColumnTypes.declared(colDef.dataTypeName(),
@@ -1702,7 +1705,9 @@ public class ColumnDefinitionParser implements CommandHandler {
                 final String funcName = funcCtx.functionName().getText().toUpperCase(Locale.ROOT);
                 if (funcName.equals("CURRENT_TIMESTAMP") || funcName.equals("CURRENT_DATE") ||
                     funcName.equals("CURRENT_TIME")) {
-                    return funcName;
+                    // A clock given its precision keeps it, read and printed as written.
+                    return funcCtx.functionArgList() != null ? new DefaultValueExpression(getOriginalText(expr))
+                        : funcName;
                 }
                 if (funcName.equals("UUID_STRING")) {
                     return "UUID_STRING()";

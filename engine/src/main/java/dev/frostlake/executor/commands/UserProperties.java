@@ -158,7 +158,10 @@ final class UserProperties {
             } else if (property.PASSWORD() != null) {
                 user.setPassword(text(property.STRING_LITERAL()));
             } else if (property.DEFAULT_ROLE() != null) {
-                user.setDefaultRole(nameOrLiteral(property));
+                // A name is the role it spells, a quoted one exactly; a string is folded as a bare name is.
+                final String role = nameOrLiteral(property);
+                user.setDefaultRole(property.identifier() != null || role == null ? role
+                    : role.toUpperCase(Locale.ROOT));
             } else if (property.DEFAULT_WAREHOUSE() != null) {
                 user.setDefaultWarehouse(nameOrLiteral(property));
             } else if (property.DEFAULT_NAMESPACE() != null) {

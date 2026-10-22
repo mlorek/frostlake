@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 /**
  * Example demonstrating Common Table Expressions (CTEs) with WITH clause
  */
@@ -136,7 +138,7 @@ public final class CTEExample {
                 logger.info("   - {}: {} employees, avg salary: ${}",
                     row.getValue(0),
                     row.getValue(1),
-                    String.format("%.2f", ((Number) row.getValue(2)).doubleValue()));
+                    String.format(Locale.ROOT, "%.2f", ((Number) row.getValue(2)).doubleValue()));
             }
             logger.info("");
 

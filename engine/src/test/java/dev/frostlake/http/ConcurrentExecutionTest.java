@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -119,7 +120,7 @@ public class ConcurrentExecutionTest {
         engine.execute("CREATE TABLE data (id INT, value VARCHAR)", setupSession);
 
         for (int i = 0; i < 100; i++) {
-            engine.execute(String.format("INSERT INTO data VALUES (%d, 'value%d')", i, i), setupSession);
+            engine.execute(String.format(Locale.ROOT, "INSERT INTO data VALUES (%d, 'value%d')", i, i), setupSession);
         }
 
         // Test: Multiple concurrent reads
@@ -168,7 +169,8 @@ public class ConcurrentExecutionTest {
         final int expected = numThreads * readsPerThread;
         final int minExpected = (int) (expected * 0.95);
         assertTrue(totalSuccesses >= minExpected,
-            String.format("At least 95%% of concurrent reads should succeed (got %d/%d)", totalSuccesses, expected));
+            String.format(Locale.ROOT, "At least 95%% of concurrent reads should succeed (got %d/%d)", totalSuccesses,
+                expected));
     }
 
     @Test
@@ -197,7 +199,8 @@ public class ConcurrentExecutionTest {
                     for (int i = 0; i < writesPerThread; i++) {
                         try {
                             engine.execute(
-                                String.format("INSERT INTO counters VALUES (%d, %d)", threadId * 100 + i, i),
+                                String.format(Locale.ROOT, "INSERT INTO counters VALUES (%d, %d)", threadId * 100 + i,
+                                    i),
                                 session
                             );
                         } catch (final Exception e) {

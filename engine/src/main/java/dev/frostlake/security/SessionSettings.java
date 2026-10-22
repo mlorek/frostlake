@@ -17,9 +17,11 @@
 package dev.frostlake.security;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -43,6 +45,11 @@ public final class SessionSettings {
 
     private final Map<String, Object> parameters = new HashMap<String, Object>();
     private final Map<String, Object> variables = new LinkedHashMap<String, Object>();
+    /**
+     * The variables a SET gave a DECFLOAT, by upper-case name. Their values are decimals, which carry no type of
+     * their own: the variable is DECFLOAT on the account, typed and spelled as one (see SessionContext).
+     */
+    private final Set<String> decfloatVariables = new HashSet<String>();
     /** The session's number: what CURRENT_SESSION() answers and every listing that names a session shows. */
     private final long sessionNumber = NEXT_SESSION_NUMBER.getAndIncrement();
     /** The SQL text of the statement this session is running, what CURRENT_STATEMENT() answers. */
@@ -125,9 +132,26 @@ public final class SessionSettings {
         return name == null ? null : parameters.get(name.toUpperCase(Locale.ROOT));
     }
 
+    /**
+     * Whether the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, under which a driver matches a column
+     * label ignoring case.
+     *
+     * @return whether it is set TRUE
+     */
+    public boolean resultColumnsCaseInsensitive() {
+        final Object value = getParameter("CLIENT_RESULT_COLUMN_CASE_INSENSITIVE");
+        return value instanceof Boolean ? ((Boolean) value).booleanValue()
+            : value != null && "TRUE".equalsIgnoreCase(value.toString().trim());
+    }
+
     /** The variables SET defined, by upper-case name, in the order they were defined. */
     Map<String, Object> variables() {
         return variables;
+    }
+
+    /** The variables a SET gave a DECFLOAT, by upper-case name. */
+    Set<String> decfloatVariables() {
+        return decfloatVariables;
     }
 
     /** Back to a new session's settings. */
@@ -135,6 +159,7 @@ public final class SessionSettings {
         parameters.clear();
         parameters.put("MULTI_STATEMENT_COUNT", 1);
         variables.clear();
+        decfloatVariables.clear();
         roles = null;
     }
 }

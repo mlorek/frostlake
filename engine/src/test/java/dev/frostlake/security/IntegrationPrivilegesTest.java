@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * CREATE INTEGRATION on the account, ALTER and DROP its OWNERSHIP, SHOW lists and DESCRIBE answers for it only to a
  * role holding some privilege on it, and a stage's STORAGE_INTEGRATION, a routine's EXTERNAL_ACCESS_INTEGRATIONS and an
  * external function's API_INTEGRATION take USAGE on it. Every role could create, widen, disable and drop every
- * integration (FL-430). USAGE and OWNERSHIP on one are granted, revoked and listed as on any object (FL-431). Engine
+ * integration. USAGE and OWNERSHIP on one are granted, revoked and listed as on any object. Engine
  * only: the live account allows no CREATE ROLE or GRANT.
  */
 public class IntegrationPrivilegesTest {

@@ -35,6 +35,7 @@ import dev.frostlake.values.VariantValue;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -114,16 +115,23 @@ public class TaskDependentsFunction extends TableFunction {
             new ResultSetColumn("CONDITION", TaskGraphRuns.TEXT)));
     }
 
-    /** The task's row, its predecessors named fully qualified as SHOW TASKS names them. */
+    /**
+     * The task's row, its predecessors named fully qualified as SHOW TASKS names them and sorted by name, as live
+     * lists them whatever order they were added in ({@code ["O","R"]} for a task created AFTER r, o).
+     */
     private static Row row(final Task task, final Schema schema) {
-        final StringBuilder predecessors = new StringBuilder("[");
+        final List<String> names = new ArrayList<>();
         for (final String predecessor : task.getPredecessors()) {
+            final String[] parts = QualifiedName.parse(predecessor).parts();
+            names.add(parts.length == 3 ? String.join(".", parts)
+                : schema.getDatabaseName() + "." + schema.getName() + "." + parts[parts.length - 1]);
+        }
+        Collections.sort(names);
+        final StringBuilder predecessors = new StringBuilder("[");
+        for (final String qualified : names) {
             if (predecessors.length() > 1) {
                 predecessors.append(',');
             }
-            final String[] parts = QualifiedName.parse(predecessor).parts();
-            final String qualified = parts.length == 3 ? String.join(".", parts)
-                : schema.getDatabaseName() + "." + schema.getName() + "." + parts[parts.length - 1];
             predecessors.append('"').append(qualified.replace("\"", "\\\"")).append('"');
         }
         predecessors.append(']');

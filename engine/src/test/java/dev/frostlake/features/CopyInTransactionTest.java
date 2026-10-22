@@ -161,7 +161,7 @@ public class CopyInTransactionTest {
     }
 
     /**
-     * FL-444: a file another session's open transaction loaded is not loaded yet. Another session's COPY of it waits
+     * a file another session's open transaction loaded is not loaded yet. Another session's COPY of it waits
      * for that transaction, as a writer waits for a table's holder, and loads the file once the transaction rolls
      * back, where it answered "0 files processed" and nothing ever loaded the file.
      */
@@ -182,7 +182,7 @@ public class CopyInTransactionTest {
         assertEquals("Copy executed with 0 files processed.", run(a, "COPY INTO u FROM @st"));
     }
 
-    /** FL-444: once the transaction that loaded the file commits, the waiting COPY skips it as loaded. */
+    /** once the transaction that loaded the file commits, the waiting COPY skips it as loaded. */
     @Test
     public void anotherSessionsCopyWaitsForAnUncommittedLoadAndSkipsTheFileAfterACommit() throws Exception {
         run(b, "ALTER SESSION SET LOCK_TIMEOUT = 60");
@@ -199,7 +199,7 @@ public class CopyInTransactionTest {
     }
 
     /**
-     * FL-444: the wait is bounded by LOCK_TIMEOUT like any lock wait, and refused the same way; the loading
+     * the wait is bounded by LOCK_TIMEOUT like any lock wait, and refused the same way; the loading
      * transaction's own next COPY counts its file as loaded, and FORCE loads it in another session without waiting.
      */
     @Test

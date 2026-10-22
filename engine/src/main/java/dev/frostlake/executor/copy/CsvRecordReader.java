@@ -606,8 +606,10 @@ public final class CsvRecordReader {
     /** A refusal of the last record against a table: the sentence, the file and place, the row and the column. */
     private RuntimeException tableRefusal(final String detail, final int atLine, final int atColumn, final long row,
                                           final String against) {
-        return new RuntimeException(detail + "\n  File '" + relativeName + "', line " + atLine + ", character "
-            + atColumn + "\n  Row " + row + startingAt(atLine, recordStartLine) + ", column " + against);
+        final int shownAt = shownLine(atLine, recordStartLine);
+        return new RuntimeException(detail + "\n  File '" + relativeName + "', line " + shownAt + ", character "
+            + atColumn + "\n  Row " + row + startingAt(shownAt, shownLine(recordStartLine, recordStartLine))
+            + ", column " + against);
     }
 
     /**
@@ -664,20 +666,32 @@ public final class CsvRecordReader {
     /** A refusal of a record's width, in the header's words. */
     private RuntimeException widthRefusal(final String detail, final int atLine, final int atColumn, final long row,
                                           final int startLine, final int index) {
+        final int shownAt = shownLine(atLine, startLine);
         return new RuntimeException("Error with CSV header: " + detail + "\n  File '" + relativeName + "', line "
-            + atLine + ", character " + atColumn + "\n  Row " + row + startingAt(atLine, startLine) + ", column "
-            + columnReference(index) + "\n  File '" + relativeName + "'" + HEADER_TAIL);
+            + shownAt + ", character " + atColumn + "\n  Row " + row + startingAt(shownAt,
+            shownLine(startLine, startLine)) + ", column " + columnReference(index) + "\n  File '" + relativeName
+            + "'" + HEADER_TAIL);
     }
 
     /** A refusal of a record that does not parse. */
     private RuntimeException parseRefusal(final String detail, final int atLine, final int atColumn, final long row,
                                           final int startLine, final int index) {
-        final String where = "\n  File '" + relativeName + "', line " + atLine + ", character " + atColumn;
-        final String at = detail + where + "\n  Row " + row + startingAt(atLine, startLine) + ", column "
-            + columnReference(index);
+        final int shownAt = shownLine(atLine, startLine);
+        final String where = "\n  File '" + relativeName + "', line " + shownAt + ", character " + atColumn;
+        final String at = detail + where + "\n  Row " + row + startingAt(shownAt, shownLine(startLine, startLine))
+            + ", column " + columnReference(index);
         final String message = stagedQuery ? at
             : at + where + "\n  Row 0 starts at line 0, column " + columnReference(index);
-        return new CsvParseFault(message, detail, atLine, atColumn, index);
+        return new CsvParseFault(message, detail, shownAt, atColumn, index);
+    }
+
+    /**
+     * The line a refusal names: the file's, or under a FIELD_DELIMITER of several characters the record's own, counted
+     * from the line it starts on, where the character stays the line's own (live-verified: the third record of a
+     * file whose records end at line breaks is refused at line 1, character 4).
+     */
+    private int shownLine(final int atLine, final int startLine) {
+        return fieldDelimiter != null && fieldDelimiter.length() > 1 ? atLine - startLine + 1 : atLine;
     }
 
     private static String startingAt(final int atLine, final int startLine) {

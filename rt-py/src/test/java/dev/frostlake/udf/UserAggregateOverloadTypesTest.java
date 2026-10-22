@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
  * A call of a user aggregate runs the overload its arguments' static types choose, the same for every group - an
  * all-NULL group too - and a typed NULL runs its type's overload, as a scalar function's call chooses (all
  * live-verified). An argument qualified by a lone relation's alias chooses as a bare one does, in a correlated
- * subquery as at the top level (FL-442).
+ * subquery as at the top level.
  */
 public class UserAggregateOverloadTypesTest extends MeasuredCellsTestSupport {
 

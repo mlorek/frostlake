@@ -269,8 +269,10 @@ public final class RoutineSignatures {
     }
 
     /**
-     * A routine's signature as its argument types' families, {@code (NUMBER, VARCHAR)}: what tells its overloads
-     * apart, and what privileges on one overload are recorded under (GrantNames).
+     * A routine's signature as its argument types' families, {@code (NUMBER, VARCHAR)}, a structured one with its
+     * shape: what tells its overloads apart, and what privileges on one overload are recorded under (GrantNames).
+     * {@code f1(x OBJECT(a INT))} and {@code f1(x OBJECT(b INT))} are two overloads, so each keeps privileges of its
+     * own, and a REVOKE or a DROP of one leaves the other's.
      *
      * @param parameters the routine's parameters
      * @return the signature
@@ -281,9 +283,34 @@ public final class RoutineSignatures {
             // A parameter with a default is marked, as SHOW GRANTS names it: D(NUMBER, DEFAULT VARCHAR)
             // (live-verified).
             text.append(i > 0 ? ", " : "").append(parameters.get(i).hasDefault() ? "DEFAULT " : "")
-                .append(signatureFamily(parameters.get(i).getDataType()));
+                .append(recordedType(parameters.get(i).getDataType()));
         }
         return text.append(')').toString();
+    }
+
+    /**
+     * A parameter's type as a signature records it: its family, and a structured type's shape with each member's
+     * family and no NOT NULL in it, {@code OBJECT(a NUMBER, b VARCHAR)}, as the overload's identity reads it
+     * (see {@link #sameSignature}).
+     */
+    private static String recordedType(final DataType type) {
+        if (type instanceof StructuredObjectType) {
+            final StringBuilder shape = new StringBuilder("OBJECT(");
+            final List<StructuredField> fields = ((StructuredObjectType) type).getFields();
+            for (int i = 0; i < fields.size(); i++) {
+                shape.append(i > 0 ? ", " : "").append(fields.get(i).getName()).append(' ')
+                    .append(recordedType(fields.get(i).getDataType()));
+            }
+            return shape.append(')').toString();
+        }
+        if (type instanceof MapType) {
+            return "MAP(" + recordedType(((MapType) type).getKeyType()) + ", "
+                + recordedType(((MapType) type).getValueType()) + ")";
+        }
+        if (type instanceof StructuredArrayType) {
+            return "ARRAY(" + recordedType(((StructuredArrayType) type).getElementType()) + ")";
+        }
+        return signatureFamily(type);
     }
 
     /** Whether two different signatures take a call of some argument count with the same leading types. */

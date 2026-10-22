@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionAstBuilder;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
@@ -102,6 +103,40 @@ final class ArgumentRows {
             }
             throw new RuntimeException(SqlCompilationError.of("invalid type [" + typeText(argument.argumentRow(),
                 evaluator) + "] for parameter '" + argument.variableName().getText().toUpperCase(Locale.ROOT) + "'"));
+        }
+    }
+
+    /**
+     * Refuse the first positional argument written as a parenthesized list, a ROW no table function's positional
+     * parameter takes, by its place: {@code FLATTEN((1, 2))} is {@code invalid type [ROW(NUMBER(1,0), NUMBER(1,0))]
+     * for parameter '1'} and {@code SPLIT_TO_TABLE('a,b', (1, 2))} names parameter '2'. A name in the list is
+     * resolved first, as any argument's is: {@code FLATTEN((a, b))} before the relation holding them is an invalid
+     * identifier at the {@code a} (all live-verified). GENERATOR, TO_QUERY, RESULT_SCAN and INFER_SCHEMA keep their
+     * own rules.
+     *
+     * @param functionName the table function, upper-cased
+     * @param arguments    the call's arguments as written
+     * @param evaluator    the evaluator that types each value in the list
+     */
+    static void refusePositional(final String functionName, final List<FrostlakeParser.FunctionArgContext> arguments,
+                                 final ExpressionEvaluator evaluator) {
+        if ("GENERATOR".equals(functionName) || "TO_QUERY".equals(functionName) || "RESULT_SCAN".equals(functionName)
+                || "INFER_SCHEMA".equals(functionName)) {
+            return;
+        }
+        for (int i = 0; i < arguments.size(); i++) {
+            final FrostlakeParser.ExprTupleContext tuple = arguments.get(i).exprTuple();
+            if (tuple == null) {
+                continue;
+            }
+            final StringBuilder types = new StringBuilder("ROW(");
+            for (int j = 0; j < tuple.expression().size(); j++) {
+                final Expression value = new ExpressionAstBuilder().visit(tuple.expression(j));
+                evaluator.validateStrict(value);
+                types.append(j > 0 ? ", " : "").append(evaluator.argumentTypeText(value));
+            }
+            throw new RuntimeException(SqlCompilationError.of("invalid type [" + types.append(')') + "] for parameter '"
+                + (i + 1) + "'"));
         }
     }
 

@@ -107,9 +107,9 @@ public class JdbcDriverTest {
                 // Query data
                 final ResultSet rs = stmt.executeQuery("SELECT * FROM users");
                 assertTrue(rs.next());
-                assertEquals(1, rs.getInt("id"));
-                assertEquals("Alice", rs.getString("name"));
-                assertEquals(30, rs.getInt("age"));
+                assertEquals(1, rs.getInt("ID"));
+                assertEquals("Alice", rs.getString("NAME"));
+                assertEquals(30, rs.getInt("AGE"));
                 assertFalse(rs.next());
             }
         }
@@ -145,7 +145,7 @@ public class JdbcDriverTest {
                 final ResultSet rs = pstmt.executeQuery();
 
                 assertTrue(rs.next());
-                assertEquals("Laptop", rs.getString("name"));
+                assertEquals("Laptop", rs.getString("NAME"));
                 assertFalse(rs.next());
             }
         }
@@ -202,12 +202,12 @@ public class JdbcDriverTest {
                 final ResultSet rs = stmt.executeQuery(sql);
 
                 assertTrue(rs.next());
-                assertEquals("Alice", rs.getString("emp_name"));
-                assertEquals("Engineering", rs.getString("dept_name"));
+                assertEquals("Alice", rs.getString("EMP_NAME"));
+                assertEquals("Engineering", rs.getString("DEPT_NAME"));
 
                 assertTrue(rs.next());
-                assertEquals("Bob", rs.getString("emp_name"));
-                assertEquals("Sales", rs.getString("dept_name"));
+                assertEquals("Bob", rs.getString("EMP_NAME"));
+                assertEquals("Sales", rs.getString("DEPT_NAME"));
 
                 assertFalse(rs.next());
             }
@@ -455,12 +455,15 @@ public class JdbcDriverTest {
                 st.execute("INSERT INTO arr SELECT ARRAY_CONSTRUCT(10, 20)");
                 try (ResultSet rs = st.executeQuery("SELECT a FROM arr")) {
                     assertTrue(rs.next());
-                    // Reported as text, as Snowflake's driver reports it, while getArray still reads the elements.
+                    // Reported and read as text, as Snowflake's driver does; getArray is refused as there.
                     assertEquals(Types.VARCHAR, rs.getMetaData().getColumnType(1));
-                    final Object[] elements = (Object[]) rs.getArray(1).getArray();
-                    assertEquals(2, elements.length);
-                    assertEquals(10, ((Number) elements[0]).intValue());
-                    assertEquals(20, ((Number) elements[1]).intValue());
+                    assertEquals("[10,20]", rs.getString(1));
+                    assertThrows(SQLFeatureNotSupportedException.class, new Executable() {
+                        @Override
+                        public void execute() throws SQLException {
+                            rs.getArray(1);
+                        }
+                    });
                 }
             }
         }
@@ -518,8 +521,8 @@ public class JdbcDriverTest {
                 // Verify data
                 final ResultSet rs = stmt.executeQuery("SELECT * FROM test_table");
                 assertTrue(rs.next());
-                assertEquals(1, rs.getInt("id"));
-                assertEquals("test", rs.getString("value"));
+                assertEquals(1, rs.getInt("ID"));
+                assertEquals("test", rs.getString("VALUE"));
                 assertFalse(rs.next());
             }
 
