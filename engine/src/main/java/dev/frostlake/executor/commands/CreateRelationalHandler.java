@@ -284,6 +284,9 @@ public class CreateRelationalHandler implements CommandHandler {
             } else {
                 ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, schema);
             }
+            if (ctx.or_alter() != null && ctx.tagList() != null) {
+                InlineTags.refuseOnOrAlter(ctx.tagList(), queryExecutor);
+            }
             // A VIEW answers existence FIRST: over an existing view, IF NOT EXISTS succeeds without the
             // body ever compiling (live: a broken body over an existing view is "already exists").
             if (ifNotExists && !orReplace && schema.hasViewExact(viewName)) {
@@ -420,7 +423,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 // The body compiles where the view will live, whatever the session's context.
                 view.setResolvedColumns(queryExecutor.resolveViewShapeInScope(
                     schemaDatabaseName(parts), schema.getName(), selectQuery, view.getColumnNames(),
-                    selectQuery.equals(writtenQuery) ? null : ctx.objectName().getStop().getText()));
+                    selectQuery.equals(writtenQuery) ? null : viewName));
             } finally {
                 ExpressionSource.end(displacedBody);
             }

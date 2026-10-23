@@ -1021,6 +1021,10 @@ final class RoutineBodyCompiler {
             // The account abandons the CAST at the frame's closing character, where this grammar reads on past it.
             stop = framedTokens.get(framedTokens.size() - 1);
         }
+        final String methodTail = describeMethodTail(framedTokens, stop, body);
+        if (methodTail != null) {
+            return methodTail;
+        }
         final String refusal = "syntax error " + describe(stop) + ".";
         final int opening = framedTokens.size() > 3 ? framedTokens.get(1).getType() : Token.EOF;
         final int refusedAt = opening == FrostlakeLexer.VALUES ? 1
@@ -1035,7 +1039,13 @@ final class RoutineBodyCompiler {
             }
             return lines.toString();
         }
-        if (stop.getType() == FrostlakeLexer.RPAREN && stop.getStartIndex() == framed.length() - 1 && unclosed > 0
+        final int beforeClose = framedTokens.size() > 1 ? framedTokens.get(framedTokens.size() - 2).getType()
+            : Token.EOF;
+        final boolean atFrameClose = stop.getType() == FrostlakeLexer.RPAREN
+            && stop.getStartIndex() == framed.length() - 1;
+        // After a '!' the frame's ')' is no method's name and ends the report; after an OVER it is taken for the
+        // window's, and the frame's own is wanting at the end of input: x OVER (live-verified).
+        if (atFrameClose && (unclosed > 0 && beforeClose != FrostlakeLexer.BANG || beforeClose == FrostlakeLexer.OVER)
                 && !castLeavesFrameClosed) {
             return refusal + "\nsyntax error " + describeEndOfBody(body) + ".";
         }
@@ -1090,6 +1100,76 @@ final class RoutineBodyCompiler {
     }
 
     /** Whether a parenthesis after {@code token} opens a call's argument list: the token is a name. */
+    /**
+     * The refusal of a body broken at a method called with {@code !}, as the account's frame reads it (all
+     * live-verified). After a value that is no name the {@code !} is taken and the token after it is refused:
+     * {@code 1 !} at the frame's ')', {@code 1 ! y} at 'y'. After a method's name that no parenthesis follows, one is
+     * taken to open before the token, which is refused; then a value run into the one before it among those
+     * arguments, and the end of input where the arguments close at the frame's ')': {@code x ! y} is ')' and the end
+     * of input, {@code x ! y z w} 'z', 'w' and the end of input. Null for a body broken anywhere else.
+     */
+    private static String describeMethodTail(final List<Token> framed, final Token stop, final String body) {
+        int at = -1;
+        for (int i = 0; i < framed.size() && at < 0 && stop.getType() != Token.EOF; i++) {
+            if (framed.get(i).getStartIndex() == stop.getStartIndex()) {
+                at = i;
+            }
+        }
+        if (at < 2) {
+            return null;
+        }
+        if (stop.getType() == FrostlakeLexer.BANG && endsUnnamedValue(framed.get(at - 1)) && at + 1 < framed.size()) {
+            final StringBuilder lines = new StringBuilder("syntax error " + describe(framed.get(at + 1)) + ".");
+            if (at + 2 < framed.size() && isCalledName(framed.get(at + 1))
+                    && framed.get(at + 2).getType() == FrostlakeLexer.LPAREN) {
+                lines.append("\nsyntax error ").append(describe(framed.get(at + 2))).append('.');
+            }
+            return lines.toString();
+        }
+        if (at < 3 || framed.get(at - 2).getType() != FrostlakeLexer.BANG || !isCalledName(framed.get(at - 1))
+                || stop.getType() == FrostlakeLexer.LPAREN) {
+            return null;
+        }
+        final StringBuilder lines = new StringBuilder("syntax error " + describe(stop) + ".");
+        int depth = 1;
+        boolean runIn = false;
+        for (int i = at; i < framed.size(); i++) {
+            final int type = framed.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN && --depth == 0) {
+                if (i == framed.size() - 1) {
+                    lines.append("\nsyntax error ").append(describeEndOfBody(body)).append('.');
+                }
+                break;
+            } else if (!runIn && depth == 1 && i > at && endsValue(framed.get(i - 1)) && startsValue(framed.get(i))) {
+                lines.append("\nsyntax error ").append(describe(framed.get(i))).append('.');
+                runIn = true;
+            }
+        }
+        return lines.toString();
+    }
+
+    /** Whether a token ends a value that is no name: a closing bracket or a literal. */
+    private static boolean endsUnnamedValue(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.RPAREN || type == FrostlakeLexer.RBRACKET
+            || type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.STRING_LITERAL;
+    }
+
+    /** Whether a token ends a value: a name, or one that is no name. */
+    private static boolean endsValue(final Token token) {
+        return isCalledName(token) || endsUnnamedValue(token);
+    }
+
+    /** Whether a token starts a value: a name, a literal or an opening parenthesis. */
+    private static boolean startsValue(final Token token) {
+        final int type = token.getType();
+        return isCalledName(token) || type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.STRING_LITERAL || type == FrostlakeLexer.LPAREN;
+    }
+
     private static boolean isCalledName(final Token token) {
         return token.getType() == FrostlakeLexer.IDENTIFIER || token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER;
     }

@@ -37,6 +37,7 @@ import dev.frostlake.executor.expressions.WhenClause;
 import dev.frostlake.executor.expressions.WindowFunctionExpression;
 import dev.frostlake.metastore.model.JoinedRelations;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -50,7 +51,8 @@ import java.util.Set;
  * JavaScript procedure's {@code isColumnNullable} (live-verified):
  *
  * <pre>
- *   a column                                   its own NOT NULL, or nullable on a side an outer join extends
+ *   a column                                   its own NOT NULL, or nullable on a side an outer join extends;
+ *                                              a derived relation's as the projection that made it judged
  *   NULL, TRUE, FALSE                          nullable; a number or a string is not
  *   +, -, *, /, %, ||, a sign, a cast          nullable when an operand is; TRY_CAST always
  *   a comparison, AND, OR, NOT, IS [NOT] NULL,
@@ -218,13 +220,21 @@ final class ResultNullability {
             final Table relation = relationNamed(reference.getTableName());
             if (relation != null && relation.hasColumn(name)) {
                 final JoinedRelations joined = table == null ? null : table.getJoinedRelations();
-                return relation.getColumns().get(relation.getColumnIndex(name)).isNullable()
+                return nullable(relation.getColumns().get(relation.getColumnIndex(name)))
                     || joined != null && joined.includes(relation) && joined.isNullExtended(relation);
             }
         }
         // A name no column answers to is a word of the call it stands in — DATEADD(day, …) — and no value.
         return table != null && table.hasColumn(name)
-            && table.getColumns().get(table.getColumnIndex(name)).isNullable();
+            && nullable(table.getColumns().get(table.getColumnIndex(name)));
+    }
+
+    /**
+     * A column's own NOT NULL, or a derived relation's column's judgement of its item: a column of
+     * (SELECT 1 AS c1) cannot answer NULL (live-verified).
+     */
+    private static boolean nullable(final TableColumn column) {
+        return column.getValuesNullable() != null ? column.getValuesNullable().booleanValue() : column.isNullable();
     }
 
     /** The relation a qualifier names, exactly or else by case alone. */

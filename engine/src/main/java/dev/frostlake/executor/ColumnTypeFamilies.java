@@ -33,6 +33,7 @@ import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 
 import java.util.Locale;
 
@@ -78,6 +79,15 @@ public final class ColumnTypeFamilies {
     public static void rejectMismatch(final TableColumn target, final DataType sourceType) {
         if (target == null || sourceType == null) {
             return;
+        }
+        // A VECTOR column takes a VECTOR of its own type and nothing else: not an ARRAY, a VARIANT or a text that a
+        // cast would convert, nor a VECTOR of another element type, "expecting VECTOR(FLOAT, 3) but got ARRAY for
+        // column V" (live-verified, for INSERT, UPDATE and MERGE).
+        if (target.getDataType() instanceof VectorType && !target.getDataType().equals(sourceType)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Expression type does not match column data type, expecting "
+                + spell(target.getDataType()) + " but got " + spell(sourceType)
+                + " for column " + target.getName()));
         }
         final String targetFamily = family(target.getDataType());
         final String sourceFamily = family(sourceType);

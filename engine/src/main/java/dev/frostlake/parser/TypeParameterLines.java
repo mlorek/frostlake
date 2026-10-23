@@ -99,6 +99,18 @@ public final class TypeParameterLines {
         final boolean inCast = (holder instanceof FrostlakeParser.CastExprContext
             || holder instanceof FrostlakeParser.TryCastExprContext) && (!nested || begins);
         final TypeParameterRefusal refusal = refusal(open, written, close, family, structured, afterColons, inCast);
+        if (refusal != null && list.getParent() instanceof FrostlakeParser.DynamicTableColumnContext) {
+            // A dynamic table's column list is given up whole at a type list it does not take: its first column's name
+            // is named alone, whichever column's list it is and whatever its fault (live-verified).
+            final FrostlakeParser.DynamicTableColumnsContext columns =
+                (FrostlakeParser.DynamicTableColumnsContext) list.getParent().getParent();
+            final List<Token> lines = new ArrayList<>();
+            lines.add(columns.dynamicTableColumn(0).getStart());
+            return new TypeParameterRefusal(lines, true);
+        }
+        if (refusal != null && refusal.size() == 1 && refusal.line(0) == open && returnsOfPolicy(list)) {
+            return new TypeParameterRefusal(policyReturnsReadOn(open, tokens), true);
+        }
         if (refusal != null && nested && !begins && refusal.size() == 1 && refusal.line(0) == open
                 && !(holder instanceof FrostlakeParser.CastExpr2Context)) {
             // A list that cannot begin inside a structured type gives the structured type up: the parenthesis after
@@ -360,6 +372,41 @@ public final class TypeParameterLines {
             || parent instanceof FrostlakeParser.ParameterDefContext
             || parent instanceof FrostlakeParser.StructuredFieldContext
             || parent instanceof FrostlakeParser.AlterColumnItemActionContext;
+    }
+
+    /** Whether a list is the one of a masking or row access policy's RETURNS type. */
+    private static boolean returnsOfPolicy(final FrostlakeParser.TypeParametersContext list) {
+        return list.getParent() instanceof FrostlakeParser.CreateStatementContext
+            && ((FrostlakeParser.CreateStatementContext) list.getParent()).POLICY() != null
+            && ((FrostlakeParser.CreateStatementContext) list.getParent()).RETURNS() != null;
+    }
+
+    /**
+     * The lines of a policy's RETURNS type whose list cannot begin: the account reads on past the '(', refusing each
+     * token up to the first word, which it takes for the type's name, and then the token after that word; a value met
+     * before any word - a number, a text, a parenthesis - is read as the body and refuses nothing more (all
+     * live-verified): {@code RETURNS NUMBER() -> v} is '(', ')', '->' and the end of input, {@code -> v COMMENT = 'x'}
+     * ends at the COMMENT, {@code -> CASE WHEN TRUE THEN v END} at the WHEN, and {@code -> 1 + v} at the '->'.
+     */
+    private static List<Token> policyReturnsReadOn(final Token open, final TokenStream tokens) {
+        final List<Token> lines = new ArrayList<>();
+        lines.add(open);
+        for (int ahead = 1; ; ahead++) {
+            final Token next = tokens.LT(ahead);
+            if (next.getType() == Token.EOF) {
+                lines.add(next);
+                return lines;
+            }
+            if (isWord(next)) {
+                lines.add(tokens.LT(ahead + 1));
+                return lines;
+            }
+            if (next.getType() == FrostlakeParser.INTEGER_LITERAL || next.getType() == FrostlakeParser.FLOAT_LITERAL
+                    || next.getType() == FrostlakeParser.STRING_LITERAL || next.getType() == FrostlakeParser.LPAREN) {
+                return lines;
+            }
+            lines.add(next);
+        }
     }
 
     /** Whether a list's definition is an ALTER statement's, which opens no list of its own around it. */

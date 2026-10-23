@@ -25,6 +25,7 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.KeyContexts;
+import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
@@ -334,11 +335,11 @@ public final class CorrelatedSubqueryRule {
      * FROM-less select does: {@code (SELECT x FROM (SELECT fz.id + 1 AS x))} is answered, and so is a SQL function's
      * {@code WITH d AS (SELECT p AS v) SELECT v FROM d} called over a column (live-verified).
      */
-    private static boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause) {
+    private boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause) {
         return readsOneRowRelationsOnly(clause, new HashSet<FrostlakeParser.CteDefinitionContext>());
     }
 
-    private static boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause,
+    private boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause,
                                                     final Set<FrostlakeParser.CteDefinitionContext> entered) {
         final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
         if (from == null || !from.joinClause().isEmpty()) {
@@ -369,9 +370,11 @@ public final class CorrelatedSubqueryRule {
 
     /**
      * The query a FROM relation reads: a derived table's, or the body of the common table expression its name reads —
-     * once, so a definition that reads itself is no query of one row. Null for a table, a view or any other source.
+     * once, so a definition that reads itself is no query of one row. A subquery read from its own text finds the
+     * statement's CTE of the name in the scope it runs in (see CteDefinitions). Null for a table, a view or any other
+     * source.
      */
-    private static FrostlakeParser.SelectStatementContext relationQuery(
+    private FrostlakeParser.SelectStatementContext relationQuery(
             final FrostlakeParser.TableReferenceContext relation,
             final Set<FrostlakeParser.CteDefinitionContext> entered) {
         final FrostlakeParser.TableSourceContext source = relation.tableSource();
@@ -381,7 +384,12 @@ public final class CorrelatedSubqueryRule {
         if (source.selectStatement() != null) {
             return source.selectStatement();
         }
-        final FrostlakeParser.CteDefinitionContext cte = CommonTableExpressions.named(source);
+        FrostlakeParser.CteDefinitionContext cte = CommonTableExpressions.named(source);
+        if (cte == null && source.tableQualifiedName() != null && source.timeTravelClause() == null) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(source.tableQualifiedName());
+            final Map<String, ResultSet> inScope = executor.getCurrentCteContext();
+            cte = parts.length != 1 || inScope == null ? null : CteDefinitions.of(inScope.get(parts[0]));
+        }
         return cte == null || !entered.add(cte) ? null : cte.selectStatement();
     }
 

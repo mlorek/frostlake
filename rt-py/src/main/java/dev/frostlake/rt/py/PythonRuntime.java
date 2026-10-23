@@ -152,8 +152,9 @@ public final class PythonRuntime {
      * and the environment whole, the modules the runtime made - a helper module and those it installed on
      * {@code sys.modules}, which no file holds - under their names there, and what the runtime's own code is made
      * of. That is each module the runtime made (this one included) and every class and function its sources define,
-     * whether a module holds it, a closure does (the snowpark emulation defines its classes inside a function, so
-     * {@code GroupedFrame} lives in no module) or only {@code object.__subclasses__()} finds it: a member a routine
+     * whether a module holds it, a closure does (the snowpark emulation defines its classes inside a function and
+     * names them by Snowpark's modules, {@code snowflake.snowpark.relational_grouped_dataframe}, so those count as
+     * the runtime's too) or only {@code object.__subclasses__()} finds it: a member a routine
      * replaced or deleted is put back and one it added is removed - an added {@code Session.__getattribute__} would
      * otherwise answer for {@code session.sql} in every later statement - and so for a class's bases, a module's
      * class and a function's code, defaults and closure cells. The cpython worker ({@code cpython_worker.py}) does
@@ -289,7 +290,8 @@ public final class PythonRuntime {
             _namespace.clear()
             _namespace.update(saved)
         def _owned(value):
-            return str(getattr(value, '__module__', '')).startswith('__frostlake')
+            module = str(getattr(value, '__module__', ''))
+            return module.startswith('__frostlake') or module.startswith('snowflake.snowpark')
         def _guard(holder):
             if id(holder) in _guarded_ids:
                 return

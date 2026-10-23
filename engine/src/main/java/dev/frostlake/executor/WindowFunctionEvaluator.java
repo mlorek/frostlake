@@ -121,6 +121,9 @@ final class WindowFunctionEvaluator {
     /** CURRENT ROW's place among a frame's bounds (see boundRank). */
     private static final int CURRENT_ROW_RANK = 2;
 
+    /** What {@link #declaredRatioScale} answers for a DECFLOAT call, whose share is worked out as DECFLOAT. */
+    private static final int DECFLOAT_RATIO = -2;
+
     /** The moment two INTERVAL offsets are measured from, to tell which of them reaches further. */
     private static final LocalDateTime INTERVAL_BASE = LocalDateTime.of(2000, 1, 1, 0, 0);
 
@@ -2765,7 +2768,20 @@ final class WindowFunctionEvaluator {
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
         final Object curVal = extractColumnValue(currentRow, colExpr, table);
         final List<Object> allVals = frameValues(sortedPartition, 0, sortedPartition.size() - 1, colExpr, table);
+        if (ratioScale(funcCtx, table) == DECFLOAT_RATIO) {
+            return WindowFunctionHelper.decfloatRatioToReport(curVal, allVals);
+        }
         return ratioAtDeclaredScale(funcCtx, WindowFunctionHelper.ratioToReport(curVal, allVals), table);
+    }
+
+    /** The scale a ratio's call declares, read once per call (see {@link #declaredRatioScale}). */
+    private int ratioScale(final FrostlakeParser.FunctionCallExprContext funcCtx, final Table table) {
+        Integer scale = state().ratioDeclaredScales.get(funcCtx);
+        if (scale == null) {
+            scale = Integer.valueOf(declaredRatioScale(funcCtx, table));
+            state().ratioDeclaredScales.put(funcCtx, scale);
+        }
+        return scale.intValue();
     }
 
     /**
@@ -2788,19 +2804,17 @@ final class WindowFunctionEvaluator {
         if (!(ratio instanceof Number)) {
             return ratio;
         }
-        Integer scale = state().ratioDeclaredScales.get(funcCtx);
-        if (scale == null) {
-            scale = Integer.valueOf(declaredRatioScale(funcCtx, table));
-            state().ratioDeclaredScales.put(funcCtx, scale);
-        }
-        if (scale.intValue() < 0) {
+        final int scale = ratioScale(funcCtx, table);
+        if (scale < 0) {
             return ratio;
         }
-        return BigDecimal.valueOf(((Number) ratio).doubleValue())
-            .setScale(scale.intValue(), RoundingMode.HALF_UP);
+        return BigDecimal.valueOf(((Number) ratio).doubleValue()).setScale(scale, RoundingMode.HALF_UP);
     }
 
-    /** The declared scale of one RATIO_TO_REPORT call, or -1 when its type is not an exact number. */
+    /**
+     * The declared scale of one RATIO_TO_REPORT call, or -1 when its type is not an exact number, and {@link
+     * #DECFLOAT_RATIO} when it is a DECFLOAT.
+     */
     private int declaredRatioScale(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                    final Table table) {
         final DataType declared;
@@ -2810,6 +2824,9 @@ final class WindowFunctionEvaluator {
                 ExpressionEvaluator.parse(ParseTreeText.getOriginalText(funcCtx)));
         } catch (final RuntimeException undetermined) {
             return -1;
+        }
+        if (NumericType.isDecfloat(declared)) {
+            return DECFLOAT_RATIO;
         }
         return declared instanceof NumericType && !NumericType.isApproximate(declared)
             ? ((NumericType) declared).getScale() : -1;

@@ -28,6 +28,7 @@ import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.HigherOrderFunctionNames;
 import dev.frostlake.functions.SnowflakeBuiltinNames;
+import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Schema;
@@ -54,6 +55,8 @@ import java.util.Set;
  *       {@code Invalid function type [ABS] for window function.};</li>
  *   <li>every call whose name nothing declares is named in ONE sentence, an inner call before the call
  *       holding it: {@code Unknown functions NOSUCHB, NOSUCHA.}</li>
+ *   <li>a block's logging or event statement written as a call is refused alone, the sentence ending with no
+ *       full stop: {@code Unknown function SYSTEM$LOG}.</li>
  * </ul>
  * A name the account has built in counts as declared even where this engine does not implement it, so a
  * routine calling one is created, as it is on the account.
@@ -84,6 +87,12 @@ final class SqlUdfBodyCalls {
         final List<ParserRuleContext> written = new ArrayList<ParserRuleContext>();
         collectNamed(body, written);
         for (final ParserRuleContext one : written) {
+            if (one instanceof FrostlakeParser.SystemFuncExprContext && SystemFunctionNames.isScriptingStatement(
+                    ((FrostlakeParser.SystemFuncExprContext) one).SYSTEM_FUNC().getText())) {
+                // A block's logging or event statement is no function: Unknown function SYSTEM$LOG, no full stop.
+                throw SystemFunctionNames.unknownLoggingFunction(
+                    ((FrostlakeParser.SystemFuncExprContext) one).SYSTEM_FUNC().getText());
+            }
             if (!(one instanceof FrostlakeParser.FunctionCallExprContext)) {
                 // A leading '!' and a class instance's method are calls of what no account has.
                 try {
@@ -319,8 +328,9 @@ final class SqlUdfBodyCalls {
 
     /**
      * Every call under the node that names a function, inner calls first: the calls {@link #collect} gathers, a
-     * method of a class instance written without OVER, a leading {@code !} that negates no EXISTS, and the calls an
-     * ampersand and a leading tilde stand for.
+     * method of a class instance written without OVER, a leading {@code !} that negates no EXISTS, the calls an
+     * ampersand and a leading tilde stand for, and a call of a block statement's SYSTEM$ name (see
+     * {@link SystemFunctionNames#isScriptingStatement}).
      */
     private static void collectNamed(final ParseTree node, final List<ParserRuleContext> calls) {
         if (node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
@@ -336,7 +346,9 @@ final class SqlUdfBodyCalls {
                     && ((FrostlakeParser.InstanceMethodCallExprContext) node).overClause() == null
                 || node instanceof FrostlakeParser.BangExprContext
                     && !BangOperator.negatesExists((FrostlakeParser.BangExprContext) node)
-                || node instanceof FrostlakeParser.AmpExprContext || node instanceof FrostlakeParser.TildeExprContext) {
+                || node instanceof FrostlakeParser.AmpExprContext || node instanceof FrostlakeParser.TildeExprContext
+                || node instanceof FrostlakeParser.SystemFuncExprContext && SystemFunctionNames.isScriptingStatement(
+                    ((FrostlakeParser.SystemFuncExprContext) node).SYSTEM_FUNC().getText())) {
             calls.add((ParserRuleContext) node);
         }
     }

@@ -2225,6 +2225,12 @@ public class SyntaxErrorListener extends BaseErrorListener {
             if (kindWords != null) {
                 return kindWords;
             }
+            // ★ A SECOND OR AFTER CREATE OR REPLACE is the statement's one line — see ReplaceOrLines.
+            final List<String> replaceOr = offendingIndexes.isEmpty() ? null
+                : ReplaceOrLines.lines(opening, offendingIndexes.get(0).intValue());
+            if (replaceOr != null) {
+                return replaceOr;
+            }
             // ★ A FAULT IN A STRUCTURED TYPE'S PARENTHESES, written as a cast's target or a column's type — see
             // StructuredTypeLines.
             final List<String> structured = firstOnly || offendingIndexes.isEmpty() ? null
@@ -2711,6 +2717,11 @@ public class SyntaxErrorListener extends BaseErrorListener {
             : JoinMarkerListLines.refusal(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
         if (markerList != null) {
             return markerList;
+        }
+        final List<String> listAlias = spokenTokens == null ? null
+            : QuantifiedListAliasLines.lines(spokenTokens, offendingIndexes.get(kept.get(0)));
+        if (listAlias != null) {
+            return listAlias;
         }
         final List<String> inList = spokenTokens == null ? null
             : InListRecovery.refusal(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);

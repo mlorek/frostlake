@@ -196,6 +196,11 @@ public class CreateTableHandler implements CommandHandler {
             } else {
                 ddl.checkCreatePrivilege(isHybrid ? Privilege.CREATE_HYBRID_TABLE : Privilege.CREATE_TABLE, schema);
             }
+            final FrostlakeParser.TagListContext orAlterTags = ctx.or_alter() == null ? null
+                : InlineTags.ownTagList(ctx.tableTailOption());
+            if (orAlterTags != null) {
+                InlineTags.refuseOnOrAlter(orAlterTags, queryExecutor);
+            }
             // Every table in a transient schema or database is transient (documented), TRANSIENT written or not
             // (a schema in a transient database is itself transient). A temporary table stays temporary and a
             // hybrid table hybrid.
@@ -281,7 +286,6 @@ public class CreateTableHandler implements CommandHandler {
                     if (!alteredKeys.isEmpty()) {
                         standing.setClusterKeys(alteredKeys, clusterByText(ctx));
                     }
-                    InlineTags.applyFrom(standing, ctx.tableTailOption(), queryExecutor);
                     ConditionalDdlOutcome.alteredInPlace();
                     return null;
                 }
@@ -413,6 +417,7 @@ public class CreateTableHandler implements CommandHandler {
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
@@ -464,6 +469,7 @@ public class CreateTableHandler implements CommandHandler {
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
@@ -552,6 +558,7 @@ public class CreateTableHandler implements CommandHandler {
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
@@ -652,6 +659,7 @@ public class CreateTableHandler implements CommandHandler {
                 DefaultDdlCollation.apply(table, table.getColumns(), schema, catalog);
                 MaskedArguments.requireNotMaskedAndConditional(catalog, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);

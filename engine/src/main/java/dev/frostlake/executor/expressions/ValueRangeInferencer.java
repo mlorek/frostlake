@@ -358,6 +358,12 @@ final class ValueRangeInferencer {
     }
 
     private ValueRange binaryRange(final BinaryOperationExpression binary) {
+        // A difference of two dates is a count of days the account tags by its declared NUMBER(9,0) alone, [SB4],
+        // whatever the dates hold, a NULL date beside the other included (live-verified).
+        if (binary.getOperator() == BinaryOperator.SUBTRACT && isDate(visitor.inferStaticType(binary.getLeft()))
+                && isDate(visitor.inferStaticType(binary.getRight()))) {
+            return null;
+        }
         // A bare NULL operand makes every row NULL whatever the operator, and the account tags that
         // as an empty interval: n10_2 % NULL and NULL / n10_2 are [SB1], not the dividend's width.
         if (isBareNull(binary.getLeft()) || isBareNull(binary.getRight())) {

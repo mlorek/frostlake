@@ -246,15 +246,17 @@ public final class AlertCommandHandler {
             final List<FrostlakeParser.AlertPropertyContext> properties = new ArrayList<>();
             final List<FrostlakeParser.AlertSettingContext> parameters = new ArrayList<>();
             final List<String> names = new ArrayList<>();
+            final List<WrittenParameterValue> values = new ArrayList<>();
             for (final FrostlakeParser.AlertSettingContext setting : action.alertSetting()) {
                 if (setting.alertProperty() != null) {
                     properties.add(setting.alertProperty());
                 } else {
                     parameters.add(setting);
                     names.add(setting.identifier().getText());
+                    values.add(WrittenParameterValue.of(setting.taskPropertyValue()));
                 }
             }
-            judgeParameters(names, alert);
+            judgeParameters(names, values, alert);
             final String schedule = alert.getSchedule();
             applyProperties(catalog, alert.copy(alert.getName()), properties);
             applyProperties(catalog, alert, properties);
@@ -270,7 +272,7 @@ public final class AlertCommandHandler {
                     names.add(parameter.identifier().getText());
                 }
             }
-            judgeParameters(names, alert);
+            judgeParameters(names, null, alert);
             for (final FrostlakeParser.AlertParameterContext parameter : action.alertParameter()) {
                 if (parameter.identifier() != null) {
                     alert.getParameters().remove(ParameterRegistry.canonical(parameter.identifier().getText()));
@@ -297,14 +299,16 @@ public final class AlertCommandHandler {
      * Judges the parameters an ALTER ALERT … SET or UNSET names before any is applied (live-verified): a session
      * parameter or an alert's own LOG_LEVEL and its kin is taken; a few parameters are refused at the alert's level,
      * {@code cannot set parameter 'NETWORK_POLICY' at 'ALERT'}; any other parameter for want of access, "Insufficient
-     * privileges to operate on alert 'A'."; and a name no parameter has as an invalid property of an alert.
+     * privileges to operate on alert 'A'."; and a name no parameter has as an invalid property of an alert. A SET's
+     * value of another kind than its parameter's type is refused first, as an ALTER TABLE's is.
      */
-    private static void judgeParameters(final List<String> names, final Alert alert) {
+    private static void judgeParameters(final List<String> names, final List<WrittenParameterValue> values,
+                                        final Alert alert) {
         final List<Boolean> taken = new ArrayList<>();
         for (final String name : names) {
             taken.add(Boolean.valueOf(ParameterRegistry.isAlertParameter(ParameterRegistry.canonical(name))));
         }
-        ParameterLevels.judgeAlter(names, taken, "ALERT", "alert", alert.getName());
+        ParameterLevels.judgeAlter(names, taken, values, "ALERT", "alert", alert.getName());
     }
 
     private void rescheduleIfChanged(final Schema schema, final Alert alert, final String previousSchedule) {

@@ -104,8 +104,21 @@ final class UdfOverloadPreference {
      * @return the position, lower first
      */
     static int signatureOrder(final DataType parameterType) {
-        return parameterType == null ? Integer.MAX_VALUE
-            : OverloadConversionCosts.signatureOrder(familyOfType(parameterType));
+        if (parameterType == null) {
+            return Integer.MAX_VALUE;
+        }
+        final String family = familyOfType(parameterType);
+        return OverloadConversionCosts.signatureOrder(
+            "TIMESTAMP".equals(family) ? timestampKind(parameterType) : family);
+    }
+
+    /** A timestamp parameter's kind, by the name the type reports; a bare TIMESTAMP is the TIMESTAMP_NTZ it maps to. */
+    private static String timestampKind(final DataType type) {
+        final String name = type.getName().toUpperCase(Locale.ROOT);
+        if (name.startsWith("TIMESTAMP_LTZ") || name.startsWith("TIMESTAMPLTZ")) {
+            return "TIMESTAMP_LTZ";
+        }
+        return name.startsWith("TIMESTAMP_TZ") || name.startsWith("TIMESTAMPTZ") ? "TIMESTAMP_TZ" : "TIMESTAMP_NTZ";
     }
 
     /**

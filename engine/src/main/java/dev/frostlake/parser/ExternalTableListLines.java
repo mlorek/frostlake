@@ -26,6 +26,12 @@ import java.util.List;
  * reading of the statement stops at its kind word instead (live-verified): a leading comma is read as in any option
  * list ({@link OptionListCommaLines}), {@code FILE_FORMAT = (, TYPE = CSV)} the comma and then the list's closing
  * parenthesis, and a trailing one names that parenthesis alone, {@code FILE_FORMAT = (TYPE = CSV,)}.
+ *
+ * <p>Its column list is read as a table's: a type's parameter list the type does not take is refused as in CREATE
+ * TABLE, {@code (a VARCHAR(5,2) AS (value:a::VARCHAR))} at the ',' and the '2' and then the AS the list's first ')'
+ * leaves unread, {@code (a NUMBER() AS …)} at the '(' (live-verified). The reading is the CREATE TABLE this grammar
+ * reads, the kind word blanked and every position where it was written; it speaks only where its first fault falls
+ * inside a type's parameter list there.
  */
 final class ExternalTableListLines {
 
@@ -62,7 +68,53 @@ final class ExternalTableListLines {
                 }
             }
         }
+        return columnListLines(sql, spoken, at);
+    }
+
+    /** The lines of a column list read as a table's, or null where its first fault falls outside a type's list. */
+    private static List<String> columnListLines(final String sql, final List<Token> spoken, final int external) {
+        int open = external + 2;
+        while (!ends(spoken, open) && type(spoken, open) != FrostlakeLexer.LPAREN) {
+            open++;
+        }
+        if (ends(spoken, open) || type(spoken, open - 1) == FrostlakeLexer.EQ) {
+            return null;
+        }
+        final int close = closeOf(spoken, open);
+        final char[] text = sql.toCharArray();
+        for (int c = spoken.get(external).getStartIndex(); c <= spoken.get(external).getStopIndex(); c++) {
+            text[c] = ' ';
+        }
+        final List<String> read = SyntaxErrorListener.linesReportedFor(new String(text), true);
+        if (read.isEmpty()) {
+            return null;
+        }
+        final int[] first = SyntaxErrorListener.sentenceCoordinates(read.get(0));
+        for (int i = open + 3; first != null && i < spoken.size() && (close < 0 || i < close); i++) {
+            // A type's list: a '(' after the type's word, itself after the column's name.
+            if (type(spoken, i) != FrostlakeLexer.LPAREN || type(spoken, i - 1) == FrostlakeLexer.AS
+                    || !isWord(spoken.get(i - 1)) || !isWord(spoken.get(i - 2))) {
+                continue;
+            }
+            final int listClose = closeOf(spoken, i);
+            if (!after(first, spoken.get(i - 1)) || listClose > 0 && after(first, spoken.get(listClose))) {
+                continue;
+            }
+            return read;
+        }
         return null;
+    }
+
+    /** Whether a token is a word: a name or a keyword, written with letters. */
+    private static boolean isWord(final Token token) {
+        final String text = token.getText();
+        return token.getType() != Token.EOF && text != null && !text.isEmpty()
+            && (Character.isLetter(text.charAt(0)) || text.charAt(0) == '_');
+    }
+
+    /** Whether a line's place lies after a token's. */
+    private static boolean after(final int[] place, final Token token) {
+        return place[0] > token.getLine() || place[0] == token.getLine() && place[1] > token.getCharPositionInLine();
     }
 
     /** The index of the parenthesis closing the one at {@code open}, or -1 where the statement leaves it open. */

@@ -59,7 +59,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             def main(session):
                 return sp.__version__
             $$""");
-        assertEquals("1.30.0", callString("shim_imports()"));
+        assertEquals("1.55.3", callString("shim_imports()"));
     }
 
     @Test

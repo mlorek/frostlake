@@ -77,9 +77,11 @@ public class ResultScan extends TableFunction {
         // created_on TIMESTAMP_LTZ(3), the text columns VARCHAR(16777216) and rows / bytes
         // NUMBER(38,0) on the account, and the scan of a SELECT keeps the query's own types — so
         // SYSTEM$TYPEOF and a table built over the scan see a type rather than nothing.
+        // A stored result keeps no statistics of its values: a scanned number is tagged by its declared width,
+        // NUMBER(38,0)[SB16] whatever the query's own column held, and NUMBER(1,0)[SB1] (live-verified).
         final List<ResultSetColumn> declared = new ArrayList<>();
         for (final ResultSetColumn column : result.getColumns()) {
-            declared.add(column.getStaticType() != null && column.getStaticType() != column.getDataType()
+            declared.add((column.getStaticType() != null && column.getStaticType() != column.getDataType()
                     && column.getDataType() instanceof NumericType && column.getStaticType() instanceof NumericType
                 // The scan declares the width the result itself reported, a rewritten SUM's included.
                 ? new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
@@ -87,7 +89,7 @@ public class ResultScan extends TableFunction {
                 : column.getStaticType() != null ? column
                 : new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
                     column.getDataType(), column.isNullable(), column.isNullabilityKnown(),
-                    column.getValueRange()));
+                    column.getValueRange())).withoutValueRange());
         }
         return new ResultSet(declared, withinDeclaredWidths(declared, result.getRows()));
     }

@@ -49,10 +49,23 @@ import org.antlr.v4.runtime.misc.IntervalSet;
  * <pre>
  *   SELECT (SELECT SUM(n IGNORE NULLS) FROM t)          'SELECT', then the call's '(': in a select list
  *   SELECT (SELECT ABS(1) 2 3), SELECT (SELECT SUM(n) FROM t u v)    the same, the fault past the call
- *   … WHERE a = (SELECT ABS(1 2)), … HAVING a = (…)     'SELECT', then '1': compared, the first token in the call
+ *   … WHERE a = (SELECT ABS(1 2)), … HAVING a = (…)     'SELECT', then '1': the first token in the call, in a WHERE
+ *                                                       compared or not, a HAVING, a QUALIFY, an ORDER BY, a GROUP
+ *                                                       BY, an UPDATE's SET and a select list's call argument
+ *   SELECT COALESCE((SELECT ABS(1 2)), 1)               'SELECT', '1', then the call's ')'
  *   … WHERE a &gt; (SELECT COUNT(x =&gt; *, 1) FROM t)          'SELECT', 'x', then the ',' after the star
  *   … WHERE a IN (SELECT SUM(n IGNORE NULLS) FROM t)    'SELECT', then the 'FROM': an IN's list, the token past
  *                                                       the call
+ * </pre>
+ *
+ * <p>A fault inside a call of a later item reads on past the query's own reading (all live-verified):
+ *
+ * <pre>
+ *   SELECT (SELECT n, ABS(1 2) FROM t)                  'SELECT', '2', then the query's ')': in a select list
+ *   … WHERE a = (SELECT n, ABS(1 2) FROM t)             'SELECT', '2', then the 'FROM' past the call, and the
+ *                                                       query's ')' after a clause the FROM's relation is followed
+ *                                                       by; the same in an IN's list and an ORDER BY
+ *   SELECT UPPER((SELECT n, ABS(1 2) FROM t))           'SELECT', '2', 'FROM', then the query's ')'
  * </pre>
  *
  * <p>A derived table, a common table expression's body and an EXISTS are no such query: their own fault is the
@@ -130,6 +143,19 @@ final class ValueSubqueryLines {
             final List<String> called = afterCallFirst(spoken, open, close, place, found[4], firstCall);
             if (called != null) {
                 lines.addAll(called);
+                if (place == ARGUMENT) {
+                    final int callClose = closing(spoken, found[3], end);
+                    if (callClose > close + 1 && callClose < end) {
+                        lines.add(SyntaxErrorListener.sentence(spoken.get(callClose)));
+                    }
+                }
+                return lines;
+            }
+        }
+        if (firstCall < 0 && faultyQuery(sql, spoken, open + 2, close, -1) == null) {
+            final List<String> later = laterCallFault(sql, spoken, open, close, place);
+            if (later != null) {
+                lines.addAll(later);
                 return lines;
             }
         }
@@ -326,11 +352,14 @@ final class ValueSubqueryLines {
             lines.add(SyntaxErrorListener.sentence(spoken.get(call)));
             return lines;
         }
-        if (place != CLAUSE || clause != FrostlakeLexer.WHERE && clause != FrostlakeLexer.HAVING || open < 1) {
+        final boolean clauseRead = place == CLAUSE && (clause == FrostlakeLexer.WHERE || clause == FrostlakeLexer.HAVING
+            || clause == FrostlakeLexer.QUALIFY || clause == FrostlakeLexer.ORDER || clause == FrostlakeLexer.GROUP
+            || clause == FrostlakeLexer.SET);
+        if (place != ARGUMENT && !clauseRead || open < 1) {
             return null;
         }
         final int before = spoken.get(open - 1).getType();
-        if (before == FrostlakeLexer.IN) {
+        if (before == FrostlakeLexer.IN && (clause == FrostlakeLexer.WHERE || clause == FrostlakeLexer.HAVING)) {
             final int callClose = closing(spoken, call, close);
             if (callClose + 1 >= close) {
                 return null;
@@ -338,9 +367,7 @@ final class ValueSubqueryLines {
             lines.add(SyntaxErrorListener.sentence(spoken.get(callClose + 1)));
             return lines;
         }
-        final boolean compared = isComparison(before)
-            || close + 1 < spoken.size() && isComparison(spoken.get(close + 1).getType());
-        if (!compared || spoken.get(call + 1).getType() == FrostlakeLexer.RPAREN) {
+        if (spoken.get(call + 1).getType() == FrostlakeLexer.RPAREN) {
             return null;
         }
         lines.add(SyntaxErrorListener.sentence(spoken.get(call + 1)));
@@ -352,9 +379,79 @@ final class ValueSubqueryLines {
         return lines;
     }
 
-    private static boolean isComparison(final int type) {
-        return type == FrostlakeLexer.EQ || type == FrostlakeLexer.NEQ || type == FrostlakeLexer.LT
-            || type == FrostlakeLexer.LTE || type == FrostlakeLexer.GT || type == FrostlakeLexer.GTE;
+    /**
+     * The lines after the SELECT of a faulty query whose fault stands inside a call that does not open its select
+     * list, or null for a fault anywhere else: the fault, then in a select list the query's own ')'; elsewhere the
+     * FROM past the call, and the query's ')' after a clause the FROM's relation is followed by — or, for a select
+     * list's call argument, after the FROM alone.
+     */
+    private static List<String> laterCallFault(final String sql, final List<Token> spoken, final int open,
+                                               final int close, final int place) {
+        if (place == DEEP || spoken.get(close).getType() != FrostlakeLexer.RPAREN) {
+            return null;
+        }
+        final List<String> inside = queryReadAlone(sql, spoken, open, close);
+        final int[] at = inside.isEmpty() ? null : SyntaxErrorListener.sentenceCoordinates(inside.get(0));
+        int fault = -1;
+        for (int i = open + 2; at != null && i < close && fault < 0; i++) {
+            if (spoken.get(i).getLine() == at[0] && spoken.get(i).getCharPositionInLine() == at[1]) {
+                fault = i;
+            }
+        }
+        // The innermost bracket open at the fault must be a call's, its ')' inside the query.
+        int callOpen = -1;
+        final List<Integer> brackets = new ArrayList<>();
+        for (int i = open + 1; i < fault; i++) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                brackets.add(i);
+            } else if (type == FrostlakeLexer.RPAREN && !brackets.isEmpty()) {
+                brackets.remove(brackets.size() - 1);
+            }
+        }
+        if (!brackets.isEmpty()) {
+            final int innermost = brackets.get(brackets.size() - 1);
+            final int before = spoken.get(innermost - 1).getType();
+            callOpen = WORDS.contains(before) || before == FrostlakeLexer.QUOTED_IDENTIFIER ? innermost : -1;
+        }
+        final int callClose = callOpen < 0 ? -1 : closing(spoken, callOpen, close);
+        if (callClose < 0 || callClose >= close) {
+            return null;
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(inside.get(0));
+        if (place == ITEM) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(close)));
+            return lines;
+        }
+        if (spoken.get(callClose + 1).getType() != FrostlakeLexer.FROM) {
+            return lines;
+        }
+        lines.add(SyntaxErrorListener.sentence(spoken.get(callClose + 1)));
+        boolean clauseAfter = false;
+        for (int i = callClose + 2; i < close && !clauseAfter; i++) {
+            clauseAfter = isClause(spoken.get(i).getType()) && spoken.get(i).getType() != FrostlakeLexer.FROM;
+        }
+        if (place == ARGUMENT || clauseAfter) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(close)));
+        }
+        return lines;
+    }
+
+    /** The lines of the query between {@code open} and {@code close} parsed on its own, every position kept. */
+    private static List<String> queryReadAlone(final String sql, final List<Token> spoken, final int open,
+                                               final int close) {
+        final char[] alone = new char[sql.length()];
+        Arrays.fill(alone, ' ');
+        final int from = spoken.get(open + 1).getStartIndex();
+        final int to = spoken.get(close - 1).getStopIndex();
+        for (int c = 0; c < alone.length; c++) {
+            final char written = sql.charAt(c);
+            if (c >= from && c <= to || written == '\n' || written == '\r') {
+                alone[c] = written;
+            }
+        }
+        return SyntaxErrorListener.linesReportedFor(new String(alone), true);
     }
 
     /** The clause last opened at the innermost level that has opened one, or -1. */

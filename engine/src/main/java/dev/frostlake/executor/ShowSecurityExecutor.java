@@ -442,7 +442,9 @@ final class ShowSecurityExecutor {
 
     /**
      * SHOW GRANTS OF ROLE: who holds the role. Live's five columns are its own shape — narrower
-     * than every other grants listing.
+     * than every other grants listing. PUBLIC, which every user and role holds, lists no one, and a grant of the
+     * account's own role hierarchy — SYSADMIN and SECURITYADMIN to ACCOUNTADMIN, USERADMIN to SECURITYADMIN —
+     * names no grantor (live-verified).
      */
     public ResultSet showGrantsOfRole(final String roleName) {
         final Role role = catalog.getRoleExact(roleName);
@@ -454,6 +456,9 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("granted_by", StringType.VARCHAR)
         );
         final List<Row> rows = new ArrayList<>();
+        if ("PUBLIC".equals(role.getName())) {
+            return new ResultSet(columns, rows);
+        }
         for (final User user : catalog.getAllUsers()) {
             if (user.getGrantedRoles().contains(role.getName())) {
                 rows.add(new Row(Arrays.asList(
@@ -466,7 +471,7 @@ final class ShowSecurityExecutor {
                 rows.add(new Row(Arrays.asList(
                     roleGrantedOn(holder.getRoleGrantTime(role.getName()), holder.getCreatedTime()),
                     role.getName(), "ROLE", holder.getName(),
-                    holder.getRoleGrantor(role.getName()))));
+                    holder.hasExplicitRoleGrant(role.getName()) ? holder.getRoleGrantor(role.getName()) : "")));
             }
         }
         return new ResultSet(columns, rows);

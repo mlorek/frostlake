@@ -21,6 +21,8 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.GeographyType;
+import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
@@ -29,6 +31,7 @@ import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.WidthlessStringType;
 
 /**
  * The text a scripting variable holding NULL takes when a statement's text binds it: NULL cast to the variable's
@@ -44,9 +47,10 @@ import dev.frostlake.types.VariantType;
  *       function, whose overloads are chosen by it, does it keep its type.</li>
  * </ul>
  *
- * <p>A declaration of another family — a geography, a vector, a structured type — keeps the bare NULL. A text
- * declared without a length binds at the width nothing bounds, VARCHAR(134217728), which is the type its
- * declaration is recorded with.
+ * <p>A geography or a geometry binds as an OBJECT; a declaration of another family — a vector, a structured type —
+ * keeps the bare NULL. A text declared without a length binds at the width nothing bounds, VARCHAR(134217728),
+ * which is the type its declaration is recorded with, while one declared at that width in so many words binds as a
+ * text of no width at all, VARCHAR to SYSTEM$TYPEOF.
  */
 final class TypedNullBind {
 
@@ -62,8 +66,15 @@ final class TypedNullBind {
      * @return {@code NULL::<type>}, or a bare {@code NULL}
      */
     static String spell(final DataType declared, final NullBindSlot slot, final boolean userFunctionArgument) {
+        if ((declared instanceof GeographyType || declared instanceof GeometryType) && !slot.isValuesItem()
+                && !slot.isDateTimeArgument()) {
+            return "NULL::OBJECT";
+        }
         if (!castable(declared) || !keepsType(declared, slot, userFunctionArgument)) {
             return "NULL";
+        }
+        if (declared instanceof WidthlessStringType) {
+            return "NULL::VARCHAR";
         }
         // A binary is spelled at the width SYSTEM$TYPEOF names: a BINARY declared without one at the 64MB maximum.
         return "NULL::" + (declared instanceof BinaryType ? ((BinaryType) declared).typeofText()

@@ -85,6 +85,10 @@ public final class PythonTableFunctionExecutor {
     /** The global a row's argument is bound to for its {@code process} call, numbered from 0. */
     private static final String TABLE_ARGUMENT = "__fl_table_argument";
 
+    /** Python that reads a generator a handler answered, at {@code @}, into a list. */
+    private static final String READ_THROUGH =
+        "\nif isinstance(@, __import__('types').GeneratorType):\n    @ = list(@)\n";
+
     /**
      * Execute a Python UDTF with a single set of arguments (no partition).
      * Calls process(*args) once then end_partition() if defined.
@@ -137,14 +141,14 @@ public final class PythonTableFunctionExecutor {
         Object frame = null;
         try {
             frame = PythonInterpreter.enterModule();
-            PythonInterpreter.eval(dedent(function.getBody()));
+            PythonFailureReport.runSource(dedent(function.getBody()), handlerClassName);
 
             // Instantiate the handler class; a dotted one is a module's attribute, imported as CREATE resolved it.
             if (PythonHandlerCheck.isDotted(handlerClassName)) {
                 PythonInterpreter.bind("__fl_handler_name", handlerClassName);
-                PythonInterpreter.eval(PythonHandlerCheck.RESOLVE_DOTTED + "__handler_instance = __fl_handler()");
+                PythonFailureReport.run(PythonHandlerCheck.RESOLVE_DOTTED + "__handler_instance = __fl_handler()");
             } else {
-                PythonInterpreter.eval("__handler_instance = " + handlerClassName + "()");
+                PythonFailureReport.run("__handler_instance = " + handlerClassName + "()");
             }
 
             // Call process() for each input row, each argument bound as the Python value its parameter's type maps
@@ -157,14 +161,17 @@ public final class PythonTableFunctionExecutor {
                     PythonInterpreter.bindArgument(params.get(i), TABLE_ARGUMENT + i, rowArgs.get(i));
                     call.append(i == 0 ? "" : ", ").append(TABLE_ARGUMENT).append(i);
                 }
-                PythonInterpreter.eval(call.append(')').toString());
+                // A generator is read through here, so what it raises while it yields is reported as the handler's.
+                PythonFailureReport.run(call.append(')').append(READ_THROUGH.replace("@", "__process_result"))
+                    .toString());
                 writtenPerRow.add(rowsOf("__process_result", function, outputColumns, declared));
             }
 
             // Call end_partition() if it exists
             PythonInterpreter.eval("__has_end_partition = hasattr(__handler_instance, 'end_partition')");
             if (Boolean.TRUE.equals(PythonInterpreter.global("__has_end_partition"))) {
-                PythonInterpreter.eval("__end_result = __handler_instance.end_partition()");
+                PythonFailureReport.run("__end_result = __handler_instance.end_partition()"
+                    + READ_THROUGH.replace("@", "__end_result"));
                 atEnd.addAll(rowsOf("__end_result", function, outputColumns, declared));
             }
 
@@ -173,8 +180,9 @@ public final class PythonTableFunctionExecutor {
             throw refused;
         } catch (final Exception e) {
             // Worded before the context is settled (see PythonInterpreter.settleAfter).
-            final String refusal = "Error executing Python table function " + function.getName() + ": "
-                + e.getMessage();
+            final String reported = PythonFailureReport.wording(function.getName(), handlerClassName);
+            final String refusal = reported != null ? reported
+                : "Error executing Python table function " + function.getName() + ": " + e.getMessage();
             logger.error("Error executing Python table function {}: {}", function.getName(), e.getMessage(), e);
             if (!PythonInterpreter.settleAfter(e)) {
                 throw new RuntimeException(refusal);

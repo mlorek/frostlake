@@ -29,8 +29,9 @@ import java.util.Map;
  * NULL (live-verified): a DATE plus or minus a number, a number plus a DATE and a DATE minus a DATE where a DATE
  * variable holds NULL — {@code :d + 1}, {@code 1 + :d}, {@code :d + :n}, {@code :d - :e} — the same where a number
  * variable beside a DATE holds NULL, and a date, a time or a timestamp plus or minus an INTERVAL where the variable
- * holds NULL. The NULL then reads as the bare word does: {@code SYSTEM$TYPEOF(:d + 1)} is {@code NULL[LOB]},
- * {@code :d + 1 + 1} a NUMBER(19,0) and {@code COALESCE(:d + 1, CURRENT_DATE())} a DATE. A variable written in
+ * holds NULL, a DATE written as a literal or as a text cast to DATE alike. The NULL then reads as the bare word
+ * does: {@code SYSTEM$TYPEOF(:d + 1)} is {@code NULL[LOB]}, {@code :d + 1 + 1} a NUMBER(19,0) and
+ * {@code COALESCE(:d + 1, CURRENT_DATE())} a DATE. A variable written in
  * brackets of its own stands where the bare one would; an operation another operator binds closer, as {@code x - :d
  * + 1} or {@code :d + 1 * 2}, is left as written.
  */
@@ -143,6 +144,9 @@ final class NullDateOperations {
         if (type(end) == FrostlakeLexer.STRING_LITERAL && isTypedLiteralWord(type(end - 1))) {
             return end - 1;
         }
+        if (isDateCast(end)) {
+            return end - 2;
+        }
         if (binds.containsKey(end - 1)) {
             return end - 1;
         }
@@ -178,7 +182,16 @@ final class NullDateOperations {
         if (type(end) == FrostlakeLexer.STRING_LITERAL) {
             return literalKind(type(end - 1));
         }
+        if (isDateCast(end)) {
+            return DateOperandKind.DATE;
+        }
         return binds.containsKey(end - 1) ? binds.get(end - 1) : binds.get(end - 2);
+    }
+
+    /** Whether the operand ending at {@code end} is a text cast to DATE, {@code '2024-01-02'::DATE}. */
+    private boolean isDateCast(final int end) {
+        return type(end) == FrostlakeLexer.DATE && type(end - 1) == FrostlakeLexer.DOUBLE_COLON
+            && type(end - 2) == FrostlakeLexer.STRING_LITERAL;
     }
 
     private DateOperandKind kindStartingAt(final int start) {

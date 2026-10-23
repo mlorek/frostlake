@@ -78,6 +78,9 @@ final class TaskProperties {
 
     /** The level parameters, whose bare value keeps the case it is written in. */
     private static final Set<String> LEVELS = new HashSet<>(Arrays.asList("LOG_LEVEL", "TRACE_LEVEL"));
+    /** The parameters a task takes from its graph's root, which a task that is no root cannot set. */
+    private static final Set<String> ROOT_PARAMETERS = new HashSet<>(Arrays.asList("TASK_AUTO_RETRY_ATTEMPTS",
+        "SUSPEND_TASK_AFTER_NUM_FAILURES"));
 
     private static final BigInteger INT_MIN = BigInteger.valueOf(Integer.MIN_VALUE);
     private static final BigInteger INT_MAX = BigInteger.valueOf(Integer.MAX_VALUE);
@@ -581,9 +584,26 @@ final class TaskProperties {
             throw nonRootOverlapping(task);
         }
         if (retryAttemptsGiven) {
-            throw new RuntimeException("Cannot set parameter TASK_AUTO_RETRY_ATTEMPTS on non-root task "
-                + task.getName() + ". Non-root tasks use the parameter setting from their root task. Please set "
-                + "this on the root task for this task instead.");
+            throw nonRootParameter("TASK_AUTO_RETRY_ATTEMPTS", task);
+        }
+    }
+
+    /**
+     * The parameters a task takes from its graph's root, refused on a task that runs after others or finalizes a
+     * graph, the first one written named. ALTER TASK … SET refuses them before it asks whether the graph runs,
+     * wherever they stand among the statement's properties (live-verified).
+     *
+     * @param task     the task
+     * @param settings the statement's properties
+     */
+    void requireRootParameters(final Task task, final List<TaskPropertySetting> settings) {
+        if (task.getPredecessors().isEmpty() && !task.isFinalizer()) {
+            return;
+        }
+        for (final TaskPropertySetting setting : settings) {
+            if (ROOT_PARAMETERS.contains(setting.key())) {
+                throw nonRootParameter(setting.key(), task);
+            }
         }
     }
 
@@ -693,11 +713,32 @@ final class TaskProperties {
         for (final Task member : members) {
             for (final Task root : TaskGraphs.rootsOf(schema, member)) {
                 if (root.getState() == TaskState.STARTED) {
-                    throw new RuntimeException("Unable to update graph with root task " + qualified(root)
-                        + " since that root task is not suspended.");
+                    throw notSuspended(root);
                 }
             }
         }
+    }
+
+    /**
+     * Refuses a change to a task of a graph whose root runs. While a root with a child or a finalizer runs, none of
+     * the graph's tasks is altered, redefined or dropped, and no child or finalizer is resumed or suspended; its
+     * tags and contacts still change, and the root still resumes and suspends. A task that runs alone takes every
+     * change (live-verified).
+     *
+     * @param member the task the statement changes
+     */
+    void requireSuspendedGraph(final Task member) {
+        for (final Task root : TaskGraphs.rootsOf(schema, member)) {
+            if (root.getState() == TaskState.STARTED
+                    && (hasChildren(root) || TaskGraphs.finalizerOf(schema, root) != null)) {
+                throw notSuspended(root);
+            }
+        }
+    }
+
+    private RuntimeException notSuspended(final Task root) {
+        return new RuntimeException("Unable to update graph with root task " + qualified(root)
+            + " since that root task is not suspended.");
     }
 
     /**
@@ -911,6 +952,12 @@ final class TaskProperties {
             shown.add(part.startsWith("\"") ? part : part.toUpperCase(Locale.ROOT));
         }
         return String.join(".", shown);
+    }
+
+    private static RuntimeException nonRootParameter(final String parameter, final Task task) {
+        return new RuntimeException("Cannot set parameter " + parameter + " on non-root task " + task.getName()
+            + ". Non-root tasks use the parameter setting from their root task. Please set this on the root task for "
+            + "this task instead.");
     }
 
     private RuntimeException nonRootConfig(final Task task) {

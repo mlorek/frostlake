@@ -18,6 +18,8 @@ package dev.frostlake.rt.js;
 
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.values.VectorValue;
 import org.graalvm.polyglot.HostAccess;
 
@@ -72,10 +74,11 @@ public class JavaScriptResultSet {
         }
         final Row row = resultSet.getRows().get(currentRow);
         final Object value = index < row.size() ? row.getValue(index) : null;
-        if (value instanceof VectorValue) {
-            // A VECTOR column's value is its text, as getColumnValueAsString writes it (live-verified).
-            return JavaScriptArgumentJson.ofColumn(
-                JavaScriptColumns.asString(value, resultSet.getColumns().get(index).getDataType()));
+        final DataType type = resultSet.getColumns().get(index).getDataType();
+        if (value instanceof VectorValue || value != null && NumericType.isDecfloat(type)) {
+            // A VECTOR column's value is its text, as getColumnValueAsString writes it, and so is a DECFLOAT's: a
+            // string, never a JavaScript number that would lose its digits (live-verified).
+            return JavaScriptArgumentJson.ofColumn(JavaScriptColumns.asString(value, type));
         }
         return JavaScriptArgumentJson.ofColumn(value);
     }

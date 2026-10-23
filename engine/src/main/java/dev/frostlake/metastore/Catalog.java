@@ -47,6 +47,7 @@ import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
@@ -1656,6 +1657,16 @@ public class Catalog {
     /** The pipe a statement names, exactly: a quoted name in another case is another pipe (live-verified). */
     public Pipe getPipe(final String name) {
         return resolveSchemaForObject(name).getPipeExact(objectName(name));
+    }
+
+    /**
+     * The task a canonical name names, bare or qualified, resolved as a pipe's name is.
+     *
+     * @param name the canonical name
+     * @return the task, or null where no task of exactly that name is in the schema
+     */
+    public Task getTask(final String name) {
+        return resolveSchemaForObject(name).getTaskExact(objectName(name));
     }
 
     public List<Stage> getAllStages() {

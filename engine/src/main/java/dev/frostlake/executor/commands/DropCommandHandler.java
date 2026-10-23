@@ -735,11 +735,16 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.TASK() != null) {
                 final String taskQn = dropNameText(ctx);
                 final String taskName = ddl.extractObjectName(taskQn);
-
+                boolean found = false;
                 try {
                     final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQn);
                     checkDrop(SecurableObjectType.TASK, taskQn);
                     queryExecutor.requireOwnership("TASK", dropNameParts(ctx), null);
+                    found = schema.hasTaskExact(taskName);
+                    // No task of a graph whose root runs is dropped; a task that runs alone is (live-verified).
+                    if (found) {
+                        new TaskProperties(catalog, schema).requireSuspendedGraph(schema.getTaskExact(taskName));
+                    }
                     // A quoted name in another case is another task, which is not there (live-verified).
                     schema.dropTaskExact(taskName);
                     // A finalizer task of the dropped root finalizes nothing any more: it stands alone. A task that
@@ -758,7 +763,8 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     logger.trace("Dropped task: {}", taskName);
                 } catch (final RuntimeException e) {
-                    if (!forgiven(ifExists, e)) throw e;
+                    // IF EXISTS forgives the task's absence, never a refusal of the task that is there.
+                    if (found || !forgiven(ifExists, e)) throw e;
                     ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Task does not exist (IF EXISTS): {}", taskName);
                 }

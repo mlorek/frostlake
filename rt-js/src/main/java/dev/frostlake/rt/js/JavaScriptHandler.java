@@ -35,6 +35,7 @@ import dev.frostlake.values.BinaryValue;
 
 import java.time.temporal.TemporalAccessor;
 import java.util.List;
+import java.util.Locale;
 import javax.script.Invocable;
 import javax.script.ScriptEngine;
 import javax.script.ScriptException;
@@ -408,6 +409,7 @@ final class JavaScriptHandler {
         final StringBuilder converted = new StringBuilder();
         final StringBuilder row = new StringBuilder();
         final StringBuilder info = new StringBuilder();
+        final StringBuilder told = new StringBuilder();
         boolean semiStructured = false;
         boolean binary = false;
         for (int i = 0; i < parameters.size(); i++) {
@@ -422,13 +424,17 @@ final class JavaScriptHandler {
                     .append(" = arrive(a").append(i).append("); }\n");
             }
             row.append(i > 0 ? ", " : "").append(key).append(": a").append(i);
-            // A constant number is told by its value (live-verified); a constant of another type is not measured.
+            // A constant is told by its value as the handler reads it, the partition's first row converted for the
+            // purpose, and every argument by its type's name (live-verified).
             final Object constant = constants == null || i >= constants.size() ? NOT_CONSTANT : constants.get(i);
-            final boolean told = type instanceof NumericType && constant instanceof Number;
+            final boolean isConstant = constant != NOT_CONSTANT;
             info.append(i > 0 ? ", " : "").append(key).append(": {")
-                .append(told ? "constValue: " + numberLiteral((Number) constant) + ", " : "")
-                .append("isNullable: true, isConst: ").append(told)
-                .append(type instanceof NumericType ? ", type: 'real'" : "").append('}');
+                .append(isConstant ? "constValue: undefined, " : "")
+                .append("isNullable: true, isConst: ").append(isConstant)
+                .append(", type: '").append(argumentTypeName(type)).append("'}");
+            if (isConstant) {
+                told.append("argumentInfo[").append(key).append("].constValue = a").append(i).append(";\n");
+            }
         }
         final StringBuilder cells = new StringBuilder();
         final StringBuilder names = new StringBuilder();
@@ -476,6 +482,8 @@ final class JavaScriptHandler {
             .append("if (udtfObject === null || typeof udtfObject !== 'object' && typeof udtfObject !== 'function') ")
             .append("{ return '").append(NO_MEMBER).append("'; }\n")
             .append("if (udtfObject.processRow === undefined) { return null; }\n")
+            .append(told.length() == 0 ? "" : converted)
+            .append(told)
             .append("if (udtfObject.initialize !== undefined) { if (typeof udtfObject.initialize !== 'function') ")
             .append("{ return '").append(NO_MEMBER).append("initialize'; } ")
             .append("udtfObject.initialize(argumentInfo, context); }\n")
@@ -493,16 +501,24 @@ final class JavaScriptHandler {
             .append("};\n})();\n})()").toString();
     }
 
-    /** A number as a JavaScript literal of its double value. */
-    private static String numberLiteral(final Number number) {
-        final double value = number.doubleValue();
-        if (Double.isNaN(value)) {
-            return "NaN";
+    /**
+     * The name {@code argumentInfo} gives an argument's type: {@code text}, {@code real}, {@code boolean},
+     * {@code binary}, and a date, timestamp or semi-structured type's own name in lower case (live-verified).
+     */
+    private static String argumentTypeName(final DataType type) {
+        if (type instanceof StringType) {
+            return "text";
         }
-        if (Double.isInfinite(value)) {
-            return value > 0 ? "Infinity" : "-Infinity";
+        if (type instanceof NumericType) {
+            return "real";
         }
-        return Double.toString(value);
+        if (type instanceof BooleanType) {
+            return "boolean";
+        }
+        if (type instanceof BinaryType) {
+            return "binary";
+        }
+        return type == null ? "variant" : type.getName().toLowerCase(Locale.ROOT);
     }
 
     /** A name as a JavaScript string literal. */

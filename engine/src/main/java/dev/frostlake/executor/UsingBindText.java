@@ -20,6 +20,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.StringNode;
@@ -152,8 +153,14 @@ public final class UsingBindText {
         return out.append(node.isArray() ? "\n]" : "\n}").toString();
     }
 
-    /** A number's text: a FLOAT's by its magnitude, an exact one's digits at the scale its variable declares. */
+    /**
+     * A number's text: a FLOAT's by its magnitude, a DECFLOAT's its own ({@code 1.5e300}, not its 301 digits), an exact
+     * one's digits at the scale its variable declares (live-verified).
+     */
     private static String numberText(final Number value, final DataType declared) {
+        if (NumericType.isDecfloat(declared)) {
+            return Decfloats.text(Decfloats.of(value, "TO_DECFLOAT"));
+        }
         if (value instanceof Double || value instanceof Float
                 || declared instanceof NumericType && NumericType.isApproximate(declared)) {
             return floatText(value.doubleValue());

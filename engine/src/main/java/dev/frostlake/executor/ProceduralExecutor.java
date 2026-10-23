@@ -97,6 +97,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
@@ -112,6 +113,13 @@ import tools.jackson.databind.node.ArrayNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -133,6 +141,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class ProceduralExecutor {
+
+    /** A time as TO_OBJECT's refusal echoes it, its fraction only where it has one: 10:00:00. */
+    private static final DateTimeFormatter ECHO_TIME = new DateTimeFormatterBuilder().appendPattern("HH:mm:ss")
+        .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter();
+
+    /** A timestamp as TO_OBJECT's refusal echoes it: 2024-01-02 03:04:05. */
+    private static final DateTimeFormatter ECHO_TIMESTAMP = new DateTimeFormatterBuilder()
+        .appendPattern("yyyy-MM-dd HH:mm:ss").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter();
+
+    /** A zoned timestamp as TO_OBJECT's refusal echoes it: 2024-01-02 03:04:05 +05:00. */
+    private static final DateTimeFormatter ECHO_ZONED = new DateTimeFormatterBuilder().append(ECHO_TIMESTAMP)
+        .appendLiteral(' ').appendOffset("+HH:MM", "+00:00").toFormatter();
+
 
     private static final Logger logger = LoggerFactory.getLogger(ProceduralExecutor.class);
 
@@ -600,7 +621,8 @@ public class ProceduralExecutor {
         }
         rememberConversionType(stmt.getVariableName(), stmt.getDefaultValue(), declaredType);
         try {
-            setVariable(stmt.getVariableName(), heldUnder(stmt.getDefaultValue(), declaredType));
+            setVariable(stmt.getVariableName(), heldUnder(variantIntoContainer(stmt.getDefaultValue(), declaredType),
+                declaredType));
         } catch (final RuntimeException failed) {
             // A coercion fault is an EXPRESSION fault, anchored on the initialiser (live).
             if (stmt.getInitializerLine() > 0) {
@@ -667,7 +689,12 @@ public class ProceduralExecutor {
         rememberConversionType(stmt.getVariableName(), value,
             variableTypes.get(stmt.getVariableName().toUpperCase(Locale.ROOT)));
         try {
-            value = heldUnder(value, variableTypes.get(stmt.getVariableName().toUpperCase(Locale.ROOT)));
+            final DataType assignedTo = variableTypes.get(stmt.getVariableName().toUpperCase(Locale.ROOT));
+            if (!stmt.isHeldAnswer()) {
+                value = variantIntoContainer(writtenIntoArray(stmt.getExpression() == null ? null
+                    : stmt.getExpression().getJudgedFrom(), value, assignedTo), assignedTo);
+            }
+            value = heldUnder(value, assignedTo);
         } catch (final RuntimeException failed) {
             // A coercion fault is an EXPRESSION fault, anchored on the right side (live).
             final BaseExpression rhs = stmt.getExpression();
@@ -3174,7 +3201,9 @@ public class ProceduralExecutor {
         final Object current = getVariable(name);
         if (answer == null || declared == null || VariantJsonText.isSemiStructured(declared)
                 || current instanceof ResultSetVariable || current instanceof ResultSet || current instanceof Cursor) {
-            executeStatement(new SetStatement(name, new LiteralExpression(answer)));
+            final SetStatement held = new SetStatement(name, new LiteralExpression(answer));
+            held.markHeldAnswer();
+            executeStatement(held);
             return;
         }
         initialiserTypes.remove(key);
@@ -4127,8 +4156,9 @@ public class ProceduralExecutor {
             // The scalar-into-container cells, each measured: a number assigned to a VARIANT stays
             // itself as a variant, to an ARRAY it wraps ([5]), and to an OBJECT it is TO_OBJECT's
             // own refusal — the echo says CAST, so the assignment is the cast machinery. A STRING
-            // assigned to a container is left as it always was: the vendor loaders assign JSON
-            // text to OBJECT variables and live accepts it, so the refusal is scalar-only.
+            // value is left as it is here: a procedure's OBJECT answer reaches this point as its JSON
+            // text (the vendor loaders assign CALLs to OBJECT variables), so a text the block writes
+            // is judged by its static type (see writtenIntoArray and BlockExpressionTypes).
             if ("VARIANT".equals(declaredName)) {
                 // Held AS a variant, so a later conversion reads it as one: a VARIANT holding 5 under
                 // RETURNS DATE fails "Failed to cast variant value 5 to DATE" (live-verified).
@@ -4142,12 +4172,100 @@ public class ProceduralExecutor {
                     + castEchoLiteral(value) + " AS OBJECT)] for parameter 'TO_OBJECT'"));
             }
         }
-        if (type instanceof ObjectType && value instanceof LocalDate) {
-            // A DATE into an OBJECT is the same refusal, echoing the date as the call that makes one.
-            throw new RuntimeException(SqlCompilationError.of("invalid type [CAST(TO_DATE('" + value
-                + "') AS OBJECT)] for parameter 'TO_OBJECT'"));
+        if (type instanceof ObjectType && SharedFunctionHelpers.isNativeTemporal(value)) {
+            // A date, a time or a timestamp into an OBJECT is the same refusal, echoing the value as the call that
+            // makes one: CAST(TO_TIME('10:00:00') AS OBJECT) (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("invalid type [CAST(" + temporalCallEcho(value)
+                + " AS OBJECT)] for parameter 'TO_OBJECT'"));
         }
         return value;
+    }
+
+    /** A date, a time or a timestamp as the conversion of its text that makes it, as TO_OBJECT's refusal echoes it. */
+    private static String temporalCallEcho(final Object value) {
+        if (value instanceof LocalDate) {
+            return "TO_DATE('" + value + "')";
+        }
+        if (value instanceof LocalTime) {
+            return "TO_TIME('" + ECHO_TIME.format((LocalTime) value) + "')";
+        }
+        if (value instanceof LocalDateTime) {
+            return "TO_TIMESTAMP_NTZ('" + ECHO_TIMESTAMP.format((LocalDateTime) value) + "')";
+        }
+        if (value instanceof ZonedDateTime) {
+            return "TO_TIMESTAMP_TZ('" + ECHO_ZONED.format((ZonedDateTime) value) + "')";
+        }
+        return "TO_TIMESTAMP_LTZ('" + ECHO_TIMESTAMP.format(((OffsetDateTime) value).toLocalDateTime()) + "')";
+    }
+
+    /**
+     * A value the block writes for an ARRAY variable, as the assignment's TO_ARRAY reads it: a text by its static type
+     * is the one element — {@code a := '[1, 2]'} holds ["[1, 2]"], {@code a := 'x' || 'y'} ["xy"], and a DEFAULT, a
+     * typed LET and a text variable alike (live-verified). A text given to an OBJECT is refused before the value is
+     * reached (see {@link BlockExpressionTypes}). Any other value, and one no written expression gave — a CALL's
+     * answer, held as the CALL handed it back — is handed back as it is.
+     *
+     * @param written  the value's expression as parsed in the block, or null
+     * @param value    the value
+     * @param declared the variable's declared type, or null
+     * @return the value the variable takes
+     */
+    public Object writtenIntoArray(final ParserRuleContext written, final Object value, final DataType declared) {
+        if (!(value instanceof String) || !(declared instanceof ArrayType) || StructuredTypes.isStructured(declared)
+                || written == null) {
+            return value;
+        }
+        return BlockExpressionTypes.staticType(written, judgedTypes(), queryExecutor) instanceof StringType
+            ? singleElementArray(value) : value;
+    }
+
+    /**
+     * A VARIANT given to an OBJECT or an ARRAY variable, as the assignment's TO_OBJECT and TO_ARRAY read it when the
+     * value arrives: an OBJECT takes only an object, anything else failing as the variant's cast — {@code Failed to
+     * cast variant value "y" to OBJECT}, {@code … [1] to OBJECT} — and an ARRAY takes an array as it is and makes
+     * anything else its one element, [5] and [{"k":1}]; a JSON null stays as it is (all live-verified). Any other
+     * value is handed back as it is.
+     */
+    private static Object variantIntoContainer(final Object value, final DataType type) {
+        if (!(value instanceof VariantValue) || StructuredTypes.isStructured(type)) {
+            return value;
+        }
+        final JsonNode node = ((VariantValue) value).node();
+        if (node == null || node.isNull()) {
+            return value;
+        }
+        if (type instanceof ObjectType && !node.isObject()) {
+            throw new RuntimeException("Failed to cast variant value " + ((VariantValue) value).text() + " to OBJECT");
+        }
+        return type instanceof ArrayType && !node.isArray() ? singleElementArray(value) : value;
+    }
+
+    /**
+     * A SELECT … INTO's value for an OBJECT or an ARRAY target, by the selected column's static type, as the
+     * assignment's TO_OBJECT and TO_ARRAY read a selected text when its row arrives: TO_ARRAY makes it the one
+     * element, {@code SELECT c INTO :a} holding ["x"], and TO_OBJECT refuses it, echoing the value under identity —
+     * {@code invalid type [CAST(identity('x') AS OBJECT)] for parameter 'TO_OBJECT'}, the SELECT's EXPRESSION_ERROR;
+     * no row selected leaves the target NULL (all live-verified). Any other value is handed back as it is.
+     *
+     * @param name     the target
+     * @param value    the selected value, or null when no row was selected
+     * @param selected the selected column's static type, or null
+     * @param line     the SELECT's line
+     * @param position the SELECT's position on its line
+     * @return the value the target takes
+     */
+    public Object selectedIntoContainer(final String name, final Object value, final DataType selected,
+                                        final int line, final int position) {
+        final DataType declared = getDeclaredVariableType(name);
+        if (!(selected instanceof StringType) || !(value instanceof String) || StructuredTypes.isStructured(declared)) {
+            return value;
+        }
+        if (declared instanceof ObjectType) {
+            recordExpressionFailure(line, position);
+            throw new RuntimeException(SqlCompilationError.of("invalid type [CAST(identity(" + castEchoLiteral(value)
+                + ") AS OBJECT)] for parameter 'TO_OBJECT'"));
+        }
+        return declared instanceof ArrayType ? singleElementArray(value) : value;
     }
 
     /**

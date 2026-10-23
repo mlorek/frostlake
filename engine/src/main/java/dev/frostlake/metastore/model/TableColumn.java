@@ -98,6 +98,9 @@ public class TableColumn implements Taggable {
     // Whether a DERIVED relation's column projects the word NULL cast to a text type (see isNullText); false for
     // every other column.
     private boolean nullText;
+    // Whether a DERIVED relation's column's values can be NULL, as its projection judged its item (see
+    // getValuesNullable); null for a column no projection judged.
+    private Boolean valuesNullable;
 
     // Whether a DERIVED relation's column holds its collation because a COLLATE named it (see
     // isCollationExplicit); false for every other column, a catalog column's among them.
@@ -303,6 +306,20 @@ public class TableColumn implements Taggable {
         this.nullText = nullText;
     }
 
+    /**
+     * Whether a derived relation's column's values can be NULL, as the projection that made it judged its item: a
+     * literal, a cast of one and an operation over such items cannot, which a refusal spells {@code {not null}}.
+     *
+     * @return the judgement, or null where no projection made one
+     */
+    public Boolean getValuesNullable() {
+        return valuesNullable;
+    }
+
+    public void setValuesNullable(final Boolean valuesNullable) {
+        this.valuesNullable = valuesNullable;
+    }
+
     public boolean isFoldedDouble() {
         return foldedDouble;
     }
@@ -385,6 +402,7 @@ public class TableColumn implements Taggable {
         copy.foldedDouble = foldedDouble;
         copy.untypedNull = untypedNull;
         copy.nullText = nullText;
+        copy.valuesNullable = valuesNullable;
         copy.formatType = formatType;
         return copy;
     }
@@ -419,6 +437,7 @@ public class TableColumn implements Taggable {
         copy.foldedDouble = foldedDouble;
         copy.untypedNull = untypedNull;
         copy.nullText = nullText;
+        copy.valuesNullable = valuesNullable;
         return copy;
     }
 

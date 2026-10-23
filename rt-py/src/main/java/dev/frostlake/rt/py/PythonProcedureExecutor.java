@@ -130,10 +130,12 @@ public final class PythonProcedureExecutor {
             }
 
             PythonHandlerCheck.forget(handlerName);
-            if (handlerName != null && !handlerName.isEmpty() && !PythonHandlerCheck.isDotted(handlerName)) {
+            final boolean reported = handlerName != null && !handlerName.isEmpty()
+                && !PythonHandlerCheck.isDotted(handlerName);
+            if (reported) {
                 // The body runs first, and a handler it does not define is refused before any call, in the
                 // sentence a function's missing handler gets (live-verified).
-                PythonInterpreter.eval(body);
+                PythonFailureReport.runSource(body, handlerName);
                 PythonInterpreter.eval("__fl_handler_found = globals().get('" + handlerName + "') is not None\n");
                 if (!Boolean.TRUE.equals(PythonInterpreter.global("__fl_handler_found"))) {
                     typedFailure = new RuntimeException("Could not find handler in function " + procedure.getName()
@@ -141,8 +143,10 @@ public final class PythonProcedureExecutor {
                     throw typedFailure;
                 }
                 pythonCode = pythonCode.substring(body.length() + 1);
+                PythonFailureReport.run(pythonCode);
+            } else {
+                PythonInterpreter.eval(pythonCode);
             }
-            PythonInterpreter.eval(pythonCode);
 
             // A procedure that answers a value answers it as its declared RETURNS type, converted as Python
             // converts and judged as the account judges it (see PythonReturn).
@@ -185,8 +189,14 @@ public final class PythonProcedureExecutor {
             }
             // Worded before the context is settled: a discarded context answers nothing more of its failure, so the
             // refusal then travels as text alone.
-            final String refusal = PythonRuntimeDiagnostics.describeFailure(
-                "procedure", procedure.getName(), procedure.getRuntimeVersion(), procedure.getBody(), e);
+            final String handler = procedure.getHandler();
+            final String reported = handler == null || handler.isEmpty() ? null
+                : PythonFailureReport.wording(procedure.getName(), handler);
+            final String refusal = reported != null
+                ? reported + PythonRuntimeDiagnostics.newerSyntaxNote("procedure", procedure.getRuntimeVersion(),
+                    procedure.getBody(), e)
+                : PythonRuntimeDiagnostics.describeFailure("procedure", procedure.getName(),
+                    procedure.getRuntimeVersion(), procedure.getBody(), e);
             logger.error("Error executing Python procedure: {}", procedure.getName(), e);
             if (!PythonInterpreter.settleAfter(e)) {
                 throw new RuntimeException(refusal);

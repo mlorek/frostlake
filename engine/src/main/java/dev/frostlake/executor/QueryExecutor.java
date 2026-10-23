@@ -1922,6 +1922,15 @@ public class QueryExecutor implements ImportLocalizer {
     }
 
     /**
+     * Whether the thread plans a query that reads no row of its FROM (see UnreadSources).
+     *
+     * @return true while one is planned
+     */
+    public static boolean planningUnreadQuery() {
+        return UnreadSources.inForce();
+    }
+
+    /**
      * The script a text parses to, as running it parses it; the tree is the one a run reuses.
      *
      * @param sql the text
@@ -3520,9 +3529,11 @@ public class QueryExecutor implements ImportLocalizer {
             // Snowflake's RECURSIVE keyword is OPTIONAL: a CTE that references its own name as a
             // table source recurses with or without it, so detection is by the parse tree alone.
             final boolean recursive = isRecursiveCte(cteCtx, cteName);
-            if (recursive && !cteName.equals(cteName.toUpperCase(Locale.ROOT))) {
+            if (recursive && !cteName.equals(cteName.toUpperCase(Locale.ROOT))
+                    && !RecursiveViewBody.isViewBody(cteName)) {
                 // A CTE that reads itself under a name that is not all upper case is refused — quoted "r" and
-                // "My R" alike, written with RECURSIVE or without (live-verified).
+                // "My R" alike, written with RECURSIVE or without; a RECURSIVE view's own, "rvq", is taken
+                // (live-verified).
                 throw new RuntimeException(SqlCompilationError.of("'" + cteName + "' is an invalid Recursive CTE"));
             }
             if (recursive && readsItselfInsideAQuery(cteCtx.selectStatement(), cteName)) {
@@ -3563,6 +3574,7 @@ public class QueryExecutor implements ImportLocalizer {
                 }
             }
 
+            CteDefinitions.record(cteResult, cteCtx);
             cteResults.put(cteName, cteResult);
         }
 
@@ -4554,6 +4566,14 @@ public class QueryExecutor implements ImportLocalizer {
                 }
             }
         }
+        // A column can answer NULL where any arm's can, whatever the operator, and a BY NAME column always can
+        // (live-verified): (SELECT 'inf'::FLOAT n UNION SELECT 1) reads n as not null, an EXCEPT of a NULL nullable.
+        for (int i = 0; i < accColumns.size(); i++) {
+            final Boolean armsNullable = anyByName ? Boolean.TRUE : armsNullable(branchColumns, i);
+            if (armsNullable != null) {
+                accColumns.set(i, accColumns.get(i).withDerivedNullable(armsNullable.booleanValue()));
+            }
+        }
         if (wrapsNeedRows) {
             final List<List<Row>> branchRows = new ArrayList<>();
             for (final RowsProvider arm : armRows) {
@@ -4930,6 +4950,21 @@ public class QueryExecutor implements ImportLocalizer {
             throw new RuntimeException("Unsupported UNION modifier 'BY " + modifier + "' (only BY NAME is supported)");
         }
         return true;
+    }
+
+    /**
+     * Whether the arms' column at a position can answer NULL: when any arm judged its item can (see
+     * {@link ResultSetColumn#getDerivedNullable}); null where an arm made no judgement of it.
+     */
+    private static Boolean armsNullable(final List<List<ResultSetColumn>> branchColumns, final int index) {
+        boolean nullable = false;
+        for (final List<ResultSetColumn> arm : branchColumns) {
+            if (index >= arm.size() || arm.get(index).getDerivedNullable() == null) {
+                return null;
+            }
+            nullable |= arm.get(index).getDerivedNullable().booleanValue();
+        }
+        return Boolean.valueOf(nullable);
     }
 
     /**
@@ -6486,6 +6521,10 @@ public class QueryExecutor implements ImportLocalizer {
                             if (slot != null && slot.getDataType() != null) {
                                 colType = slot.getDataType();
                             }
+                        } else if (positional == 0 && SelectItemAccessors.isSequenceRead(columnExpr)) {
+                            // A sequence's next value is never NULL: a view projecting seq.NEXTVAL describes its
+                            // column NOT NULL, as it does not seq.NEXTVAL + 0 (live-verified).
+                            colNullable = false;
                         }
                     }
 
@@ -7370,8 +7409,13 @@ public class QueryExecutor implements ImportLocalizer {
             }
             // Same channel as the FROM-bearing projection: live types the two identically
             // (OBJECT/ARRAY/VARIANT reported, everything else recovered from the values).
-            final ResultSetColumn projectedItem = projectedColumn(columnName, StringType.VARCHAR, null,
-                exprText, evaluator, true, false, SelectItemAccessors.getItemExpression(item));
+            // A sequence's next value is never NULL, as the FROM-bearing projection says too.
+            // The item's own judgement of whether it can answer NULL travels out as the FROM-bearing projection's
+            // does, so a column of (SELECT 'inf'::FLOAT n) is read as not null.
+            final ParserRuleContext itemTypeSource = SelectItemAccessors.getItemExpression(item);
+            final ResultSetColumn projectedItem = withDerivedNullability(projectedColumn(columnName,
+                StringType.VARCHAR, null, exprText, evaluator, !SelectItemAccessors.isSequenceRead(itemValue), false,
+                itemTypeSource), itemTypeSource, dummyTable, null);
             // With no FROM, a collation can only be one the item WROTE — and it travels out of the
             // projection like any other, so a derived relation over it collates the column.
             final ExpressionCollation itemHeld = KeyCollations.reachable(List.of(exprText), null, null, null)
@@ -19038,6 +19082,12 @@ public class QueryExecutor implements ImportLocalizer {
                 alias != null ? alias : dynamicTableName, "SCAN[" + dynamicTable.getName() + "]");
         }
 
+        // A table function's argument subqueries compile with the statement (see compileTableFunctionArguments); a
+        // lateral item's compile where its join is planned, with the relations to its left in scope.
+        if (lateralContext == null) {
+            compileTableFunctionArguments(source, FromlessDual.unread(), null, null);
+        }
+
         // Handle FLATTEN(...) shorthand
         if (source.FLATTEN() != null && source.flattenArgList() != null) {
             final Map<String, Object> namedArgs = new HashMap<>();
@@ -19046,15 +19096,28 @@ public class QueryExecutor implements ImportLocalizer {
                 // All named: FLATTEN(INPUT => expr, OUTER => true, ...)
                 validateTableFunctionCall("FLATTEN", "", source.FLATTEN().getSymbol(),
                     null, fal.namedArgumentList().namedArgument());
+            } else {
+                // Mixed: first positional arg = INPUT, then optional named args
+                validateTableFunctionCall("FLATTEN", "FLATTEN", source.FLATTEN().getSymbol(),
+                    Arrays.asList(fal.expression()), fal.namedArgument());
+            }
+            final TableFunction flattenFunc = functionRegistry.getTableFunction("FLATTEN");
+            if (flattenFunc == null) throw new RuntimeException("FLATTEN function not available");
+            // A query that reads no row of its FROM evaluates none of the arguments, as TABLE(FLATTEN(…)) does.
+            final PlannedTableFunction unreadFlatten = unreadCall("FLATTEN", getOriginalText(source), flattenFunc);
+            if (unreadFlatten != null) {
+                judgeUnreadArgumentNames(fal.expression() != null ? Collections.singletonList(fal.expression())
+                    : Collections.<FrostlakeParser.ExpressionContext>emptyList(), fal.namedArgumentList() != null
+                    ? fal.namedArgumentList().namedArgument() : fal.namedArgument(), lateralContext);
+                return tableFunctionSource(unreadFlatten, alias, "flatten", columnAliases);
+            }
+            if (fal.namedArgumentList() != null) {
                 for (final FrostlakeParser.NamedArgumentContext argCtx : fal.namedArgumentList().namedArgument()) {
                     final String argName = argCtx.variableName().getText().toUpperCase(Locale.ROOT);
                     final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                     namedArgs.put(argName, argValue);
                 }
             } else {
-                // Mixed: first positional arg = INPUT, then optional named args
-                validateTableFunctionCall("FLATTEN", "FLATTEN", source.FLATTEN().getSymbol(),
-                    Arrays.asList(fal.expression()), fal.namedArgument());
                 final Object inputValue = evaluateTableFunctionArgument(fal.expression(),
                     getOriginalText(fal.expression()), lateralContext);
                 namedArgs.put("INPUT", inputValue);
@@ -19064,8 +19127,6 @@ public class QueryExecutor implements ImportLocalizer {
                     namedArgs.put(argName, argValue);
                 }
             }
-            final TableFunction flattenFunc = functionRegistry.getTableFunction("FLATTEN");
-            if (flattenFunc == null) throw new RuntimeException("FLATTEN function not available");
             final String inputText = fal.namedArgumentList() != null
                 ? namedInputText(fal.namedArgumentList().namedArgument()) : getOriginalText(fal.expression());
             return tableFunctionSource(plannedCall("FLATTEN", getOriginalText(source), flattenFunc, namedArgs,
@@ -24079,6 +24140,7 @@ public class QueryExecutor implements ImportLocalizer {
                 mixCtx.expression(), mixCtx.namedArgument());
             final PlannedTableFunction unreadMixed = unreadCall(functionName, callText, tableFunc);
             if (unreadMixed != null) {
+                judgeUnreadArgumentNames(mixCtx.expression(), mixCtx.namedArgument(), lateralContext);
                 return unreadMixed;
             }
             // the one leading positional argument
@@ -24139,6 +24201,8 @@ public class QueryExecutor implements ImportLocalizer {
                     funcCtx.namedArgumentList().namedArgument());
                 final PlannedTableFunction unreadNamed = unreadCall(functionName, callText, tableFunc);
                 if (unreadNamed != null) {
+                    judgeUnreadArgumentNames(Collections.<FrostlakeParser.ExpressionContext>emptyList(),
+                        funcCtx.namedArgumentList().namedArgument(), lateralContext);
                     return unreadNamed;
                 }
                 for (final FrostlakeParser.NamedArgumentContext argCtx : funcCtx.namedArgumentList().namedArgument()) {
@@ -25197,6 +25261,106 @@ public class QueryExecutor implements ImportLocalizer {
             || message.contains("Unknown user-defined function");
     }
 
+    /**
+     * A lateral table function's shape read as a query that reads no row reads it (see UnreadSources): the columns of
+     * a function that tells them without evaluating its arguments, or null where it cannot.
+     */
+    private TableData shapeWithoutArguments(final FrostlakeParser.TableReferenceContext ref,
+                                            final Map<String, Object> nullContext) {
+        final boolean outer = UnreadSources.begin(true);
+        try {
+            return executeTableReference(ref, nullContext, null);
+        } catch (final RuntimeException untold) {
+            return null;
+        } finally {
+            UnreadSources.end(outer);
+        }
+    }
+
+    /**
+     * The names an unread call's arguments read (see UnreadSources), judged as evaluating them over no row judges
+     * them: a column or a function nothing answers to is refused while the statement compiles; any other fault of
+     * the arguments waits for a row, which never comes.
+     *
+     * @param positional     the arguments written by place
+     * @param named          the arguments written by name
+     * @param lateralContext the names of the row to the call's left, or null
+     */
+    private void judgeUnreadArgumentNames(final List<FrostlakeParser.ExpressionContext> positional,
+                                          final List<FrostlakeParser.NamedArgumentContext> named,
+                                          final Map<String, Object> lateralContext) {
+        final Map<String, Object> names = lateralContext != null ? lateralContext : new HashMap<String, Object>();
+        final boolean previous = RelationShapeOnly.begin();
+        try {
+            for (final FrostlakeParser.ExpressionContext argument : positional) {
+                try {
+                    evaluateTableFunctionArgument(argument, getOriginalText(argument), names);
+                } catch (final RuntimeException fault) {
+                    raiseNameRefusal(fault);
+                }
+            }
+            for (final FrostlakeParser.NamedArgumentContext argument : named) {
+                try {
+                    evaluateNamedTableFunctionArgument(argument, names);
+                } catch (final RuntimeException fault) {
+                    raiseNameRefusal(fault);
+                }
+            }
+        } finally {
+            RelationShapeOnly.end(previous);
+        }
+    }
+
+    /** A refusal of a name nothing answers to, raised again; any other fault is dropped. */
+    private static void raiseNameRefusal(final RuntimeException fault) {
+        if (namesNothingInScope(fault)) {
+            throw fault;
+        }
+    }
+
+    /**
+     * Compile the subqueries a table-function source's arguments hold, as the statement's clauses compile theirs (see
+     * SubqueryCompilation): a name one cannot resolve is refused whatever rows reach the call - the relation to its
+     * left holding none, or the query reading none (live-verified). Anything else a compile refuses waits for the
+     * row that evaluates the argument.
+     *
+     * @param source       the table-function source
+     * @param table        the relation to its left, or the FROM-less row
+     * @param aliasToTable the FROM-clause keys in scope, or null
+     * @param allTables    every relation in scope, or null
+     */
+    private void compileTableFunctionArguments(final FrostlakeParser.TableSourceContext source, final Table table,
+                                               final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        if (source == null) {
+            return;
+        }
+        final List<ParserRuleContext> arguments = new ArrayList<>();
+        if (source.FLATTEN() != null && source.flattenArgList() != null) {
+            final FrostlakeParser.FlattenArgListContext fal = source.flattenArgList();
+            if (fal.expression() != null) {
+                arguments.add(fal.expression());
+            }
+            addNamedArgumentValues(fal.namedArgumentList() != null ? fal.namedArgumentList().namedArgument()
+                : fal.namedArgument(), arguments);
+        } else if (source.tableFunctionExpr() != null) {
+            arguments.addAll(source.tableFunctionExpr().expression());
+            addNamedArgumentValues(source.tableFunctionExpr().namedArgument(), arguments);
+        } else if (source.TABLE() != null && source.expression() != null) {
+            arguments.add(source.expression());
+        }
+        compileSubqueriesIn(arguments, table, aliasToTable, allTables, null);
+    }
+
+    /** The values written after each named argument's arrow, where a value is an expression. */
+    private static void addNamedArgumentValues(final List<FrostlakeParser.NamedArgumentContext> named,
+                                               final List<ParserRuleContext> into) {
+        for (final FrostlakeParser.NamedArgumentContext argument : named) {
+            if (argument.expression() != null) {
+                into.add(argument.expression());
+            }
+        }
+    }
+
     private boolean isImplicitlyLateral(final FrostlakeParser.TableReferenceContext ref) {
         final FrostlakeParser.TableSourceContext src = ref.tableSource();
         if (src == null) {
@@ -25270,6 +25434,12 @@ public class QueryExecutor implements ImportLocalizer {
         } finally {
             lateralArgumentTypes.end();
         }
+        // Its arguments' subqueries compile with the statement, the relations to its left in scope.
+        if (isImplicitlyLateral(rightTableRef)) {
+            compileTableFunctionArguments(rightTableRef.tableSource(), leftTable, scope, scopeTables);
+        }
+        // A query that reads no row of its FROM calls such a function for none of them (see UnreadSources).
+        final boolean callsNone = isImplicitlyLateral(rightTableRef) && UnreadSources.inForce();
         Table rightTable;
         String rightAlias;
         final boolean previous = RelationShapeOnly.begin();
@@ -25290,10 +25460,14 @@ public class QueryExecutor implements ImportLocalizer {
                 throw shapeUnreadable;
             }
             // The right side could not be read with NULL inputs (e.g. a correlated subquery that errors on
-            // a NULL correlation value). An empty (0-column) relation lets the join still complete; the
-            // rows, when there are any, are evaluated as written and raise their own fault.
-            rightTable = new Table("lateral", new ArrayList<>(), false);
-            rightAlias = null;
+            // a NULL correlation value). A table function that tells its columns without its arguments still
+            // answers them — FLATTEN's six, whatever its input evaluates to — and anything else an empty
+            // (0-column) relation, which lets the join still complete; the rows, when there are any, are
+            // evaluated as written and raise their own fault.
+            final TableData told = isImplicitlyLateral(rightTableRef)
+                ? shapeWithoutArguments(rightTableRef, nullContext) : null;
+            rightTable = told != null ? told.table : new Table("lateral", new ArrayList<>(), false);
+            rightAlias = told != null ? told.alias : null;
         } finally {
             SubqueryCompilation.endScope(enclosingScope);
             RelationShapeOnly.end(previous);
@@ -25350,7 +25524,7 @@ public class QueryExecutor implements ImportLocalizer {
                 if (callRanges != null) {
                     callRanges.begin();
                 }
-                for (final Row leftRow : leftRows) {
+                for (final Row leftRow : callsNone ? new ArrayList<Row>() : leftRows) {
                     if (inputFilter != null && !inputFilter.accepts(leftRow)) {
                         continue;
                     }
@@ -26530,6 +26704,8 @@ public class QueryExecutor implements ImportLocalizer {
         column.setUncheckedConstant(source.isUncheckedConstant());
         column.setFoldedDouble(source.isFoldedDouble());
         column.setNullText(source.isNullText());
+        // So does what the projection judged of its item's NULLs, which a range refusal over the column spells.
+        column.setValuesNullable(source.getDerivedNullable());
         // A collation rides along too: the outer query compares, sorts and groups the derived column
         // under the collation the projection settled on, as it would a catalog column's.
         column.setCollation(source.getCollation());

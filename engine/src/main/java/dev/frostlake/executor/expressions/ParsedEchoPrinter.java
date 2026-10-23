@@ -517,7 +517,9 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     public String visitCast(final CastExpression expr) {
         final String value = expr.getExpression().accept(this);
         if (expr.isTypedLiteral()) {
-            return "TO_" + expr.getTargetType() + "(" + value + ")";
+            // A DECFLOAT literal is echoed as written, its word in lower case: decfloat '1' (live-verified).
+            return "DECFLOAT".equalsIgnoreCase(expr.getTargetType()) ? "decfloat " + value
+                : "TO_" + expr.getTargetType() + "(" + value + ")";
         }
         if (expr.isTryMode()) {
             return "TRY_CAST(" + value + ")";

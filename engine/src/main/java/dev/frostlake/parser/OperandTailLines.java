@@ -84,6 +84,11 @@ final class OperandTailLines {
             // The parse stopped at the '!' itself: the token after it is the one live names.
             return afterValueLines(sql, spoken, at + 1);
         }
+        if (at >= 3 && spoken.get(at - 2).getType() == FrostlakeLexer.BANG
+                && CallTokenGroups.isCallName(spoken.get(at - 1))
+                && fault.getType() != FrostlakeLexer.LPAREN && fault.getType() != Token.EOF) {
+            return methodArgumentLines(sql, spoken, at);
+        }
         if (spoken.get(at - 1).getType() != FrostlakeLexer.BANG || at < 2) {
             return null;
         }
@@ -123,6 +128,33 @@ final class OperandTailLines {
                 }
             }
             lines.addAll(SyntaxErrorListener.linesReportedFor(new String(text), true));
+        }
+        return lines;
+    }
+
+    /**
+     * The lines for the token after a method's name that no parenthesis follows: live reads on as if one opened before
+     * the token, so the token is named and then the first fault that reading meets — {@code SELECT x!y z FROM t} is
+     * {@code 'z'} and the {@code 'FROM'} no argument list takes, {@code SELECT x!y z} the end of the input, and a
+     * function's body {@code x ! y} the end of the input after the ')' that closes the arguments (all live-verified).
+     */
+    private static List<String> methodArgumentLines(final String sql, final List<Token> spoken, final int at) {
+        final Token fault = spoken.get(at);
+        final List<String> lines = new ArrayList<String>();
+        lines.add(SyntaxErrorListener.sentence(fault));
+        final int start = fault.getStartIndex();
+        final boolean spaced = start > 0 && (sql.charAt(start - 1) == ' ' || sql.charAt(start - 1) == '\t');
+        final String opened = sql.substring(0, spaced ? start - 1 : start) + '(' + sql.substring(start);
+        int next = SyntaxErrorListener.firstFaultStartOf(opened);
+        // A parenthesis written in, not over a blank, moves what follows it by one.
+        if (!spaced && next > start) {
+            next--;
+        }
+        for (int i = at + 1; i < spoken.size() && next > start; i++) {
+            if (spoken.get(i).getStartIndex() == next) {
+                lines.add(SyntaxErrorListener.sentence(spoken.get(i)));
+                break;
+            }
         }
         return lines;
     }

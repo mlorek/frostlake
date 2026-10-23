@@ -59,11 +59,12 @@ final class GeneratorBounds {
     /**
      * The functions the account does not fold while it judges a bound: a bound calling one is no constant, whatever
      * its arguments (live-verified) - {@code LENGTH('abc')}, {@code SQRT(9)}, {@code CEIL(1.1)}, where ABS, FLOOR,
-     * MOD, the conversions and the date parts fold.
+     * MOD, the conversions and the date parts fold. A function's other names are not folded either: TIMEDIFF and
+     * TIMESTAMPDIFF as DATEDIFF, POSITION, in either spelling, as CHARINDEX.
      */
-    private static final Set<String> UNFOLDED = Set.of("LENGTH", "LEN", "DATEDIFF", "SQRT", "TRUNC", "TRUNCATE",
-        "CEIL", "ROUND", "POWER", "POW", "BITAND", "ARRAY_SIZE", "REGEXP_COUNT", "HASH", "SIGN", "LN", "EXP", "LOG",
-        "CHARINDEX");
+    private static final Set<String> UNFOLDED = Set.of("LENGTH", "LEN", "DATEDIFF", "TIMEDIFF", "TIMESTAMPDIFF",
+        "SQRT", "TRUNC", "TRUNCATE", "CEIL", "ROUND", "POWER", "POW", "BITAND", "ARRAY_SIZE", "REGEXP_COUNT", "HASH",
+        "SIGN", "LN", "EXP", "LOG", "CHARINDEX", "POSITION");
 
     /** The functions that answer the first of their arguments that is no NULL. */
     private static final Set<String> FIRST_NON_NULL = Set.of("NVL", "IFNULL", "COALESCE");
@@ -131,6 +132,10 @@ final class GeneratorBounds {
             return false;
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext && UNFOLDED.contains(nameOf(node))) {
+            return true;
+        }
+        if (node instanceof FrostlakeParser.PositionInExprContext && UNFOLDED.contains(
+                ((FrostlakeParser.PositionInExprContext) node).functionName().getText().toUpperCase(Locale.ROOT))) {
             return true;
         }
         for (int i = 0; i < node.getChildCount(); i++) {

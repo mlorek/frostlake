@@ -19,6 +19,7 @@ package dev.frostlake.functions.window;
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.values.ApproximateValues;
+import dev.frostlake.values.Decfloats;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -68,6 +69,32 @@ public final class WindowFunctionHelper {
             if (v != null) sum += summedNumber(v);
         }
         return sum == 0 ? null : cur / sum;
+    }
+
+    /**
+     * RATIO_TO_REPORT over DECFLOAT values: the current value divided by the partition's sum as DECFLOAT divides, the
+     * sum added up as DECFLOAT adds, each step to thirty-eight digits - so a share of 1e-50 beside 1 is 1e-50; NULL for
+     * a NULL value or a sum of zero (live-verified).
+     *
+     * @param currentValue the current row's value
+     * @param allValues    every value of the partition
+     * @return the share, or null
+     */
+    public static Object decfloatRatioToReport(final Object currentValue, final List<Object> allValues) {
+        if (!(currentValue instanceof Number)) {
+            return null;
+        }
+        BigDecimal sum = null;
+        for (final Object v : allValues) {
+            if (v instanceof Number) {
+                final BigDecimal held = Decfloats.of((Number) v, "RATIO_TO_REPORT");
+                sum = sum == null ? held : Decfloats.add(sum, held);
+            }
+        }
+        if (sum == null || sum.signum() == 0) {
+            return null;
+        }
+        return Decfloats.divide(Decfloats.of((Number) currentValue, "RATIO_TO_REPORT"), sum);
     }
 
     private static double summedNumber(final Object v) {

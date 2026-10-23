@@ -50,9 +50,12 @@ import java.util.Set;
  *   SYSTEM$WAIT(n)   SYSTEM$WAIT(0, n)      argument 0 / 1 to function SqlIdentifier{qualifierNames=[],
  *                                           identifierName=SYSTEM$WAIT} needs to be constant, found 'T.N'
  *   SYSTEM$WAIT(1.5)   SYSTEM$WAIT(1 + 0)   … found 'CAST(1.5 AS NUMBER(18,0))'   … found '1 + 0'
+ *   SYSTEM$PIPE_FORCE_RESUME(c)             argument 0 to function SYSTEM$PIPE_FORCE_RESUME needs to be constant,
+ *                                           found '"values".C'
+ *   SYSTEM$TASK_DEPENDENTS_ENABLE(1)        argument 1 to function …, found 'CAST(1 AS VARCHAR(134217728))'
  * </pre>
  *
- * <p>The stream functions count their argument from one, every other function from zero.
+ * <p>The stream and task functions count their argument from one, every other function from zero.
  *
  * <p>SYSTEM$GET_TAG reads its arguments before a name in them is resolved, so a bare column is echoed as written,
  * a column inside an expression is no identifier at all, and a query — even one that reads no table — prints as
@@ -158,6 +161,14 @@ final class SystemConstantArguments {
                 requireConstant(WAIT_NAME, i, args.get(i), visitor);
             }
             judgeWaitedAmount(args.get(0), call, visitor);
+        } else if ("SYSTEM$TASK_DEPENDENTS_ENABLE".equals(funcName)) {
+            // A task named by a number is refused as the converted text it would be (live-verified).
+            judgeTaskName(funcName, args.get(0), visitor);
+        } else if ("SYSTEM$PIPE_FORCE_RESUME".equals(funcName)) {
+            // The pipe and the options are read as the statement compiles: a column is no constant (live-verified).
+            for (int i = 0; i < args.size() && i < 2; i++) {
+                requireConstant(funcName, i, args.get(i), visitor);
+            }
         }
     }
 

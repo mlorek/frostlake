@@ -69,7 +69,8 @@ public class PythonSharedStateTest {
 
     /**
      * Hijacks the snowpark emulation through what the first restore missed: a member added to a guarded class
-     * ({@code Session.__getattribute__}), classes no module holds ({@code GroupedFrame}, {@code DataFrameWriter}), a
+     * ({@code Session.__getattribute__}), classes no module held ({@code RelationalGroupedDataFrame},
+     * {@code DataFrameWriter}), a
      * function's code and a closure's cell, and a member added to an emulation module; then fails when asked to.
      */
     private static final String HIJACKS = """
@@ -119,7 +120,7 @@ public class PythonSharedStateTest {
                                                            and '__getattribute__' in vars(sp.Session))])
         $$""";
 
-    private static final String UNTOUCHED = "DataFrame GroupedFrame 1 save_as_table Column False False";
+    private static final String UNTOUCHED = "DataFrame RelationalGroupedDataFrame 1 save_as_table Column False False";
 
     /**
      * Changes the standard library: replaces {@code json.dumps} and deletes {@code json.JSONDecoder}, puts a module of
@@ -240,7 +241,7 @@ public class PythonSharedStateTest {
         final DatabaseEngine engine = engineWith(HIJACKS, VICTIM);
         try {
             assertEquals(UNTOUCHED, scalar(engine, "CALL victim()"));
-            assertEquals("GroupedFrame DataFrameWriter hijacked:SELECT 1 lit-hijacked",
+            assertEquals("RelationalGroupedDataFrame DataFrameWriter hijacked:SELECT 1 lit-hijacked",
                 scalar(engine, "CALL hijack(FALSE)"));
             assertEquals(UNTOUCHED, scalar(engine, "CALL victim()"));
         } finally {
@@ -259,7 +260,7 @@ public class PythonSharedStateTest {
                 }
             });
             assertEquals(UNTOUCHED, scalar(first, "CALL victim()"));
-            assertEquals("GroupedFrame DataFrameWriter hijacked:SELECT 1 lit-hijacked",
+            assertEquals("RelationalGroupedDataFrame DataFrameWriter hijacked:SELECT 1 lit-hijacked",
                 scalar(first, "CALL hijack(FALSE)"));
         } finally {
             first.shutdown();

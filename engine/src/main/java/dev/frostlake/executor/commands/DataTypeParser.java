@@ -110,12 +110,13 @@ public final class DataTypeParser {
         // two carries its own parameters: MAP(VARCHAR(5), NUMBER(10,2)).
         if (ctx.MAP() != null && ctx.mapKey != null && ctx.mapValue != null) {
             final DataType mapKey = nested(ctx.mapKey, ctx.mapKeyParameters, bareStringDefault);
-            if (mapKey instanceof NumericType && !NumericType.isApproximate(mapKey)
-                    && (NumericType.isDecfloat(mapKey) || ((NumericType) mapKey).getScale() > 0)) {
-                // A MAP keys by text or by a whole NUMBER: one with a scale is no key type, and a DECFLOAT none either,
-                // "Unsupported data type 'MAP with key type DECFLOAT(38)'." (live-verified).
+            if (!isMapKeyType(mapKey)) {
+                // A MAP keys by text or by a whole NUMBER and by nothing else: a FLOAT, a NUMBER with a scale, a
+                // DECFLOAT, a BOOLEAN, a temporal, a BINARY, a VARIANT and a structured type are refused alike,
+                // "Unsupported data type 'MAP with key type FLOAT'." (live-verified).
+                // A GEOGRAPHY is named UNKNOWN there (live-verified).
                 throw new RuntimeException(SqlCompilationError.of("Unsupported data type 'MAP with key type "
-                    + SqlTypeNames.canonical(mapKey) + "'."));
+                    + (mapKey instanceof GeographyType ? "UNKNOWN" : SqlTypeNames.canonical(mapKey)) + "'."));
             }
             final DataType mapValue = nested(ctx.mapValue, ctx.mapValueParameters, bareStringDefault);
             IntervalTypeSpec.refuseNested(mapValue, "MAP with value type");
@@ -347,6 +348,15 @@ public final class DataTypeParser {
         final DataType leaf = parse(ctx, typeParams, bareStringDefault);
         return bareStringDefault == CAST_STRING_DEFAULT && !hasTypeLength(typeParams)
             ? StructuredLeafWidths.unsizedCastLeaf(leaf, CAST_STRING_DEFAULT) : leaf;
+    }
+
+    /** Whether a MAP takes keys of this type: a text, or a NUMBER of no scale that is no DECFLOAT. */
+    private static boolean isMapKeyType(final DataType key) {
+        if (key instanceof StringType) {
+            return !(key instanceof UuidType);
+        }
+        return key instanceof NumericType && !NumericType.isApproximate(key) && !NumericType.isDecfloat(key)
+            && ((NumericType) key).getScale() == 0;
     }
 
     private static boolean hasTypeLength(final FrostlakeParser.TypeParametersContext typeParams) {

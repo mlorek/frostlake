@@ -256,7 +256,8 @@ public class VectorRefusalDetailTest extends BaseDatabaseTest {
             answer("SELECT TO_VARIANT([1,2,3])::VECTOR(FLOAT,3)"));
         assertEquals("ACCEPTED: null",
             answer("SELECT NULL::VECTOR(FLOAT,3)"));
-        assertEquals("Array-like value being cast to a float vector has elements that are not real numbers",
+        assertEquals("Cannot convert an array with missing elements to a vector. Compact the array to a dense "
+                + "representation first using ARRAY_COMPACT.",
             answer("SELECT [1,2,NULL]::VECTOR(FLOAT,3)"));
         assertEquals("Vector value being cast to a vector is not an array or vector, or has incorrect dimension or element type",
             answer("SELECT []::VECTOR(FLOAT,3)"));

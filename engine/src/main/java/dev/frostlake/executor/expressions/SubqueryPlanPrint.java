@@ -1317,7 +1317,9 @@ final class SubqueryPlanPrint {
         items.add(new ExpressionAstBuilder().build(((FrostlakeParser.ExprItemContext) item).booleanExpr()));
         final String alias = SelectItemAccessors.getItemAlias(item);
         final String name = alias != null ? alias : derivedName(item);
-        if (name.indexOf('"') >= 0) {
+        // A name derived from the item's text keeps a double quote it holds as it is, unescaped:
+        // (SELECT '{"a": 1}') prints as SELECT '{"a": 1}' AS "'{"A": 1}'" (live-verified).
+        if (alias != null && name.indexOf('"') >= 0) {
             return false;
         }
         names.add(name);

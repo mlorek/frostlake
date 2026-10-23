@@ -177,6 +177,18 @@ public class ResultSetColumn {
     }
 
     /**
+     * This column with no interval of values known, as a result read back from storage carries none: an exact number
+     * is then tagged by its declared width's own storage (see SystemTypeOfDescription).
+     *
+     * @return a copy of this column with no value range
+     */
+    public ResultSetColumn withoutValueRange() {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            null, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName,
+            nullText, derivedNullable);
+    }
+
+    /**
      * This column under another name.
      *
      * @param renamed the name

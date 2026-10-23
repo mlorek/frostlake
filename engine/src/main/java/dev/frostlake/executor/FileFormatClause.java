@@ -118,35 +118,38 @@ public final class FileFormatClause {
     }
 
     private static WrittenFormatOption writtenOption(final FrostlakeParser.CopyFormatOptionContext option) {
-        final String name = optionName(option.getStart().getText());
+        final String spelled = option.getStart().getText();
+        final String name = optionName(spelled);
         if (option.SKIP_HEADER() != null) {
             final String count = (option.MINUS() != null ? "-" : "") + option.INTEGER_LITERAL().getText();
-            return new WrittenFormatOption(name, count, count, false, null);
+            return new WrittenFormatOption(name, spelled, count, count, false, null);
         }
         if (option.LPAREN() != null) {
-            return new WrittenFormatOption(name, null, null, false, listed(option.stringLiteralList()));
+            return new WrittenFormatOption(name, spelled, null, null, false, listed(option.stringLiteralList()));
         }
-        return scalar(name, option.copyOptionValue());
+        return scalar(name, spelled, option.copyOptionValue());
     }
 
     private static WrittenFormatOption writtenOption(final FrostlakeParser.ParenOptionContext option) {
-        final String name = optionName(option.optionKey().getText());
+        final String spelled = option.optionKey().getText();
+        final String name = optionName(spelled);
         if (option.LPAREN() != null) {
-            return new WrittenFormatOption(name, null, null, false, listed(option.stringLiteralList()));
+            return new WrittenFormatOption(name, spelled, null, null, false, listed(option.stringLiteralList()));
         }
-        return scalar(name, option.copyOptionValue());
+        return scalar(name, spelled, option.copyOptionValue());
     }
 
-    private static WrittenFormatOption scalar(final String name, final FrostlakeParser.CopyOptionValueContext value) {
+    private static WrittenFormatOption scalar(final String name, final String spelled,
+                                              final FrostlakeParser.CopyOptionValueContext value) {
         final boolean string = value.STRING_LITERAL() != null;
-        return new WrittenFormatOption(name, ParseTreeText.getOriginalText(value),
+        return new WrittenFormatOption(name, spelled, ParseTreeText.getOriginalText(value),
             string ? SqlStringLiterals.decode(value.STRING_LITERAL().getText()) : value.getText(), string, null);
     }
 
-    /** A parameter's name in upper case; a quoted name is no parameter of a file format. */
+    /** A parameter's name in upper case; a quoted name, no parameter of a file format, is kept as written. */
     private static String optionName(final String token) {
         if (token.length() > 1 && token.startsWith("\"") && token.endsWith("\"")) {
-            throw new RuntimeException(SqlCompilationError.of("invalid parameter '" + token + "'"));
+            return token;
         }
         return token.toUpperCase(Locale.ROOT);
     }
@@ -187,7 +190,12 @@ public final class FileFormatClause {
                 // COMMENT describes the format object itself; it is not one of its format options.
                 comment = option.value != null ? option.value : String.join(",", option.listed);
             } else if (!FileFormatSurfaces.isKnownOption(option.name)) {
-                throw new RuntimeException(SqlCompilationError.of("invalid parameter '" + option.name + "'"));
+                // An unknown name is refused as written: as an invalid property of a file format where a CREATE or
+                // an ALTER FILE FORMAT writes it alone, "invalid property 'foo' for 'FILE_FORMAT'", and as an
+                // invalid parameter beside another option or in a list a stage or a COPY writes (live-verified).
+                throw new RuntimeException(SqlCompilationError.of(!namesAllowed && options.size() == 1
+                    ? "invalid property '" + option.spelled + "' for 'FILE_FORMAT'"
+                    : "invalid parameter '" + option.spelled + "'"));
             } else if (option.listed != null) {
                 // NULL_IF keeps each value whole (see FileFormat.getNullIfValues); any other list is kept
                 // comma-joined so the format round-trips.

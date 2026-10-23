@@ -19,6 +19,9 @@ package dev.frostlake.jdbc;
 import dev.frostlake.values.Decfloats;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.sql.Types;
 
@@ -266,6 +269,54 @@ final class JdbcCellReads {
                 : new BigDecimal(wire);
         } catch (final NumberFormatException notADecimal) {
             throw JdbcMarshaling.unconvertible(type, "big decimal", wire);
+        }
+    }
+
+    /**
+     * A cell read by {@code getBytes}, as the account's driver reads one (live-verified): a BINARY's own bytes, a
+     * BOOLEAN's one byte 1 or 0, a whole number's two's-complement bytes ({@code [1, 44]} for 300, {@code [-1]} for
+     * -1), a FLOAT's eight IEEE 754 bytes, and the UTF-8 bytes of the text getString reads for a text, a VARIANT, an
+     * OBJECT, an ARRAY or a VECTOR. A NUMBER with digits after its point, a DECFLOAT, a DATE, a TIME and every
+     * timestamp are refused, quoting the cell's wire form.
+     *
+     * @param type the column's JDBC type
+     * @param cell the cell, not null
+     * @param text the cell's text, as getString reads it
+     * @param wire the cell's wire text
+     * @return the bytes
+     * @throws SQLException when the column's type reads as no bytes
+     */
+    static byte[] bytesOf(final int type, final Object cell, final String text, final String wire)
+            throws SQLException {
+        switch (type) {
+            case Types.BINARY:
+            case Types.VARBINARY:
+            case Types.LONGVARBINARY:
+                return JdbcMarshaling.toBytes(cell);
+            case Types.BOOLEAN:
+                return new byte[] {(byte) (booleanOf(type, cell, wire) ? 1 : 0)};
+            case Types.TINYINT:
+            case Types.SMALLINT:
+            case Types.INTEGER:
+            case Types.BIGINT:
+                try {
+                    return new BigInteger(wire).toByteArray();
+                } catch (final NumberFormatException notWhole) {
+                    throw JdbcMarshaling.unconvertible(type, "byte array", wire);
+                }
+            case Types.REAL:
+            case Types.FLOAT:
+            case Types.DOUBLE:
+                return ByteBuffer.allocate(Double.BYTES).putDouble(doubleOf(type, cell, wire)).array();
+            case Types.DECIMAL:
+            case Types.NUMERIC:
+            case Types.DATE:
+            case Types.TIME:
+            case Types.TIMESTAMP:
+            case Types.TIMESTAMP_WITH_TIMEZONE:
+                throw JdbcMarshaling.unconvertible(type, "byte array", wire);
+            default:
+                return text.getBytes(StandardCharsets.UTF_8);
         }
     }
 

@@ -150,11 +150,26 @@ public final class PythonRuntimeDiagnostics {
      */
     public static String describeFailure(final String kind, final String name, final String runtimeVersion,
                                          final String body, final Throwable error) {
-        final StringBuilder message = new StringBuilder("Error executing Python ")
-            .append(kind).append(' ').append(name).append(": ").append(error.getMessage());
+        return "Error executing Python " + kind + ' ' + name + ": " + error.getMessage()
+            + newerSyntaxNote(kind, runtimeVersion, body, error);
+    }
+
+    /**
+     * What a parse failure owes to a body written for a newer Python than this engine runs, as a sentence to append to
+     * the failure's report; empty for any other failure.
+     *
+     * @param kind           "function" or "procedure", for the message text
+     * @param runtimeVersion the declared RUNTIME_VERSION (may be null)
+     * @param body           the Python source, scanned for Python-3-only constructs
+     * @param error          the failure being reported
+     * @return the note, or the empty text
+     */
+    public static String newerSyntaxNote(final String kind, final String runtimeVersion, final String body,
+                                         final Throwable error) {
         if (!declaresNewerPython(runtimeVersion) || !isSyntaxFailure(error)) {
-            return message.toString();
+            return "";
         }
+        final StringBuilder message = new StringBuilder();
         message.append(" — the ").append(kind).append(" declares RUNTIME_VERSION '").append(runtimeVersion)
             .append("' but this engine runs Python ").append(PythonInterpreter.description())
             .append(", so syntax added after that version cannot be parsed");

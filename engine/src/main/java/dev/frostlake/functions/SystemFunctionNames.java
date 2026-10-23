@@ -75,6 +75,7 @@ public final class SystemFunctionNames {
             "SYSTEM$GET_TAG_ON_CURRENT_TABLE",
             "SYSTEM$GET_TASK_GRAPH_CONFIG",
             "SYSTEM$LAST_CHANGE_COMMIT_TIME",
+            "SYSTEM$PIPE_FORCE_RESUME",
             "SYSTEM$PIPE_STATUS",
             "SYSTEM$QUERY_REFERENCE",
             "SYSTEM$REFERENCE",
@@ -118,6 +119,19 @@ public final class SystemFunctionNames {
      * @param name the name as written
      * @return the refusal
      */
+    /**
+     * Whether the name is one a block's statements are written with that names no function: a logging statement's,
+     * {@code SYSTEM$ADD_EVENT} or {@code SYSTEM$SET_SPAN_ATTRIBUTES}. A query, a view or a SQL function body that calls
+     * one is refused as calling an unknown function, the sentence ending with no full stop (live-verified).
+     *
+     * @param name the name as written
+     * @return whether it is such a statement's name
+     */
+    public static boolean isScriptingStatement(final String name) {
+        return isLoggingStatement(name) || "SYSTEM$ADD_EVENT".equalsIgnoreCase(name)
+            || "SYSTEM$SET_SPAN_ATTRIBUTES".equalsIgnoreCase(name);
+    }
+
     public static RuntimeException unknownLoggingFunction(final String name) {
         return new RuntimeException(SqlCompilationError.of("Unknown function " + name.toUpperCase(Locale.ROOT)));
     }

@@ -93,6 +93,40 @@ final class InlineTags {
         }
     }
 
+    /**
+     * Refuse a tag clause on a CREATE OR ALTER, which sets no tags: every tag it names must exist, and then the
+     * clause is refused whatever its values (live-verified).
+     *
+     * @param tags          the statement's tag clause
+     * @param queryExecutor the executor whose catalog resolves the tags
+     */
+    static void refuseOnOrAlter(final FrostlakeParser.TagListContext tags, final QueryExecutor queryExecutor) {
+        for (final FrostlakeParser.TagAssignmentContext assignment : tags.tagAssignment()) {
+            queryExecutor.getCatalog().getTag(
+                QualifiedName.of(ParseTreeText.qualifiedNameParts(assignment.qualifiedName())).toString());
+        }
+        throw new RuntimeException("CREATE OR ALTER does not support setting policies or tags.");
+    }
+
+    /**
+     * The object's own tag clause among {@code ownContexts}, or null.
+     *
+     * @param ownContexts the contexts that belong to the object itself, as {@link #applyFrom} takes them
+     * @return the first tag clause found, or null
+     */
+    static FrostlakeParser.TagListContext ownTagList(final List<? extends ParseTree> ownContexts) {
+        if (ownContexts == null) {
+            return null;
+        }
+        for (final ParseTree context : ownContexts) {
+            final FrostlakeParser.TagListContext tags = firstTagList(context);
+            if (tags != null) {
+                return tags;
+            }
+        }
+        return null;
+    }
+
     /** The first tag clause in the subtree, or null when the statement carries none. */
     private static FrostlakeParser.TagListContext firstTagList(final ParseTree node) {
         if (node instanceof FrostlakeParser.TagListContext) {

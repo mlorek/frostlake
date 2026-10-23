@@ -33,15 +33,19 @@ import java.util.Map;
 
 /**
  * A correlated subquery over a derived relation of a shape of its own - one that computes over, groups or joins
- * its tables, or that stands beside another relation in the FROM - judged as the account judges it, before any row
- * (live-verified). A select-list subquery that is no aggregate and correlates by one equality is refused unless:
+ * its tables, or that stands beside another relation in the FROM, joined in or outer - judged as the account judges
+ * it, before any row (live-verified). A select-list, HAVING or ORDER BY subquery that is no aggregate and correlates
+ * by one equality is refused unless:
  * the outer column it reads is a constant of the relation ({@code SELECT 5 AS id}); the statistics of what the
  * column computes settle the equality ({@code -id AS id} never meets the inner ids, and neither does
  * {@code d.id + o.id}); or the relation is pruned - by a {@code FALSE} or a condition the statistics rule out in
  * its own WHERE, by its own constant {@code WHERE 1 = 0} over a derived relation of its own, or by the statement's
  * constant {@code WHERE 1 = 0} over it, which prunes a computed and a joined relation and not a grouped one. A
  * relation that groups, aggregates, keeps DISTINCT rows, orders, limits or unites selects has no statistics of its
- * columns to settle anything. Any other correlation keeps the judgement a row makes when it reaches it.
+ * columns to settle anything, and one over a table function neither statistics nor its pruning. A correlation of
+ * another shape - two conditions, a non-equality, an OR - is refused over such a relation unless each outer column it
+ * reads is a constant of its relation or its relation is pruned. A WHERE's subquery keeps the judgement a row makes
+ * when it reaches it.
  */
 final class DerivedRelationJudgement {
 
@@ -85,6 +89,13 @@ final class DerivedRelationJudgement {
         final boolean statementPruned = judgement.prunedByConstant(ParseTreeText.getWhereClause(clause));
         final List<FrostlakeParser.ScalarSubqueryExprContext> subqueries = new ArrayList<>();
         collectSubqueries(clause.selectList(), subqueries);
+        if (clause.havingClause() != null) {
+            collectSubqueries(clause.havingClause(), subqueries);
+        }
+        if (statement != null && statement.orderByClause() != null && statement.selectOperand().size() == 1
+                && statement.selectOperand(0).selectClause() == clause) {
+            collectSubqueries(statement.orderByClause(), subqueries);
+        }
         for (final FrostlakeParser.ScalarSubqueryExprContext subquery : subqueries) {
             if (judgement.refuses(subquery, statementPruned)) {
                 final Token at = SubqueryAnchor.of(subquery);
@@ -99,9 +110,7 @@ final class DerivedRelationJudgement {
     private boolean readFrom(final FrostlakeParser.TableExpressionContext from) {
         final List<FrostlakeParser.TableReferenceContext> references = new ArrayList<>(from.tableReference());
         for (final FrostlakeParser.JoinClauseContext join : from.joinClause()) {
-            if (join.LATERAL() != null || join.ASOF() != null || join.asofMatchCondition() != null
-                    || join.joinType() != null && (join.joinType().LEFT() != null || join.joinType().RIGHT() != null
-                        || join.joinType().FULL() != null)) {
+            if (join.LATERAL() != null || join.ASOF() != null || join.asofMatchCondition() != null) {
                 return false;
             }
             references.add(join.tableReference());
@@ -207,18 +216,18 @@ final class DerivedRelationJudgement {
         final List<FrostlakeParser.BooleanExprContext> conjuncts = new ArrayList<>();
         collectConjuncts(where.booleanExpr(), conjuncts);
         FrostlakeParser.ComparisonExprContext correlation = null;
+        final List<FrostlakeParser.BooleanExprContext> correlated = new ArrayList<>();
         for (final FrostlakeParser.BooleanExprContext conjunct : conjuncts) {
-            if (!readsOuter(conjunct, own)) {
-                continue;
+            if (readsOuter(conjunct, own)) {
+                correlated.add(conjunct);
+                correlation = equalityOf(conjunct);
             }
-            final FrostlakeParser.ComparisonExprContext equality = equalityOf(conjunct);
-            if (equality == null || correlation != null) {
-                return false;
-            }
-            correlation = equality;
         }
-        if (correlation == null) {
+        if (correlated.isEmpty()) {
             return false;
+        }
+        if (correlated.size() > 1 || correlation == null) {
+            return refusesOtherCorrelation(correlated, own, statementPruned);
         }
         final boolean leftOuter = readsOuter(correlation.expression(0), own);
         final boolean rightOuter = readsOuter(correlation.expression(1), own);
@@ -279,6 +288,9 @@ final class DerivedRelationJudgement {
                 replacement = qualifier + "." + column;
             } else if (bodies.containsKey(qualifier)) {
                 final FrostlakeParser.SelectStatementContext body = bodies.get(qualifier);
+                if (readsTableFunction(body)) {
+                    return REFUSED;
+                }
                 if (pruned(body) || statementPruned && !grouped(body) || fromless(body)) {
                     // A relation of one row at most is read row by row, as a FROM-less select's is.
                     return null;
@@ -310,6 +322,78 @@ final class DerivedRelationJudgement {
             written.replace(from, to, "(" + replacement + ")");
         }
         return written.toString();
+    }
+
+    /**
+     * Whether the account refuses a correlation of another shape than one equality: an outer column it reads over a
+     * relation of a shape of its own that nothing prunes refuses it, unless the column is a constant of its relation;
+     * a catalog table's column, or one this cannot read, leaves the subquery to the row's judgement.
+     */
+    private boolean refusesOtherCorrelation(final List<FrostlakeParser.BooleanExprContext> correlated,
+                                            final Map<String, Table> own, final boolean statementPruned) {
+        boolean refused = false;
+        for (final FrostlakeParser.BooleanExprContext conjunct : correlated) {
+            final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
+            collectNames(conjunct, names);
+            for (final FrostlakeParser.QualifiedNameExprContext name : names) {
+                final String[] parts = ParseTreeText.qualifiedNameParts(name.qualifiedName());
+                final String qualifier = parts.length == 2 ? parts[0].toUpperCase(Locale.ROOT) : null;
+                if (qualifier != null && own.containsKey(qualifier)) {
+                    continue;
+                }
+                final Boolean column = qualifier == null ? null : refusesColumn(qualifier, parts[1], statementPruned);
+                if (column == null) {
+                    return false;
+                }
+                refused |= column.booleanValue();
+            }
+        }
+        return refused;
+    }
+
+    /** Whether an outer column refuses a correlation of another shape; null where this cannot tell. */
+    private Boolean refusesColumn(final String qualifier, final String column, final boolean statementPruned) {
+        final FrostlakeParser.SelectStatementContext body = bodies.get(qualifier);
+        if (body == null) {
+            return null;
+        }
+        if (readsTableFunction(body)) {
+            return Boolean.TRUE;
+        }
+        if (pruned(body) || statementPruned && !grouped(body) || fromless(body)) {
+            return Boolean.FALSE;
+        }
+        if (!projects(body)) {
+            return Boolean.TRUE;
+        }
+        final String replacement = columnOf(body.selectOperand(0).selectClause(), column);
+        if (replacement == null) {
+            return null;
+        }
+        return Boolean.valueOf(!ConstantHaving.isConstant(ExpressionEvaluator.parse(replacement),
+            executor.getFunctionRegistry()));
+    }
+
+    /** Whether a relation's body reads a table function in its FROM. */
+    private static boolean readsTableFunction(final FrostlakeParser.SelectStatementContext body) {
+        for (final FrostlakeParser.SelectOperandContext operand : body.selectOperand()) {
+            final FrostlakeParser.SelectClauseContext select = operand.selectClause();
+            if (select == null || select.tableExpression() == null) {
+                continue;
+            }
+            final List<FrostlakeParser.TableReferenceContext> references =
+                new ArrayList<>(select.tableExpression().tableReference());
+            for (final FrostlakeParser.JoinClauseContext join : select.tableExpression().joinClause()) {
+                references.add(join.tableReference());
+            }
+            for (final FrostlakeParser.TableReferenceContext reference : references) {
+                final FrostlakeParser.TableSourceContext source = reference.tableSource();
+                if (source != null && (source.TABLE() != null || source.FLATTEN() != null)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** What a projecting relation computes for a column: the select item of its name, or the star's column. */

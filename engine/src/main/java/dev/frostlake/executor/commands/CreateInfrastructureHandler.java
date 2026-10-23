@@ -48,7 +48,6 @@ import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
 import dev.frostlake.metastore.model.Task;
-import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.parser.FrostlakeParser;
@@ -63,6 +62,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -114,6 +114,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQualifiedName);
             if (orReplace || orAlter && hasTaskNamed(schema, taskName)) {
                 queryExecutor.requireOwnership("TASK", qualifiedNameParts(ctx.qualifiedName(0)), null);
+            }
+            if (orAlter && ctx.tagList() != null) {
+                InlineTags.refuseOnOrAlter(ctx.tagList(), queryExecutor);
             }
             final String sqlText = taskBodyText(ctx.taskBody());
 
@@ -186,7 +189,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             properties.requireRootSettings(task);
             properties.requireServerlessSettings(task);
             // The graph of a root that runs is not changed: no child is added under one of its tasks, and no child
-            // of it is recreated or redefined (a root that runs is refused below, by CREATE OR ALTER).
+            // of it is recreated or redefined (a root that runs is weighed below, by CREATE OR ALTER).
             final List<Task> graphs = new ArrayList<>(properties.namedPredecessors(after));
             if ((orAlter || orReplace) && hasTaskNamed(schema, taskName)) {
                 final Task standing = schema.getTaskExact(taskName);
@@ -204,11 +207,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             if (orAlter && hasTaskNamed(schema, taskName)) {
                 // The task there becomes what the statement writes: a property it leaves out is unset, while its
-                // state, its runs and its tags stay (live-verified, documented). A root that runs is not changed.
+                // state, its runs and its tags stay (live-verified, documented). A root that runs is changed only
+                // while it runs alone, and is made to run after others only once suspended.
                 final Task standing = schema.getTaskExact(taskName);
-                if (standing.getPredecessors().isEmpty() && standing.getState() == TaskState.STARTED) {
-                    throw new RuntimeException("Unable to update graph with root task "
-                        + schema.qualifiedName(standing.getName()) + " since that root task is not suspended.");
+                if (TaskGraphs.isRoot(standing) && !standing.isFinalizer()) {
+                    if (after.isEmpty()) {
+                        properties.requireSuspendedGraph(standing);
+                    } else {
+                        properties.requireSuspendedRoots(Collections.singletonList(standing));
+                    }
                 }
                 standing.redefineAs(task);
                 ConditionalDdlOutcome.alteredInPlace();
@@ -1014,7 +1021,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             continue;
                         }
                         if (!STAGE_OPTION_NAMES.contains(key)) {
-                            throw ParameterRegistry.invalidProperty(key, "STAGE");
+                            // Named as written: invalid property 'foo' for 'STAGE' (live-verified).
+                            throw ParameterRegistry.invalidProperty(option.identifier().getText(), "STAGE");
                         }
                         if ("STORAGE_INTEGRATION".equals(key)) {
                             // The integration is looked up before the stage's own shape is judged.

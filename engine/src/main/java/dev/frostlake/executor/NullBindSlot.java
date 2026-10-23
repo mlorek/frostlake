@@ -28,14 +28,6 @@ import org.antlr.v4.runtime.Token;
  */
 final class NullBindSlot {
 
-    /** The date and time functions an argument bound NULL makes an untyped NULL of (live-verified, one by one). */
-    private static final String[] DATE_TIME_FUNCTIONS = {
-        "ADD_MONTHS", "DATEADD", "DATEDIFF", "DATE_PART", "DATE_TRUNC", "DAY", "DAYOFMONTH", "DAYOFWEEK",
-        "DAYOFWEEKISO", "DAYOFYEAR", "EXTRACT", "HOUR", "LAST_DAY", "MINUTE", "MONTH", "MONTHS_BETWEEN", "QUARTER",
-        "SECOND", "TIMEADD", "TIMEDIFF", "TIMESTAMPADD", "TIMESTAMPDIFF", "TIME_SLICE", "TRUNC", "TRUNCATE", "WEEK",
-        "WEEKISO", "WEEKOFYEAR", "YEAR", "YEAROFWEEK", "YEAROFWEEKISO"
-    };
-
     /** The functions that read their first argument as the text it is (every argument, for CONCAT). */
     private static final String[] TEXT_FUNCTIONS = {
         "BASE64_ENCODE", "COLLATE", "CONCAT", "INITCAP", "LEFT", "LEN", "LENGTH", "LOWER", "LTRIM", "REVERSE", "RIGHT",
@@ -141,7 +133,7 @@ final class NullBindSlot {
      */
     boolean isDateTimeArgument() {
         final String call = callName();
-        return call != null && oneOf(call, DATE_TIME_FUNCTIONS)
+        return call != null && NullFoldingDateFunctions.contains(call)
             && (isWholeItem() || "EXTRACT".equals(call) && type(first - 1) == FrostlakeLexer.FROM
                 && type(last + 1) == FrostlakeLexer.RPAREN);
     }

@@ -96,8 +96,10 @@ _DECIMAL_BASE = None
 
 
 def _owned(value):
-    # What the runtime's sources define: they run as modules named __frostlake_..., and so does this worker.
-    return str(getattr(value, "__module__", "")).startswith("__frostlake")
+    # What the runtime's sources define: they run as modules named __frostlake_..., and so does this worker; the
+    # snowpark emulation's classes carry Snowpark's own module names, snowflake.snowpark.*.
+    module = str(getattr(value, "__module__", ""))
+    return module.startswith("__frostlake") or module.startswith("snowflake.snowpark")
 
 
 def _guard(holder):

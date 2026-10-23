@@ -92,6 +92,12 @@ final class PlanBuilder {
 
     private static final List<String> NONE = Collections.<String>emptyList();
 
+    /** The ranking functions whose window reads its scan twice (see readTwiceForWindows). */
+    private static final Set<String> SCAN_TWICE_RANKINGS = Set.of("ROW_NUMBER", "RANK", "DENSE_RANK");
+
+    /** The offset functions whose window reads its scan twice when it partitions nothing (see readTwiceForWindows). */
+    private static final Set<String> SCAN_TWICE_OFFSETS = Set.of("LAG", "LEAD");
+
     /** How deep views may stand in views before a plan stops reading them. */
     private static final int DEEPEST_VIEW = 32;
 
@@ -1045,7 +1051,9 @@ final class PlanBuilder {
         if (!grouped.isEmpty()) {
             plan = operator("Filter").filtering(texts(grouped, state)).over(plan);
         }
+        PlanNode windowedScan = null;
         if (computesAWindow(select.selectList()) || computesAWindow(select.qualifyClause())) {
+            windowedScan = plan.isScan() ? plan : null;
             plan = operator("WindowFunction").over(plan);
             state.windowedBy(plan);
         }
@@ -1055,6 +1063,9 @@ final class PlanBuilder {
             plan = operator("Filter").filtering(texts(qualifying, state)).over(plan);
         }
         state.render();
+        if (windowedScan != null) {
+            readTwiceForWindows(select, windowedScan);
+        }
         if (several && select.topClause() != null) {
             final Long count = numberOf(select.topClause().INTEGER_LITERAL());
             plan = new PlanNode("Limit", NONE, null, limitTexts(count, null)).over(plan).holding(keptRows(count, plan));
@@ -2040,6 +2051,59 @@ final class PlanBuilder {
     }
 
     /** Whether an OVER clause stands under a node, outside any nested query. */
+    /**
+     * A WindowFunction straight over a TableScan reads it twice, as a Sort with no row limit does (see
+     * {@link PlanNode#readForSort}), when the first window the query writes is a ROW_NUMBER, a RANK or a DENSE_RANK, or
+     * a LAG or a LEAD with no PARTITION BY: the scan lists its table twice, the columns that window partitions and
+     * orders by first, and GlobalStats counts it twice. A first window of any other function reads the scan once, the
+     * windows after it whatever they are, and so does a window over a Filter (all live-verified).
+     */
+    private static void readTwiceForWindows(final FrostlakeParser.SelectClauseContext select, final PlanNode scan) {
+        FrostlakeParser.OverClauseContext first = firstWindow(select.selectList());
+        if (first == null) {
+            first = firstWindow(select.qualifyClause());
+        }
+        if (first == null || !readsItsScanTwice(first)) {
+            return;
+        }
+        final Set<String> named = new LinkedHashSet<>();
+        if (first.partitionByClause() != null) {
+            collectColumns(first.partitionByClause(), named);
+        }
+        if (first.orderByClause() != null) {
+            collectColumns(first.orderByClause(), named);
+        }
+        scan.readForSort(new ArrayList<>(named));
+    }
+
+    /** The first window written under the node, outside nested queries, or null. */
+    private static FrostlakeParser.OverClauseContext firstWindow(final ParseTree node) {
+        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
+            return null;
+        }
+        if (node instanceof FrostlakeParser.OverClauseContext) {
+            return (FrostlakeParser.OverClauseContext) node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.OverClauseContext found = firstWindow(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /** Whether a window's function reads its scan twice (see {@link #readTwiceForWindows}). */
+    private static boolean readsItsScanTwice(final FrostlakeParser.OverClauseContext window) {
+        if (!(window.getParent() instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return false;
+        }
+        final String name = SqlIdentifiers.canonicalText(
+            ((FrostlakeParser.FunctionCallExprContext) window.getParent()).functionName().getText());
+        return SCAN_TWICE_RANKINGS.contains(name)
+            || SCAN_TWICE_OFFSETS.contains(name) && window.partitionByClause() == null;
+    }
+
     private static boolean computesAWindow(final ParseTree node) {
         if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
             return false;

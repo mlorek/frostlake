@@ -14,6 +14,90 @@ Changes since 0.3.0 accumulate here as they land.
 
 ### Now refused (SQL that earlier versions accepted)
 
+- **A time, a timestamp, a text or a VARIANT other than an object given to a block's OBJECT variable**
+  (live-verified): `invalid type [CAST(TO_TIME('10:00:00') AS OBJECT)] for parameter 'TO_OBJECT'`, as a DATE was
+  refused; a text is `[CAST('x' AS OBJECT)]` whether assigned, a DEFAULT, a typed LET or an expression, and
+  `[CAST(identity('x') AS OBJECT)]` selected INTO; a VARIANT is `Failed to cast variant value "y" to OBJECT`. The
+  value used to be held.
+- **An ARRAY, a VARIANT, a text or a VECTOR of another type written to a VECTOR column** (live-verified): refused
+  while the INSERT, the UPDATE or the MERGE compiles, `Expression type does not match column data type, expecting
+  VECTOR(FLOAT, 3) but got ARRAY for column V`, where the value was converted.
+- **A SQL function body that calls SYSTEM$LOG, a SYSTEM$LOG_<level>, SYSTEM$ADD_EVENT or SYSTEM$SET_SPAN_ATTRIBUTES**
+  (live-verified): refused at CREATE with `Unknown function SYSTEM$LOG`, where the function was created.
+- **SYSTEM$SET_RETURN_VALUE outside a task** (live-verified): `Function SYSTEM$SET_RETURN_VALUE must be called from
+  within a task.`, and in a procedure that runs with its owner's rights `Query called from a stored procedure contains
+  a function with side effects [SYSTEM$SET_RETURN_VALUE].`, where it answered its argument.
+- **SYSTEM$TASK_DEPENDENTS_ENABLE of a task that is not there** (live-verified): `invalid value [nosuch_task] for
+  parameter 'RECURSIVE_TASK_ENABLE'`, the name as written, and a task named by a number as no constant, where it
+  answered `Statement executed successfully.`; a NULL answers NULL.
+- **GET of a VARIANT at a FLOAT, DECFLOAT, date or time, or binary index** (live-verified): `Invalid argument types
+  for function 'GET': (FILE, FLOAT)` as the call compiles, at the call, where the call answered: NULL at a FLOAT or a
+  date index, the element at a DECFLOAT one (a binary index was refused naming the VARIANT). An ARRAY or an OBJECT
+  read at a FLOAT index still answers NULL.
+- **A DECFLOAT column in a hybrid table, and search optimization ON EQUALITY or SUBSTRING of a DECFLOAT column**
+  (live-verified): `This feature is not supported for hybrid tables: 'DECFLOAT(38)'.`, ahead of the table's keys, and
+  `Expression EQUALITY(IDX_SRC_TABLE.D) cannot be used in search optimization.` at the column. A clustering key on a
+  DECFLOAT or an expression of one, and search optimization of the whole table, still take it, as the account does.
+- **A MAP keyed by anything but a text or a NUMBER of no scale** (live-verified), wherever the type is written — a
+  cast, a TRY_CAST, a column, ALTER TABLE … ADD COLUMN, a routine's parameter or result, a MAP or an ARRAY nesting
+  one, EXPLAIN: `Unsupported data type 'MAP with key type FLOAT'.`, the key named canonically (`TIMESTAMP_NTZ(9)`,
+  `BINARY(67108864)`, `ARRAY(NUMBER(38,0))`) and a GEOGRAPHY as `UNKNOWN`. A FLOAT, BOOLEAN, DATE, TIME, timestamp,
+  BINARY, VARIANT, VECTOR, UUID or structured key was taken.
+- **A GENERATOR bound calling TIMEDIFF, TIMESTAMPDIFF or POSITION** (live-verified), as one calling DATEDIFF or
+  CHARINDEX already was: `argument 1 to function GENERATOR needs to be constant, found
+  'DATE_DIFFDATEINDAYS('2024-01-01', '2024-01-04')'`, POSITION echoed as `POSITION('c', 'abc')` in both its spellings,
+  a TIMELIMIT as argument 2 and an EXPLAIN alike. The bound was folded and the generator ran.
+- **BITAND_AGG, BITOR_AGG and BITXOR_AGG of a VECTOR, as aggregates and as window functions, and
+  CONDITIONAL_TRUE_EVENT of one** (live-verified), as the statement compiles and whatever rows it reads: `Invalid
+  argument types for function 'BITAND_AGG': (VECTOR(FLOAT, 2))`. Over rows they failed reading the vector as a number
+  or a boolean, and over none they answered.
+- **The JDBC drivers refuse getBytes over a NUMBER with digits after its point, a DECFLOAT, a DATE, a TIME and every
+  timestamp** (live-verified), as the account's driver does, quoting the cell's wire form: `Cannot convert value in
+  the driver from type:93 to type:byte array, value=1704164645.123456789.` They read such a cell's text, and a
+  timestamp's text differed between the HTTP and the in-process driver.
+- **An ALTER TABLE or ALERT … SET value of another kind than its parameter's type** (live-verified; an ALTER DATABASE
+  or SCHEMA … SET follows the same rule), refused before the object's level or the role's access is judged: a NUMBER
+  takes a whole number, a FLOAT a number written with a fraction (`10.0`, not `7`), a BOOLEAN TRUE or FALSE and a
+  STRING a text — `invalid value ['x'] for parameter 'DATA_RETENTION_TIME_IN_DAYS'`, `invalid value [5] for parameter
+  'LOG_LEVEL'`. A parameter the object takes was set to it, and one it does not take was refused for want of access.
+  `ALTER TABLE … SET INITIAL_REPLICATION_SIZE_LIMIT_IN_TB = 10.0` parses, where the number was a syntax error. An
+  unknown STAGE property is named as written (`invalid property 'foo' for 'STAGE'`), and an unknown FILE FORMAT option
+  is `invalid property 'foo' for 'FILE_FORMAT'` when a CREATE or ALTER FILE FORMAT writes it alone and `invalid
+  parameter 'foo'`, as written, beside another option or in a stage's format list.
+- **A MAP or ARRAY function's argument a structured value's types do not take** (live-verified), whatever rows the
+  statement reads: a key of the other family in MAP_INSERT, MAP_PICK or MAP_DELETE (`Function MAP_PICK cannot be used
+  with arguments of types MAP(VARCHAR(134217728), NUMBER(38,0)) and NUMBER(1,0)`); a plain ARRAY, OBJECT or VARIANT
+  value for a structured value type, or a BOOLEAN for a number, in MAP_INSERT; maps whose keys or values are of two
+  families in MAP_CAT; a structured ARRAY in ARRAY_FLATTEN, and one beside a plain ARRAY in ARRAYS_ZIP (`Invalid
+  argument types for function '…': (…)`); and a value of another family than a structured ARRAY's elements in
+  ARRAY_REMOVE (`Invalid type [VARIANT] for function 'ARRAY_REMOVE' at position 2`; a text was refused there in other
+  words). Each was answered.
+- **A correlated subquery over a derived relation of a shape of its own is refused in more places** (live-verified):
+  in the HAVING and the ORDER BY, as in the select list (a WHERE's is still answered); over a relation on either side
+  of an outer join, as over an inner one; correlated by two conditions, a non-equality or an OR, unless every outer
+  column it reads is a constant of its relation or its relation is pruned; and over a relation that reads a table
+  function, even under the statement's constant `WHERE 1 = 0`. Each answered no rows.
+- **A name a table function's arguments read that nothing answers to is refused whatever rows reach the call**
+  (live-verified), `invalid identifier` as over rows: written inside a subquery there (`TABLE(FLATTEN(INPUT => (SELECT
+  nosuch FROM t)))`, correlated or not) over an empty relation to the call's left or over an empty table the subquery
+  reads, and written anywhere in the arguments under a query that reads no row of its FROM (`WHERE 1 = 0`, `LIMIT 0`).
+  Each answered no rows.
+- **A JavaScript table function with a TIME column is refused at the call** (live-verified), as one with a NUMBER
+  column already was: `Snowflake type TIME[SB8](0,9){nullable} is not supported in function F`. A scale up to 4 is
+  stored as SB4, and scale 0 omits the parenthesised scale.
+- **A running task graph refuses changes to its tasks** (live-verified). While the graph's root runs and has a child
+  or a finalizer, each of the following is refused with `Unable to update graph with root task … since that root task
+  is not suspended.`: ALTER TASK … SET, UNSET, MODIFY, REMOVE WHEN and SET or UNSET EXECUTE AS on any task of the
+  graph; RESUME or SUSPEND of a child or finalizer; and DROP TASK of any task of the graph. Tags and contacts can
+  still be changed, and the root can still be resumed and suspended.
+- **ALTER TASK IF EXISTS and DROP TASK IF EXISTS forgive only a missing task**: when the task exists, its refusal
+  stands. Before, IF EXISTS answered success.
+- **A child task refuses SUSPEND_TASK_AFTER_NUM_FAILURES** (live-verified) with `Cannot set parameter
+  SUSPEND_TASK_AFTER_NUM_FAILURES on non-root task …`, as it already refused TASK_AUTO_RETRY_ATTEMPTS. ALTER TASK …
+  SET refuses both before it checks whether the graph is running.
+- **CREATE OR ALTER refuses a tag clause** (live-verified): on a TASK, a TABLE or a VIEW, `WITH TAG (…)` is refused
+  with `CREATE OR ALTER does not support setting policies or tags.` once every tag it names has been found. CREATE OR
+  ALTER TASK no longer takes `WITH CONTACT (…)`.
 - **The JDBC drivers refuse getArray and getObject with a type map** (live-verified), as the account's driver does
   over JSON and Arrow results alike: a semi-structured or structured ARRAY reads as its JSON text through getString
   and getObject.
@@ -259,6 +343,141 @@ Changes since 0.3.0 accumulate here as they land.
 
 ### Fixed
 
+- **FIRST_VALUE and LAST_VALUE whose argument is a call followed by a null treatment** (live-verified):
+  `FIRST_VALUE(ABS(n) IGNORE NULLS) OVER (ORDER BY n)` runs, ignoring the NULLs, where it was refused as a syntax
+  error at the IGNORE.
+- **JSON.stringify of a value holding a circle, in a JavaScript function or procedure** (live-verified): the refusal
+  describes the circle as the account's engine does - where it starts, its first links and its last, and the key that
+  closes it - where only its first line was given.
+- **Further syntax-error lines** (live-verified): a fault inside a value query's call, a policy's RETURNS type list
+  that cannot begin, a type list in a dynamic or external table's column list, an AS inside a quantified or IN list,
+  an EXISTS after a quantifier, a null treatment inside a call nested in FIRST_VALUE, and a method's name written
+  without its parenthesis report the lines the account reports.
+- **SYSTEM$TYPEOF of a difference of two dates** (live-verified): `NUMBER(9,0)[SB4]` beside a NULL date too, where it
+  was `[SB1]`; a date difference is tagged by its declared width whatever the dates hold.
+- **SHOW GRANTS OF ROLE over the built-in roles** (live-verified): PUBLIC lists no one, and the grants of the
+  account's own role hierarchy name no grantor, where the user's implicit PUBLIC was listed and SYSADMIN named.
+- **Which SQL function overload a text or a NULL runs among TIME and the timestamps** (live-verified): a text runs a
+  TIMESTAMP_NTZ, a TIMESTAMP_LTZ or a NUMBER overload before a TIME one, and the timestamp kinds sort by their names,
+  NTZ before TZ, where the TIME and the TZ overloads ran.
+- **A text or a VARIANT given to a block's ARRAY variable** (live-verified): a text — assigned, as a DEFAULT, by a
+  typed LET, as an expression such as `'x' || 'y'`, or selected INTO from a text column — is the array's one element,
+  `["x"]`, and so is a VARIANT holding anything but an array, `[5]`, where both stayed as they were. A CALL's answer
+  is still held as the CALL handed it back.
+- **A scalar subquery whose derived column name holds a double quote, echoed in a refusal** (live-verified): `(SELECT
+  '{"a": 1}')::OBJECT` echoes `(SELECT '{"a": 1}' AS "'{"A": 1}'" FROM (VALUES (NULL)) DUAL)`, where the echo printed
+  an internal `(subquery …)` form.
+- **A cast of an array with a missing element to a VECTOR** (live-verified): `Cannot convert an array with missing
+  elements to a vector. Compact the array to a dense representation first using ARRAY_COMPACT.`, after a wrong length
+  and before any element is judged, where the elements were reported as not real numbers; a JSON null is an element
+  and is judged as one.
+- **EXPLAIN of a window straight over a table scan** (live-verified): when the query's first window is a ROW_NUMBER, a
+  RANK or a DENSE_RANK, or a LAG or a LEAD with no PARTITION BY, the TableScan lists its table twice, the columns that
+  window partitions and orders by first, and GlobalStats counts its partitions twice; any other first window reads the
+  scan once.
+- **Arithmetic over a block's NULL DATE variable in SELECT … INTO, INSERT and UPDATE** (live-verified): the folded
+  operation reads as the bare word NULL to what surrounds it, so `:d + 1 + 1` is a NUMBER(19,0) and `COALESCE(:d + 1,
+  CURRENT_DATE())` a DATE, where both answered NULL[LOB].
+- **SYSTEM$PIPE_FORCE_RESUME** (live-verified): a view over it is created, a missing pipe is refused as
+  SYSTEM$PIPE_STATUS refuses it, an argument that is no text is refused as `argument needs to be a string: '1'` and a
+  column as no constant, and a pipe that is there is resumed; it was an unknown function. `SYSTEM$ADD_EVENT` and
+  `SYSTEM$SET_SPAN_ATTRIBUTES` written as calls are refused as `Unknown function SYSTEM$ADD_EVENT`, with no full stop,
+  as the logging statements' names are.
+- **A DECFLOAT literal and a PERCENTILE fraction in refusal texts** (live-verified): an expression printed in a
+  refusal spells a DECFLOAT literal `decfloat '1'`, as in `Invalid expression [ARRAY_CONSTRUCT(decfloat '1')] in
+  VALUES clause`, and a PERCENTILE_CONT or PERCENTILE_DISC fraction that is no constant is quoted through the cast the
+  plan gives it: `CAST(CAST(0.1 AS FLOAT) AS NUMBER(18,0))` for a FLOAT, `CAST(decfloat '0.1' AS NUMBER(18,0))` for a
+  DECFLOAT, `TO_NUMBER('0.1', 18, 1)` for a numeric text, while an exact NUMBER cast is quoted as written.
+- **Nullability through derived relations and set operations** (live-verified): a column of a derived table, a CTE or
+  a view whose item cannot be NULL is `{not null}` in a range refusal — `SUBSTR('abcdef', n)` over `(SELECT
+  'inf'::FLOAT n)` — with a FROM or without; a set operation's column can be NULL where any arm's can, whatever the
+  operator, and a BY NAME column always can. An INSERT … SELECT or a MERGE that writes such a value into a NOT NULL
+  column prints the same nullability, and a JavaScript statement's `isColumnNullable` gives the same answer for a
+  select list without a FROM, a set operation and a derived relation's column.
+- **The snowpark shim's classes carry Snowpark's names and modules** (live-verified):
+  `snowflake.snowpark.dataframe.DataFrame`,
+  `snowflake.snowpark.relational_grouped_dataframe.RelationalGroupedDataFrame` (it was `GroupedFrame`), and the
+  Session, Row, Column, DataFrameWriter and DataFrameReader (it was `_SessionReader`) classes each in its own module,
+  importable by that name, so a DataFrame prints as `<snowflake.snowpark.dataframe.DataFrame object at 0x…>`;
+  `snowflake.snowpark.__version__` is the account's default package version, `1.55.3`, where it was `1.30.0`.
+- **RATIO_TO_REPORT over DECFLOAT values is a DECFLOAT** (live-verified): the value divided by the partition's sum as
+  DECFLOAT divides, the sum added up to thirty-eight digits — `3.3333333333333333333333333333333333333e-1`, and a
+  share of `1e-50` beside 1 is `1e-50` — and NULL for a NULL value or a sum of zero. It was typed NUMBER(38,6) and
+  worked out in double arithmetic, so 1e-50 read as 0.000000.
+- **A DECFLOAT is its own text wherever it becomes one**: bound through `OPEN … USING` or `EXECUTE IMMEDIATE … USING`
+  (live-verified) it is `1.5e300` and `1e16384`, so a numeric context refuses `Numeric value '1.5e300' is not
+  recognized`; a JavaScript procedure's ResultSet reads it by `getColumnValue` and `getColumnValueAsString` alike as
+  that text, a string (live-verified), where getColumnValue gave a JavaScript number that lost its digits; and `COPY
+  INTO @stage` unloads it as that text, as every number unloads as its cast to VARCHAR. Each wrote the plain digits,
+  16385 of them for 1e16384.
+- **GET_DDL and TAG_REFERENCES read a bare TIMESTAMP in a routine reference by the session's TIMESTAMP_TYPE_MAPPING**
+  (live-verified), as DESCRIBE and DROP read it: under `TIMESTAMP_LTZ`, `GET_DDL('function', 'f(TIMESTAMP)')` returns
+  the DDL of the function declared `f(x TIMESTAMP)` there, its parameter `"X" TIMESTAMP_LTZ(9)`, and
+  `TAG_REFERENCES('f(TIMESTAMP)', 'function')` reads that function's tags, where both refused the reference as an
+  object that does not exist.
+- **getBytes reads a cell by its column's type in both JDBC drivers** (live-verified): a whole number as its
+  two's-complement bytes (`[1, 44]` for 300), a FLOAT as its eight IEEE 754 bytes, a BOOLEAN as the one byte 1 or 0,
+  and a text, a VARIANT, an OBJECT, an ARRAY or a VECTOR as the UTF-8 bytes of what getString reads, where a cell's
+  text was decoded as hex or Base64 whenever it spelled either (`'abc'` read as two bytes, `TRUE` as three). A
+  conversion refusal over a timestamp quotes the account's wire form — its seconds past the epoch to the column's
+  scale, a TIMESTAMP_TZ's followed by its offset in minutes plus 1440 — and writes a TIMESTAMP_TZ's type `type:2,014`;
+  a TIMESTAMP_NTZ(0) reads by getInt and getLong as its seconds.
+- **A RECURSIVE view named by a quoted name recurses as the same name written plain does** (live-verified): `CREATE
+  RECURSIVE VIEW "RVX"(n) AS … FROM "RVX" … UNION ALL SELECT 100` reads 1, 2 and 3 as `RVX` does, where it was refused
+  `'RVX' is an invalid Recursive CTE`, and a name in lower or mixed case (`"rvq"`, `"Rv Q"`) recurses too, which a
+  WITH RECURSIVE still refuses.
+- **A Python routine's source runs as a module of its own** (live-verified), on GraalPy and on the CPython backend
+  alike: named after the handler (`h_module`, `Gen_module`, `run_module`), its `__file__` `_udf_code.py` and
+  `__cached__` None, registered on `sys.modules`, and its globals holding the module's own names (`__builtins__`,
+  `__cached__`, `__doc__`, `__file__`, `__loader__`, `__name__`, `__package__`, `__spec__`) and none of the runtime's;
+  an exception class it defines is reported qualified by it, `h_module.MyErr: boom`. It ran as `__main__`, beside the
+  runtime's own names.
+- **Creating a view or a SQL function over a sequence's NEXTVAL draws no value** (live-verified), nor does a query
+  that reads no row of its FROM through such a view, a CTAS over one included: the first draw after them is the
+  sequence's first, where each drew one. A view's column that is the bare NEXTVAL is described NOT NULL; `NEXTVAL + 0`
+  stays nullable.
+- **SYSTEM$TYPEOF of a number read back through RESULT_SCAN is tagged by its declared width** (live-verified):
+  NUMBER(38,0)[SB16] for a column, an expression over one or a scalar subquery, correlated or not, where the scan was
+  tagged by the values the query held (SB1 for small numbers); a literal's NUMBER(1,0) stays SB1. A correlated
+  subquery over a common table expression of one row (`WITH t AS (SELECT 1 AS c) SELECT k, (SELECT c + o.k FROM t)
+  FROM o`) is answered, as over a derived table, where it was refused `Unsupported subquery type cannot be evaluated`.
+- **The array functions keep a structured ARRAY's type, and MAP_INSERT and MAP_CAT cast into a structured map's**
+  (live-verified): ARRAY_SORT, ARRAY_DISTINCT, ARRAY_REMOVE, ARRAY_REMOVE_AT and ARRAY_REVERSE answer the array's own
+  type, so `ARRAY_SORT([3,1,2]::ARRAY(INT))[0] + 1` is 2 where it was the FLOAT 2.0, and ARRAYS_ZIP over structured
+  arrays answers `ARRAY(OBJECT($1 NUMBER(38,0), $2 VARCHAR))`. ARRAY_REMOVE takes a text out of an ARRAY(VARCHAR),
+  where it was refused. MAP_INSERT casts its value to the map's value type: '5' into a NUMBER map is 5, 2.25 into
+  NUMBER(3,1) is 2.3, 5 into a VARCHAR map is '5', and 'x' into a NUMBER map is refused `Numeric value 'x' is not
+  recognized`. MAP_CAT casts its second map to the first's type, a FLOAT map's 1.5 joining a NUMBER map as 2.
+- **A lateral table function of a query that reads no row of its FROM is called for none of its rows**
+  (live-verified), as a table function that reads no column to its left already was not. Under a WHERE whose constant
+  conjunct is FALSE or NULL (`WHERE 1 = 0`, `WHERE FALSE`, `WHERE NULL`, `WHERE fz.id = 5 AND 1 = 0`), a LIMIT 0 or an
+  inner join on such a constant, `FROM fz, TABLE(FLATTEN(INPUT => PARSE_JSON('[' || fz.id))) f` answers no row where
+  it failed `Error parsing JSON`, as does an argument that divides by zero or holds a correlated subquery; a name the
+  arguments read that nothing answers to is still refused. `LATERAL FLATTEN(…)` written without TABLE reads no
+  argument there either. A lateral FLATTEN whose arguments cannot be read with NULL inputs keeps its six columns, so a
+  correlated subquery in its argument is refused `Unsupported subquery type cannot be evaluated` at the first row,
+  where `f.value` was an invalid identifier.
+- **A Python handler's failure is reported as the account reports it** (live-verified). The report is `Python
+  Interpreter Error:`, then the traceback of the handler's own source as the file `_udf_code.py` (Python's caret lines
+  included), then the exception and ` in function <NAME> with handler <h>`. This holds for functions, table functions,
+  aggregates and procedures, at CREATE and at the call. A source that does not compile is reported by its line, text
+  and caret, with no traceback. Before, the report read `Error executing Python function …: ValueError: …`.
+- **A JavaScript table function's argumentInfo reports every argument's type and every constant's value**
+  (live-verified). The types are named `text`, `real`, `boolean`, `binary`, `date`, `timestamp_ntz`, `timestamp_ltz`,
+  `variant`, `array` and `object`. A constant's value is given as the handler reads it: a boolean as 1 or 0, a date or
+  timestamp as its instant, a VARIANT as its JSON, a BINARY as its bytes. Before, only a FLOAT constant was reported,
+  and only FLOAT arguments named a type.
+- **SYSTEM$TYPEOF of a block variable holding NULL matches the account** (live-verified). A text declared as
+  `VARCHAR(134217728)` in so many words reads `VARCHAR`, and a GEOGRAPHY or GEOMETRY variable reads `OBJECT`.
+  `NULL::GEOGRAPHY` reads `VARIANT`. A date or time function, or date arithmetic, over the variable folds to an
+  untyped NULL in a `SELECT … INTO` too, and in `DATE - :d`.
+- **A Java handler's `Variant` made from a `BigDecimal` answers by the decimal's scale** (live-verified): at scale 0
+  it is an INTEGER and at any other scale a DECIMAL, whole values included (`1E+3`, `1000.0`, `BigDecimal.valueOf(25,
+  -1)`). Before, every whole value answered as an INTEGER.
+- **CREATE OR REPLACE OR ALTER is refused with one syntax line** (live-verified), the line naming the second OR,
+  whatever kind follows. Before, a second line named the token after the object's name.
+- **CREATE OR ALTER of a running task with no children or finalizer redefines it in place** (live-verified). Before,
+  it was refused as if the task were the root of a running graph.
 - **The policy listings answer their rows by name** (live-verified): SHOW JOIN, MASKING, ROW ACCESS, AGGREGATION and
   PROJECTION POLICIES list a schema's policies character for character — a quoted lower-case name after every
   upper-case one, a renamed policy at its new name's place — where join, aggregation and projection policies came out

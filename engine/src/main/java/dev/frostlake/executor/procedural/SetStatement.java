@@ -31,6 +31,8 @@ public class SetStatement extends Statement {
     private final String rawExpressionText;
     /** A LET's initialiser as a SQL expression, which types an untyped declaration, or null. */
     private Expression sqlInitialiser;
+    /** Whether the value is a CALL's answer, held as the CALL handed it back. */
+    private boolean heldAnswer;
 
     public SetStatement(final String variableName, final BaseExpression expression) {
         this(variableName, expression, (String) null);
@@ -81,5 +83,14 @@ public class SetStatement extends Statement {
 
     public void setSqlInitialiser(final Expression sqlInitialiser) {
         this.sqlInitialiser = sqlInitialiser;
+    }
+
+    public boolean isHeldAnswer() {
+        return heldAnswer;
+    }
+
+    /** Mark the value as a CALL's answer, which no OBJECT or ARRAY conversion applies to when it is assigned. */
+    public void markHeldAnswer() {
+        this.heldAnswer = true;
     }
 }

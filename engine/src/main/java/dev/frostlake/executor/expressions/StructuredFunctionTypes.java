@@ -37,7 +37,10 @@ import java.util.Locale;
  *   ARRAY_CAT(ARRAY(NUMBER), ARRAY(NUMBER(2,1)))           ARRAY(NUMBER(38,1))    the elements' common type
  *   ARRAY_INTERSECTION(ARRAY(INT), ARRAY(NUMBER(10,2)))    ARRAY(NUMBER(38,2))    the same
  *   ARRAY_APPEND, ARRAY_PREPEND, ARRAY_INSERT,             the first array's type
- *   ARRAY_SLICE, ARRAY_COMPACT, ARRAY_EXCEPT
+ *   ARRAY_SLICE, ARRAY_COMPACT, ARRAY_EXCEPT, ARRAY_SORT,
+ *   ARRAY_DISTINCT, ARRAY_REMOVE, ARRAY_REMOVE_AT,
+ *   ARRAY_REVERSE
+ *   ARRAYS_ZIP(ARRAY(INT), ARRAY(VARCHAR))                 ARRAY(OBJECT($1 NUMBER(38,0), $2 VARCHAR))
  *   ARRAY_UNION_AGG(ARRAY(INT))                            ARRAY(NUMBER(38,0) NOT NULL)
  *   MAP_INSERT, MAP_DELETE, MAP_CAT, MAP_PICK              the first map's type
  *   MAP_KEYS(MAP(NUMBER(38,0), VARCHAR))                   ARRAY(NUMBER(38,0) NOT NULL)
@@ -91,7 +94,14 @@ final class StructuredFunctionTypes {
             case "ARRAY_INSERT":
             case "ARRAY_SLICE":
             case "ARRAY_EXCEPT":
+            case "ARRAY_SORT":
+            case "ARRAY_DISTINCT":
+            case "ARRAY_REMOVE":
+            case "ARRAY_REMOVE_AT":
+            case "ARRAY_REVERSE":
                 return first instanceof StructuredArrayType ? first : null;
+            case "ARRAYS_ZIP":
+                return zipped(inferencer, args);
             case "ARRAY_COMPACT":
                 // What it keeps is never NULL: ARRAY(NUMBER(38,0) NOT NULL) over an ARRAY(INT) (live-verified).
                 return first instanceof StructuredArrayType
@@ -112,6 +122,19 @@ final class StructuredFunctionTypes {
             default:
                 return null;
         }
+    }
+
+    /** ARRAYS_ZIP over structured arrays alone: an ARRAY of OBJECT($1 …, $2 …) typed by each array's elements. */
+    private static DataType zipped(final TypeInferencer inferencer, final List<Expression> args) {
+        final List<StructuredField> fields = new ArrayList<>();
+        for (int i = 0; i < args.size(); i++) {
+            final DataType array = inferencer.infer(args.get(i));
+            if (!(array instanceof StructuredArrayType)) {
+                return null;
+            }
+            fields.add(new StructuredField("$" + (i + 1), ((StructuredArrayType) array).getElementType(), false));
+        }
+        return new StructuredArrayType(new StructuredObjectType(fields));
     }
 
     private static DataType concatenated(final DataType first, final DataType second) {

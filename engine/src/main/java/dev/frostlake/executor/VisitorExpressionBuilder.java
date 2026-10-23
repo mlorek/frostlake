@@ -660,7 +660,7 @@ public class VisitorExpressionBuilder {
         // SYSTEM$ family, shared with SHOW FUNCTIONS via FunctionRegistry.allDispatchableNames(). This
         // parse-tree path and the expression-AST path both consult it, so neither switch can grow a name
         // the listing does not know about.
-        if (SystemFunctionNames.isLoggingStatement(rawName)) {
+        if (SystemFunctionNames.isScriptingStatement(rawName)) {
             throw SystemFunctionNames.unknownLoggingFunction(rawName);
         }
         if (!SystemFunctionNames.contains(rawName)) {
@@ -691,6 +691,10 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$SET_RETURN_VALUE": {
+                if (queryExecutor.insideOwnersRightsProcedure()) {
+                    throw SideEffectFunctions.ownersRightsRefusal(rawName);
+                }
+                TaskOnlyFunctions.requireTask(rawName);
                 // Store the return value on the currently executing task (readable by successors).
                 final Task currentTask = TaskScheduler.currentTask();
                 final Object value = args.isEmpty() ? null : args.get(0);
@@ -722,22 +726,9 @@ public class VisitorExpressionBuilder {
                 return null;
             }
 
-            case "SYSTEM$TASK_DEPENDENTS_ENABLE": {
-                // Resume the named root's transitive dependents (only that subtree).
-                if (!args.isEmpty() && args.get(0) != null) {
-                    try {
-                        final Catalog cat = queryExecutor.getCatalog();
-                        final String dbN = cat.getCurrentDatabase();
-                        final String scN = cat.getCurrentSchema();
-                        if (dbN != null && scN != null) {
-                            SystemFunctionEvaluator.enableTaskDependents(
-                                args.get(0).toString().replaceAll("^'|'$", ""),
-                                cat.getDatabase(dbN).getSchema(scN).getTasks());
-                        }
-                    } catch (final Exception ignored) {}
-                }
-                return "Statement executed successfully.";
-            }
+            case "SYSTEM$TASK_DEPENDENTS_ENABLE":
+                // Resume the named root's transitive dependents (only that subtree), as the expression path does.
+                return queryExecutor.evaluateSystemFunction(rawName, args);
 
             case "SYSTEM$TASK_RUNTIME_INFO":
                 TaskOnlyFunctions.requireTask("SYSTEM$TASK_RUNTIME_INFO");
@@ -792,6 +783,9 @@ public class VisitorExpressionBuilder {
 
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":
                 return "{\"token\": \"" + UUID.randomUUID() + "\", \"expires_at\": null}";
+
+            case "SYSTEM$PIPE_FORCE_RESUME":
+                return queryExecutor.evaluateSystemFunction(rawName, args);
 
             case "SYSTEM$PIPE_STATUS": {
                 final String pipeName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");

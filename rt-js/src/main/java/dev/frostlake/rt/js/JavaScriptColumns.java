@@ -30,6 +30,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
@@ -273,7 +274,9 @@ final class JavaScriptColumns {
             return json.append('}').toString();
         }
         if (value instanceof BigDecimal) {
-            return ((BigDecimal) value).toPlainString();
+            // A DECFLOAT reads as its own text, 1e16384, where an exact number writes its digits (live-verified).
+            return NumericType.isDecfloat(type) ? Decfloats.text((BigDecimal) value)
+                : ((BigDecimal) value).toPlainString();
         }
         if (value instanceof Double || value instanceof Float) {
             final double number = ((Number) value).doubleValue();

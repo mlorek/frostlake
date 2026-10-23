@@ -385,7 +385,8 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getBytes(interval, intervalCount(cell));
         }
-        return JdbcMarshaling.toBytes(cell);
+        return cell == null ? null
+            : JdbcCellReads.bytesOf(jdbcType(columnIndex), cell, text(columnIndex, cell), wire(columnIndex, cell));
     }
 
     @Override

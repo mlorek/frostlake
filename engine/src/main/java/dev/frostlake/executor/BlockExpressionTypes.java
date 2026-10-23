@@ -171,8 +171,9 @@ public final class BlockExpressionTypes {
         final SourcePosition displaced = ExpressionSource.begin(new SourcePosition(1, 0));
         try {
             final ExpressionEvaluator typer = DeclarationTypes.scriptTyper(types, queryExecutor);
-            if (!(sql instanceof RowExpression)
-                    && !ExpressionEvaluatorVisitor.castMatrixRefuses(typer.inferStaticType(sql), target)) {
+            final DataType valueType = sql instanceof RowExpression ? null : typer.inferStaticType(sql);
+            if (!(sql instanceof RowExpression) && !ExpressionEvaluatorVisitor.castMatrixRefuses(valueType, target)
+                    && !textIntoObject(valueType, target)) {
                 return null;
             }
             final Expression rendered = rendered(expression, types, values, false);
@@ -181,6 +182,39 @@ public final class BlockExpressionTypes {
         } catch (final RuntimeException untyped) {
             final String message = untyped.getMessage();
             return SqlCompilationError.isCompilationError(message) && message.contains(CAST_ECHO) ? message : null;
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /**
+     * Whether a text is given to an OBJECT, which TO_OBJECT refuses whatever the text holds: {@code o := '{"a": 1}'}
+     * is {@code invalid type [CAST('{"a": 1}' AS OBJECT)] for parameter 'TO_OBJECT'}, and a text variable, a
+     * concatenation, a DEFAULT and a typed LET alike (live-verified).
+     */
+    private static boolean textIntoObject(final DataType value, final DataType target) {
+        return value instanceof StringType && target instanceof ObjectType && !(target instanceof StructuredObjectType);
+    }
+
+    /**
+     * The static type of a block expression over the names in scope, or null when it cannot be typed.
+     *
+     * @param expression    the expression as parsed in the block
+     * @param types         the types of the names in scope, keyed as the resolver folds them
+     * @param queryExecutor the executor whose functions and catalog type the expression
+     * @return the type, or null
+     */
+    public static DataType staticType(final ParserRuleContext expression, final Map<String, DataType> types,
+                                      final QueryExecutor queryExecutor) {
+        final Expression sql = sqlOf(expression);
+        if (sql == null || queryExecutor == null) {
+            return null;
+        }
+        final SourcePosition displaced = ExpressionSource.begin(new SourcePosition(1, 0));
+        try {
+            return DeclarationTypes.scriptTyper(types, queryExecutor).inferStaticType(sql);
+        } catch (final RuntimeException untyped) {
+            return null;
         } finally {
             ExpressionSource.end(displaced);
         }

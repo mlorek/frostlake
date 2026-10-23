@@ -93,6 +93,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
+import dev.frostlake.task.TaskGraphs;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.ArrayType;
@@ -1598,6 +1599,8 @@ public class AlterCommandHandler implements CommandHandler {
                 schema = catalog.requireOwningSchema(QualifiedName.of(taskParts));
                 // A quoted name in another case is another task, which is not there (live-verified).
                 final Task task = schema.getTaskExact(taskName);
+                // The task is there, so IF EXISTS has nothing left to forgive: every later refusal stands.
+                branchHandlesIfExists = true;
                 if (ctx.taskAction().RESUME() != null || ctx.taskAction().SUSPEND() != null) {
                     // OPERATE "Grants the ability to suspend or resume a task" (documented); every other action
                     // is the owner's.
@@ -1633,6 +1636,7 @@ public class AlterCommandHandler implements CommandHandler {
                         task.unsetContact(contactPurpose(purpose));
                     }
                 } else if (ctx.taskAction().RESUME() != null) {
+                    requireRunStateChangeable(task, schema);
                     // RESUME flips state to STARTED AND arms the scheduler so the task fires on its SCHEDULE
                     // (scheduleTask is a no-op until the scheduler is started). resumeTask sets the state.
                     if (visitor.getTaskScheduler() != null) {
@@ -1642,6 +1646,7 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     logger.trace("Resumed task: {}", taskName);
                 } else if (ctx.taskAction().SUSPEND() != null) {
+                    requireRunStateChangeable(task, schema);
                     // SUSPEND flips state to SUSPENDED AND cancels any armed timer. suspendTask sets the state.
                     if (visitor.getTaskScheduler() != null) {
                         visitor.getTaskScheduler().suspendTask(taskKey, task);
@@ -1651,14 +1656,20 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.trace("Suspended task: {}", taskName);
                 } else if (ctx.taskAction().SET() != null && ctx.taskAction().taskExecuteAs() != null) {
                     final String runAs = TaskProperties.runAsUser(ctx.taskAction().taskExecuteAs(), queryExecutor);
-                    new TaskProperties(catalog, schema).requireRunAsUser(task, runAs);
+                    final TaskProperties properties = new TaskProperties(catalog, schema);
+                    properties.requireRunAsUser(task, runAs);
+                    properties.requireSuspendedGraph(task);
                     task.setExecuteAsUser(runAs);
                 } else if (ctx.taskAction().UNSET() != null && ctx.taskAction().EXECUTE() != null) {
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setExecuteAsUser(null);
                 } else if (ctx.taskAction().SET() != null) {
                     final List<TaskPropertySetting> settings = alterTaskSettings(ctx.taskAction());
                     final TaskProperties properties = new TaskProperties(catalog, schema);
                     properties.compile(settings);
+                    // A parameter a child takes from its root is refused first, and only then a graph that runs.
+                    properties.requireRootParameters(task, settings);
+                    properties.requireSuspendedGraph(task);
                     // The statement is tried on a copy first, so a refused one leaves the task as it was.
                     final Task scratch = TaskProperties.scratchCopy(task);
                     for (final Task target : Arrays.asList(scratch, task)) {
@@ -1681,11 +1692,13 @@ public class AlterCommandHandler implements CommandHandler {
                     for (final FrostlakeParser.TaskParamNameContext pn : ctx.taskAction().taskParamName()) {
                         requireUnsettableTaskParam(pn.getText().toUpperCase(Locale.ROOT));
                     }
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     for (final FrostlakeParser.TaskParamNameContext pn : ctx.taskAction().taskParamName()) {
                         unsetTaskParam(task, pn.getText().toUpperCase(Locale.ROOT));
                     }
                     logger.trace("Unset params on task: {}", taskName);
                 } else if (ctx.taskAction().REMOVE() != null && ctx.taskAction().WHEN() != null) {
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setCondition(null);
                 } else if (ctx.taskAction().ADD() != null) {
                     addTaskPredecessors(task, ctx.taskAction().qualifiedName(), schema);
@@ -1694,10 +1707,12 @@ public class AlterCommandHandler implements CommandHandler {
                 } else if (ctx.taskAction().MODIFY() != null && ctx.taskAction().AS() != null) {
                     // MODIFY AS <sql> replaces the task body.
                     TaskBodySyntax.requireOneStatement(ctx);
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setSqlStatement(ParseTreeText.taskBodyText(ctx.taskAction().taskBody()));
                     logger.trace("Modified task body: {}", taskName);
                 } else if (ctx.taskAction().MODIFY() != null && ctx.taskAction().WHEN() != null) {
                     // MODIFY WHEN <boolean> replaces the run condition.
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setCondition(visitor.getOriginalText(ctx.taskAction().booleanExpr()).trim());
                     logger.trace("Modified task condition: {}", taskName);
                 }
@@ -2853,13 +2868,15 @@ public class AlterCommandHandler implements CommandHandler {
                                                    final String name) {
         final List<String> names = new ArrayList<>();
         final List<Boolean> taken = new ArrayList<>();
+        final List<WrittenParameterValue> values = new ArrayList<>();
         for (final FrostlakeParser.TableSetPropertyContext property : properties) {
             names.add(property.optionKey().getText());
             taken.add(Boolean.valueOf(takenByContainer(ParameterRegistry.canonical(property.optionKey().getText()),
                 kind)));
+            values.add(WrittenParameterValue.of(property));
         }
         PropertyDuplicates.reject(names);
-        ParameterLevels.judgeAlter(names, taken, kind, kind.toLowerCase(Locale.ROOT), name);
+        ParameterLevels.judgeAlter(names, taken, values, kind, kind.toLowerCase(Locale.ROOT), name);
         for (final FrostlakeParser.TableSetPropertyContext property : properties) {
             final String rawKey = property.optionKey().getText();
             ParameterLevels.refuseClassificationProfile(ParameterRegistry.canonical(rawKey),
@@ -3464,6 +3481,16 @@ public class AlterCommandHandler implements CommandHandler {
             if (!TaskProperties.hasPredecessor(task, predecessor)) {
                 task.addPredecessor(predecessor);
             }
+        }
+    }
+
+    /**
+     * A child or a finalizer is resumed or suspended only while its graph's root is suspended; the root itself always
+     * is (live-verified).
+     */
+    private void requireRunStateChangeable(final Task task, final Schema schema) {
+        if (!TaskGraphs.isRoot(task) || task.isFinalizer()) {
+            new TaskProperties(catalog, schema).requireSuspendedGraph(task);
         }
     }
 
@@ -4353,10 +4380,12 @@ public class AlterCommandHandler implements CommandHandler {
                 + target.toUpperCase(Locale.ROOT) + "'"));
         }
         final TableColumn column = table.getColumn(target);
-        // GEO indexes only a geography, so live refuses it over anything else.
-        if ("GEO".equals(method) && !(column.getDataType() instanceof GeographyType)) {
+        // GEO indexes only a geography, so live refuses it over anything else; EQUALITY and SUBSTRING take no DECFLOAT.
+        if ("GEO".equals(method) && !(column.getDataType() instanceof GeographyType)
+                || ("EQUALITY".equals(method) || "SUBSTRING".equals(method))
+                    && NumericType.isDecfloat(column.getDataType())) {
             throw new RuntimeException(SqlCompilationError.at(line, position,
-                "Expression GEO(" + SEARCH_SOURCE_ALIAS + "." + column.getName()
+                "Expression " + method + "(" + SEARCH_SOURCE_ALIAS + "." + column.getName()
                 + ") cannot be used in search optimization."));
         }
         table.addSearchOptimization(searchOptimizationMethod(method), column.getName(),
@@ -4381,12 +4410,14 @@ public class AlterCommandHandler implements CommandHandler {
                                                      final Table table) {
         final List<String> names = new ArrayList<>();
         final List<Boolean> taken = new ArrayList<>();
+        final List<WrittenParameterValue> values = new ArrayList<>();
         for (final FrostlakeParser.TableSetPropertyContext property : properties) {
             names.add(property.optionKey().getText());
             taken.add(Boolean.valueOf(tableTakes(property)));
+            values.add(WrittenParameterValue.of(property));
         }
         // A parameter of another level is no table's to set (see ParameterLevels).
-        ParameterLevels.judgeAlter(names, taken, "TABLE", privilegeKind(table), table.getName());
+        ParameterLevels.judgeAlter(names, taken, values, "TABLE", privilegeKind(table), table.getName());
     }
 
     /** Whether an ALTER TABLE … SET's property is one a table takes: its own, or a parameter of its level. */

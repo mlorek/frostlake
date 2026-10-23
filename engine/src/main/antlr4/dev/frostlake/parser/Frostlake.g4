@@ -554,14 +554,20 @@ import java.util.List;
      *  FIRST_VALUE and LAST_VALUE only — `LAG(v IGNORE NULLS)` and `NTH_VALUE(v, 1 IGNORE NULLS)` are
      *  syntax errors at the IGNORE, while every one of them takes the treatment AFTER the closing
      *  parenthesis (live-verified). The name is read back off the token stream rather than passed in,
-     *  so the predicate costs nothing where it does not apply. */
+     *  so the predicate costs nothing where it does not apply. The brackets the argument holds are passed over:
+     *  FIRST_VALUE(ABS(n) IGNORE NULLS) takes the treatment, ABS(n IGNORE NULLS) inside it does not. */
     private boolean insideNullTreatmentAllowed() {
-        for (int back = 1; back < 40; back++) {
+        int depth = 0;
+        for (int back = 1; _input.LT(-back) != null; back++) {
             final Token token = _input.LT(-back);
-            if (token == null || token.getType() == Token.EOF) {
+            if (token.getType() == Token.EOF) {
                 return false;
             }
-            if (token.getType() == LPAREN) {
+            if (token.getType() == RPAREN) {
+                depth++;
+            } else if (token.getType() == LPAREN && depth > 0) {
+                depth--;
+            } else if (token.getType() == LPAREN) {
                 final Token name = _input.LT(-back - 1);
                 if (name == null) {
                     return false;
@@ -571,6 +577,34 @@ import java.util.List;
             }
         }
         return false;
+    }
+
+    /** Whether a null treatment written after a call's parenthesis is the call's own. It is not where the call
+     *  ends the arguments of a FIRST_VALUE or LAST_VALUE and the treatment closes them: that function reads it as
+     *  its own treatment inside its parentheses, FIRST_VALUE(ABS(n) IGNORE NULLS) (live-verified). */
+    private boolean trailingNullTreatmentOwned() {
+        if (_input.LT(3).getType() != RPAREN) {
+            return true;
+        }
+        int depth = 0;
+        for (int back = 1; _input.LT(-back) != null; back++) {
+            final Token token = _input.LT(-back);
+            if (token.getType() == RPAREN) {
+                depth++;
+            } else if (token.getType() == LPAREN && depth > 0) {
+                depth--;
+            } else if (token.getType() == LPAREN) {
+                final Token name = _input.LT(-back - 1);
+                if (name == null) {
+                    return true;
+                }
+                final String spelled = name.getText().toUpperCase(java.util.Locale.ROOT);
+                return !spelled.equals("FIRST_VALUE") && !spelled.equals("LAST_VALUE");
+            } else if (token.getType() == Token.EOF || token.getType() == SEMI) {
+                return true;
+            }
+        }
+        return true;
     }
 
     /** Whether an interval literal's qualifier goes on to a trailing field: a TO with a singular field after it.
@@ -1663,8 +1697,10 @@ createStatement
     // EXECUTE AS USER follows the options and the AFTER list and precedes WHEN (live-verified).
     | CREATE or_replace? TASK if_not_exists? qualifiedName tagList? taskContacts? warehouseClause? taskOptions? afterClause? commentClause? taskExecuteAs? (WHEN booleanExpr)? AS taskBody SEMI?
     // CREATE OR ALTER makes the task, or changes it to what the statement writes; it takes no IF NOT EXISTS and no
-    // tags, and leaves the tags a task carries as they are (live-verified, documented).
-    | CREATE or_alter TASK qualifiedName taskContacts? warehouseClause? taskOptions? afterClause? commentClause? taskExecuteAs? (WHEN booleanExpr)? AS taskBody SEMI?
+    // contacts, reads a tag clause only to refuse it, and leaves the tags a task carries as they are (live-verified,
+    // documented).
+    | CREATE or_alter TASK qualifiedName tagList? warehouseClause? taskOptions? afterClause? commentClause?
+        taskExecuteAs? (WHEN booleanExpr)? AS taskBody SEMI?
     | CREATE or_replace? PIPE if_not_exists? qualifiedName pipeOptions? AS copyStatement commentClause? SEMI?
     | CREATE or_replace? SEQUENCE if_not_exists? qualifiedName (CLONE qualifiedName | WITH? sequenceOptions? commentClause?) SEMI?
     | CREATE or_replace? WAREHOUSE if_not_exists? identifier warehouseProperties? commentClause? SEMI?
@@ -3337,7 +3373,8 @@ tableUnsetProperties
 
 // One key=value of an ALTER TABLE … SET, kept paired with its value.
 tableSetProperty
-    : optionKey EQ (parenOptionList | copyOptionValue)
+    // A number with a fraction is a FLOAT parameter's value, judged by kind with the others (see ParameterLevels).
+    : optionKey EQ (parenOptionList | copyOptionValue | MINUS? FLOAT_LITERAL)
     ;
 
 // An enforcement property of ALTER TABLE … {ALTER | MODIFY} CONSTRAINT. Several may be given at
@@ -6057,13 +6094,16 @@ expression
     // not as a syntax error (see strayArguments).
     | functionName LPAREN (DISTINCT | ALL)? (mixedStarArgument | expression) (COMMA expression)* (COMMA namedArgument)+
           (COMMA strayArguments)?
-          ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause? nullHandling? overClause?  # FunctionCallMixedArgsExpr
+          ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause?
+          ({trailingNullTreatmentOwned()}? nullHandling)? overClause?  # FunctionCallMixedArgsExpr
     | functionName LPAREN (DISTINCT | ALL)? namedArgumentList (COMMA strayArguments)?
-          ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause? nullHandling? overClause?  # FunctionCallNamedArgsExpr
+          ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause?
+          ({trailingNullTreatmentOwned()}? nullHandling)? overClause?  # FunctionCallNamedArgsExpr
     // ALL is the quantifier every aggregate takes as a no-op, refused for a scalar by its sentence.
     | functionName LPAREN (DISTINCT | ALL)? functionArgList?
           ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause?
-          (FROM (FIRST | LAST) nullHandling? overClause | nullHandling? overClause?)     # FunctionCallExpr
+          (FROM (FIRST | LAST) nullHandling? overClause
+              | ({trailingNullTreatmentOwned()}? nullHandling)? overClause?)     # FunctionCallExpr
     // An IDENTIFIER followed by a STRING inside a call. Live reads that pair as a TYPED LITERAL — the
     // DATE '2020-01-01' shape with any word in front — so it consumes both and reports whatever comes
     // next. That is why TRIM(BOTH ' ' FROM v) is refused on its FROM there and on the string here, and

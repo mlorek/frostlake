@@ -87,6 +87,19 @@ public final class SideEffectFunctions {
         }
     }
 
+    /**
+     * The refusal of a call a procedure that runs with its owner's rights may not make: SYSTEM$ABORT_TRANSACTION and
+     * SYSTEM$SET_RETURN_VALUE, while SYSTEM$CANCEL_QUERY, SYSTEM$TASK_DEPENDENTS_ENABLE and
+     * SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS run there (live-verified).
+     *
+     * @param name the function's name, upper-cased
+     * @return the refusal
+     */
+    public static RuntimeException ownersRightsRefusal(final String name) {
+        return new RuntimeException("SQL compilation error: \nQuery called from a stored procedure contains a"
+            + " function with side effects [" + name + "].");
+    }
+
     private static RuntimeException refusal(final String name) {
         return new RuntimeException("SQL compilation error: \nView or UDF contains a function with side effects ["
             + name + "]");

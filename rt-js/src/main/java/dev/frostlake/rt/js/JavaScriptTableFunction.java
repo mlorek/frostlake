@@ -27,6 +27,7 @@ import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import tools.jackson.databind.JsonNode;
 
@@ -55,6 +56,9 @@ final class JavaScriptTableFunction {
     /** What a table function's world is kept under among its function's states, before the session's zone. */
     private static final String TABLE_WORLD = "table-world:";
 
+    /** The largest TIME scale held in four bytes: a day's ticks at scale 5 pass 2^31. */
+    private static final int TIME_SB4_SCALE = 4;
+
     private static final int BEGIN = 0;
     private static final int ROW = 1;
     private static final int END = 2;
@@ -82,6 +86,13 @@ final class JavaScriptTableFunction {
                     + number.getPrecision() + "," + number.getScale() + "){nullable} is not supported in function "
                     + function.getName());
             }
+            // A TIME column is refused the same way, at the storage its scale takes, the scale told unless it is 0.
+            if (type instanceof DateTimeType && "TIME".equals(type.getName())) {
+                final int scale = ((DateTimeType) type).getPrecision();
+                throw new RuntimeException("Snowflake type TIME[SB" + (scale <= TIME_SB4_SCALE ? 4 : 8) + "]"
+                    + (scale == 0 ? "" : "(0," + scale + ")") + "{nullable} is not supported in function "
+                    + function.getName());
+            }
         }
         // A constant argument's value is every row's; the handler is told it as the account tells it.
         final List<Object> constants = new ArrayList<>();
@@ -106,8 +117,9 @@ final class JavaScriptTableFunction {
         Object driver = null;
         try {
             driver = world.invoker(source);
+            // The partition's first row goes with its beginning when an argument is constant: argumentInfo tells it.
             final Object begun = JavaScriptHandler.invokeTable(engine, driver, BEGIN, function.getName(), parameters,
-                null);
+                anyConstant(constants) ? rows.get(0) : null);
             if (begun == null) {
                 throw new RuntimeException("User Defined Table Function object is missing property processRow");
             }
@@ -194,6 +206,16 @@ final class JavaScriptTableFunction {
             return Double.valueOf(cell.substring(1));
         }
         return cell.substring(1);
+    }
+
+    /** Whether any argument of the call is a constant of the statement. */
+    private static boolean anyConstant(final List<Object> constants) {
+        for (final Object constant : constants) {
+            if (constant != JavaScriptHandler.NOT_CONSTANT) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The bytes an exact number of a declared precision is stored in, as a type's spelling names them. */

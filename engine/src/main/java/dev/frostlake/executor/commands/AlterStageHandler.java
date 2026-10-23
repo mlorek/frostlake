@@ -224,7 +224,8 @@ final class AlterStageHandler {
         final String key = setting.ENCRYPTION() != null ? "ENCRYPTION"
             : visitor.getText(setting.identifier()).toUpperCase(Locale.ROOT);
         if (!CreateInfrastructureHandler.isStageOption(key)) {
-            throw ParameterRegistry.invalidProperty(key, "STAGE");
+            // Named as written: invalid property 'foo' for 'STAGE' (live-verified).
+            throw ParameterRegistry.invalidProperty(setting.identifier().getText(), "STAGE");
         }
         if ("CREDENTIALS".equals(key) || "ENCRYPTION".equals(key)) {
             refuseOnInternalStage(stage);

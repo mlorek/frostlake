@@ -16,11 +16,16 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.LiteralExpression;
+import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.KeyContexts;
+import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -205,7 +210,9 @@ final class PercentileCallRules {
         // PERCENTILE_CONT(<OBJECT column>) is "Invalid argument types for function 'PERCENTILE_CONT':
         // (OBJECT)" live, not a complaint that the object is not constant. So a non-numeric argument
         // is left to the walk that already refuses it.
-        if (fraction == null && !isNumericArgument(args.get(0), table, aliasToTable, allTables)) {
+        final String numericText = numericText(args.get(0));
+        if (fraction == null && numericText == null
+                && !isNumericArgument(args.get(0), table, aliasToTable, allTables)) {
             return;
         }
         if (fraction == null) {
@@ -216,7 +223,8 @@ final class PercentileCallRules {
             throw new RuntimeException(SqlCompilationError.of("argument " + (bareName ? "1" : "0")
                 + " to function " + name + " needs to be constant, found '"
                 + (bareName ? new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog)
-                    .print(args.get(0)) : written) + "'"));
+                    .print(args.get(0)) : fractionEcho(args.get(0), numericText, table, aliasToTable, allTables))
+                + "'"));
         }
         if (fraction.compareTo(BigDecimal.ZERO) < 0 || fraction.compareTo(BigDecimal.ONE) > 0) {
             // No compilation prefix: a bad VALUE, not a bad statement.
@@ -350,6 +358,55 @@ final class PercentileCallRules {
     }
 
     /** The fraction when the argument is a bare numeric literal, else null. */
+    /**
+     * A fraction that is no NUMBER constant as its refusal quotes it, converted to the number the call reads (all
+     * live-verified): a FLOAT or a DECFLOAT is cast to NUMBER(18,0), {@code CAST(CAST(0.1 AS FLOAT) AS NUMBER(18,0))}
+     * and {@code CAST(decfloat '0.1' AS NUMBER(18,0))}; a NUMBER is quoted as it is planned, {@code CAST(0.1 AS
+     * NUMBER(3,2))}; a text spelling a number is read by TO_NUMBER at its digits, {@code TO_NUMBER('0.1', 18, 1)}.
+     */
+    private String fractionEcho(final FrostlakeParser.BooleanExprContext arg, final String numericText,
+                                final Table table, final Map<String, Table> aliasToTable,
+                                final List<Table> allTables) {
+        if (numericText != null) {
+            final int point = numericText.indexOf('.');
+            return "TO_NUMBER('" + numericText + "', 18, " + (point < 0 ? 0 : numericText.length() - point - 1) + ")";
+        }
+        final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(arg));
+        final String planned = ParsedEchoPrinter.print(parsed);
+        final ExpressionEvaluator typer = new ExpressionEvaluator(table, functionRegistry, catalog, executor);
+        if (allTables != null && !allTables.isEmpty()) {
+            typer.setMultiTableContext(aliasToTable, allTables);
+        }
+        DataType type;
+        try {
+            type = typer.inferStaticType(parsed);
+        } catch (final RuntimeException notTypeable) {
+            type = null;
+        }
+        return type instanceof NumericType && (NumericType.isApproximate(type) || NumericType.isDecfloat(type))
+            ? "CAST(" + planned + " AS NUMBER(18,0))" : planned;
+    }
+
+    /** The text of a fraction written as a text literal that spells a number, {@code '0.1'}; null for any other. */
+    private static String numericText(final FrostlakeParser.BooleanExprContext arg) {
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(arg));
+        } catch (final RuntimeException unparsed) {
+            return null;
+        }
+        if (!(parsed instanceof LiteralExpression) || ((LiteralExpression) parsed).getType() != LiteralType.STRING) {
+            return null;
+        }
+        final String text = String.valueOf(((LiteralExpression) parsed).getValue()).trim();
+        try {
+            new BigDecimal(text);
+            return text;
+        } catch (final NumberFormatException noNumber) {
+            return null;
+        }
+    }
+
     private BigDecimal constantFraction(final String written) {
         try {
             return new BigDecimal(written);

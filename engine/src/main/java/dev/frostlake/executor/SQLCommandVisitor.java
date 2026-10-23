@@ -120,6 +120,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.UuidType;
+import dev.frostlake.types.WidthlessStringType;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -1581,10 +1582,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 "A SELECT INTO statement expects exactly 1 returned row, but got " + rowCount + ".");
         }
         if (rowCount == 0) {
-            for (final FrostlakeParser.IntoTargetContext target : targets) {
-                assignSelectIntoTarget(ctx, getText(target.variableName()), null);
+            for (int i = 0; i < targets.size(); i++) {
+                final String target = getText(targets.get(i).variableName());
+                assignSelectIntoTarget(ctx, target, null, rs, i);
                 if (proceduralExecutor != null) {
-                    proceduralExecutor.markEmptySelectTarget(getText(target.variableName()));
+                    proceduralExecutor.markEmptySelectTarget(target);
                 }
             }
             logger.trace("SELECT INTO: zero rows — assigned NULL to {} variable(s)", targets.size());
@@ -1596,7 +1598,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 + ") does not match the number of selected columns (" + firstRow.getValues().size() + ")");
         }
         for (int i = 0; i < targets.size(); i++) {
-            assignSelectIntoTarget(ctx, getText(targets.get(i).variableName()), firstRow.getValue(i));
+            assignSelectIntoTarget(ctx, getText(targets.get(i).variableName()), firstRow.getValue(i), rs, i);
         }
         logger.trace("SELECT INTO: assigned {} variable(s)", targets.size());
         return null;
@@ -1629,9 +1631,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * EXPRESSION_ERROR at the SELECT (live-verified).
      */
     private void assignSelectIntoTarget(final FrostlakeParser.SelectIntoStatementContext into, final String varName,
-                                        final Object value) {
+                                        final Object value, final ResultSet selected, final int index) {
         if (proceduralExecutor != null) {
-            final LiteralExpression assigned = new LiteralExpression(carriedAsText(varName, value));
+            final Object taken = proceduralExecutor.selectedIntoContainer(varName, value,
+                selected == null || index >= selected.getColumns().size() ? null
+                    : selected.getColumns().get(index).getDataType(),
+                into.getStart().getLine(), into.getStart().getCharPositionInLine());
+            final LiteralExpression assigned = new LiteralExpression(carriedAsText(varName, taken));
             assigned.setSourcePosition(into.getStart().getLine(), into.getStart().getCharPositionInLine());
             proceduralExecutor.executeStatement(new SetStatement(varName, assigned));
         }
@@ -3376,6 +3382,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // a NULL it binds is a VARCHAR(134217728), and an explicit VARCHAR(16777216) keeps its own width.
             return new StringType("VARCHAR", StringResultWidths.UNBOUNDED);
         }
+        if (parameters != null && declared instanceof StringType && !(declared instanceof UuidType)
+                && ((StringType) declared).getMaxLength() == StringResultWidths.UNBOUNDED) {
+            // One declared at that width in so many words is a text of no width: a NULL it binds is a bare VARCHAR
+            // to SYSTEM$TYPEOF, still a VARCHAR(134217728) column (live-verified).
+            return WidthlessStringType.WIDTHLESS;
+        }
         return parameters == null && declared instanceof BinaryType ? BinaryType.AT_MAXIMUM : declared;
     }
 
@@ -3452,7 +3464,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     /**
      * A typed declaration's initial value. A DECFLOAT takes a decimal literal by its digits — DECLARE y DECFLOAT
      * DEFAULT 0.1 holds 0.1, not the double nearest it (live-verified) — where every other type reads the literal
-     * as scripting does.
+     * as scripting does, and an ARRAY takes a text as its one element (see ProceduralExecutor.writtenIntoArray).
      *
      * @param ctx      the initialiser
      * @param declared the declared type
@@ -3473,7 +3485,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 return negated ? exact.negate() : exact;
             }
         }
-        return evaluateExpression(ctx);
+        return proceduralExecutor.writtenIntoArray(ctx, evaluateExpression(ctx), declared);
     }
 
     /**

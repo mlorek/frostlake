@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.NullFoldingDateFunctions;
 import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.commands.DataTypeParser;
@@ -489,6 +490,9 @@ final class TypeInferencer {
             // BinaryOperationTypes for the measured algebra. An operand the channel could not type
             // makes the whole expression untyped, as everywhere else here.
             final BinaryOperationExpression binary = (BinaryOperationExpression) expr;
+            if (foldsNullTemporalBind(binary)) {
+                return null;
+            }
             final DataType shifted = temporalShiftedByInterval(binary);
             if (shifted != null) {
                 return shifted;
@@ -656,6 +660,10 @@ final class TypeInferencer {
             visitor.requireResolvableFunctionName(call);
             visitor.rejectNullFormattedBinary(call);
             final String funcName = call.getFunctionName().toUpperCase(Locale.ROOT);
+            // A date or time function over a block variable holding NULL is an untyped NULL, as over the word NULL.
+            if (NullFoldingDateFunctions.contains(funcName) && holdsNullBindArgument(call.getArguments())) {
+                return null;
+            }
             // A COLLATE call is judged here — its operand, then its specification — and every call that
             // hands a collation on settles its arguments' here, refusing two that disagree.
             if ("COLLATE".equals(funcName) && call.getArguments().size() == 2) {
@@ -1936,11 +1944,55 @@ final class TypeInferencer {
             // call over one.
             return argument != null ? NumericType.FLOAT : null;
         }
-        if (NumericType.isApproximate(input)) {
+        if (NumericType.isApproximate(input) || NumericType.isDecfloat(input)) {
+            // A DECFLOAT's share is the DECFLOAT its division by the partition's sum is (live-verified).
             return input;
         }
         final int scale = Math.max(input.getScale(), Math.min(input.getScale() + 6, 12));
         return new NumericType("NUMBER", Math.min(38, input.getPrecision() + scale), scale);
+    }
+
+    /** Whether one of a call's arguments is, whole, a block variable that holds NULL. */
+    private boolean holdsNullBindArgument(final List<Expression> arguments) {
+        for (final Expression argument : arguments) {
+            if (argument instanceof BindVariableExpression
+                    && visitor.boundVariableHoldsNull((BindVariableExpression) argument)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a temporal block variable holding NULL is an operand of date arithmetic live folds to an untyped
+     * NULL: beside an INTERVAL literal, or, for a DATE, beside a number literal or taken from another date —
+     * {@code :d + 1}, {@code :t - INTERVAL '1 hour'}, {@code d - :d} (live-verified).
+     */
+    private boolean foldsNullTemporalBind(final BinaryOperationExpression binary) {
+        if (binary.getOperator() != BinaryOperator.ADD && binary.getOperator() != BinaryOperator.SUBTRACT) {
+            return false;
+        }
+        for (int side = 0; side < 2; side++) {
+            final Expression operand = side == 0 ? binary.getLeft() : binary.getRight();
+            final Expression partner = side == 0 ? binary.getRight() : binary.getLeft();
+            if (!(operand instanceof BindVariableExpression)
+                    || !visitor.boundVariableHoldsNull((BindVariableExpression) operand)) {
+                continue;
+            }
+            final DataType declared = visitor.declaredBindVariableType(
+                ((BindVariableExpression) operand).getVarName());
+            if (!(declared instanceof DateTimeType)) {
+                continue;
+            }
+            final boolean date = "DATE".equals(declared.getName());
+            if (partner instanceof IntervalExpression
+                    || date && partner instanceof LiteralExpression
+                        && ((LiteralExpression) partner).getValue() instanceof Number
+                    || date && side == 1 && binary.getOperator() == BinaryOperator.SUBTRACT) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1952,10 +2004,13 @@ final class TypeInferencer {
      * @return true for an untyped NULL
      */
     private boolean isNullLiteral(final Expression branch) {
-        // A reference to a column that holds nothing but an untyped NULL is read as the bare word.
+        // A reference to a column that holds nothing but an untyped NULL is read as the bare word, and so is date
+        // arithmetic over a block variable holding NULL (see foldsNullTemporalBind): :d + 1 + 1 is a NUMBER(19,0) and
+        // COALESCE(:d + 1, CURRENT_DATE()) a DATE (live-verified).
         return UntypedNullFold.isUntypedNull(branch) || UntypedNullFold.picksAnUntypedNull(branch)
             || branch instanceof ColumnReferenceExpression
-                && visitor.readsUntypedNull((ColumnReferenceExpression) branch);
+                && visitor.readsUntypedNull((ColumnReferenceExpression) branch)
+            || branch instanceof BinaryOperationExpression && foldsNullTemporalBind((BinaryOperationExpression) branch);
     }
 
     private boolean laterBranchIsBinary(final List<Expression> branches, final Expression from) {

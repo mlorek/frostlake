@@ -184,6 +184,17 @@ public class Role implements Taggable {
         return grants.getRoleGrantor(roleName);
     }
 
+    /**
+     * Whether a role reached this one through a GRANT ROLE, which records its grantor, rather than as part of the
+     * account's own role hierarchy.
+     *
+     * @param roleName the role held
+     * @return whether a GRANT ROLE granted it
+     */
+    public boolean hasExplicitRoleGrant(final String roleName) {
+        return grants.hasExplicitRoleGrant(roleName);
+    }
+
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
         grants.grantColumnPrivilege(objectType, objectName, columnName, privilege);
     }

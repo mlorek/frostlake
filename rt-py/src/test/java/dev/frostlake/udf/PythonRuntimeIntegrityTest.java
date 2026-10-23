@@ -59,8 +59,12 @@ public class PythonRuntimeIntegrityTest extends MeasuredCellsTestSupport {
             return;
         }
         assertCells(new String[][] {
-            {"SELECT bad()", "REFUSED Error executing Python function BAD: E: <exception str() failed>"},
-            {"SELECT nameless()", "REFUSED Error executing Python function NAMELESS: E: <exception str() failed>"},
+            {"SELECT bad()", "REFUSED Python Interpreter Error: | Traceback (most recent call last): |   File "
+                + "\"_udf_code.py\", line 6, in h |     raise E() | h_module.E: <exception str() failed> |  in "
+                + "function BAD with handler h"},
+            {"SELECT nameless()", "REFUSED Python Interpreter Error: | Traceback (most recent call last): |   "
+                + "File \"_udf_code.py\", line 12, in h |     raise E() | h_module.E: <exception str() failed> |  "
+                + "in function NAMELESS with handler h"},
             {"SELECT ok()", "7"},
             {"CALL pr()", "caught SnowparkSQLException [Row(OK()=7)]"},
             {"SELECT ok()", "7"},

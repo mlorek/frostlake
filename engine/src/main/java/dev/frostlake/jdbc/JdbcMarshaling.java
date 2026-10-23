@@ -32,6 +32,7 @@ import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.sql.SQLException;
@@ -39,6 +40,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -79,6 +81,9 @@ public final class JdbcMarshaling {
 
     /** The most digits a NUMBER holds. */
     private static final int MAX_NUMBER_PRECISION = 38;
+
+    /** What the wire adds to a TIMESTAMP_TZ's offset in minutes, so that every offset spells a positive number. */
+    private static final int OFFSET_BIAS_MINUTES = 1440;
 
     /**
      * Map an engine {@code DataType} to a {@link java.sql.Types} constant, using its PARAMETERS where
@@ -416,7 +421,8 @@ public final class JdbcMarshaling {
     /**
      * The account's driver's refusal of a getter its column's type does not convert to, worded as it words it:
      * {@code Cannot convert value in the driver from type:91 to type:time, value=19724.}, SQLSTATE {@code 0A000},
-     * vendor code 200038 (live-verified).
+     * vendor code 200038, the type's number grouped by thousands — {@code type:2,014} for a TIMESTAMP_TZ
+     * (live-verified).
      *
      * @param columnType the column's JDBC type
      * @param target     what the getter reads: {@code date}, {@code time} or {@code timestamp}
@@ -424,14 +430,20 @@ public final class JdbcMarshaling {
      * @return the refusal to throw
      */
     public static SQLException unconvertible(final int columnType, final String target, final String value) {
-        return new SQLException("Cannot convert value in the driver from type:" + columnType + " to type:" + target
-            + ", value=" + value + ".", "0A000", 200038);
+        return new SQLException("Cannot convert value in the driver from type:"
+            + String.format(Locale.ROOT, "%,d", columnType) + " to type:" + target + ", value=" + value + ".",
+            "0A000", 200038);
     }
 
     /**
      * A cell as the driver's refusal quotes it: the account's wire form of it — a DATE as its day number since
      * 1970-01-01, a TIME as its seconds since midnight to the column's scale ({@code 36672.345000000} for a
-     * TIME(9), {@code 36672} for a TIME(0)), a BOOLEAN as 1 or 0 — and any other cell as its text (live-verified).
+     * TIME(9), {@code 36672} for a TIME(0)), a TIMESTAMP_NTZ as the seconds its wall clock is past 1970-01-01 at
+     * UTC and a TIMESTAMP_LTZ as the seconds its moment is past the epoch, to the column's scale
+     * ({@code 1704164645.123456789}, {@code -315619199.5} for a TIMESTAMP_LTZ(1) half a second into 1960), a
+     * TIMESTAMP_TZ as its moment's seconds and its offset in minutes plus 1440 ({@code 1704157445.500000000 1560}
+     * for {@code +02:00}), a BOOLEAN as 1 or 0 — and any other cell as its text (live-verified). A whole-number
+     * getter reads that form too: a TIMESTAMP_NTZ(0) reads by getInt as its seconds.
      *
      * @param cell       the cell, not null
      * @param columnType the column's JDBC type
@@ -453,10 +465,54 @@ public final class JdbcMarshaling {
             }
             return seconds.toString();
         }
+        if (columnType == Types.TIMESTAMP || columnType == Types.TIMESTAMP_WITH_TIMEZONE) {
+            final OffsetDateTime moment = wireMoment(cell);
+            if (moment != null) {
+                final String seconds = BigDecimal.valueOf(moment.toEpochSecond())
+                    .add(BigDecimal.valueOf(moment.getNano(), 9))
+                    .setScale(Math.max(0, Math.min(scale, 9)), RoundingMode.FLOOR).toPlainString();
+                return columnType == Types.TIMESTAMP ? seconds
+                    : seconds + " " + (moment.getOffset().getTotalSeconds() / 60 + OFFSET_BIAS_MINUTES);
+            }
+        }
         if (cell instanceof Boolean) {
             return ((Boolean) cell) ? "1" : "0";
         }
         return text;
+    }
+
+    /**
+     * A timestamp cell as the moment the wire spells: a wall clock that carries no zone, a TIMESTAMP_NTZ's, at UTC,
+     * and a zoned one at its own offset. The in-process cell is a java.time value; the HTTP one is the wire's text,
+     * {@code 2024-01-02 03:04:05.5} or {@code 2024-01-02 03:04:05.500 +0200}.
+     *
+     * @param cell the cell
+     * @return the moment, or null for a cell that spells none
+     */
+    private static OffsetDateTime wireMoment(final Object cell) {
+        if (cell instanceof OffsetDateTime) {
+            return (OffsetDateTime) cell;
+        }
+        if (cell instanceof ZonedDateTime) {
+            return ((ZonedDateTime) cell).toOffsetDateTime();
+        }
+        if (cell instanceof Instant) {
+            return ((Instant) cell).atOffset(ZoneOffset.UTC);
+        }
+        if (cell instanceof LocalDateTime) {
+            return ((LocalDateTime) cell).atOffset(ZoneOffset.UTC);
+        }
+        if (!(cell instanceof CharSequence)) {
+            return null;
+        }
+        final String text = cell.toString().trim();
+        final int space = text.lastIndexOf(' ');
+        final boolean zoned = space > 0 && isNumericOffset(text.substring(space + 1));
+        try {
+            return parseDateTime(text).atOffset(zoned ? ZoneOffset.of(text.substring(space + 1)) : ZoneOffset.UTC);
+        } catch (final DateTimeException unspelled) {
+            return null;
+        }
     }
 
     /**

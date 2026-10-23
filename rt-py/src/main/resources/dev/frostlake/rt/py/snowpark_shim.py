@@ -840,7 +840,7 @@ def _frostlake_install_snowpark():
 
     # ----------------------------------------------------------- DataFrame --
 
-    class GroupedFrame:
+    class RelationalGroupedDataFrame:
         def __init__(self, dataframe, keys):
             self._df = dataframe
             self._keys = keys
@@ -1153,7 +1153,7 @@ def _frostlake_install_snowpark():
                     flat.extend(k)
                 else:
                     flat.append(k)
-            return GroupedFrame(self, [str(k) for k in flat])
+            return RelationalGroupedDataFrame(self, [str(k) for k in flat])
 
         def groupBy(self, *keys):
             return self.group_by(*keys)
@@ -1505,7 +1505,7 @@ def _frostlake_install_snowpark():
 
     # -------------------------------------------------------------- Session --
 
-    class _SessionReader:
+    class DataFrameReader:
         def __init__(self, session):
             self._session = session
 
@@ -1597,7 +1597,7 @@ def _frostlake_install_snowpark():
 
         @property
         def read(self):
-            return _SessionReader(self)
+            return DataFrameReader(self)
 
         def close(self):
             pass
@@ -1720,6 +1720,21 @@ def _frostlake_install_snowpark():
 
     _se_mod.Session = Session
 
+    # Each class carries the name and the module Snowpark gives it, as a routine printing or comparing one sees:
+    # <snowflake.snowpark.dataframe.DataFrame object at 0x...>; each module is importable by that name.
+    _homes = (('dataframe', DataFrame), ('relational_grouped_dataframe', RelationalGroupedDataFrame),
+              ('session', Session), ('row', Row), ('column', Column), ('dataframe_writer', DataFrameWriter),
+              ('dataframe_reader', DataFrameReader))
+    for _home, _cls in _homes:
+        _cls.__module__ = 'snowflake.snowpark.' + _home
+        _cls.__qualname__ = _cls.__name__
+        _owner = _se_mod if _home == 'session' else _sys.modules.get('snowflake.snowpark.' + _home)
+        if _owner is None or _owner.__name__ != 'snowflake.snowpark.' + _home:
+            _owner = _types_mod.ModuleType('snowflake.snowpark.' + _home)
+        setattr(_owner, _cls.__name__, _cls)
+        setattr(_sp_mod, _home, _owner)
+        _sys.modules['snowflake.snowpark.' + _home] = _owner
+
     _sp_mod.Session = Session
     _sp_mod.DataFrame = DataFrame
     _sp_mod.Row = Row
@@ -1729,7 +1744,7 @@ def _frostlake_install_snowpark():
     _sp_mod.types = _ty_mod
     _sp_mod.session = _se_mod
     _sp_mod.exceptions = _ex_mod
-    _sp_mod.__version__ = '1.30.0'
+    _sp_mod.__version__ = '1.55.3'
 
     _sf_mod.snowpark = _sp_mod
 
