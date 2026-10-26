@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -45,7 +47,7 @@ final class RowCountSlot {
      * @return the rows it counts, held to the range of an int
      */
     static int ofLiteral(final String literal, final boolean offset) {
-        final BigDecimal count = new BigDecimal(literal);
+        final BigDecimal count = DecimalText.parse(literal);
         if (count.setScale(0, RoundingMode.DOWN).toBigInteger().bitLength() > MOST_COUNT_BITS) {
             throw invalid("'" + literal + "'", offset);
         }

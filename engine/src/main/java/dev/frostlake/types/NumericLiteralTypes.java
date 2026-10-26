@@ -79,7 +79,7 @@ public final class NumericLiteralTypes {
         // anything reads it, and 0.10 keeps only the decimal that means something (NUMBER(2,1)).
         // A negative scale from the strip (100.00 → 1E+2) is put back to zero, as an exponentless
         // spelling of the same value.
-        final BigDecimal stripped = new BigDecimal(text).stripTrailingZeros();
+        final BigDecimal stripped = DecimalText.parse(text).stripTrailingZeros();
         return stripped.scale() < 0 ? stripped.setScale(0) : stripped;
     }
 

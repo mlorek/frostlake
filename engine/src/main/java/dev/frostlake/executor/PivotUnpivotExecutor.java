@@ -160,8 +160,12 @@ final class PivotUnpivotExecutor {
             rejectRepeatedColumns(inList.pivotValueList(), pivotValues);
         } else if (inList.ANY() != null) {
             // Dynamic pivot: the distinct values of the FOR column in their own order — ascending, or as the
-            // ORDER BY inside ANY says — with the rows holding none last, or first when descending.
-            final boolean descending = !inList.orderItem().isEmpty() && inList.orderItem(0).DESC() != null;
+            // ORDER BY inside ANY says — with the rows holding none where that key's NULLS clause, or else the
+            // session's DEFAULT_NULL_ORDERING, puts NULLs (live-verified).
+            final FrostlakeParser.OrderItemContext key = inList.orderItem().isEmpty() ? null : inList.orderItem(0);
+            final boolean descending = key != null && key.DESC() != null;
+            final boolean nullsFirst = SessionNullOrdering.nullsFirst(!descending,
+                key == null ? null : ValueComparisons.nullsFirstFlag(key));
             final Map<Object, Object> distinct = new LinkedHashMap<>();
             boolean anyNull = false;
             for (final Row row : rowsForAny) {
@@ -180,13 +184,13 @@ final class PivotUnpivotExecutor {
                     return descending ? -order : order;
                 }
             });
-            if (anyNull && descending) {
+            if (anyNull && nullsFirst) {
                 pivotValues.add(PivotValue.read(null));
             }
             for (final Object value : ordered) {
                 pivotValues.add(PivotValue.read(value));
             }
-            if (anyNull && !descending) {
+            if (anyNull && !nullsFirst) {
                 pivotValues.add(PivotValue.read(null));
             }
         } else if (inList.selectStatement() != null) {

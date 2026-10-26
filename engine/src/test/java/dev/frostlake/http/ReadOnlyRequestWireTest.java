@@ -40,8 +40,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A request may ask to be run read-only, and a session may be opened so: such a request runs only when every
  * statement of it is a query, a SHOW, a DESCRIBE or an EXPLAIN that reaches no write, and is refused before
- * anything runs otherwise; what its statements reach while they run — a procedure called in its FROM clause —
- * is held to the same rule.
+ * anything runs otherwise; what its statements reach while they run — a procedure called in its FROM clause, a
+ * sequence a function's body draws — is held to the same rule.
  */
 public class ReadOnlyRequestWireTest {
 
@@ -171,6 +171,14 @@ public class ReadOnlyRequestWireTest {
             "SELECT SYSTEM$ABORT_SESSION(1)");
         assertRefused("Read-only request: SYSTEM$TASK_DEPENDENTS_ENABLE may act on the server.",
             "SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('nope')");
+    }
+
+    /** A function's body that draws a sequence is refused as the request's own NEXTVAL is, the sequence unmoved. */
+    @Test
+    public void aFunctionsBodyMovesNoSequence() throws Exception {
+        assertNull(error(run("CREATE OR REPLACE FUNCTION f_next() RETURNS NUMBER AS 'sq.NEXTVAL'", null)));
+        assertRefused("Read-only request: NEXTVAL moves a sequence.", "SELECT f_next()");
+        assertEquals("1", firstCell("SELECT sq.NEXTVAL"));
     }
 
     /** A procedure in the FROM clause is called, and what it runs may read and may not write. */

@@ -16,6 +16,8 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
@@ -114,13 +116,13 @@ public final class ValueRange {
         }
         if (value instanceof Double || value instanceof Float) {
             final double d = ((Number) value).doubleValue();
-            return Double.isFinite(d) ? new BigDecimal(value.toString()) : null;
+            return Double.isFinite(d) ? DecimalText.parse(value.toString()) : null;
         }
         if (value instanceof Number) {
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         try {
-            return new BigDecimal(value.toString().trim());
+            return DecimalText.parse(value.toString().trim());
         } catch (final NumberFormatException notANumber) {
             return null;
         }
@@ -150,6 +152,24 @@ public final class ValueRange {
      */
     public boolean isOpaqueToConditions() {
         return opaqueToConditions;
+    }
+
+    /**
+     * The BOOLEAN every value of this interval converts to, as the planner settles a number's conversion by its
+     * statistics: TRUE where no value is zero, FALSE where every one is, null where the interval holds both, may
+     * answer NULL, holds nothing or settles no condition (live-verified: {@code g.v::BOOLEAN} over 50 and 60 is TRUE
+     * in the plan, over 0 and 5, over NULL and 5 and over no row it stays {@code CAST(G.V <> 0 AS BOOLEAN)}).
+     *
+     * @return the BOOLEAN, or null where the interval does not settle it
+     */
+    public Boolean convertedToBoolean() {
+        if (isEmpty() || nullable || opaqueToConditions) {
+            return null;
+        }
+        if (min.signum() > 0 || max.signum() < 0) {
+            return Boolean.TRUE;
+        }
+        return min.signum() == 0 && max.signum() == 0 ? Boolean.FALSE : null;
     }
 
     /** This interval, saying whether the expression may also answer NULL; {@link #EMPTY} stays itself. */

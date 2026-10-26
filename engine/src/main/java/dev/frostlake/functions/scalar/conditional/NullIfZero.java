@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -43,7 +44,7 @@ public class NullIfZero extends BuiltInFunction {
         }
         final String text = v.toString().trim();
         try {
-            if (new BigDecimal(text).compareTo(BigDecimal.ZERO) == 0) return null;
+            if (DecimalText.parse(text).compareTo(BigDecimal.ZERO) == 0) return null;
         } catch (final NumberFormatException notANumber) {
             if (v instanceof String) {
                 throw new RuntimeException(NumericRangeRefusal.unreadableText(text));

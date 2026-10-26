@@ -20,6 +20,8 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
+import dev.frostlake.executor.SessionNullOrdering;
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -32,6 +34,7 @@ import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
@@ -763,7 +766,7 @@ final class SubqueryPlanPrint {
     private static NumericType spelledNumber(final String text) {
         BigDecimal value;
         try {
-            value = new BigDecimal(text).stripTrailingZeros();
+            value = DecimalText.parse(text).stripTrailingZeros();
         } catch (final NumberFormatException notANumber) {
             return null;
         }
@@ -1436,7 +1439,8 @@ final class SubqueryPlanPrint {
                 final Expression key = new ExpressionAstBuilder().visit(KeyContexts.of(item));
                 final Integer ordinal = ordinalOf(key, names.size());
                 final boolean descending = item.DESC() != null;
-                final boolean nullsFirst = item.FIRST() != null || (item.LAST() == null && descending);
+                final boolean nullsFirst =
+                    SessionNullOrdering.nullsFirst(!descending, ValueComparisons.nullsFirstFlag(item));
                 keys.add((ordinal != null ? names.get(ordinal.intValue() - 1) : key.accept(printer))
                     + (descending ? " DESC" : " ASC") + " NULLS " + (nullsFirst ? "FIRST" : "LAST"));
             }

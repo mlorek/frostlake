@@ -32,11 +32,30 @@ import java.util.Locale;
  * {@code RETURNS OBJECT}, the scan named by an alias or not. Every other statement over that scan is refused as it
  * reads the cell — a named column,
  * {@code $1}, an alias's star, a star beside another item, a WHERE, an ORDER BY, a LIMIT, a DISTINCT, the star of a
- * subquery over the scan (live-verified).
+ * subquery over the scan (live-verified). Over the scan of a Snowflake Scripting answer, a CALL's or a block's, the
+ * plain star hands the answer out laid out across lines as the CALL did, and is itself such an answer to a scan of
+ * it, where every other statement over the scan reads its values compact (live-verified).
  */
 final class ScanStar {
 
+    /** Whether the scan the running statement read holds a Snowflake Scripting answer. */
+    private static final ThreadLocal<Boolean> SCANNED_ANSWER = new ThreadLocal<>();
+
     private ScanStar() {
+    }
+
+    /** Forget what an earlier statement's scan read. */
+    static void clearScan() {
+        SCANNED_ANSWER.remove();
+    }
+
+    /**
+     * Note the result the running statement's scan reads.
+     *
+     * @param scanned the scanned result, or null
+     */
+    static void noteScan(final ResultSet scanned) {
+        SCANNED_ANSWER.set(Boolean.valueOf(scanned != null && scanned.isScriptingAnswer()));
     }
 
     /**
@@ -104,6 +123,9 @@ final class ScanStar {
      * @param result the plain star's result
      */
     static void handOut(final ResultSet result) {
+        if (result != null && Boolean.TRUE.equals(SCANNED_ANSWER.get())) {
+            result.markScriptingAnswer();
+        }
         final List<Row> rows = result == null ? null : result.getRows();
         if (rows == null) {
             return;

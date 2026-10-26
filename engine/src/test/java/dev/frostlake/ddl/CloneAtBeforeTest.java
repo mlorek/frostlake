@@ -110,7 +110,8 @@ public class CloneAtBeforeTest {
         engine.execute("CREATE TABLE tt_db.young.y (a INT)");
         engine.execute("CREATE SCHEMA tt_db.keep");
         engine.execute("CREATE TABLE tt_db.keep.k (a INT)");
-        assertEquals("SQL compilation error:\nObject 'TT_DB.YOUNG' does not exist or not authorized.",
+        assertEquals("Time travel data is not available for schema YOUNG. The requested time is either beyond the"
+                + " allowed time travel period or before the object creation time.",
             refusal("CREATE OR REPLACE SCHEMA tt_db.keep CLONE tt_db.young AT(TIMESTAMP => $t)"));
         assertEquals(0L, count("tt_db.keep.k"), "the schema it would have replaced is still there");
     }

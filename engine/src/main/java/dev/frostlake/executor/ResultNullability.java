@@ -66,6 +66,8 @@ import java.util.Set;
  *   HASH, RANDOM, UUID_STRING, SEQ4, the
  *   current date and time, ZEROIFNULL           not nullable
  *   any other function                         nullable when an argument is
+ *   a key a ROLLUP, a CUBE or GROUPING SETS
+ *   leaves out of a set, or a column one names  nullable (see RolledKeys)
  * </pre>
  *
  * A name no column answers to is a word of the call it is written in, such as a date part, and no value.
@@ -102,14 +104,25 @@ final class ResultNullability {
 
     private final Table table;
     private final Map<String, Table> aliasToTable;
+    private final RolledKeys rolled;
 
     /**
      * @param table        the relation the select list reads
      * @param aliasToTable the relations a qualified name reaches, by name, or null
      */
     ResultNullability(final Table table, final Map<String, Table> aliasToTable) {
+        this(table, aliasToTable, RolledKeys.NONE);
+    }
+
+    /**
+     * @param table        the relation the select list reads
+     * @param aliasToTable the relations a qualified name reaches, by name, or null
+     * @param rolled       the keys the select's grouping sets leave out of a set
+     */
+    ResultNullability(final Table table, final Map<String, Table> aliasToTable, final RolledKeys rolled) {
         this.table = table;
         this.aliasToTable = aliasToTable;
+        this.rolled = rolled;
     }
 
     /**
@@ -119,6 +132,9 @@ final class ResultNullability {
      * @return whether it can
      */
     boolean of(final Expression expression) {
+        if (rolled.holds(expression)) {
+            return true;
+        }
         if (expression instanceof LiteralExpression) {
             final LiteralType type = ((LiteralExpression) expression).getType();
             return type == LiteralType.NULL || type == LiteralType.BOOLEAN;

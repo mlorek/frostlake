@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
 
 /**
@@ -46,7 +47,7 @@ public final class BinaryLiteralText {
             .replace(" ", "").replace("\n", "").replace("\r", "");
         boolean valid = body.length() % 2 == 0;
         for (int i = 0; valid && i < body.length(); i++) {
-            valid = Character.digit(body.charAt(i), 16) >= 0;
+            valid = DecimalText.hexDigit(body.charAt(i)) >= 0;
         }
         if (!valid) {
             throw new RuntimeException(SqlCompilationError.inline("Invalid binary literal " + token

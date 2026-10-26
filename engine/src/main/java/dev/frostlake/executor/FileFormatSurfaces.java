@@ -165,6 +165,24 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
         return false;
     }
 
+    /**
+     * The kind of value an option takes as the first type's tree that carries it declares it: String, Boolean,
+     * Integer or List.
+     *
+     * @param name the option
+     * @return its kind, or null for an option no type's tree carries
+     */
+    public static String optionType(final String name) {
+        for (final List<FormatProperty> tree : TREES.values()) {
+            for (final FormatProperty property : tree) {
+                if (property.name.equalsIgnoreCase(name)) {
+                    return property.type;
+                }
+            }
+        }
+        return null;
+    }
+
     /** Whether any type's tree declares the option Boolean. */
     private static boolean isBooleanOption(final String name) {
         for (final List<FormatProperty> tree : TREES.values()) {

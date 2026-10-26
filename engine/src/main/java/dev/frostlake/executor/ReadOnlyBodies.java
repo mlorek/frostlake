@@ -25,10 +25,12 @@ import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.metastore.model.View;
+import dev.frostlake.security.SessionSettings;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -83,22 +85,58 @@ public final class ReadOnlyBodies {
     }
 
     /**
-     * Whether a request judged to read by its own text reaches a write through the bodies its names stand for.
-     * A catalog that cannot be read through is taken to write, so the request runs alone.
+     * Whether a request judged to read by its own text reaches a write through the bodies its names stand for, a
+     * session variable's name in {@code IDENTIFIER($v)} among them. A catalog that cannot be read through is taken to
+     * write, so the request runs alone.
      *
      * @param catalog the catalog, held still by the engine's shared lock
      * @param sql     the request's text
+     * @param session the settings of the session the request runs in, or null
      * @return true when a body the text reaches may write
      */
-    public static boolean reachWrite(final Catalog catalog, final String sql) {
+    public static boolean reachWrite(final Catalog catalog, final String sql, final SessionSettings session) {
         try {
-            return new ReadOnlyBodies(catalog).reaches(sql);
+            return new ReadOnlyBodies(catalog).reaches(sql, session);
         } catch (final RuntimeException unreadable) {
             return true;
         }
     }
 
-    private boolean reaches(final String sql) {
+    /**
+     * Whether a request's text names a stream. Inside an open transaction a read of a stream holds it, and a read that
+     * meets one another session holds waits for it, which only a request that runs alone can do (see
+     * {@code TableLockGate#requireStreamFree}). A catalog that cannot be read through is taken to name one.
+     *
+     * @param catalog the catalog, held still by the engine's shared lock
+     * @param sql     the request's text
+     * @param session the settings of the session the request runs in, or null
+     * @return true when a name of the text is a stream's
+     */
+    public static boolean namesStream(final Catalog catalog, final String sql, final SessionSettings session) {
+        try {
+            final Set<String> streams = new HashSet<>();
+            for (final Database database : catalog.getAllDatabases()) {
+                for (final Schema schema : database.getAllSchemas()) {
+                    for (final Stream stream : schema.getStreams()) {
+                        streams.add(stream.getName());
+                    }
+                }
+            }
+            if (streams.isEmpty()) {
+                return false;
+            }
+            for (final String name : ReadOnlyRequest.names(sql, session)) {
+                if (streams.contains(name)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (final RuntimeException unreadable) {
+            return true;
+        }
+    }
+
+    private boolean reaches(final String sql, final SessionSettings session) {
         if (bodies.isEmpty() && foreign.isEmpty()) {
             return false;
         }
@@ -113,7 +151,7 @@ public final class ReadOnlyBodies {
                 return true;
             }
             own = false;
-            for (final String name : ReadOnlyRequest.names(text)) {
+            for (final String name : ReadOnlyRequest.names(text, session)) {
                 if (!followed.add(name)) {
                     continue;
                 }

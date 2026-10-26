@@ -143,8 +143,10 @@ final class TaskProperties {
                 : name.getText(), TaskPropertyValue.of(option.taskPropertyValue()));
         }
         if (option.scheduleClause() != null) {
+            // A session variable holding a NULL or a Boolean is read as no schedule (see PropertyVariables).
             return new TaskPropertySetting(option.scheduleClause().SCHEDULE().getText(),
-                TaskPropertyValue.quoted(option.scheduleClause().STRING_LITERAL().getText()));
+                option.scheduleClause().STRING_LITERAL() == null ? TaskPropertyValue.none()
+                    : TaskPropertyValue.quoted(option.scheduleClause().STRING_LITERAL().getText()));
         }
         final String spelling = option.getStart().getText();
         if (option.booleanValue() != null) {
@@ -155,6 +157,9 @@ final class TaskProperties {
         }
         if (option.STRING_LITERAL() != null) {
             return new TaskPropertySetting(spelling, TaskPropertyValue.quoted(option.STRING_LITERAL().getText()));
+        }
+        if (option.getToken(FrostlakeParser.NULL, 0) != null) {
+            return new TaskPropertySetting(spelling, TaskPropertyValue.none());
         }
         return new TaskPropertySetting(spelling, TaskPropertyValue.name(option.identifier()));
     }
@@ -210,6 +215,9 @@ final class TaskProperties {
     }
 
     private void requireKind(final String key, final TaskPropertyValue value) {
+        if (ParameterRegistry.takesNoValue("TASK", key)) {
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.written(), key));
+        }
         switch (key) {
             case "CONFIG":
             case "SCHEDULE":
@@ -359,6 +367,12 @@ final class TaskProperties {
                 task.setWarehouse(value.text());
                 return;
             case "SCHEDULE":
+                if (value.text() == null) {
+                    // No schedule, as a session variable holding a NULL or a Boolean leaves one (live-verified).
+                    task.setSchedule(null);
+                    task.setScheduleType(null);
+                    return;
+                }
                 TaskOptions.requireValidSchedule(value.text());
                 task.setSchedule(value.text());
                 task.setScheduleType(value.text().toUpperCase(Locale.ROOT).contains("CRON")

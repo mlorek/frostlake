@@ -95,6 +95,20 @@ final class ParameterRegistry {
     }
 
     /**
+     * Whether a level takes no value of a parameter at all: AUTOCOMMIT_API_SUPPORTED, kept for the account's own use,
+     * refuses at a session, a task and an alert whatever a SET gives it, TRUE and FALSE included, {@code invalid value
+     * [true] for parameter 'AUTOCOMMIT_API_SUPPORTED'}, while UNSET is taken (live-verified).
+     *
+     * @param level         SESSION, TASK or ALERT
+     * @param canonicalName the parameter's name, canonical
+     * @return whether the level refuses every value of it
+     */
+    static boolean takesNoValue(final String level, final String canonicalName) {
+        return "AUTOCOMMIT_API_SUPPORTED".equals(canonicalName)
+            && ("SESSION".equals(level) || "TASK".equals(level) || "ALERT".equals(level));
+    }
+
+    /**
      * Whether an object of a kind refuses a parameter at its own level, {@code cannot set parameter 'X' at 'TABLE'},
      * rather than for want of access (live-verified for tables and alerts).
      *

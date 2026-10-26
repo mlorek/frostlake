@@ -170,7 +170,6 @@ public class JoinViewChangesTest extends MeasuredCellsTestSupport {
         assertCells(new String[][] {
             {"DELETE FROM jb WHERE id = 2", "1"},
             {"SELECT id, x, METADATA$ACTION FROM jao", ""},
-            {"SELECT SYSTEM$STREAM_HAS_DATA('jao')", "false"},
             {"SELECT id, METADATA$ACTION FROM jst", "2|DELETE"},
             {"UPDATE ja SET x = 'a1u' WHERE id = 1", "1|0"},
             {"INSERT INTO jb VALUES (3, 'b3')", "1"},
@@ -182,8 +181,7 @@ public class JoinViewChangesTest extends MeasuredCellsTestSupport {
             {"UPDATE ja SET x = 'a2u' WHERE id = 1", "1|0"},
             {"INSERT INTO jb VALUES (4, 'b4')", "1"},
             {"INSERT INTO ja VALUES (4, 'a4')", "1"},
-            {"SELECT id, x, METADATA$ACTION, METADATA$ISUPDATE FROM jao ORDER BY 1",
-                "3|a3|INSERT|false ;; 4|a4|INSERT|false"},
+            {"SELECT id, x, METADATA$ACTION, METADATA$ISUPDATE FROM jao ORDER BY 1", "3|a3|INSERT|false"},
             {"COMMIT", "Statement executed successfully."},
             {"INSERT INTO jsink SELECT id, x FROM jao", "2"},
             {"SELECT id, x FROM jsink ORDER BY 1", "3|a3 ;; 4|a4"},

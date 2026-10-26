@@ -20,6 +20,7 @@ import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
@@ -117,7 +118,7 @@ public class DateAdd extends BuiltInFunction {
             final String spelled = amount instanceof VariantValue && ((VariantValue) amount).node().isTextual()
                 ? ((VariantValue) amount).node().asText() : amount.toString();
             try {
-                exact = new BigDecimal(spelled.trim());
+                exact = DecimalText.parse(spelled.trim());
             } catch (final NumberFormatException notANumber) {
                 throw new RuntimeException("Numeric value '" + spelled + "' is not recognized");
             }

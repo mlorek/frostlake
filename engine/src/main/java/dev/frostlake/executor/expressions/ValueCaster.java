@@ -23,6 +23,7 @@ import dev.frostlake.executor.SignedStorageWidth;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.conversion.TimestampFlavourConversion;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DayTimeInterval;
@@ -432,7 +433,7 @@ public final class ValueCaster {
             }
         }
         if (value instanceof Number) {
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         // A SQL BOOLEAN casts to an EXACT number — TRUE::NUMBER is 1 (live-verified) — while the
         // APPROXIMATE cast of the same value is a compile-time conversion refusal, checked upstream.
@@ -443,7 +444,7 @@ public final class ValueCaster {
             return new BigDecimal(variantBooleanNumber(value).intValue());
         }
         try {
-            return new BigDecimal(castSourceText(value));
+            return DecimalText.parse(castSourceText(value));
         } catch (final NumberFormatException notNumeric) {
             throw numericCastFailure(value, family);
         }

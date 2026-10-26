@@ -48,6 +48,8 @@ import java.util.regex.Pattern;
  */
 final class NetworkRuleChecks {
 
+    private static final String INGRESS = "INGRESS";
+
     private static final Map<String, List<String>> MODES = new HashMap<>();
     private static final Map<String, String> TYPE_SPELLINGS = new HashMap<>();
     private static final List<String> KNOWN_MODES = Collections.unmodifiableList(Arrays.asList("INGRESS",
@@ -100,6 +102,31 @@ final class NetworkRuleChecks {
     /** The refusal of a MODE no type takes. */
     static RuntimeException unknownMode() {
         return new RuntimeException("The network rule mode must be one of the snowflake supported network rule mode.");
+    }
+
+    /** The refusal of a TYPE that is none of the account's. */
+    static RuntimeException unknownType() {
+        return new RuntimeException("The network rule type must be one of the snowflake supported network rule type.");
+    }
+
+    /**
+     * Refuses a MODE no type takes. Such a word stands for INGRESS while the rule's type judges its mode, so a type
+     * that takes no INGRESS refuses it in INGRESS's name first (live-verified): {@code TYPE = HOST_PORT MODE = nope}
+     * is refused as {@code The network rule mode INGRESS is not supported by the network rule type HOST_PORT. …},
+     * {@code TYPE = IPV4 MODE = nope} as no mode at all.
+     *
+     * @param type the rule's TYPE, or null where the statement gives none
+     * @param mode its MODE, upper-cased
+     */
+    static void requireKnownMode(final String type, final String mode) {
+        if (isMode(mode)) {
+            return;
+        }
+        final List<String> taken = type == null ? null : MODES.get(type);
+        if (taken != null && !taken.contains(INGRESS)) {
+            requireMode(type, INGRESS);
+        }
+        throw unknownMode();
     }
 
     /**

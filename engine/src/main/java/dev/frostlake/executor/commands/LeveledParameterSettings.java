@@ -50,6 +50,7 @@ final class LeveledParameterSettings {
 
     private static final String NUMBER = "NUMBER";
     private static final String FLOAT = "FLOAT";
+    private static final String FALLBACK_WAREHOUSE = "FALLBACK_WAREHOUSE";
 
     private LeveledParameterSettings() {
     }
@@ -71,6 +72,28 @@ final class LeveledParameterSettings {
             }
         }
         return null;
+    }
+
+    /**
+     * The kind of value a parameter of any level takes, a session's own and a warehouse's own included: what an
+     * ALTER of a schema or a database judges a value against before the level, so a session's BOOLEAN
+     * TELEMETRY_ENABLE_INTERACTIVE_MODE = 'x' and a warehouse's FALLBACK_WAREHOUSE = 1 are invalid values there, not
+     * access refusals (live-verified).
+     *
+     * @param name the parameter's name, upper case
+     * @return BOOLEAN, NUMBER, FLOAT or STRING; null when no level has a parameter of that name
+     */
+    static String valueTypeOf(final String name) {
+        final String leveled = typeOf(name);
+        if (leveled != null) {
+            return leveled;
+        }
+        final SessionParameterRow row = SessionParameterCatalog.find(name);
+        if (row != null) {
+            return row.getType();
+        }
+        // The warehouse parameter no session carries, typed as SHOW PARAMETERS IN WAREHOUSE lists it.
+        return FALLBACK_WAREHOUSE.equals(name) ? "STRING" : null;
     }
 
     /**

@@ -332,6 +332,16 @@ public final class SqlIdentifiers {
     }
 
     /**
+     * Whether a text is a token SYSTEM$REFERENCE issued that the statement running may read.
+     *
+     * @param text the text
+     * @return whether it reads as the object it stands for
+     */
+    public static boolean isIssuedReference(final String text) {
+        return ObjectReferenceTokens.issued(text) != null;
+    }
+
+    /**
      * The canonical parts of an {@code IDENTIFIER(...)} argument's value: {@link #canonicalTextParts},
      * with an empty middle part ({@code 'db..t'}) read as the PUBLIC schema, as the account reads it.
      */

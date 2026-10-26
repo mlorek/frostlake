@@ -44,7 +44,8 @@ public class UnloadAndContainerPrivilegeTest {
         engine.execute("CREATE DATABASE p");
         engine.execute("USE SCHEMA p.PUBLIC");
         engine.execute("CREATE ROLE reader_role");
-        engine.execute("CREATE USER reader");
+        // The user puts no secondary role in use, so a refusal names the primary role alone.
+        engine.execute("CREATE USER reader DEFAULT_SECONDARY_ROLES = ()");
         engine.execute("GRANT ROLE reader_role TO USER reader");
         engine.execute("CREATE TABLE secret (x INT, s VARCHAR)");
         engine.execute("INSERT INTO secret VALUES (1, 'top'), (2, 'secret')");

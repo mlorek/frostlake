@@ -130,7 +130,8 @@ public class ResultSetData {
                 // it would arrive as its element type alone. A semi-structured cell crosses as its JSON
                 // text with every DOUBLE in the account's fifteen-decimal form, and so does a DOUBLE read
                 // out of a VARIANT, which the engine holds unwrapped and would send as a bare JSON number.
-                // A STRING read out of one crosses JSON-quoted, as live's driver hands it back.
+                // A STRING read out of one crosses JSON-quoted, as live's driver hands it back. A FLOAT cell crosses
+                // with the digits the account's JSON results carry (see FloatWireDigits).
                 final String unwrappedDouble = VariantJsonText.unwrappedDoubleText(cell, declared);
                 rowData.add(cell instanceof Number && NumericType.isDecfloat(declared)
                         ? Decfloats.text(Decfloats.of((Number) cell, "TO_DECFLOAT"))
@@ -142,6 +143,8 @@ public class ResultSetData {
                     : SharedFunctionHelpers.isNativeTemporal(cell) && VariantJsonText.isSemiStructured(declared)
                         ? VariantJsonText.unwrappedStringText(SharedFunctionHelpers.variantTemporalText(cell))
                     : unwrappedDouble != null ? unwrappedDouble
+                    : cell instanceof Double && NumericType.isApproximate(declared)
+                        ? FloatWireDigits.of((Double) cell)
                     : IntervalCells.isInterval(cell) ? IntervalCells.wireText(cell)
                     : TemporalText.wireValue(cell, declared));
             }

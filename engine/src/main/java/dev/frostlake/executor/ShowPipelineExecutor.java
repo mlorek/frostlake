@@ -422,8 +422,8 @@ final class ShowPipelineExecutor {
 
     /**
      * The tables a stream reads, as SHOW STREAMS lists them: a table stream's table, and the tables a view stream's
-     * view reads rather than the view itself, or how many of them are gone, as for a table stream lost in a clone
-     * (live-verified).
+     * view reads rather than the view itself, a comma and a space between two, or how many of them are gone, as for
+     * a table stream lost in a clone (live-verified).
      */
     private String baseTablesText(final Stream stream, final String source, final boolean tableGone) {
         if (stream.isLostInClone()) {
@@ -433,13 +433,17 @@ final class ShowPipelineExecutor {
             return TABLE_GONE;
         }
         if (stream.getSourceType() == StreamSourceType.VIEW) {
+            final List<String> shown = StreamSources.shownBaseTableNames(catalog, stream);
+            if (shown != null) {
+                return String.join(", ", shown);
+            }
             final int missing = StreamSources.missingBaseCount(catalog, stream);
             if (missing > 0) {
                 return missing + " inaccessible table(s)";
             }
             final List<String> bases = StreamSources.baseTableFullNames(catalog, stream);
             if (bases != null) {
-                return String.join(",", bases);
+                return String.join(", ", bases);
             }
         }
         return source;
@@ -463,6 +467,11 @@ final class ShowPipelineExecutor {
      * tables does too.
      */
     private boolean stale(final Schema home, final Stream stream) {
+        if (stream.getSourceType() == StreamSourceType.VIEW
+                && StreamSources.shownBaseTableNames(catalog, stream) != null) {
+            // A stream re-bound to the tables that replaced its own is listed as reading them (see Stream#showOn).
+            return false;
+        }
         return stream.isStale() || (stream.getSourceType() == StreamSourceType.TABLE
             && StreamSources.sourceOf(catalog, home, stream) == null)
             || StreamSources.missingBaseOf(catalog, stream) != null;
@@ -726,6 +735,12 @@ final class ShowPipelineExecutor {
     /** DESCRIBE CORTEX SEARCH SERVICE — the one service, in the SHOW shape. */
     public ResultSet describeCortexSearchService(final String[] serviceParts) {
         final CortexSearchService service = catalog.resolveCortexSearchService(serviceParts);
+        final String recorded =
+            QualifiedName.join(service.getDatabaseName(), service.getSchemaName(), service.getName());
+        if (!ownership.sees("CORTEX_SEARCH_SERVICE", recorded, service.getOwner())) {
+            // One the session does not see is answered as one that does not exist.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", recorded));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(cortexSearchServiceRow(service)));
         return new ResultSet(cortexSearchServiceColumns(), rows);
@@ -734,7 +749,8 @@ final class ShowPipelineExecutor {
     private void appendCortexSearchServiceRows(final Schema schema, final String like,
                                                final List<Row> rows) {
         for (final CortexSearchService service : schema.getCortexSearchServices()) {
-            if (like == null || matchesLike(service.getName(), like)) {
+            if ((like == null || matchesLike(service.getName(), like))
+                    && seen("CORTEX_SEARCH_SERVICE", schema, service.getName(), service.getOwner())) {
                 rows.add(new Row(cortexSearchServiceRow(service)));
             }
         }

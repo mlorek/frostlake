@@ -24,6 +24,7 @@ import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.executor.expressions.RawOverflowKind;
 import dev.frostlake.executor.expressions.RawRangeOverflow;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
@@ -542,7 +543,7 @@ public final class AggregateNumerics {
             return null;
         }
         try {
-            final BigDecimal decimal = new BigDecimal(v.toString().trim());
+            final BigDecimal decimal = DecimalText.parse(v.toString().trim());
             if (decimal.stripTrailingZeros().scale() <= 0) {
                 return decimal.toBigIntegerExact();
             }
@@ -572,7 +573,7 @@ public final class AggregateNumerics {
             return null;
         }
         try {
-            final BigDecimal decimal = new BigDecimal(v.toString().trim());
+            final BigDecimal decimal = DecimalText.parse(v.toString().trim());
             if (decimal.stripTrailingZeros().scale() <= 0) {
                 return new BigDecimal(decimal.toBigIntegerExact());
             }
@@ -968,7 +969,7 @@ public final class AggregateNumerics {
             }
         } else if (v instanceof Number) {
             shown = v.toString();
-            number = new BigDecimal(shown);
+            number = DecimalText.parse(shown);
         } else if (IntervalCells.isInterval(v)) {
             // An interval converts as its cast to a number does: its span in units of its trailing field, so
             // MEDIAN over a TIMESTAMP difference reads whole seconds (live-verified).
@@ -991,7 +992,7 @@ public final class AggregateNumerics {
 
     private static BigDecimal numberSpelledBy(final String text, final String refusal) {
         try {
-            return new BigDecimal(text.trim());
+            return DecimalText.parse(text.trim());
         } catch (final NumberFormatException notNumeric) {
             throw new NumericConversionException(refusal);
         }

@@ -53,13 +53,27 @@ public class Generator extends TableFunction {
 
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
+        return execute(namedArgs, -1L);
+    }
+
+    /**
+     * The rows of a call the statement reads no more than {@code rowCap} of. The account streams a GENERATOR's
+     * rows, so under a LIMIT it generates no more of them than are read: a ROWCOUNT past what a list holds is no
+     * fault there, and a TIMELIMIT ends as soon as the rows are read (live-verified).
+     *
+     * @param namedArgs the call's arguments
+     * @param rowCap    the most rows read of the call, or -1 for all of them
+     * @return the rows
+     */
+    public ResultSet execute(final Map<String, Object> namedArgs, final long rowCap) {
         validateArgs(namedArgs);
         // A bound that is NULL is a bound not given: ROWCOUNT => NULL generates no rows, and beside a TIMELIMIT
         // it leaves the time to bound the rows. A TIMELIMIT of 0 is no limit either: ROWCOUNT => 3 beside it
         // still generates three rows (live-verified).
-        final Long rowCount = boundOf(namedArgs.get("ROWCOUNT"));
+        final Long counted = boundOf(namedArgs.get("ROWCOUNT"));
         final Long written = boundOf(namedArgs.get("TIMELIMIT"));
         final Long timeLimit = written != null && written.longValue() == 0 ? null : written;
+        final Long rowCount = capped(counted, timeLimit, rowCap);
         if (rowCount != null && timeLimit == null && rowCount.longValue() > MAX_ROWS) {
             // The rows are held in memory: a count past what a list holds is refused here rather than cut down.
             throw new RuntimeException("GENERATOR cannot produce " + rowCount + " rows here: at most " + MAX_ROWS
@@ -102,6 +116,17 @@ public class Generator extends TableFunction {
             }
         }
         return new ResultSet(columns, rows);
+    }
+
+    /** A ROWCOUNT no larger than the rows read, and a count of them where only a TIMELIMIT bounds the call. */
+    private static Long capped(final Long rowCount, final Long timeLimit, final long rowCap) {
+        if (rowCap < 0) {
+            return rowCount;
+        }
+        if (rowCount == null) {
+            return timeLimit == null ? null : Long.valueOf(rowCap);
+        }
+        return Long.valueOf(Math.min(rowCount.longValue(), rowCap));
     }
 
     /**

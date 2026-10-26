@@ -159,7 +159,7 @@ public final class TagValues {
     }
 
     /** The value of the session variable a value reads; one no SET defined is refused at its own position. */
-    private static Object sessionVariable(final Token token, final QueryExecutor queryExecutor) {
+    static Object sessionVariable(final Token token, final QueryExecutor queryExecutor) {
         final String name = token.getText().substring(1).toUpperCase(Locale.ROOT);
         final SecurityManager security = queryExecutor.getSecurityManager();
         final boolean session = security != null && security.getSessionContext() != null;

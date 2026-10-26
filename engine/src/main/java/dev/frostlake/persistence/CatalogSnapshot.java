@@ -45,6 +45,8 @@ public class CatalogSnapshot implements Serializable {
     public List<AccountSnapshot> accounts = new ArrayList<>();
     /** The parameters set on the account, by name. */
     public HashMap<String, String> accountParameters = new HashMap<>();
+    /** The tags set on the account itself, by tag; null on an older snapshot or where none is set. */
+    public HashMap<String, String> accountTags;
     public List<ManagedAccountSnapshot> managedAccounts = new ArrayList<>();
     /** The last account locator number handed out, so a restored engine does not reuse one. */
     public int accountLocatorSequence;

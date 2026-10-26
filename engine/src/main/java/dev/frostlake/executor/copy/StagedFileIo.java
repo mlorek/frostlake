@@ -49,6 +49,9 @@ public final class StagedFileIo {
      */
     public static final char UNREADABLE_START = '\uF600';
 
+    /** The byte order mark a file may start with, as its characters read it. */
+    public static final char BYTE_ORDER_MARK = '\uFEFF';
+
     /** The mark of a later byte of the same unreadable sequence, the byte's value added to it. */
     public static final char UNREADABLE_MORE = '\uF700';
 
@@ -257,6 +260,23 @@ public final class StagedFileIo {
      */
     public static RuntimeException unreadableRefusal(final String format, final String marked, final int unreadable,
                                                      final String shownName) {
+        return unreadableRefusal(format, marked, unreadable, shownName, true);
+    }
+
+    /**
+     * {@link #unreadableRefusal(String, String, int, String)}, the column named only where the reading query reads
+     * one: under a query that reads none of the file's positional columns the refusal ends {@code Row 0, column }
+     * (live-verified).
+     *
+     * @param format      the format, as the refusal names it: JSON, XML
+     * @param marked      the file's text, each unreadable byte kept as its mark
+     * @param unreadable  where the text holds the first mark
+     * @param shownName   the file, as the refusal names it
+     * @param namesColumn whether the refusal names the column, $1
+     * @return the refusal
+     */
+    public static RuntimeException unreadableRefusal(final String format, final String marked, final int unreadable,
+                                                     final String shownName, final boolean namesColumn) {
         final int lineStart = marked.lastIndexOf('\n', unreadable - 1) + 1;
         int line = 1;
         for (int i = 0; i < lineStart; i++) {
@@ -264,7 +284,7 @@ public final class StagedFileIo {
         }
         return new RuntimeException("Error parsing " + format + ": invalid UTF-8 sequence: "
             + unreadableByte(marked.charAt(unreadable)) + "\n  File '" + shownName + "', line " + line
-            + ", character " + (unreadable - lineStart + 1) + "\n  Row 0, column $1");
+            + ", character " + (unreadable - lineStart + 1) + "\n  Row 0, column " + (namesColumn ? "$1" : ""));
     }
 
     /**
@@ -287,6 +307,31 @@ public final class StagedFileIo {
             }
         }
         return replaced.toString();
+    }
+
+    /**
+     * A file's text without the byte order mark it starts with, if it starts with one.
+     *
+     * @param text the text
+     * @return the text
+     */
+    public static String withoutByteOrderMark(final String text) {
+        return !text.isEmpty() && text.charAt(0) == BYTE_ORDER_MARK ? text.substring(1) : text;
+    }
+
+    /**
+     * Moves a reader past the byte order mark its file starts with, if it starts with one.
+     *
+     * @param reader the reader, at the file's start
+     * @return the reader
+     * @throws IOException when the file cannot be read
+     */
+    public static BufferedReader pastByteOrderMark(final BufferedReader reader) throws IOException {
+        reader.mark(1);
+        if (reader.read() != BYTE_ORDER_MARK) {
+            reader.reset();
+        }
+        return reader;
     }
 
     public static String readString(final Path file) throws IOException {

@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.ValueRange;
 
 import java.math.BigDecimal;
@@ -111,10 +112,10 @@ public final class SignedStorageWidth {
         } else if (value instanceof BigInteger) {
             exact = new BigDecimal((BigInteger) value);
         } else if (value instanceof Number) {
-            exact = new BigDecimal(value.toString());
+            exact = DecimalText.parse(value.toString());
         } else {
             try {
-                exact = new BigDecimal(value.toString().trim());
+                exact = DecimalText.parse(value.toString().trim());
             } catch (final NumberFormatException notANumber) {
                 return null;
             }

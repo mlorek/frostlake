@@ -63,6 +63,9 @@ public class SecondaryRolesOfAUserTest {
 
     @Test
     public void allStandsForTheRolesGrantedToTheUserButThePrimaryOne() {
+        // A user whose DEFAULT_SECONDARY_ROLES was never written starts with the default, ALL.
+        assertEquals("{\"roles\":\"SR_B\",\"value\":\"ALL\"}", secondaryRoles());
+        engine.execute("USE SECONDARY ROLES NONE");
         assertEquals("{\"roles\":\"\",\"value\":\"\"}", secondaryRoles());
         engine.execute("USE SECONDARY ROLES ALL");
         assertEquals("{\"roles\":\"SR_B\",\"value\":\"ALL\"}", secondaryRoles());

@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.ComparisonLevelChain;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.executor.procedural.BaseExpression;
@@ -185,8 +186,12 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.CurrentUserExprContext) { return new FunctionCallExpression("CURRENT_USER", Collections.emptyList()); }
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
+            final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) ctx;
+            if (bind.variableName() == null) {
+                throw unsetNumberedBind(bind);
+            }
             // :varname — procedural variable binding, treat as variable reference
-            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).variableName());
+            final String varName = visitor.getText(bind.variableName());
             return new VariableExpression(varName, true);
         }
 
@@ -338,6 +343,20 @@ public class VisitorExpressionBuilder {
      * expression context — a bare name may be a scripting variable here (a {@code LET} / {@code :=}
      * right-hand side, an {@code IF} condition, {@code RETURN <expr>}, a {@code DECLARE … DEFAULT}).
      */
+    /**
+     * The refusal of a numbered bind no value was written into: a bind variable that is not set, placed at its colon as
+     * a query places it ({@code Bind variable :1 not set.}).
+     *
+     * @param bind the {@code :n} reference
+     * @return the refusal
+     */
+    private static RuntimeException unsetNumberedBind(final FrostlakeParser.BindVarExprContext bind) {
+        final Token colon = bind.getStart();
+        final SourcePosition at = ExpressionSource.place(colon.getLine(), colon.getCharPositionInLine());
+        return new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+            "Bind variable :" + bind.INTEGER_LITERAL().getText() + " not set."));
+    }
+
     public Object evaluateExpression(final FrostlakeParser.ExpressionContext ctx) {
         try {
             return evaluateExpression(ctx, true);
@@ -473,8 +492,12 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.CurrentUserExprContext) { return queryExecutor.getFunctionRegistry().getFunction("CURRENT_USER").evaluate(Collections.emptyList()); }
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
+            final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) ctx;
+            if (bind.variableName() == null) {
+                throw unsetNumberedBind(bind);
+            }
             // :varname — procedural variable binding, treat as variable reference
-            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).variableName());
+            final String varName = visitor.getText(bind.variableName());
             if (visitor.getProceduralExecutor() != null) {
                 final Object v = visitor.getProceduralExecutor().readExpressionValue(varName);
                 if (v != null) return v;
@@ -800,7 +823,7 @@ public class VisitorExpressionBuilder {
                 return "{\"executionState\": \"RUNNING\"}";
 
             case "SYSTEM$AUTO_REFRESH_STATUS":
-                return "{\"state\": \"Active\"}";
+                return AutoRefreshStatus.answer(queryExecutor.getCatalog(), args.isEmpty() ? null : args.get(0));
 
             case "SYSTEM$QUERY_REFERENCE":
                 return UUID.randomUUID().toString();

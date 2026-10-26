@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.scalar.WholeNumberArgument;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.Decfloats;
 
 import java.math.BigDecimal;
@@ -64,7 +65,7 @@ final class RoundedValue {
                 args.size() > 1 ? approximateScaleOf(args.get(1)) : 0, mode);
         }
         final int scale = args.size() > 1 ? scaleOf(args.get(1)) : 0;
-        final BigDecimal num = new BigDecimal(args.get(0).toString());
+        final BigDecimal num = DecimalText.parse(args.get(0).toString());
         if (num.scale() - scale > MAX_SPAN) {
             throw new RuntimeException(
                 "Invalid parameter value: " + scale + ". Reason: Scale too large");
@@ -85,7 +86,48 @@ final class RoundedValue {
             return null;
         }
         final int scale = args.size() > 1 ? scaleOf(args.get(1)) : 0;
-        return Decfloats.held(new BigDecimal(args.get(0).toString()).setScale(scale, mode));
+        return Decfloats.held(DecimalText.parse(args.get(0).toString()).setScale(scale, mode));
+    }
+
+    /**
+     * The value rounded to a FLOAT scale, in FLOAT arithmetic and to the scale's own value, a fraction included: the
+     * input divided by ten to the negated scale, rounded in the call's direction, then multiplied back (live-verified):
+     *
+     * <pre>
+     *   ROUND(1.2345, 2::FLOAT)      1.23            a FLOAT, where a NUMBER scale keeps the NUMBER
+     *   ROUND(1.2345, 2.5::FLOAT)    1.233288287     TRUNC(1.2389, 2.5::FLOAT) 1.236450565
+     *   ROUND(1.005, 2::FLOAT)       1.0             the double nearest 1.005 is below it
+     *   ROUND(123.456, 400::FLOAT)   NaN             ten to the negated scale underflows to zero
+     *   ROUND(1e300, -300::FLOAT)    1.0E300
+     * </pre>
+     *
+     * @param args the input and the scale
+     * @param mode the direction the call rounds in
+     * @return the rounded value, or null when the input or the scale is null
+     */
+    static Object ofFloatScale(final List<Object> args, final RoundingMode mode) {
+        if (args.get(0) == null || args.get(1) == null) {
+            return null;
+        }
+        final double factor = Math.pow(10, -((Number) args.get(1)).doubleValue());
+        final double shifted = ((Number) args.get(0)).doubleValue() / factor;
+        final double rounded;
+        if (mode == RoundingMode.CEILING) {
+            rounded = Math.ceil(shifted);
+        } else if (mode == RoundingMode.FLOOR) {
+            rounded = Math.floor(shifted);
+        } else if (mode == RoundingMode.DOWN) {
+            rounded = shifted < 0 ? Math.ceil(shifted) : Math.floor(shifted);
+        } else {
+            // Half away from zero, judged on the fraction itself: adding a half before the floor would round the double
+            // just below a half up.
+            final double magnitude = Math.floor(Math.abs(shifted));
+            final double away = Math.abs(shifted) - magnitude >= 0.5 ? magnitude + 1 : magnitude;
+            rounded = shifted < 0 ? -away : away;
+        }
+        // A zero comes back positive but FLOOR's, as the FLOAT input's rounding has it (see approximatelyRounded).
+        final double result = rounded * factor;
+        return Double.valueOf(mode == RoundingMode.FLOOR ? result : result + 0.0);
     }
 
     /**
@@ -158,7 +200,7 @@ final class RoundedValue {
     /** The scale argument's nearest whole number, half away from zero. */
     private static BigInteger wholeScale(final Object arg) {
         try {
-            return new BigDecimal(arg.toString()).setScale(0, RoundingMode.HALF_UP).toBigInteger();
+            return DecimalText.parse(arg.toString()).setScale(0, RoundingMode.HALF_UP).toBigInteger();
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + arg + "' is not recognized");
         }

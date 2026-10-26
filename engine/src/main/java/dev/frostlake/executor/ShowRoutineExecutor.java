@@ -1142,10 +1142,11 @@ final class ShowRoutineExecutor {
     /** DESCRIBE JOIN POLICY — name, empty signature, return type and body. */
     public ResultSet describeJoinPolicy(final String policyName) {
         final JoinPolicy policy = catalog.findJoinPolicy(policyName);
+        // Named exactly: a quoted name in another case is another policy, which is not there (live-verified).
         if (policy == null
-                || !ownership.sees("JOIN_POLICY", catalog.qualifiedObjectName(policyName), policy.getOwner())) {
+                || !ownership.sees("JOIN_POLICY", catalog.qualifiedExactName(policyName), policy.getOwner())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
-                catalog.qualifiedObjectName(policyName)));
+                catalog.qualifiedExactName(policyName)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),

@@ -50,6 +50,12 @@ public final class SessionSettings {
      * their own: the variable is DECFLOAT on the account, typed and spelled as one (see SessionContext).
      */
     private final Set<String> decfloatVariables = new HashSet<String>();
+    /**
+     * The precision a SET gave each time or timestamp variable, by upper-case name. Its value, a time of day or an
+     * instant, does not tell the precision of the type it was set from, which the variable keeps (see
+     * SessionContext).
+     */
+    private final Map<String, Integer> variablePrecisions = new HashMap<String, Integer>();
     /** The session's number: what CURRENT_SESSION() answers and every listing that names a session shows. */
     private final long sessionNumber = NEXT_SESSION_NUMBER.getAndIncrement();
     /** The SQL text of the statement this session is running, what CURRENT_STATEMENT() answers. */
@@ -149,9 +155,24 @@ public final class SessionSettings {
         return variables;
     }
 
+    /**
+     * A session variable's value as SET defined it, read where the session is not the one bound to the thread.
+     *
+     * @param name the variable's name, in any case
+     * @return the value, or null where SET defined none of the name
+     */
+    public Object variable(final String name) {
+        return name == null ? null : variables.get(name.toUpperCase(Locale.ROOT));
+    }
+
     /** The variables a SET gave a DECFLOAT, by upper-case name. */
     Set<String> decfloatVariables() {
         return decfloatVariables;
+    }
+
+    /** The precision a SET gave each time or timestamp variable, by upper-case name. */
+    Map<String, Integer> variablePrecisions() {
+        return variablePrecisions;
     }
 
     /** Back to a new session's settings. */
@@ -160,6 +181,7 @@ public final class SessionSettings {
         parameters.put("MULTI_STATEMENT_COUNT", 1);
         variables.clear();
         decfloatVariables.clear();
+        variablePrecisions.clear();
         roles = null;
     }
 }

@@ -34,6 +34,15 @@ import org.antlr.v4.runtime.Token;
  *   WITH w AS (DESCRIBE TABLE t) SELECT * FROM w    'TABLE' alone: a common table expression reads the word as a
  *                                                   name, and refuses what follows it
  * </pre>
+ *
+ * <p>And for an INSERT, an UPDATE or an EXPLAIN written as a select item's bracketed value (all live-verified):
+ *
+ * <pre>
+ *   SELECT (INSERT INTO t VALUES (1, 'a'))          'INTO', then 'VALUES': INSERT reads as a name, and the name
+ *                                                   after the refused word is read, then the token after it refused
+ *   SELECT (UPDATE t SET a = 1)                     'UPDATE', then 'SET'
+ *   SELECT (EXPLAIN USING TEXT SELECT 1)            'USING' alone
+ * </pre>
  */
 final class StatementWordInBracketLines {
 
@@ -57,6 +66,10 @@ final class StatementWordInBracketLines {
         }
         if (fault < 2) {
             return null;
+        }
+        final List<String> statementItem = statementItemLines(spoken, fault);
+        if (statementItem != null) {
+            return statementItem;
         }
         if (spoken.get(fault).getType() == FrostlakeLexer.IN && fault + 3 < spoken.size()
                 && spoken.get(fault + 1).getType() == FrostlakeLexer.LPAREN && isStatementWord(spoken.get(fault + 2))) {
@@ -91,6 +104,26 @@ final class StatementWordInBracketLines {
             return null;
         }
         lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+        return lines;
+    }
+
+    /** The lines of an INSERT, an UPDATE or an EXPLAIN that opens a select item's brackets, or null. */
+    private static List<String> statementItemLines(final List<Token> spoken, final int fault) {
+        final int type = spoken.get(fault).getType();
+        final int word = type == FrostlakeLexer.INTO || type == FrostlakeLexer.USING ? fault - 1 : fault;
+        final int wordType = spoken.get(word).getType();
+        final boolean shaped = type == FrostlakeLexer.INTO && wordType == FrostlakeLexer.INSERT
+            || type == FrostlakeLexer.USING && wordType == FrostlakeLexer.EXPLAIN || type == FrostlakeLexer.UPDATE;
+        if (!shaped || word < 2 || spoken.get(word - 1).getType() != FrostlakeLexer.LPAREN
+                || spoken.get(word - 2).getType() != FrostlakeLexer.SELECT) {
+            return null;
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+        if (type != FrostlakeLexer.USING && fault + 2 < spoken.size()
+                && SyntaxErrorListener.isNameLike(spoken.get(fault + 1))) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(fault + 2)));
+        }
         return lines;
     }
 

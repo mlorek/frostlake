@@ -237,7 +237,7 @@ final class MergeCompilation {
             if (clause.INSERT() == null) {
                 continue;
             }
-            int columns = target.getColumns().size();
+            int columns = VirtualColumns.writtenCount(target);
             if (clause.mergeInsertColumnList() != null) {
                 columns = clause.mergeInsertColumnList().mergeInsertColumn().size();
                 for (final FrostlakeParser.MergeInsertColumnContext column
@@ -293,6 +293,7 @@ final class MergeCompilation {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(at.getStart().getLine(),
                 at.getStart().getCharPositionInLine(), column.toUpperCase(Locale.ROOT)), unknown);
         }
+        VirtualColumns.refuseTarget(target, column);
     }
 
     private String insertColumnName(final FrostlakeParser.MergeInsertColumnContext column) {

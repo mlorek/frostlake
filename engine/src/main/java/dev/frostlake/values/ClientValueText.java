@@ -18,6 +18,7 @@ package dev.frostlake.values;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import java.math.BigDecimal;
 
@@ -59,7 +60,7 @@ public final class ClientValueText {
      * @return the decimal
      */
     public static BigDecimal decfloatObject(final Number value) {
-        return new BigDecimal(Decfloats.text(Decfloats.of(value, "TO_DECFLOAT")));
+        return DecimalText.parse(Decfloats.text(Decfloats.of(value, "TO_DECFLOAT")));
     }
 
     public static String render(final Object value, final DataType declared) {

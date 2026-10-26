@@ -29,7 +29,7 @@ import java.util.List;
  * <p>The scale becomes the RESULT's declared scale as well as the value's, and a NULL scale — or a
  * NULL mode — makes the whole call NULL rather than meaning "no rounding". See {@link RoundedValue}.
  */
-public class Round extends NumericArgumentFunction implements DecfloatRounding {
+public class Round extends NumericArgumentFunction implements DecfloatRounding, FloatScaleRounding {
     public Round() { super("ROUND", NumericType.NUMBER); }
 
     @Override
@@ -48,6 +48,12 @@ public class Round extends NumericArgumentFunction implements DecfloatRounding {
             return null;
         }
         return RoundedValue.ofDecfloat(args, args.size() > 2 ? roundingMode(args.get(2)) : RoundingMode.HALF_UP);
+    }
+
+    /** A FLOAT scale rounds in FLOAT arithmetic, half away from zero (see RoundedValue#ofFloatScale). */
+    @Override
+    public Object evaluateFloatScale(final List<Object> args) {
+        return RoundedValue.ofFloatScale(args, RoundingMode.HALF_UP);
     }
 
     /**

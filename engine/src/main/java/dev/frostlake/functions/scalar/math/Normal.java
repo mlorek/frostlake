@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.math;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -77,7 +78,7 @@ public class Normal extends BuiltInFunction {
             return ((Number) value).doubleValue();
         }
         try {
-            return new BigDecimal(value.toString().trim()).doubleValue();
+            return DecimalText.parse(value.toString().trim()).doubleValue();
         } catch (final NumberFormatException noNumber) {
             throw new RuntimeException("Numeric value '" + value + "' is not recognized");
         }

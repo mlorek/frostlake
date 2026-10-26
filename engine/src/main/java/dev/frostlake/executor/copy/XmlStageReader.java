@@ -55,7 +55,8 @@ public class XmlStageReader implements StageFileReader {
         final String marked = StagedFileIo.readMarked(file, StandardCharsets.UTF_8);
         final int unreadable = StagedFileIo.firstUnreadable(marked);
         if (unreadable >= 0 && !options.replacesInvalidCharacters()) {
-            throw StagedFileIo.unreadableRefusal("XML", marked, unreadable, shownName);
+            throw StagedFileIo.unreadableRefusal("XML", marked, unreadable, shownName,
+                !options.readsNoPositionalColumn());
         }
         try {
             return ParseXml.parseRecords(StagedFileIo.unreadableReplaced(marked), options.disablesAutoConvert(),

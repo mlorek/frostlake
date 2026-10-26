@@ -111,10 +111,11 @@ public class HttpWireJdbcTest {
 
     /**
      * Over the wire too, getObject answers the class the metadata names: a temporal cell is no longer the
-     * text it crossed as, and a small whole number no longer the Integer the JSON parsed to.
+     * text it crossed as, and a small whole number no longer the Integer the JSON parsed to. A TIMESTAMP_TZ
+     * is a Timestamp that shows its own offset, as the account's driver answers one.
      */
     @Test
-    public void getObjectAnswersTheClassTheMetadataNames() throws SQLException {
+    public void getObjectAnswersTheClassTheMetadataNames() throws SQLException, ClassNotFoundException {
         try (final ResultSet rs = statement.executeQuery("SELECT '2024-01-15'::DATE, '12:34:56'::TIME, "
             + "'2024-01-15 12:34:56'::TIMESTAMP_NTZ, '2024-01-15 12:34:56 +0200'::TIMESTAMP_TZ, "
             + "1, 12345678901234567890123456789012345678, 1.25")) {
@@ -123,7 +124,7 @@ public class HttpWireJdbcTest {
             assertEquals("2024-01-15", rs.getObject(1).toString());
             assertEquals(Time.class, rs.getObject(2).getClass());
             assertEquals(Timestamp.class, rs.getObject(3).getClass());
-            assertEquals(Timestamp.class, rs.getObject(4).getClass());
+            assertTrue(rs.getObject(4) instanceof Timestamp, String.valueOf(rs.getObject(4)));
             assertEquals(Long.valueOf(1L), rs.getObject(5));
             assertEquals(BigDecimal.class, rs.getObject(6).getClass());
             assertEquals("12345678901234567890123456789012345678", rs.getObject(6).toString());
@@ -132,9 +133,8 @@ public class HttpWireJdbcTest {
             // metadata names Long while a value past a Long comes back as a BigDecimal.
             for (int column = 1; column <= 7; column++) {
                 if (column != 6) {
-                    assertEquals(rs.getMetaData().getColumnClassName(column),
-                        rs.getObject(column).getClass().getName(),
-                        "column " + column + " must answer the class its metadata names");
+                    assertTrue(Class.forName(rs.getMetaData().getColumnClassName(column)).isInstance(
+                        rs.getObject(column)), "column " + column + " must answer the class its metadata names");
                 }
             }
         }

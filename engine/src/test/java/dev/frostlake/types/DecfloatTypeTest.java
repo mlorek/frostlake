@@ -264,8 +264,7 @@ public class DecfloatTypeTest extends MeasuredCellsTestSupport {
 
     /**
      * A BOOLEAN cast to a DECFLOAT is the DECFLOAT 1 or 0, as TO_DECFLOAT reads it (live: CAST(TRUE AS DECFLOAT) is
-     * 1), so arithmetic over it is DECFLOAT arithmetic; the NUMBER(2,0) a BOOLEAN cast to NUMBER types as is no rule of
-     * a DECFLOAT.
+     * 1), so arithmetic over it is DECFLOAT arithmetic, as a cast to a NUMBER is the NUMBER the cast spells.
      */
     @Test
     public void aBooleanCastToADecfloatIsADecfloat() {
@@ -280,7 +279,7 @@ public class DecfloatTypeTest extends MeasuredCellsTestSupport {
                 "3.3333333333333333333333333333333333333e-1|DECFLOAT(38)[DECFLOAT18] ;; "
                     + "0|DECFLOAT(38)[DECFLOAT18] ;; null|DECFLOAT(38)[DECFLOAT18]"},
             {"SELECT TYPEOF(TO_VARIANT(TRUE::DECFLOAT)), (TRUE::DECFLOAT + 0.5)::VARCHAR", "DECFLOAT|1.5"},
-            {"SELECT TRUE::NUMBER(5,1), SYSTEM$TYPEOF(TRUE::NUMBER(5,1))", "1|NUMBER(2,0)[SB1]"},
+            {"SELECT TRUE::NUMBER(5,1), SYSTEM$TYPEOF(TRUE::NUMBER(5,1))", "1.0|NUMBER(5,1)[SB4]"},
         });
     }
 

@@ -51,9 +51,11 @@ with it. A session created with `POST /api/sessions` reports it too. An answer t
 leaves it out.
 
 A failed statement's answer carries `sqlState` and `errorCode` where the account's are known, and leaves them out
-otherwise. Today that is a canceled statement: `57014` with `604` for a cancel or a query timeout, and with `630`
-for the session's `STATEMENT_TIMEOUT_IN_SECONDS` (`Statement reached its statement or warehouse timeout of 1
-second(s) and was canceled.`).
+otherwise: the pair the account's driver reports for the failure's family — `42S02` with `2003` for a missing table,
+`02000` with `2003` for a missing schema, `42000` with `1003` for a syntax error, `22012` with `100051` for a
+division by zero, `P0001` with the declared code for an exception a script raised — and a canceled statement's
+`57014`, with `604` for a cancel or a query timeout and with `630` for the session's `STATEMENT_TIMEOUT_IN_SECONDS`
+(`Statement reached its statement or warehouse timeout of 1 second(s) and was canceled.`).
 
 A `sql` that holds no statement — empty, blank, a lone `;` or only comments — is a statement like any other and
 fails as the account fails it: 200 with `success: false` and `SQL compilation error:` / `Empty SQL statement.`, in a session.
@@ -318,6 +320,18 @@ Frostlake's JDBC driver reads a column label the way the account's driver does: 
 `getInt("x")` over a column named `X` is `Column not found: x`. Once an answer reports the parameter, a label names
 the first column it matches ignoring case for the rest of the connection; a later `FALSE` or `UNSET` leaves it so, as
 it leaves the account's driver.
+
+### The session's time zone
+
+Every `/api/execute` answer carries `timezone`: the zone the session's `TIMEZONE` names once the request has run, its
+own or the one it inherits from its user or the account, as `"America/Los_Angeles"`.
+
+Frostlake's JDBC driver reads temporal cells the way the account's driver does, and some of those reads need that
+zone. A TIMESTAMP_LTZ or TIMESTAMP_TZ cell is read by `getTimestamp`, `getDate`, `getTime` and `getObject` as the
+moment it names, printed at the wall clock of the session's zone or of the value's own offset. A TIMESTAMP_NTZ cell
+read by `getTime` is its wall clock in the session's zone. A DATE read by `getObject` is the session's midnight, and
+read with a Calendar it is the session's midnight shifted by the Calendar's offset. A client that reads none of these
+can ignore the field.
 
 ### `GET /api/sessions`
 

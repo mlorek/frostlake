@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 
@@ -54,7 +55,7 @@ final class SampleClauseRule {
         // The seed is judged before the size.
         final FrostlakeParser.SampleSeedContext seed = sample.sampleSeed();
         if (seed != null && (seed.INTEGER_LITERAL() == null
-                || new BigDecimal(seed.INTEGER_LITERAL().getText()).compareTo(MOST_SEED) > 0)) {
+                || DecimalText.parse(seed.INTEGER_LITERAL().getText()).compareTo(MOST_SEED) > 0)) {
             throw outOfRange("seed. Must be between 0 and 2,147,483,647.");
         }
         final boolean rows = sample.ROWS() != null;
@@ -64,7 +65,7 @@ final class SampleClauseRule {
         }
         final String size = sample.INTEGER_LITERAL() != null ? sample.INTEGER_LITERAL().getText()
             : sample.FLOAT_LITERAL() != null ? sample.FLOAT_LITERAL().getText() : null;
-        if (size != null && new BigDecimal(size).compareTo(rows ? MOST_ROWS : MOST_PERCENT) > 0) {
+        if (size != null && DecimalText.parse(size).compareTo(rows ? MOST_ROWS : MOST_PERCENT) > 0) {
             throw outOfRange(rows ? "size of fixed sample. Must be between 0 and 1,000,000."
                 : "sample percentage. Must be between 0 and 100.");
         }

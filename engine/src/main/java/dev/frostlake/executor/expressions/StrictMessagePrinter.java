@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.SessionNullOrdering;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StarArgument;
 import dev.frostlake.executor.SubqueryCompilation;
@@ -28,6 +29,8 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
+import dev.frostlake.types.GeoTypes;
 import dev.frostlake.types.IntervalDayTimeType;
 import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
@@ -98,6 +101,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     private final StrictPrintMode mode;
     /** Whether a routine parameter's default is told back — see {@link #tellingDefault()}. */
     private boolean tellingDefault;
+    /** Whether the default told back is a column's — see {@link #tellingColumnDefault()}. */
+    private boolean tellingColumnDefault;
     /** Whether a column prints as written, unresolved — see {@link #columnsAsWritten()}. */
     private boolean columnsAsWritten;
     /** Whether what the plan folds early prints as its value — see {@link #foldingConstants()}. */
@@ -137,6 +142,20 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      */
     StrictMessagePrinter tellingDefault() {
         this.tellingDefault = true;
+        return this;
+    }
+
+    /**
+     * Prints as a column's default is told back: as a routine parameter's (see {@link #tellingDefault()}), except
+     * that an arithmetic operation written in parentheses keeps them alone, uncast: {@code 1 * (2 + 3)},
+     * {@code (10 * 5) + (20 - 5)}, a doubled NOT is kept, {@code NOT(NOT(TRUE))}, and a NOT LIKE is the NOT of the
+     * LIKE, {@code NOT('a' LIKE 'b')} (live-verified).
+     *
+     * @return this printer
+     */
+    StrictMessagePrinter tellingColumnDefault() {
+        this.tellingDefault = true;
+        this.tellingColumnDefault = true;
         return this;
     }
 
@@ -610,6 +629,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         final BinaryOperator operator = expr.getOperator();
         final Expression left = expr.getLeft();
         final Expression right = expr.getRight();
+        if (tellingColumnDefault && (operator == BinaryOperator.NOT_LIKE || operator == BinaryOperator.NOT_ILIKE)) {
+            return "NOT(" + new BinaryOperationExpression(left,
+                operator == BinaryOperator.NOT_LIKE ? BinaryOperator.LIKE : BinaryOperator.ILIKE, right,
+                expr.getEscape()).accept(this) + ")";
+        }
         final DataType leftType = argumentType(left);
         final DataType rightType = argumentType(right);
         final String typedNulls = planShaped() || conversionShaped()
@@ -775,7 +799,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             return null;
         }
         try {
-            return new BigDecimal(part.getWrittenAmount().trim());
+            return DecimalText.parse(part.getWrittenAmount().trim());
         } catch (final NumberFormatException notANumber) {
             return null;
         }
@@ -898,7 +922,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 || convertedCallType(expression) != null) {
             return "(" + expression.accept(this) + ")";
         }
-        if (tellingDefault && expression instanceof BinaryOperationExpression
+        if (tellingDefault && !tellingColumnDefault && expression instanceof BinaryOperationExpression
                 && ((BinaryOperationExpression) expression).isWrittenInParentheses()
                 && isArithmetic(((BinaryOperationExpression) expression).getOperator())) {
             final String type = typeText(expression);
@@ -1338,7 +1362,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             }
             case NOT: {
                 final Expression operand = expr.getOperand();
-                if (planShaped() && operand instanceof UnaryOperationExpression
+                if (planShaped() && !tellingColumnDefault && operand instanceof UnaryOperationExpression
                         && ((UnaryOperationExpression) operand).getOperator() == UnaryOperator.NOT) {
                     return ((UnaryOperationExpression) operand).getOperand().accept(this);
                 }
@@ -1533,7 +1557,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             text.append(i == 0 ? (partition.isEmpty() ? "ORDER BY " : " ORDER BY ") : ", ")
                 .append(order.get(i).accept(this))
                 .append(ascending ? " ASC NULLS " : " DESC NULLS ")
-                .append((nullsFirst != null ? nullsFirst.booleanValue() : !ascending) ? "FIRST" : "LAST");
+                .append(SessionNullOrdering.nullsFirst(ascending, nullsFirst) ? "FIRST" : "LAST");
         }
         return text.append(')').toString();
     }
@@ -1958,6 +1982,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (mode == StrictPrintMode.WRITTEN) {
             return super.visitCast(expr);
         }
+        if (!expr.isTryMode() && isUntypedNull(expr.getExpression()) && GeoTypes.isGeo(expr.getTargetDataType())) {
+            // A NULL cast to a geospatial type is the user type over the NULL: CAST(UNDERLYING_TO_UDT(NULL) AS
+            // VARCHAR(134217728)) for a NULL cast to GEOMETRY, then to VARCHAR (live-verified).
+            return "UNDERLYING_TO_UDT(NULL)";
+        }
         if (foldingConversions && !expr.isTryMode()) {
             final String date = foldedDateLiteral(expr);
             if (date != null) {
@@ -1978,7 +2007,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             // A column default's echo spells a cast to FLOAT as the conversion: (TO_DOUBLE(0.5)) (live-verified).
             return "TO_DOUBLE(" + source.accept(this) + ")";
         }
-        final String target = typeText(expr);
+        // The plan converts a BOOLEAN to an exact number through NUMBER(2,0), and names that step whatever number the
+        // cast declares: id + CAST(b AS INT) is [FZ.ID + (CAST(FZ.B AS NUMBER(2,0)))] (live-verified).
+        final String target = argumentType(source) instanceof BooleanType && isExactNumber(targetType)
+            && !NumericType.isDecfloat(targetType) ? "NUMBER(2,0)" : typeText(expr);
         final String targetText = tellingDefault && targetType instanceof StringType && expr.getTargetType() != null
             && expr.getTargetType().indexOf('(') < 0 ? "VARCHAR" : target != null ? target : expr.getTargetType();
         if (conversionShaped()) {
@@ -4167,6 +4199,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      *   APPROX_COUNT_DISTINCT(x)  HLL_ACCUMULATE(x)                   one argument only
      *   REGR_COUNT(n, f)          COUNT(IFF(T.N IS NULL, SYSTEM$NULL_TO_REAL(null), T.F))
      *   REGR_AVGX(n, f)           (SUM(IFF(…))) / (CAST(COUNT(IFF(…)) AS FLOAT))       the same pairs
+     *   REGR_COUNT(f, n)          COUNT(CAST(IFF(T.F IS NULL, SYSTEM$NULL_TO_FIXED(null), T.N) AS FLOAT))
+     *   REGR_AVGY(n, f)           as REGR_AVGX over the pair of the dependent value, IFF(T.F IS NULL, …, T.N)
+     *   REGR_SXX(n, f)            (SUM(SQUARE(P))) - ((SQUARE(SUM(P))) / (CAST(COUNT(P) AS FLOAT)))
      * </pre>
      *
      * <p>What takes NO cast is measured too: ARRAY_AGG, HASH_AGG, MAX, MIN, COUNT, ANY_VALUE, MODE and
@@ -4271,8 +4306,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                     + (number.getPrecision() - number.getScale()) + ",0)))";
             }
             case "COUNT_IF":
+                // The sum casts its condition whole, a doubled NOT kept: SUM(IFF(CAST(NOT(NOT(T.B)) AS BOOLEAN), 1,
+                // 0)), where a plan-shaped echo folds one elsewhere (live-verified).
                 return args.size() == 1 && !expr.isDistinct() && logical
-                    ? "SUM(IFF(CAST(" + printed + " AS BOOLEAN), 1, 0))" : null;
+                    ? "SUM(IFF(CAST(" + notsKept(first) + " AS BOOLEAN), 1, 0))" : null;
             case "BOOLOR_AGG":
             case "BOOLAND_AGG":
             case "BOOLXOR_AGG": {
@@ -4305,21 +4342,50 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 return args.size() == 1 && type instanceof VariantType
                     ? name + "(CAST(" + printed + " AS ARRAY))" : null;
             case "REGR_COUNT":
-            case "REGR_AVGX": {
-                // A regression aggregate reads the pairs whose values are both there: the independent value,
-                // with the dependent one's IS NULL guarding it. Measured over a FLOAT independent value only.
-                if (args.size() != 2 || expr.isDistinct() || !(argumentType(args.get(1)) instanceof NumericType)
-                        || !NumericType.isApproximate(argumentType(args.get(1)))) {
+            case "REGR_AVGX":
+            case "REGR_AVGY":
+            case "REGR_SXX": {
+                // A regression aggregate reads the pairs whose values are both there: the value it sums, the other
+                // one's IS NULL guarding it - the independent value, but the dependent one for REGR_AVGY. A FLOAT
+                // value's NULL is a REAL one; an exact value's is a FIXED one, and the pair is cast to FLOAT.
+                if (args.size() != 2 || expr.isDistinct()) {
                     return null;
                 }
-                final String pair = "IFF(" + operand(first) + " IS NULL, SYSTEM$NULL_TO_REAL(null), "
-                    + args.get(1).accept(this) + ")";
-                return name.equals("REGR_COUNT") ? "COUNT(" + pair + ")"
-                    : "(SUM(" + pair + ")) / (CAST(COUNT(" + pair + ") AS FLOAT))";
+                final boolean dependent = name.equals("REGR_AVGY");
+                final Expression value = dependent ? first : args.get(1);
+                final Expression other = dependent ? args.get(1) : first;
+                final DataType valueType = argumentType(value);
+                if (!(valueType instanceof NumericType)) {
+                    return null;
+                }
+                final boolean approximate = NumericType.isApproximate(valueType);
+                final String guarded = "IFF(" + operand(other) + " IS NULL, SYSTEM$NULL_TO_"
+                    + (approximate ? "REAL" : "FIXED") + "(null), " + value.accept(this) + ")";
+                final String pair = approximate ? guarded : "CAST(" + guarded + " AS FLOAT)";
+                if (name.equals("REGR_COUNT")) {
+                    return "COUNT(" + pair + ")";
+                }
+                if (name.equals("REGR_SXX")) {
+                    return "(SUM(SQUARE(" + pair + "))) - ((SQUARE(SUM(" + pair + "))) / (CAST(COUNT(" + pair
+                        + ") AS FLOAT)))";
+                }
+                return "(SUM(" + pair + ")) / (CAST(COUNT(" + pair + ") AS FLOAT))";
             }
             default:
                 return null;
         }
+    }
+
+    /** A condition printed with every doubled NOT kept: {@code NOT NOT b} is {@code NOT(NOT(T.B))}. */
+    private String notsKept(final Expression condition) {
+        if (condition instanceof UnaryOperationExpression
+                && ((UnaryOperationExpression) condition).getOperator() == UnaryOperator.NOT
+                && ((UnaryOperationExpression) condition).getOperand() instanceof UnaryOperationExpression
+                && ((UnaryOperationExpression) ((UnaryOperationExpression) condition).getOperand()).getOperator()
+                    == UnaryOperator.NOT) {
+            return "NOT(" + notsKept(((UnaryOperationExpression) condition).getOperand()) + ")";
+        }
+        return condition.accept(this);
     }
 
     /** The exclusive-or of a column of truth values as the plan computes it: exactly one of them true. */
@@ -4618,7 +4684,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
 
     /** A number literal as the FLOAT it folds to: 9 as {@code 9.0}, 2.5 as {@code 2.5}. */
     private static String floatLiteral(final LiteralExpression literal) {
-        final BigDecimal value = new BigDecimal(String.valueOf(literal.getValue())).stripTrailingZeros();
+        final BigDecimal value = DecimalText.parse(String.valueOf(literal.getValue())).stripTrailingZeros();
         return value.scale() <= 0 ? value.toBigInteger() + ".0" : value.toPlainString();
     }
 

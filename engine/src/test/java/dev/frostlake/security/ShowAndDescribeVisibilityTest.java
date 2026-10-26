@@ -44,7 +44,8 @@ public class ShowAndDescribeVisibilityTest {
         engine.execute("CREATE DATABASE p");
         engine.execute("USE SCHEMA p.PUBLIC");
         engine.execute("CREATE ROLE reader_role");
-        engine.execute("CREATE USER reader");
+        // The user puts no secondary role in use, so a refusal names the primary role alone.
+        engine.execute("CREATE USER reader DEFAULT_SECONDARY_ROLES = ()");
         engine.execute("GRANT ROLE reader_role TO USER reader");
         engine.execute("GRANT USAGE ON DATABASE p TO ROLE reader_role");
         engine.execute("GRANT USAGE ON SCHEMA p.PUBLIC TO ROLE reader_role");

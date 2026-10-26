@@ -29,6 +29,7 @@ public class SqlSyntaxException extends RuntimeException {
     private final String failedSql;
     private boolean declareSectionEnd;
     private UnknownTypeReading unknownTypes;
+    private WholeStatementReading wholeStatement;
 
     public SqlSyntaxException(final String message, final List<String> syntaxErrors, final String failedSql) {
         super(message);
@@ -72,6 +73,35 @@ public class SqlSyntaxException extends RuntimeException {
     /** Records the reading a refusal for a word that names no type was made from. */
     void setUnknownTypes(final UnknownTypeReading reading) {
         unknownTypes = reading;
+    }
+
+    /**
+     * The statement of a request of several that the account reads whole where this grammar refused only that
+     * statement: the request then runs the statements before it and fails at it (see {@link WholeStatementReading}).
+     *
+     * @return the reading, or null for any other refusal
+     */
+    public WholeStatementReading getWholeStatement() {
+        return wholeStatement;
+    }
+
+    /** Records the statement the account reads whole. */
+    void setWholeStatement(final WholeStatementReading reading) {
+        wholeStatement = reading;
+    }
+
+    /**
+     * The same refusal told of another text: the one a reading of this refusal's text stands for, every place the
+     * same in both.
+     *
+     * @param text the text the refusal is told of
+     * @return the refusal
+     */
+    public SqlSyntaxException ofText(final String text) {
+        final SqlSyntaxException told = new SqlSyntaxException(getMessage(), syntaxErrors, text);
+        told.declareSectionEnd = declareSectionEnd;
+        told.unknownTypes = unknownTypes;
+        return told;
     }
 
     @Override

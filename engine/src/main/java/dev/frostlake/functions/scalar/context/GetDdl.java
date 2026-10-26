@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.executor.DefinitionCompile;
+import dev.frostlake.executor.GetDdlMissingObject;
 import dev.frostlake.executor.GrantedObject;
 import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.ParseTreeText;
@@ -32,6 +33,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TagAssignment;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
@@ -228,10 +230,21 @@ public class GetDdl extends BuiltInFunction {
             case "SCHEMA": {
                 final Schema schema =
                     catalog.resolveSchema(QualifiedName.of(SqlIdentifiers.canonicalTextParts(written)));
+                final String recorded = QualifiedName.join(schema.getDatabaseName(), schema.getName());
+                if (ownership != null && !SystemDatabase.is(schema.getDatabaseName())
+                        && !ownership.sees("SCHEMA", recorded, schema.getOwner())) {
+                    // One the session does not see is answered as one that does not exist.
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", recorded));
+                }
                 return lookupOnly ? null : containers.schema(schema, names);
             }
             case "DATABASE": {
                 final Database database = databaseNamed(written);
+                if (ownership != null && !SystemDatabase.is(database.getName())
+                        && !ownership.sees("DATABASE", database.getName(), database.getOwner())) {
+                    // One the session does not see is answered as one that does not exist.
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Database", database.getName()));
+                }
                 return lookupOnly ? null : containers.database(database, names);
             }
             case "TABLE":
@@ -268,8 +281,11 @@ public class GetDdl extends BuiltInFunction {
             case "STAGE":
                 return memberDdl(objectType, typeText, written, names);
             case "WAREHOUSE":
-                // A warehouse is looked up before anything else is said about it.
-                if (!catalog.hasWarehouseExact(SqlIdentifiers.canonicalTextParts(written)[0])) {
+                // A warehouse is looked up before anything else is said about it, and one the session does not see
+                // is not there for it.
+                final String warehouse = SqlIdentifiers.canonicalTextParts(written)[0];
+                if (!catalog.hasWarehouseExact(warehouse) || ownership != null
+                        && !ownership.sees("WAREHOUSE", warehouse, catalog.getWarehouseExact(warehouse).getOwner())) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse",
                         SqlIdentifiers.canonicalTextParts(written)[0]));
                 }
@@ -330,14 +346,14 @@ public class GetDdl extends BuiltInFunction {
     /**
      * The refusal for a missing object: {@code Kind 'NAME' does not exist or not authorized.} and the privilege
      * hint. A bare name is echoed as resolved, a qualified one completed to three parts; {@code alwaysQualified}
-     * completes a bare one too.
+     * completes a bare one too. It carries GET_DDL's own code and state (see {@link GetDdlMissingObject}).
      */
     private static RuntimeException missing(final String[] parts, final Schema owner, final String kind,
                                             final boolean alwaysQualified) {
         final String name = parts[parts.length - 1];
         final String echoed = parts.length == 1 && !alwaysQualified ? QualifiedName.join(name)
             : QualifiedName.join(owner.getDatabaseName(), owner.getName(), name);
-        return new RuntimeException(SqlCompilationError.doesNotExist(kind, echoed));
+        return new GetDdlMissingObject(SqlCompilationError.doesNotExist(kind, echoed));
     }
 
     /** Whether a catalog lookup found the object of exactly this name, rather than one that differs by case. */
@@ -488,7 +504,7 @@ public class GetDdl extends BuiltInFunction {
             }
             case "STREAMLIT":
                 for (final AppObject app : owner.getAppObjects().all(AppObjectKind.STREAMLIT)) {
-                    if (named(app.getName(), name)) {
+                    if (named(app.getName(), name) && sees("STREAMLIT", owner, name, app.getOwner())) {
                         return ObjectDdl.streamlit(app, names.object(owner, name));
                     }
                 }
@@ -893,6 +909,10 @@ public class GetDdl extends BuiltInFunction {
         final StringBuilder c = new StringBuilder();
         c.append(SqlIdentifiers.spellCanonicalEscaped(col.getName())).append(" ")
          .append(formatNames ? IcebergTypes.ddlName(col.getFormatType()) : renderType(col.getDataType()));
+        if (col.isVirtual()) {
+            // A virtual column's expression follows its type, as the plan prints it (live-verified).
+            c.append(" AS (").append(col.getVirtualText()).append(')');
+        }
         if (col.getCollation() != null && !col.getCollation().isEmpty()) {
             c.append(" COLLATE '").append(col.getCollation()).append("'");
         }
@@ -972,7 +992,8 @@ public class GetDdl extends BuiltInFunction {
     /**
      * Live Snowflake's GET_DDL always renders a view's parenthesized output column list, one
      * tab-indented column per line with its COMMENT: {@code create or replace view V(\n\tA,\n\tB\n) as SELECT ...;},
-     * then its row access policy, its tags and its own COMMENT, each after a space on a line of its own. Columns come
+     * then its aggregation policy, its row access policy, its join policy, its tags and its own COMMENT, each after a
+     * space on a line of its own. Columns come
      * from the explicit column list when declared, otherwise from planning the defining query; if neither is
      * available the list is omitted.
      */
@@ -994,12 +1015,21 @@ public class GetDdl extends BuiltInFunction {
         for (int i = 0; i < columns.size(); i++) {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i)))
               .append(columnPolicies(view.getResolvedColumns(), columns.get(i)))
+              .append(columnTags(view.getResolvedColumns(), columns.get(i), schema))
               .append(columnComment(view.getResolvedColumns(), columns.get(i)));
         }
         sb.append("\n)");
+        if (view.hasAggregationPolicy()) {
+            sb.append(" WITH AGGREGATION POLICY ").append(view.getAggregationPolicyName())
+              .append(view.getAggregationEntityKey().isEmpty() ? ""
+                  : " ENTITY KEY (" + String.join(", ", view.getAggregationEntityKey()) + ")").append('\n');
+        }
         if (view.hasRowAccessPolicy()) {
             sb.append(' ').append(rowAccessPolicy(view.getRowAccessPolicyName(), view.getRowAccessPolicyColumns(),
                 columns, schema)).append('\n');
+        }
+        if (view.hasJoinPolicy()) {
+            sb.append(" WITH JOIN POLICY ").append(view.getJoinPolicyName()).append('\n');
         }
         final String viewTags = tagAssignments(view, schema);
         if (!viewTags.isEmpty()) {
@@ -1038,6 +1068,19 @@ public class GetDdl extends BuiltInFunction {
                 }
             }
             return clauses.toString();
+        }
+        return "";
+    }
+
+    /** {@code  WITH TAG (DB.S.T='v')} for a view's column that carries tags, as a table's column does; else nothing. */
+    private String columnTags(final List<TableColumn> resolved, final String column, final Schema schema) {
+        if (resolved != null) {
+            for (final TableColumn candidate : resolved) {
+                if (candidate.getName().equals(column)) {
+                    final String tags = tagAssignments(candidate, schema);
+                    return tags.isEmpty() ? "" : " WITH TAG (" + tags + ")";
+                }
+            }
         }
         return "";
     }

@@ -30,6 +30,7 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Volatility;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -134,7 +135,7 @@ final class HandlerCallEcho implements CallEcho {
         if (argument instanceof LiteralExpression && parameter != null && NumericType.isApproximate(parameter)) {
             final Object value = ((LiteralExpression) argument).getValue();
             if (value instanceof Number && !(value instanceof Double) && !(value instanceof Float)) {
-                final BigDecimal number = new BigDecimal(value.toString());
+                final BigDecimal number = DecimalText.parse(value.toString());
                 if (number.scale() <= 0) {
                     return number.toBigInteger() + ".0";
                 }
@@ -250,7 +251,7 @@ final class HandlerCallEcho implements CallEcho {
             if (!(value instanceof Number) || value instanceof Double || value instanceof Float) {
                 return null;
             }
-            final BigDecimal number = new BigDecimal(value.toString());
+            final BigDecimal number = DecimalText.parse(value.toString());
             return number.scale() <= 0 ? number.toBigInteger() : null;
         }
         if (expr instanceof UnaryOperationExpression) {

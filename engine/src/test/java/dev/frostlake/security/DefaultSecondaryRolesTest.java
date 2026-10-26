@@ -27,8 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A session of a user starts with the secondary roles its DEFAULT_SECONDARY_ROLES names: ('ALL') puts every role
- * granted to the user in use, () none (documented). A user that sets none leaves the session's secondary roles as
- * they are. Engine only: the live account allows no CREATE USER or CREATE ROLE.
+ * granted to the user in use, () none (documented). A user no statement wrote it for has the default, ALL, so a
+ * privilege of another role granted to the user answers its query. A name no user has leaves the session's secondary
+ * roles as they are. Engine only: the live account allows no CREATE USER or CREATE ROLE.
  */
 public class DefaultSecondaryRolesTest {
 
@@ -62,11 +63,30 @@ public class DefaultSecondaryRolesTest {
     }
 
     @Test
-    public void aUserWithoutDefaultsLeavesTheSecondaryRolesAsTheyAre() {
-        engine.execute("USE SECONDARY ROLES ALL");
+    public void aUserWithoutDefaultsStartsWithAll() {
+        engine.execute("USE SECONDARY ROLES NONE");
         engine.setCurrentUser("DSR_UNSET");
         assertTrue(secondaryRoles().contains("\"value\":\"ALL\""), secondaryRoles());
+        engine.execute("USE SECONDARY ROLES NONE");
         engine.setCurrentUser("NOSUCH_DSR_USER");
-        assertTrue(secondaryRoles().contains("\"value\":\"ALL\""), secondaryRoles());
+        assertEquals("{\"roles\":\"\",\"value\":\"\"}", secondaryRoles());
+    }
+
+    @Test
+    public void anotherGrantedRolesPrivilegeAnswersUnderTheDefault() {
+        for (final String sql : new String[] {
+            "CREATE DATABASE dsr", "CREATE TABLE dsr.public.t (a INT)", "INSERT INTO dsr.public.t VALUES (1), (2)",
+            "CREATE ROLE dsr_r2", "GRANT USAGE ON DATABASE dsr TO ROLE dsr_r2",
+            "GRANT USAGE ON SCHEMA dsr.public TO ROLE dsr_r2", "GRANT SELECT ON TABLE dsr.public.t TO ROLE dsr_r2",
+            "GRANT ROLE dsr_r1 TO USER dsr_unset", "GRANT ROLE dsr_r2 TO USER dsr_unset",
+        }) {
+            engine.execute(sql);
+        }
+        engine.getSessionContext().clearActiveRoles();
+        engine.setCurrentUser("DSR_UNSET");
+        engine.setCurrentRole("dsr_r1");
+        assertEquals("{\"roles\":\"DSR_R2\",\"value\":\"ALL\"}", secondaryRoles());
+        assertEquals("2", String.valueOf(engine.executeQuery("SELECT COUNT(*) FROM dsr.public.t").getRows().get(0)
+            .getValue(0)));
     }
 }

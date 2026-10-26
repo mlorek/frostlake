@@ -18,10 +18,10 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DecimalText;
 
 import tools.jackson.databind.node.ArrayNode;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -159,13 +159,22 @@ public class MaxByMinByAccumulator implements AggregateFunction.Accumulator {
 
     /**
      * Numeric-aware comparison of two non-NULL keys: two numbers compare by value (via BigDecimal, tolerating
-     * mixed runtime numeric types), two same-typed Comparables compare naturally, otherwise their textual
-     * forms are compared. Mirrors {@code ValueComparisons.compareValues} without coupling to the executor.
+     * mixed runtime numeric types), NaN above every number and the infinities at the ends (live-verified), two
+     * same-typed Comparables compare naturally, otherwise their textual forms are compared. Mirrors
+     * {@code ValueComparisons.compareValues} without coupling to the executor.
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static int compareKeys(final Object a, final Object b) {
         if (a instanceof Number && b instanceof Number) {
-            return new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString()));
+            final boolean aNaN = a instanceof Double && ((Double) a).isNaN();
+            final boolean bNaN = b instanceof Double && ((Double) b).isNaN();
+            if (aNaN || bNaN) {
+                return aNaN == bNaN ? 0 : aNaN ? 1 : -1;
+            }
+            if (a instanceof Double && ((Double) a).isInfinite() || b instanceof Double && ((Double) b).isInfinite()) {
+                return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
+            }
+            return DecimalText.parse(a.toString()).compareTo(DecimalText.parse(b.toString()));
         }
         if (a instanceof Comparable && b instanceof Comparable && a.getClass() == b.getClass()) {
             return ((Comparable) a).compareTo(b);

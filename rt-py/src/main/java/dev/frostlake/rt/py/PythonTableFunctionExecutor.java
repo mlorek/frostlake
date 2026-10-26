@@ -50,16 +50,18 @@ public final class PythonTableFunctionExecutor {
     /** The name of the module {@link #ROWS} is made into on a CPython worker. */
     private static final String ROWS_MODULE = "__frostlake_rows";
 
+    /** The name of the module {@link #SHAPE} is made into on GraalPy. */
+    private static final String SHAPE_MODULE = "__frostlake_shape";
+
     /**
-     * Shapes what a handler call answered into rows on the CPython worker, as {@link #collectRows} reads them on
-     * GraalPy: a str is one value, any other iterable one row per element, anything else a single row; an item that
-     * is a tuple or a list is the row's cells, padded or trimmed to the declared width. Each cell is reported as
-     * {@code [outcome, text, value]}: {@code absent} for padding, {@link PythonReturn#CONVERT}'s pair for a declared
-     * column, and {@code pass} with the value itself for a column that takes it as the runtime holds it.
+     * Shapes what a handler call answered into rows of cells, the same on both backends ({@code raw}): None is no row,
+     * a str, a bytes or a bytearray is one value and anything else that is not iterable one row, and any other
+     * iterable one row per element; an item that is a tuple or a list is the row's cells, any other item the row's one
+     * cell. A None item ends the call's rows: {@code return None}, {@code [None]} or {@code []} skips the input row,
+     * and with {@code yield} the rows yielded after a None are ignored (Snowflake's UDTF documentation).
      */
-    private static final String ROWS = """
-        import __frostlake_returns as _returns
-        def rows(result, kinds, scales, width):
+    private static final String SHAPE = """
+        def raw(result):
             if result is None:
                 return []
             if isinstance(result, (str, bytes, bytearray)) or not hasattr(result, '__iter__'):
@@ -68,7 +70,23 @@ public final class PythonTableFunctionExecutor {
                 items = list(result)
             shaped = []
             for item in items:
-                cells = list(item) if isinstance(item, (list, tuple)) else [item]
+                if item is None:
+                    break
+                shaped.append(list(item) if isinstance(item, (list, tuple)) else [item])
+            return shaped
+        """;
+
+    /**
+     * {@link #SHAPE} on the CPython worker, each row padded or trimmed to the declared width and each cell reported as
+     * {@code [outcome, text, value]}: {@code absent} for padding, {@link PythonReturn#CONVERT}'s pair for a declared
+     * column, and {@code pass} with the value itself for a column that takes it as the runtime holds it. GraalPy reads
+     * the shaped cells as polyglot values instead (see {@link #rowsOf}).
+     */
+    private static final String ROWS = SHAPE + """
+        import __frostlake_returns as _returns
+        def rows(result, kinds, scales, width):
+            shaped = []
+            for cells in raw(result):
                 row = []
                 for i in range(width):
                     if i >= len(cells):
@@ -196,15 +214,26 @@ public final class PythonTableFunctionExecutor {
     }
 
     /**
-     * The rows a handler call left in a global, on whichever backend runs. GraalPy's are read as polyglot values
-     * ({@link #collectRows}); the CPython worker shapes them itself ({@link #ROWS}), each declared cell converted by
-     * {@link PythonReturn#CONVERT} on its side and built into its SQL value here.
+     * The rows a handler call left in a global, on whichever backend runs, shaped by {@link #ROWS}. GraalPy's cells
+     * are read as polyglot values, each padded or trimmed to the declared width and converted here; the CPython
+     * worker converts each declared cell by {@link PythonReturn#CONVERT} on its side, built into its SQL value here.
      */
     private static List<Row> rowsOf(final String global, final Function function,
                                     final List<ResultSetColumn> columns, final boolean declared) {
         final List<Row> rows = new ArrayList<>();
         if (PythonInterpreter.holdsPolyglotValues()) {
-            collectRows(PythonRuntime.global(global), function, columns, declared, rows);
+            PythonInterpreter.bind("__fl_shape_module", PythonRuntime.module(SHAPE_MODULE, SHAPE));
+            PythonInterpreter.eval("__fl_raw_rows = __fl_shape_module.raw(" + global + ")\n");
+            final Value raw = PythonRuntime.global("__fl_raw_rows");
+            for (long r = 0; raw != null && r < raw.getArraySize(); r++) {
+                final Value cells = raw.getArrayElement(r);
+                final List<Object> values = new ArrayList<>(columns.size());
+                for (int i = 0; i < columns.size(); i++) {
+                    values.add(i < cells.getArraySize()
+                        ? cellValue(cells.getArrayElement(i), function, declared ? columns.get(i) : null) : null);
+                }
+                rows.add(new Row(values));
+            }
             return rows;
         }
         final StringBuilder kinds = new StringBuilder("[");
@@ -243,57 +272,11 @@ public final class PythonTableFunctionExecutor {
     }
 
     /**
-     * Append the rows a handler call produced. A generator or any iterable yields one row per element;
-     * anything else is a single row. A row is a tuple/list of column values, or a bare scalar for a
-     * single-column output.
+     * One value a handler wrote, as its declared column holds it, or as the runtime holds it for no column. A
+     * declared column holds its value as its type does, converted as Python converts and judged as the account judges
+     * it (live-verified, see {@link PythonReturn}): a NUMBER(10,2) column holds {@code Decimal('1.255')} as 1.26 and a
+     * VARCHAR one {@code str()} of what it is given.
      */
-    private static void collectRows(final Value result, final Function function,
-                                    final List<ResultSetColumn> columns, final boolean declared,
-                                    final List<Row> outputRows) {
-        if (result == null || result.isNull()) {
-            return;
-        }
-        // A str is iterable in Python but represents ONE value, so it must not be exploded per character.
-        if (!result.isString() && (result.hasIterator() || result.hasArrayElements())) {
-            final Value iterator = result.hasIterator() ? result.getIterator() : result;
-            if (result.hasIterator()) {
-                while (iterator.hasIteratorNextElement()) {
-                    outputRows.add(tupleToRow(iterator.getIteratorNextElement(), function, columns, declared));
-                }
-                return;
-            }
-            for (long i = 0; i < result.getArraySize(); i++) {
-                outputRows.add(tupleToRow(result.getArrayElement(i), function, columns, declared));
-            }
-            return;
-        }
-        outputRows.add(tupleToRow(result, function, columns, declared));
-    }
-
-    /**
-     * One yielded item as a Row, padded or trimmed to the declared column count. A declared column holds its value
-     * as its type does, converted as Python converts and judged as the account judges it (live-verified, see
-     * {@link PythonReturn}): a NUMBER(10,2) column holds {@code Decimal('1.255')} as 1.26 and a VARCHAR one
-     * {@code str()} of what it is given.
-     */
-    private static Row tupleToRow(final Value item, final Function function, final List<ResultSetColumn> columns,
-                                  final boolean declared) {
-        final List<Value> cells = new ArrayList<>();
-        if (item != null && !item.isNull() && !item.isString() && item.hasArrayElements()) {
-            for (long i = 0; i < item.getArraySize(); i++) {
-                cells.add(item.getArrayElement(i));
-            }
-        } else {
-            cells.add(item);
-        }
-        final List<Object> values = new ArrayList<>(columns.size());
-        for (int i = 0; i < columns.size(); i++) {
-            values.add(i < cells.size() ? cellValue(cells.get(i), function, declared ? columns.get(i) : null) : null);
-        }
-        return new Row(values);
-    }
-
-    /** One value a handler wrote, as its declared column holds it, or as the runtime holds it for no column. */
     private static Object cellValue(final Value cell, final Function function, final ResultSetColumn column) {
         if (column != null) {
             final Object held = PythonReturn.declared(cell, column.getDataType(), function.getName(),

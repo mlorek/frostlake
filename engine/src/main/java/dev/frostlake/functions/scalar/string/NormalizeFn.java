@@ -17,9 +17,9 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -79,7 +79,7 @@ public class NormalizeFn extends TextArgumentFunction {
             final LocalDateTime ts = (LocalDateTime) value;
             return ts.toEpochSecond(ZoneOffset.UTC) + ts.getNano() / 1_000_000_000.0;
         }
-        return new BigDecimal(value.toString()).doubleValue();
+        return DecimalText.parse(value.toString()).doubleValue();
     }
 
     /**

@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.DecimalOriginNode;
 import tools.jackson.databind.JsonNode;
@@ -48,7 +49,7 @@ public class AsInteger extends BuiltInFunction {
         }
         final Object v = args.get(0);
         if (v instanceof Number) {
-            final BigDecimal dec = new BigDecimal(v.toString()).stripTrailingZeros();
+            final BigDecimal dec = DecimalText.parse(v.toString()).stripTrailingZeros();
             return dec.scale() <= 0 ? (Object) dec.longValue() : null;
         }
         return null;

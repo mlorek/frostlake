@@ -21,6 +21,7 @@ import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -155,7 +156,7 @@ final class OrdinalLiteral {
         } else if (value instanceof Long || value instanceof Integer) {
             exact = BigDecimal.valueOf(((Number) value).longValue());
         } else if (value instanceof Double) {
-            exact = new BigDecimal(value.toString());
+            exact = DecimalText.parse(value.toString());
         } else {
             return null;
         }

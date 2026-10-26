@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.Decfloats;
@@ -165,7 +166,7 @@ public final class UsingBindText {
                 || declared instanceof NumericType && NumericType.isApproximate(declared)) {
             return floatText(value.doubleValue());
         }
-        final BigDecimal exact = value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(value.toString());
+        final BigDecimal exact = value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(value.toString());
         if (declared instanceof NumericType && ((NumericType) declared).getScale() >= exact.scale()) {
             return exact.setScale(((NumericType) declared).getScale()).toPlainString();
         }

@@ -16,8 +16,6 @@
 
 package dev.frostlake.types;
 
-import java.math.BigDecimal;
-
 public class NumericType extends DataType {
 
     private final int precision;
@@ -42,7 +40,7 @@ public class NumericType extends DataType {
         if (value == null || value.equalsIgnoreCase("NULL")) {
             return null;
         }
-        return new BigDecimal(value);
+        return DecimalText.parse(value);
     }
 
     @Override

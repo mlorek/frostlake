@@ -49,6 +49,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.IcebergTypes;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericLiteralTypes;
@@ -157,20 +158,21 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     private void rejectComputedDefaultOnAddColumn(
             final FrostlakeParser.DefaultExpressionContext defaultExpression) {
-        if (defaultExpression == null || defaultExpression.expression() == null
-                || negatedLiteral(defaultExpression.expression()) != null) {
+        if (defaultExpression == null || defaultExpression.booleanExpr() == null
+                || valueOf(defaultExpression) != null && negatedLiteral(valueOf(defaultExpression)) != null) {
             return;
         }
         // A sequence's NEXTVAL is a default ADD COLUMN takes on a table that holds no rows; one that holds rows has
         // refused it already, as a non-constant default (live-verified).
-        if (isSequenceNextval(defaultExpression.expression())) {
+        if (valueOf(defaultExpression) != null && isSequenceNextval(valueOf(defaultExpression))) {
             return;
         }
         // A default that calls a user-defined function is echoed as the plan prints it, the function under its
-        // bare name in upper case, and a name that is no function is refused as one first (live-verified).
+        // bare name in upper case, and a name that is no function is refused as one first (live-verified). A
+        // condition is computed too: DEFAULT NOT FALSE is [NOT(FALSE)], DEFAULT TRUE OR x the invalid X.
         final DefaultExpressionCalls calls = new DefaultExpressionCalls(queryExecutor);
-        calls.requireKnownFunctions(defaultExpression.expression());
-        final FrostlakeParser.ExpressionContext written = defaultExpression.expression();
+        final ParserRuleContext written = defaultExpression.booleanExpr();
+        calls.requireKnownFunctions(written);
         final SourcePosition displaced = ExpressionSource.beginNested(
             new SourcePosition(written.getStart().getLine(), written.getStart().getCharPositionInLine()));
         try {
@@ -180,7 +182,8 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
         final String planned = calls.addColumnEcho(written);
         throw new RuntimeException(SqlCompilationError.of("Invalid column default expression ["
-            + (planned != null ? planned : castSpelling(written)) + "]"));
+            + (planned != null ? planned : valueOf(defaultExpression) != null
+                ? castSpelling(valueOf(defaultExpression)) : getOriginalText(written)) + "]"));
     }
 
     /** Whether a default is a sequence's next value, {@code seq.NEXTVAL}, qualified or not. */
@@ -247,10 +250,10 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     private void rejectMistypedLiteralOnAddColumn(final String colName, final DataType dataType,
             final FrostlakeParser.DefaultExpressionContext defaultExpression, final Object defaultValue) {
-        if (defaultExpression == null || defaultExpression.expression() == null) {
+        if (defaultExpression == null || valueOf(defaultExpression) == null) {
             return;
         }
-        final FrostlakeParser.LiteralContext literal = negatedLiteral(defaultExpression.expression());
+        final FrostlakeParser.LiteralContext literal = negatedLiteral(valueOf(defaultExpression));
         if (literal == null || literal.NULL() != null) {
             return;
         }
@@ -300,10 +303,10 @@ public class ColumnDefinitionParser implements CommandHandler {
                 defaultValue == null ? 0 : CodePointText.length(String.valueOf(defaultValue)));
         }
         if (literal.INTEGER_LITERAL() != null) {
-            return NumericLiteralTypes.forDecimal(new BigDecimal(literal.INTEGER_LITERAL().getText()));
+            return NumericLiteralTypes.forDecimal(DecimalText.parse(literal.INTEGER_LITERAL().getText()));
         }
         if (literal.FLOAT_LITERAL() != null) {
-            return NumericLiteralTypes.forDecimal(new BigDecimal(literal.FLOAT_LITERAL().getText()));
+            return NumericLiteralTypes.forDecimal(DecimalText.parse(literal.FLOAT_LITERAL().getText()));
         }
         if (literal.TRUE() != null || literal.FALSE() != null) {
             return BooleanType.BOOLEAN;
@@ -358,12 +361,12 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     private void rejectCollatedDefault(final String colName,
             final FrostlakeParser.DefaultExpressionContext defaultExpression) {
-        if (defaultExpression == null || defaultExpression.expression() == null) {
+        if (defaultExpression == null || valueOf(defaultExpression) == null) {
             return;
         }
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(null,
             queryExecutor.getFunctionRegistry(), catalog, queryExecutor);
-        final Expression parsed = ExpressionEvaluator.parse(getOriginalText(defaultExpression.expression()));
+        final Expression parsed = ExpressionEvaluator.parse(getOriginalText(valueOf(defaultExpression)));
         if (evaluator.collationOf(parsed) == null) {
             return;
         }
@@ -375,10 +378,14 @@ public class ColumnDefinitionParser implements CommandHandler {
     /** The DEFAULT's own type: a literal's measured type, or a computed expression's static type. */
     private DataType defaultSourceType(final FrostlakeParser.DefaultExpressionContext defaultExpression,
                                        final Object defaultValue) {
-        if (defaultExpression == null || defaultExpression.expression() == null) {
+        if (defaultExpression == null || defaultExpression.booleanExpr() == null) {
             return null;
         }
-        final FrostlakeParser.ExpressionContext expr = defaultExpression.expression();
+        final FrostlakeParser.ExpressionContext expr = valueOf(defaultExpression);
+        if (expr == null) {
+            // A condition, compiled where it stands: a name in it is refused there (live-verified).
+            return staticDefaultType(defaultExpression.booleanExpr());
+        }
         if (expr instanceof FrostlakeParser.LiteralExprContext) {
             final FrostlakeParser.LiteralContext literal =
                 ((FrostlakeParser.LiteralExprContext) expr).literal();
@@ -396,7 +403,7 @@ public class ColumnDefinitionParser implements CommandHandler {
      * read leaves the type unknown, as before - a value-time fault such as {@code 1/0} or
      * {@code TO_NUMBER('x')} is the row's, and live creates those columns.
      */
-    private DataType staticDefaultType(final FrostlakeParser.ExpressionContext expr) {
+    private DataType staticDefaultType(final ParserRuleContext expr) {
         try {
             final ExpressionEvaluator evaluator = new ExpressionEvaluator(null,
                 queryExecutor.getFunctionRegistry(), catalog, queryExecutor);
@@ -415,15 +422,17 @@ public class ColumnDefinitionParser implements CommandHandler {
      * even where the column's type would take the value (live-verified).
      */
     private void rejectUnsupportedDefaultShape(final FrostlakeParser.DefaultExpressionContext defaultExpression) {
-        if (defaultExpression == null || defaultExpression.expression() == null) {
+        if (defaultExpression == null || defaultExpression.booleanExpr() == null) {
             return;
         }
-        rejectDefaultShape(defaultExpression.expression());
+        rejectDefaultShape(defaultExpression.booleanExpr());
     }
 
     /** The walk behind {@link #rejectUnsupportedDefaultShape}, in source order. */
     private void rejectDefaultShape(final ParseTree node) {
-        if (node instanceof FrostlakeParser.SelectStatementContext) {
+        // An EXISTS is refused where its EXISTS stands (live-verified).
+        if (node instanceof FrostlakeParser.SelectStatementContext
+                || node instanceof FrostlakeParser.ExistsExprContext) {
             final Token at = ((ParserRuleContext) node).getStart();
             throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                 "sub-queries are not supported as part of the specification of a default value clause."));
@@ -735,6 +744,9 @@ public class ColumnDefinitionParser implements CommandHandler {
                 collation = extractCollation(constraint.collateClause());
             }
         }
+        if (colDef.virtualColumnClause() != null) {
+            VirtualColumnDefinitions.refuseConstraints(colName, colDef);
+        }
 
         if (collation != null) {
             // A collation needs a string column, refused naming the declared type before the
@@ -753,18 +765,27 @@ public class ColumnDefinitionParser implements CommandHandler {
         rejectUnsupportedDefaultShape(defaultExpression);
         rejectCollatedDefault(colName, defaultExpression);
         rejectUncoercibleDefault(colName, dataType, defaultExpression, defaultValue);
-        if (defaultExpression != null && defaultExpression.expression() != null) {
+        if (defaultExpression != null && valueOf(defaultExpression) != null) {
             // A user-defined function a default cannot expand is refused once the default's type fits: such a
             // function's FLOAT is no default of an exact NUMBER column, which is refused for the type first.
             final DataType source = dataType instanceof NumericType && !NumericType.isApproximate(dataType)
                 ? defaultSourceType(defaultExpression, defaultValue) : null;
-            new DefaultExpressionCalls(queryExecutor).requireColumnDefault(defaultExpression.expression(),
+            new DefaultExpressionCalls(queryExecutor).requireColumnDefault(valueOf(defaultExpression),
                 source instanceof NumericType && NumericType.isApproximate(source)
                     ? new RuntimeException(SqlCompilationError.of(
                         "Default value data type does not match data type for column " + colName.toUpperCase(Locale.ROOT)))
                     : null);
         }
         rejectNonNullableFieldsInNullableStructure(colName, dataType, notNull);
+        if (defaultValue instanceof DefaultValueExpression && !(defaultValue instanceof SequenceDefault)
+                && defaultExpression != null && defaultExpression.booleanExpr() != null) {
+            // The account tells an expression default back printed from the plan it compiled to, as it tells a
+            // routine parameter's: a cast written :: is CAST(… AS …), a CASE is CASE_FLATTENED(…) (live-verified).
+            final String written = ((DefaultValueExpression) defaultValue).getExpressionText();
+            final String told = new DefaultExpressionCalls(queryExecutor)
+                .toldColumnDefault(defaultExpression.booleanExpr());
+            defaultValue = new DefaultValueExpression(written, told.equals(written) ? null : told);
+        }
 
         // A PRIMARY KEY column is NOT NULL whether or not the definition says so, and an explicit NULL
         // beside the key does not win. The rule belongs to the declaration: a key added later by
@@ -828,6 +849,11 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (collation != null) {
             column.setCollation(collation);
         }
+        if (colDef.virtualColumnClause() != null) {
+            // Judged over the columns it reads once they are all known (see VirtualColumnDefinitions).
+            final String expression = getOriginalText(colDef.virtualColumnClause().booleanExpr());
+            column.setVirtualExpression(expression, expression);
+        }
 
         return column;
     }
@@ -883,10 +909,15 @@ public class ColumnDefinitionParser implements CommandHandler {
         final List<String> tablePrimaryKeys = new ArrayList<>();
         final List<String> tableNotNullColumns = new ArrayList<>();
         final List<String> tableUniqueColumns = new ArrayList<>();
+        // A value DEFAULT reads the columns defined before it alone (see DefaultExpressionCalls).
+        final Set<String> earlier = new HashSet<>();
 
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             if (item.columnDef() != null) {
-                columns.add(parseSingleColumnDef(item.columnDef(), false, iceberg));
+                final TableColumn parsed = parseSingleColumnDef(item.columnDef(), false, iceberg);
+                DefaultExpressionCalls.requireEarlierColumns(item.columnDef(), parsed.getName(), earlier);
+                earlier.add(parsed.getName());
+                columns.add(parsed);
             } else if (item.tableConstraint() != null) {
                 final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
                 if (constraint.checkConstraint() != null || constraint.FOREIGN() != null) {
@@ -933,6 +964,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
 
         rejectDuplicateColumnNames(columns);
+        VirtualColumnDefinitions.judge(columns, ctx, queryExecutor);
         return columns;
     }
 
@@ -1652,8 +1684,8 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     public Object parseDefaultExpression(final FrostlakeParser.DefaultExpressionContext ctx) {
-        if (ctx.expression() != null) {
-            final FrostlakeParser.ExpressionContext expr = ctx.expression();
+        final FrostlakeParser.ExpressionContext expr = valueOf(ctx);
+        if (expr != null) {
 
             // Handle literal expressions
             if (expr instanceof FrostlakeParser.LiteralExprContext) {
@@ -1718,10 +1750,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             if (expr instanceof FrostlakeParser.ParenExprContext) {
                 final FrostlakeParser.ParenExprContext parenCtx = (FrostlakeParser.ParenExprContext) expr;
                 final FrostlakeParser.DefaultExpressionContext innerCtx = new FrostlakeParser.DefaultExpressionContext(null, 0);
-                final FrostlakeParser.BooleanExprContext be = parenCtx.booleanExpr();
-                if (be instanceof FrostlakeParser.ValueExprContext) {
-                    innerCtx.addChild(((FrostlakeParser.ValueExprContext) be).expression());
-                }
+                innerCtx.addChild(parenCtx.booleanExpr());
                 return parseDefaultExpression(innerCtx);
             }
 
@@ -1757,7 +1786,24 @@ public class ColumnDefinitionParser implements CommandHandler {
             // no spaces (e.g. "CASE WHEN 1=1 THEN…" → "CASEWHEN1=1THEN…"), which cannot be re-parsed.
             return new DefaultValueExpression(getOriginalText(expr));
         }
-        return null;
+        // A condition — a NOT, an AND, an OR — is computed per row as a complex expression is, and reads no name.
+        if (ctx.booleanExpr() == null) {
+            return null;
+        }
+        new DefaultExpressionCalls(queryExecutor).requireNoNames(ctx.booleanExpr());
+        return new DefaultValueExpression(getOriginalText(ctx.booleanExpr()));
+    }
+
+    /**
+     * The value a DEFAULT is written as, or null for a condition, a NOT, an AND or an OR, which a column takes as its
+     * default too (live-verified).
+     *
+     * @param written the DEFAULT
+     * @return its value expression, or null
+     */
+    static FrostlakeParser.ExpressionContext valueOf(final FrostlakeParser.DefaultExpressionContext written) {
+        return written != null && written.booleanExpr() instanceof FrostlakeParser.ValueExprContext
+            ? ((FrostlakeParser.ValueExprContext) written.booleanExpr()).expression() : null;
     }
 
     /**

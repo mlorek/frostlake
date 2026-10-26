@@ -77,6 +77,39 @@ final class FromSourceNames {
     }
 
     /**
+     * Refuse a parenthesised source that holds one relation with an alias of its own and is given another around
+     * it: {@code FROM (t a) b} is {@code duplicate alias 'b'}, the outer alias as written, before a relation the
+     * clause names is looked for (live-verified). A parenthesised source with no alias of its own is read for such
+     * sources inside it.
+     *
+     * @param clause the clause whose table references and joins are read
+     */
+    static void rejectRealiasedGroups(final ParserRuleContext clause) {
+        if (clause.children == null) {
+            return;
+        }
+        for (final ParseTree child : clause.children) {
+            final FrostlakeParser.TableReferenceContext ref = child instanceof FrostlakeParser.TableReferenceContext
+                ? (FrostlakeParser.TableReferenceContext) child
+                : child instanceof FrostlakeParser.JoinClauseContext
+                    ? ((FrostlakeParser.JoinClauseContext) child).tableReference() : null;
+            final FrostlakeParser.TableSourceContext source = ref == null ? null : ref.tableSource();
+            if (source == null || source.tableReference() == null) {
+                continue;
+            }
+            final ParserRuleContext outer = ref.aliasName() != null ? ref.aliasName()
+                : ref.nonJoinKeywordIdentifier();
+            final FrostlakeParser.TableReferenceContext inner = source.tableReference();
+            if (outer == null) {
+                rejectRealiasedGroups(source);
+            } else if (source.joinClause().isEmpty()
+                    && (inner.aliasName() != null || inner.nonJoinKeywordIdentifier() != null)) {
+                throw new RuntimeException(SqlCompilationError.of("duplicate alias '" + outer.getText() + "'"));
+            }
+        }
+    }
+
+    /**
      * Register every source a clause lists directly, in written order: the FROM of a query, an UPDATE's
      * FROM or a DELETE's USING.
      *

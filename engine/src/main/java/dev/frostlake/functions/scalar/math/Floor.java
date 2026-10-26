@@ -26,7 +26,7 @@ import java.util.List;
  * FLOOR(n [, scale]) — the input rounded DOWN, to whole numbers by default and to {@code scale}
  * decimal places when one is given. The twin of {@link Ceil} in every other respect.
  */
-public class Floor extends NumericArgumentFunction implements DecfloatRounding {
+public class Floor extends NumericArgumentFunction implements DecfloatRounding, FloatScaleRounding {
     public Floor() { super("FLOOR", NumericType.INTEGER); }
 
     @Override
@@ -38,6 +38,12 @@ public class Floor extends NumericArgumentFunction implements DecfloatRounding {
     @Override
     public Object evaluateDecfloat(final List<Object> args) {
         return RoundedValue.ofDecfloat(args, RoundingMode.FLOOR);
+    }
+
+    /** A FLOAT scale rounds in FLOAT arithmetic (see RoundedValue#ofFloatScale). */
+    @Override
+    public Object evaluateFloatScale(final List<Object> args) {
+        return RoundedValue.ofFloatScale(args, RoundingMode.FLOOR);
     }
 
     @Override

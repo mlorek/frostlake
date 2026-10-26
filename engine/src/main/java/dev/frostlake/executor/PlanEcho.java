@@ -60,8 +60,9 @@ import org.antlr.v4.runtime.misc.Interval;
  *   OVER (PARTITION BY (g) ORDER BY n)   OVER (PARTITION BY EB.G ORDER BY EB.N ASC NULLS LAST)
  * </pre>
  *
- * <p>So ASC defaults to NULLS LAST and DESC to NULLS FIRST — the same defaults the sort itself uses —
- * and the direction is printed whether or not it was written. A PARTITION BY key takes neither, and
+ * <p>So ASC defaults to NULLS LAST and DESC to NULLS FIRST — the same defaults the sort itself uses, the
+ * other way round under DEFAULT_NULL_ORDERING = 'FIRST' (see {@link SessionNullOrdering}) — and the
+ * direction is printed whether or not it was written. A PARTITION BY key takes neither, and
  * its parentheses are dropped. Three things present in the source do NOT survive into a window echo:
  * the FRAME ({@code ROWS BETWEEN …}, {@code RANGE …}), the null treatment
  * ({@code IGNORE NULLS} / {@code RESPECT NULLS}), and all original spacing. DISTINCT does survive.
@@ -455,7 +456,7 @@ final class PlanEcho {
             final Boolean nullsFirst = ValueComparisons.nullsFirstFlag(item);
             text.append(print(KeyContexts.of(item)))
                 .append(ascending ? " ASC NULLS " : " DESC NULLS ")
-                .append((nullsFirst != null ? nullsFirst.booleanValue() : !ascending) ? "FIRST" : "LAST");
+                .append(SessionNullOrdering.nullsFirst(ascending, nullsFirst) ? "FIRST" : "LAST");
         }
     }
 

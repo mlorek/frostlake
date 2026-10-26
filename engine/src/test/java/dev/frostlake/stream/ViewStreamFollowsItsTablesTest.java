@@ -99,7 +99,11 @@ public class ViewStreamFollowsItsTablesTest {
         engine.execute("INSERT INTO t VALUES (1)");
         engine.execute("DROP TABLE t");
         assertEquals("true", shownStale("VS"));
-        assertTrue(refusal("SELECT a FROM vs").contains("Base table 'VD.PUBLIC.T' dropped"), refusal("SELECT a FROM vs"));
+        // The stream reads its view as a query does, and fails as the view's expansion does (live-verified).
+        assertTrue(refusal("SELECT a FROM vs").contains("Failure during expansion of view 'VD.PUBLIC.V':"),
+            refusal("SELECT a FROM vs"));
+        assertTrue(refusal("SELECT a FROM vs").contains("Object 'VD.PUBLIC.T' does not exist or not authorized."),
+            refusal("SELECT a FROM vs"));
         engine.execute("CREATE TABLE t (a INT)");
         engine.execute("INSERT INTO t VALUES (2)");
         assertTrue(refusal("SELECT a FROM vs").contains("Change tracking is not enabled or has been missing for the"

@@ -24,8 +24,8 @@ import java.util.Set;
 
 /**
  * What a child statement's QUERY_HISTORY row is completed from, taken as the statement begins: the statement, the
- * session's last transaction then, and the tables the statement running it had written so far, set aside so that
- * the child counts its own and put back with the child's once it is counted.
+ * session's last transaction then, the tables the statement running it had written so far, set aside so that the
+ * child counts its own and put back with the child's once it is counted, and the query ID it runs under.
  */
 final class ChildStatementStart {
 
@@ -34,6 +34,8 @@ final class ChildStatementStart {
     private final Set<TableStorage> storedTables;
     private final Transaction transaction;
     private final Set<String> pendingTables;
+    private final String reservedId;
+    private final String runningBefore;
 
     /**
      * @param statement             the child statement
@@ -41,15 +43,19 @@ final class ChildStatementStart {
      * @param storedTables          the tables written through to storage so far
      * @param transaction           the transaction open as it begins, or null
      * @param pendingTables         the tables that transaction's statements had written so far, empty without one
+     * @param reservedId            the query ID it runs under and ends with
+     * @param runningBefore         the query ID the statement running it ran under before it began, or null
      */
     ChildStatementStart(final FrostlakeParser.StatementContext statement, final String lastTransactionBefore,
                         final Set<TableStorage> storedTables, final Transaction transaction,
-                        final Set<String> pendingTables) {
+                        final Set<String> pendingTables, final String reservedId, final String runningBefore) {
         this.statement = statement;
         this.lastTransactionBefore = lastTransactionBefore;
         this.storedTables = storedTables;
         this.transaction = transaction;
         this.pendingTables = pendingTables;
+        this.reservedId = reservedId;
+        this.runningBefore = runningBefore;
     }
 
     FrostlakeParser.StatementContext statement() {
@@ -70,5 +76,13 @@ final class ChildStatementStart {
 
     Set<String> pendingTables() {
         return pendingTables;
+    }
+
+    String reservedId() {
+        return reservedId;
+    }
+
+    String runningBefore() {
+        return runningBefore;
     }
 }

@@ -26,6 +26,8 @@ import dev.frostlake.metastore.model.AlertExecution;
 import dev.frostlake.metastore.model.AlertState;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.RefreshTrigger;
+import dev.frostlake.metastore.model.RefreshTriggers;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.State;
@@ -245,6 +247,8 @@ public class TaskScheduler {
     private void refreshOnSchedule(final String database, final String schema, final String table) {
         final String[] priorScope = catalog.currentSessionScope();
         catalog.beginSessionScope(database, schema);
+        // The refresh, and those of the tables it reads first, are the schedule's (see RefreshTriggers).
+        final RefreshTrigger trigger = RefreshTriggers.begin(RefreshTrigger.SCHEDULED);
         try {
             taskExecutor.runInOwnSession(new Runnable() {
                 @Override
@@ -254,6 +258,7 @@ public class TaskScheduler {
                 }
             });
         } finally {
+            RefreshTriggers.end(trigger);
             catalog.restoreSessionScope(priorScope);
         }
     }
@@ -684,14 +689,15 @@ public class TaskScheduler {
 
     /**
      * A run with the query that ran the task's statement — its id and the code of the error it failed with, as the
-     * query's history row has them — and the user the run was scheduled by (live-verified).
+     * query's history row has them, the code in six digits ({@code 000627}) — and the user the run was scheduled by
+     * (live-verified).
      */
     private TaskExecution ranAs(final Task task, final TaskExecution run) {
         final QueryHistory ran = taskExecutor.lastRecordedQuery();
         final boolean ours = ran != null && task.getSqlStatement() != null
             && task.getSqlStatement().equals(ran.getQueryText());
-        return run.ranAs(ours ? ran.getQueryId() : null,
-            ours && ran.getErrorCode() != null ? String.valueOf(ran.getErrorCode()) : null, SCHEDULED_BY.get());
+        return run.ranAs(ours ? ran.getQueryId() : null, ours && ran.getErrorCode() != null
+            ? String.format(Locale.ROOT, "%06d", ran.getErrorCode()) : null, SCHEDULED_BY.get());
     }
 
     private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final Set<String> visited,

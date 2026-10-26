@@ -101,11 +101,21 @@ final class InlineTags {
      * @param queryExecutor the executor whose catalog resolves the tags
      */
     static void refuseOnOrAlter(final FrostlakeParser.TagListContext tags, final QueryExecutor queryExecutor) {
+        resolveAll(tags, queryExecutor);
+        throw new RuntimeException("CREATE OR ALTER does not support setting policies or tags.");
+    }
+
+    /**
+     * Resolve every tag a clause names, refusing the statement for one that does not exist.
+     *
+     * @param tags          the tag clause
+     * @param queryExecutor the executor whose catalog resolves the tags
+     */
+    static void resolveAll(final FrostlakeParser.TagListContext tags, final QueryExecutor queryExecutor) {
         for (final FrostlakeParser.TagAssignmentContext assignment : tags.tagAssignment()) {
             queryExecutor.getCatalog().getTag(
                 QualifiedName.of(ParseTreeText.qualifiedNameParts(assignment.qualifiedName())).toString());
         }
-        throw new RuntimeException("CREATE OR ALTER does not support setting policies or tags.");
     }
 
     /**

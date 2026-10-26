@@ -28,6 +28,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
@@ -125,7 +126,7 @@ final class BoundValueRendering {
         } else {
             final BigDecimal number;
             try {
-                number = value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(String.valueOf(value));
+                number = value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(String.valueOf(value));
             } catch (final NumberFormatException notANumber) {
                 return null;
             }

@@ -16,9 +16,11 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.SessionNullOrdering;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.GeoTypes;
 import dev.frostlake.types.SqlTypeNames;
 
 import java.math.BigDecimal;
@@ -530,12 +532,12 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     /**
      * A cast's target as the tree holds it: the type the written name stands for, every width spelled — a text
      * and a binary of no width at the widest a conversion reaches — and UNKNOWN for a type the parser gives no
-     * name of its own.
+     * name of its own, a geospatial one included.
      */
     private static String target(final CastExpression expr) {
         final DataType declared = expr.getDeclaredTarget() != null
             ? expr.getDeclaredTarget() : TypeInferencer.declaredCastTarget(expr.getTargetType());
-        if (declared == null) {
+        if (declared == null || GeoTypes.isGeo(declared)) {
             return "UNKNOWN";
         }
         return declared instanceof BinaryType
@@ -754,8 +756,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     }
 
     /**
-     * A sort key's direction and where its nulls sort, both always spelled: nulls last ascending and first
-     * descending unless written otherwise.
+     * A sort key's direction and where its nulls sort, both always spelled: where the session's
+     * DEFAULT_NULL_ORDERING puts them for the direction unless written otherwise (see {@link SessionNullOrdering}).
      *
      * @param ascending  whether the key sorts ascending
      * @param nullsFirst the NULLS FIRST (TRUE) or NULLS LAST (FALSE) written, or null for neither
@@ -763,6 +765,6 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
      */
     static String sortSuffix(final boolean ascending, final Boolean nullsFirst) {
         return (ascending ? " ASC NULLS " : " DESC NULLS ")
-            + ((nullsFirst != null ? nullsFirst.booleanValue() : !ascending) ? "FIRST" : "LAST");
+            + (SessionNullOrdering.nullsFirst(ascending, nullsFirst) ? "FIRST" : "LAST");
     }
 }

@@ -18,44 +18,35 @@ package dev.frostlake.stream;
 
 import dev.frostlake.BaseDatabaseTest;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * A stream read INSIDE a transaction must reflect that transaction's own not-yet-committed DML to the
- * stream's base table — the deferred-apply equivalent of read-your-writes. A stored procedure relies on
- * this when it inserts into a table and then reads a stream over that table in the same (proc) transaction:
- * without it the stream reads empty and the downstream load silently loads nothing. A rollback, which just
- * discards the write set, must leave the stream unchanged.
+ * A stream read inside a transaction lists the changes committed before the transaction began, none of the
+ * transaction's own: those reach the stream with the COMMIT, and a ROLLBACK leaves the stream as it was
+ * (live-verified). A stream that lives in another schema than its table captures the table's committed changes, and
+ * only that table's.
  */
 public class StreamInTransactionTest extends BaseDatabaseTest {
-
-    private static final String SAME_TRANSACTION_READ =
-        "deliberate, documented model divergence: Frostlake lets a stream read see its own transaction's "
-        + "uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's "
-        + "start time and therefore returns nothing for changes made inside it";
 
     private long streamCount(final String sql) {
         return engine.executeQuery(sql).getRowCount();
     }
 
     @Test
-    public void appendOnlyStreamSeesSameTransactionInserts() {
-        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
+    public void anAppendOnlyStreamListsTheTransactionsInsertsOnceItCommits() {
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE");
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO t VALUES (1), (2)");
-        assertEquals(2, streamCount("SELECT * FROM s"));   // buffered inserts visible before COMMIT
+        assertEquals(0, streamCount("SELECT * FROM s"));
         engine.execute("COMMIT");
         assertEquals(2, streamCount("SELECT * FROM s"));
     }
 
     @Test
-    public void streamAfterFlushSeesOnlyNewSameTransactionInserts() {
-        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
+    public void aFlushedStreamListsTheTransactionsInsertsOnceItCommits() {
         // The loader shape: seed + flush the stream, then insert more in a transaction and read.
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE");
@@ -63,50 +54,50 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
         engine.execute("CREATE OR REPLACE TEMP TABLE reset AS SELECT * FROM s WHERE 1=0");  // flush past row 1
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO t VALUES (2), (3)");
-        assertEquals(2, streamCount("SELECT * FROM s"));   // only the new 2,3, not the flushed 1
+        assertEquals(0, streamCount("SELECT * FROM s"));
         engine.execute("COMMIT");
+        assertEquals(2, streamCount("SELECT * FROM s"));   // only the new 2,3, not the flushed 1
     }
 
     @Test
-    public void rollbackDiscardsBufferedStreamChanges() {
-        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
+    public void aRolledBackTransactionLeavesTheStreamAsItWas() {
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE");
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO t VALUES (1), (2)");
-        assertEquals(2, streamCount("SELECT * FROM s"));
+        assertEquals(0, streamCount("SELECT * FROM s"));
         engine.execute("ROLLBACK");
-        assertEquals(0, streamCount("SELECT * FROM s"));   // discarded — nothing was committed
+        assertEquals(0, streamCount("SELECT * FROM s"));
     }
 
     @Test
-    public void standardStreamSeesSameTransactionUpdateAndDelete() {
-        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
+    public void aStandardStreamListsTheTransactionsUpdateAndDeleteOnceItCommits() {
         engine.execute("CREATE TABLE t (id INT, v VARCHAR)");
         engine.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')");
         engine.execute("CREATE STREAM s ON TABLE t");   // standard (not APPEND_ONLY), no initial rows
         engine.execute("BEGIN TRANSACTION");
         engine.execute("UPDATE t SET v = 'z' WHERE id = 1");
         engine.execute("DELETE FROM t WHERE id = 2");
+        assertEquals(0, streamCount("SELECT * FROM s"));
+        engine.execute("COMMIT");
         // The UPDATE nets to a DELETE(old)+INSERT(new) pair and the DELETE to one DELETE → 3 change rows.
         assertEquals(3, streamCount("SELECT * FROM s"));
-        engine.execute("COMMIT");
     }
 
     @Test
-    public void viewStreamSeesSameTransactionInsertsToBothBranches() {
-        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
+    public void aViewStreamListsBothBranchesInsertsOnceTheTransactionCommits() {
         engine.execute("CREATE TABLE active (id INT, st VARCHAR)");
         engine.execute("CREATE TABLE del (id INT, st VARCHAR)");
         engine.execute("CREATE VIEW v AS SELECT id, st FROM active UNION ALL SELECT id, 'DELETE' AS st FROM del");
         engine.execute("CREATE STREAM vs ON VIEW v APPEND_ONLY=TRUE");
         engine.execute("BEGIN TRANSACTION");
-        engine.execute("INSERT INTO active VALUES (1, 'ACTIVE'), (2, 'ACTIVE')");   // branch 1 (buffered)
-        engine.execute("INSERT INTO del VALUES (1, 'DELETE')");                     // branch 2 (buffered)
+        engine.execute("INSERT INTO active VALUES (1, 'ACTIVE'), (2, 'ACTIVE')");
+        engine.execute("INSERT INTO del VALUES (1, 'DELETE')");
+        assertEquals(0, streamCount("SELECT * FROM vs"));
+        engine.execute("COMMIT");
         assertEquals(3, streamCount("SELECT * FROM vs"));
         // Each branch's rows route correctly (the DELETE branch surfaces its one change).
         assertEquals(1, streamCount("SELECT * FROM vs WHERE st = 'DELETE'"));
-        engine.execute("COMMIT");
     }
 
     @Test
@@ -139,10 +130,9 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void crossSchemaViewStreamSeesSameTransactionInserts() {
-        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
+    public void aCrossSchemaViewStreamListsTheTransactionsInsertsOnceItCommits() {
         // The loader shape: a view (and its stream) in one schema over base tables in ANOTHER schema, all
-        // driven inside one stored-proc transaction. The write-set match is by bare table name, not schema.
+        // driven inside one stored-proc transaction.
         engine.execute("CREATE SCHEMA other_schema");
         engine.execute("CREATE TABLE other_schema.active (id INT, st VARCHAR)");
         engine.execute("CREATE TABLE other_schema.del (id INT, st VARCHAR)");
@@ -152,8 +142,9 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO other_schema.active VALUES (1, 'ACTIVE'), (2, 'ACTIVE')");
         engine.execute("INSERT INTO other_schema.del VALUES (1, 'DELETE')");
+        assertEquals(0, streamCount("SELECT * FROM vs"));
+        engine.execute("COMMIT");
         assertEquals(3, streamCount("SELECT * FROM vs"));
         assertEquals(1, streamCount("SELECT * FROM vs WHERE st = 'DELETE'"));
-        engine.execute("COMMIT");
     }
 }

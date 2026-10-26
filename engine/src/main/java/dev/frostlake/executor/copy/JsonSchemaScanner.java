@@ -84,7 +84,8 @@ final class JsonSchemaScanner {
      * @throws IOException when the file cannot be read
      */
     static List<FileColumn> scan(final InferenceFile file, final SchemaScanOptions options) throws IOException {
-        try (RetainingReader text = new RetainingReader(StagedFileIo.reader(file.path()));
+        try (RetainingReader text = new RetainingReader(
+                StagedFileIo.pastByteOrderMark(StagedFileIo.reader(file.path())));
              JsonParser parser = MAPPER.createParser(text)) {
             return new JsonSchemaScanner(file, options, text, parser).read();
         }

@@ -16,6 +16,7 @@
 
 package dev.frostlake.storage;
 
+import dev.frostlake.metastore.model.StoredRead;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.ValueRange;
 
@@ -75,6 +76,10 @@ public class ResultSetColumn {
     // relation — which an exact number beside it reads as the bare word. Read only by the type rules that fold
     // such a NULL, through a derived relation built from this result set.
     private final boolean nullText;
+    // How the projection reads a stored table's column, carried out of a derived relation: what decides whether an
+    // element of it converts a VARIANT number to a DATE, a TIME or a TIMESTAMP_NTZ. Read only by that conversion,
+    // through a derived relation built from this result set.
+    private final StoredRead storedRead;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -124,7 +129,7 @@ public class ResultSetColumn {
                             final boolean collationExplicit, final String projectionPolicyName,
                             final boolean nullText) {
         this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, collation,
-            uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName, nullText, null);
+            uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName, nullText, null, StoredRead.NONE);
     }
 
     private ResultSetColumn(final String name, final DataType dataType, final String tableName,
@@ -133,8 +138,10 @@ public class ResultSetColumn {
                             final DataType spelledNumber, final String collation,
                             final boolean uncheckedConstant, final boolean foldedDouble,
                             final boolean collationExplicit, final String projectionPolicyName,
-                            final boolean nullText, final Boolean derivedNullable) {
+                            final boolean nullText, final Boolean derivedNullable,
+                            final StoredRead storedRead) {
         this.derivedNullable = derivedNullable;
+        this.storedRead = storedRead;
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -173,7 +180,7 @@ public class ResultSetColumn {
     public ResultSetColumn withCollation(final String spec, final boolean explicit) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, spec != null && explicit,
-            projectionPolicyName, nullText, derivedNullable);
+            projectionPolicyName, nullText, derivedNullable, storedRead);
     }
 
     /**
@@ -185,7 +192,7 @@ public class ResultSetColumn {
     public ResultSetColumn withoutValueRange() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             null, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName,
-            nullText, derivedNullable);
+            nullText, derivedNullable, storedRead);
     }
 
     /**
@@ -197,7 +204,7 @@ public class ResultSetColumn {
     public ResultSetColumn withName(final String renamed) {
         return new ResultSetColumn(renamed, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
-            projectionPolicyName, nullText, derivedNullable);
+            projectionPolicyName, nullText, derivedNullable, storedRead);
     }
 
     /**
@@ -209,7 +216,7 @@ public class ResultSetColumn {
     public ResultSetColumn withDerivedNullable(final boolean derived) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
-            projectionPolicyName, nullText, Boolean.valueOf(derived));
+            projectionPolicyName, nullText, Boolean.valueOf(derived), storedRead);
     }
 
     /**
@@ -240,7 +247,7 @@ public class ResultSetColumn {
     public ResultSetColumn withUncheckedConstant() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, true, foldedDouble, collationExplicit, projectionPolicyName,
-            nullText, derivedNullable);
+            nullText, derivedNullable, storedRead);
     }
 
     /**
@@ -252,7 +259,7 @@ public class ResultSetColumn {
     public ResultSetColumn withFoldedDouble() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, true, collationExplicit, projectionPolicyName,
-            nullText, derivedNullable);
+            nullText, derivedNullable, storedRead);
     }
 
     /**
@@ -264,7 +271,29 @@ public class ResultSetColumn {
     public ResultSetColumn withNullText() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
-            projectionPolicyName, true, derivedNullable);
+            projectionPolicyName, true, derivedNullable, storedRead);
+    }
+
+    /**
+     * This column carrying how its projection reads a stored table's column (see {@link #getStoredRead}).
+     *
+     * @param read how it reads one
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withStoredRead(final StoredRead read) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, derivedNullable, read);
+    }
+
+    /**
+     * How this column's projection reads a stored table's column: the column whole, an element or a path of it, or
+     * neither (see StoredRead).
+     *
+     * @return how it reads one
+     */
+    public StoredRead getStoredRead() {
+        return storedRead;
     }
 
     /**
@@ -285,7 +314,7 @@ public class ResultSetColumn {
     public ResultSetColumn withProjectionPolicy(final String policyName) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, policyName,
-            nullText, derivedNullable);
+            nullText, derivedNullable, storedRead);
     }
 
     /**

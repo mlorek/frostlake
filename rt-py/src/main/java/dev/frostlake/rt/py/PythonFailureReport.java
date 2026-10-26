@@ -67,15 +67,20 @@ final class PythonFailureReport {
             if not __fl_item[0].startswith('__')])
         """;
 
-    /** Python that words the report of {@code __fl_e}, the exception the guarded code caught. */
+    /**
+     * Python that words the report of {@code __fl_e}, the exception the guarded code caught. An exit with no status
+     * is worded {@code SystemExit}, as CPython words the {@code SystemExit()} its {@code sys.exit()} raises
+     * (live-verified), where GraalPy raises {@code SystemExit(None)}.
+     */
     private static final String REPORT = """
         import linecache as __fl_lines, traceback as __fl_trace
         __fl_lines.cache['_udf_code.py'] = (len(__fl_udf_source), None, __fl_udf_source.splitlines(True),
             '_udf_code.py')
         __fl_frames = [__fl_f for __fl_f in __fl_trace.extract_tb(__fl_e.__traceback__)
             if __fl_f.filename == '_udf_code.py']
+        __fl_shown = SystemExit() if isinstance(__fl_e, SystemExit) and __fl_e.args == (None,) else __fl_e
         __fl_failure = (('Traceback (most recent call last):\\n' + ''.join(__fl_trace.format_list(__fl_frames)))
-            if __fl_frames else '') + ''.join(__fl_trace.format_exception_only(type(__fl_e), __fl_e))
+            if __fl_frames else '') + ''.join(__fl_trace.format_exception_only(type(__fl_e), __fl_shown))
         """;
 
     private PythonFailureReport() {
@@ -109,9 +114,15 @@ final class PythonFailureReport {
         PythonInterpreter.eval(guarded(code));
     }
 
-    /** The code wrapped so a failure leaves its report before it is raised on. */
+    /**
+     * The code wrapped so a failure leaves its report before it is raised on. An exit is raised on as an ordinary
+     * error: left to end the interpreter, a function's {@code sys.exit()} under a procedure's {@code session.sql}
+     * ended the procedure running in the same interpreter too, where the account's procedure catches the function's
+     * failure and goes on (live-verified).
+     */
     private static String guarded(final String code) {
         return SLOT + " = None\ntry:\n" + indented(code) + "except BaseException as __fl_e:\n" + indented(REPORT)
+            + "    if isinstance(__fl_e, SystemExit):\n        raise RuntimeError(__fl_failure) from None\n"
             + "    raise\n";
     }
 

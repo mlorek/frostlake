@@ -49,6 +49,7 @@ import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
+import dev.frostlake.metastore.model.StreamVersion;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.TableStructure;
@@ -371,8 +372,11 @@ final class CatalogSnapshotWriter {
             }
         }
 
-        // Save view metadata
+        // Save view metadata. A temporary view ends with its session, which no restore brings back.
         for (final View view : schema.getViews()) {
+            if (view.isTemporary()) {
+                continue;
+            }
             final ViewSnapshot viewSnapshot = new ViewSnapshot();
             viewSnapshot.name = view.getName();
             viewSnapshot.tags = SnapshotTags.of(view);
@@ -394,6 +398,10 @@ final class CatalogSnapshotWriter {
             viewSnapshot.rowAccessPolicyName = view.getRowAccessPolicyName();
             viewSnapshot.rowAccessPolicyColumns = view.hasRowAccessPolicy()
                 ? new ArrayList<>(view.getRowAccessPolicyColumns()) : null;
+            viewSnapshot.aggregationPolicyName = view.getAggregationPolicyName();
+            viewSnapshot.aggregationEntityKey = view.hasAggregationPolicy()
+                ? new ArrayList<>(view.getAggregationEntityKey()) : null;
+            viewSnapshot.joinPolicyName = view.getJoinPolicyName();
             viewSnapshot.dataMetrics = DataMetricSnapshots.of(view.dataMetricAttachments());
             viewSnapshot.dataMetricSchedule = view.dataMetricAttachments().getSchedule();
             viewSnapshot.columns = derivedColumnSnapshots(view.getResolvedColumns());
@@ -474,10 +482,23 @@ final class CatalogSnapshotWriter {
                 && (stream.getSourceType() == StreamSourceType.TABLE && StreamSources.sourceOf(catalog, schema, stream) == null
                 || StreamSources.missingBaseOf(catalog, stream) != null);
             streamSnapshot.lostInClone = stream.isLostInClone();
+            streamSnapshot.rebound = stream.isRebound();
             streamSnapshot.comment = stream.getComment();
             streamSnapshot.owner = stream.getOwner();
             streamSnapshot.createdAt = stream.getCreatedAt();
             streamSnapshot.offsetSequence = stream.getOffsetSequence();
+            streamSnapshot.versions = new ArrayList<>();
+            for (final StreamVersion version : stream.getPendingVersions()) {
+                final StreamVersionSnapshot saved = new StreamVersionSnapshot();
+                saved.baseTable = version.getBaseTable();
+                saved.time = version.getTime();
+                saved.kind = version.getKind().name();
+                saved.rowsAdded = version.getRowsAdded();
+                saved.rowsRemoved = version.getRowsRemoved();
+                saved.inserted = version.getInserted();
+                saved.sequence = version.getSequence();
+                streamSnapshot.versions.add(saved);
+            }
             for (final StreamRecord rec : stream.getUnconsumedRecords()) {
                 streamSnapshot.records.add(recordSnapshot(rec));
             }
@@ -492,6 +513,8 @@ final class CatalogSnapshotWriter {
                 for (final List<Object> row : stream.getRefreshImage()) {
                     streamSnapshot.refreshImage.add(new ArrayList<>(row));
                 }
+                streamSnapshot.refreshImageIds = stream.getRefreshImageIds() == null ? null
+                    : new ArrayList<>(stream.getRefreshImageIds());
             }
             schemaSnapshot.streams.add(streamSnapshot);
         }
@@ -637,8 +660,12 @@ final class CatalogSnapshotWriter {
             schemaSnapshot.fileFormats.add(ffSnapshot);
         }
 
-        // Save user-defined functions (all languages, scalar and table)
+        // Save user-defined functions (all languages, scalar and table), but a temporary one, which ends with its
+        // session as a temporary file format does.
         for (final Function fn : schema.allFunctions()) {
+            if (fn.isTemporary()) {
+                continue;
+            }
             final FunctionSnapshot fnSnapshot = new FunctionSnapshot();
             fnSnapshot.name = fn.getName();
             fnSnapshot.tags = SnapshotTags.of(fn);
@@ -672,8 +699,11 @@ final class CatalogSnapshotWriter {
             schemaSnapshot.functions.add(fnSnapshot);
         }
 
-        // Save stored procedures (all languages)
+        // Save stored procedures (all languages), but a temporary one, which ends with its session.
         for (final Procedure proc : schema.allProcedures()) {
+            if (proc.isTemporary()) {
+                continue;
+            }
             final ProcedureSnapshot procSnapshot = new ProcedureSnapshot();
             procSnapshot.name = proc.getName();
             procSnapshot.tags = SnapshotTags.of(proc);
@@ -756,10 +786,12 @@ final class CatalogSnapshotWriter {
             dtSnapshot.refreshSequences = new ArrayList<>();
             dtSnapshot.refreshMillis = new ArrayList<>();
             dtSnapshot.refreshRows = new ArrayList<>();
+            dtSnapshot.refreshRowIds = new ArrayList<>();
             for (final DynamicTableRefresh refresh : dt.getRefreshes()) {
                 dtSnapshot.refreshSequences.add(Long.valueOf(refresh.getSequence()));
                 dtSnapshot.refreshMillis.add(Long.valueOf(refresh.getMillis()));
                 dtSnapshot.refreshRows.add(refresh.getRows());
+                dtSnapshot.refreshRowIds.add(refresh.getRowIds());
             }
             if (dt.getResolvedColumns() != null) {
                 dtSnapshot.resolvedColumns = derivedColumnSnapshots(dt.getResolvedColumns());
@@ -961,6 +993,9 @@ final class CatalogSnapshotWriter {
         colSnapshot.primaryKey = col.isPrimaryKey();
         colSnapshot.defaultValue = col.getDefaultValue() != null ? col.getDefaultValue().toString() : null;
         colSnapshot.defaultIsExpression = col.getDefaultValue() instanceof DefaultValueExpression;
+        if (colSnapshot.defaultIsExpression) {
+            colSnapshot.defaultTold = ((DefaultValueExpression) col.getDefaultValue()).toldTextOrNull();
+        }
         if (!colSnapshot.defaultIsExpression && col.getDefaultValue() instanceof Serializable) {
             // A literal keeps its value, so a number stays a number rather than coming back as its text.
             colSnapshot.defaultLiteral = (Serializable) col.getDefaultValue();
@@ -976,6 +1011,8 @@ final class CatalogSnapshotWriter {
         colSnapshot.identityOrdered = col.isIdentityOrdered();
         colSnapshot.collation = col.getCollation();
         colSnapshot.formatType = col.getFormatType();
+        colSnapshot.virtualExpression = col.getVirtualExpression();
+        colSnapshot.virtualText = col.getVirtualText();
         colSnapshot.ordinalPosition = col.getOrdinalPosition();
         colSnapshot.tags = SnapshotTags.of(col);
         colSnapshot.referencedTable = col.getReferencedTable();

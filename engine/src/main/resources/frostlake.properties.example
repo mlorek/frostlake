@@ -64,7 +64,7 @@ persistence.saveIntervalSeconds=60
 # restoring an autosave snapshot AND replaying the log would double-apply transactions.
 durability.walEnabled=false
 # WAL file location. Defaults to <persisted-data directory>/wal.log (see persistence.directory above).
-# Uncomment to override explicitly:
+# An engine that cannot open it refuses to start rather than run on without it. Uncomment to override explicitly:
 # durability.walFile=./data/wal.log
 # Write a checkpoint (full state snapshot + log truncation) after this many committed transactions, bounding
 # the log's growth and speeding recovery. 0 disables automatic checkpointing.

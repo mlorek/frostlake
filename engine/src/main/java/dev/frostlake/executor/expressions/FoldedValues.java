@@ -21,6 +21,7 @@ import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.UuidType;
 
@@ -81,7 +82,7 @@ public final class FoldedValues {
                 return exact;
             }
             final BigDecimal decimal = exact instanceof BigDecimal
-                ? (BigDecimal) exact : new BigDecimal(exact.toString());
+                ? (BigDecimal) exact : DecimalText.parse(exact.toString());
             return decimal.scale() == scale ? decimal : decimal.setScale(scale, RoundingMode.HALF_UP);
         }
         if (declared instanceof BooleanType) {

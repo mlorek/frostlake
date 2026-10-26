@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.functions.scalar.datetime.ZonedTimestampShift;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.YearMonthInterval;
 
 import java.math.BigDecimal;
@@ -145,6 +146,6 @@ final class YearMonthIntervalArithmetic {
 
     private static BigDecimal exact(final Number number) {
         return number instanceof Double || number instanceof Float
-            ? BigDecimal.valueOf(number.doubleValue()) : new BigDecimal(number.toString());
+            ? BigDecimal.valueOf(number.doubleValue()) : DecimalText.parse(number.toString());
     }
 }

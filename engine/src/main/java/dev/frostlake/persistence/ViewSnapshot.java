@@ -54,6 +54,10 @@ public class ViewSnapshot implements Serializable {
     // Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)). Null on old snapshots.
     public String rowAccessPolicyName;
     public List<String> rowAccessPolicyColumns;
+    // The aggregation policy with its ENTITY KEY and the join policy the view is read under. Null on old snapshots.
+    public String aggregationPolicyName;
+    public List<String> aggregationEntityKey;
+    public String joinPolicyName;
     // Attached data metric functions and their DATA_METRIC_SCHEDULE as written. Null on old snapshots.
     public List<DataMetricSnapshot> dataMetrics;
     public String dataMetricSchedule;

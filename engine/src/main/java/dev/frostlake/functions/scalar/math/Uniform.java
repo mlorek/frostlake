@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -48,11 +49,11 @@ public class Uniform extends NumericArgumentFunction {
         final Object loArg = args.get(0);
         final Object hiArg = args.get(1);
         if (loArg instanceof Number && hiArg instanceof Number
-                && new BigDecimal(loArg.toString()).compareTo(new BigDecimal(hiArg.toString())) > 0) {
+                && DecimalText.parse(loArg.toString()).compareTo(DecimalText.parse(hiArg.toString())) > 0) {
             // Exact bounds are told at the scale they are drawn at: UNIFORM(1.5, 1, g) names 15 and 10.
             final boolean exact = !isFloatBound(loArg) && !isFloatBound(hiArg);
-            final BigDecimal lo = new BigDecimal(loArg.toString());
-            final BigDecimal hi = new BigDecimal(hiArg.toString());
+            final BigDecimal lo = DecimalText.parse(loArg.toString());
+            final BigDecimal hi = DecimalText.parse(hiArg.toString());
             final int scale = Math.max(0, Math.max(lo.scale(), hi.scale()));
             throw new RuntimeException("Invalid parameter value: "
                 + (exact ? lo.setScale(scale).unscaledValue().toString() : loArg.toString()) + ", "
@@ -75,8 +76,8 @@ public class Uniform extends NumericArgumentFunction {
             return lo + fraction * (hi - lo);
         }
         if (loArg instanceof BigDecimal || hiArg instanceof BigDecimal) {
-            final BigDecimal lo = new BigDecimal(loArg.toString());
-            final BigDecimal hi = new BigDecimal(hiArg.toString());
+            final BigDecimal lo = DecimalText.parse(loArg.toString());
+            final BigDecimal hi = DecimalText.parse(hiArg.toString());
             final int scale = Math.max(0, Math.max(lo.scale(), hi.scale()));
             final BigInteger loUnits = lo.setScale(scale).unscaledValue();
             final BigInteger range = hi.setScale(scale).unscaledValue().subtract(loUnits).add(BigInteger.ONE);

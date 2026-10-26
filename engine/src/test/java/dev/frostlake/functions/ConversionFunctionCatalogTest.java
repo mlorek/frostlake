@@ -72,7 +72,7 @@ public class ConversionFunctionCatalogTest extends MeasuredCellsTestSupport {
             "13|NUMBER(38,0)[SB1]",
             "SELECT TO_NUMBER(12.5::FLOAT), SYSTEM$TYPEOF(TO_NUMBER(12.5::FLOAT))");
         assertAnswer(
-            "1|NUMBER(2,0)[SB1]",
+            "1|NUMBER(38,0)[SB16]",
             "SELECT TO_NUMBER(TRUE), SYSTEM$TYPEOF(TO_NUMBER(TRUE))");
         assertAnswer(
             "REFUSED Numeric value '123456' is out of range",

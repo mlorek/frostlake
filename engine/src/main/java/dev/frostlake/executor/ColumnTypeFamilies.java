@@ -104,7 +104,10 @@ public final class ColumnTypeFamilies {
             throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
                 + spell(sourceType) + "] and [" + spell(target.getDataType()) + "]"));
         }
-        if (!accepts(targetFamily, sourceFamily) || zonedIntoUnzoned(target.getDataType(), sourceType)) {
+        // A structured value reaches a structured column only when it coerces to the column's type, its elements
+        // to the column's elements (see StructuredTypes.coercible).
+        if (!accepts(targetFamily, sourceFamily) || zonedIntoUnzoned(target.getDataType(), sourceType)
+                || isStructuredFamily(targetFamily) && !StructuredTypes.coercible(sourceType, target.getDataType())) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Expression type does not match column data type, expecting "
                 + spell(target.getDataType()) + " but got " + spell(sourceType)

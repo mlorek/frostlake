@@ -60,6 +60,11 @@ public class ColumnSnapshot implements Serializable {
      * on a snapshot written before it was kept, which restores the text.
      */
     public Serializable defaultLiteral;
+    /**
+     * An expression default as it is told back, where that is not the default as written. Null on snapshots written
+     * before it was persisted, which tell the default as written.
+     */
+    public String defaultTold;
     public String comment;
     // Qualified name of an attached masking policy, or null. Old snapshots predate this field (null on load).
     public String maskingPolicyName;
@@ -78,6 +83,12 @@ public class ColumnSnapshot implements Serializable {
      * column, and on a snapshot written before it was kept.
      */
     public DataType formatType;
+    /**
+     * A virtual column's expression as written and as it is told back (see TableColumn#getVirtualExpression); null for
+     * every other column, and on a snapshot written before it was kept.
+     */
+    public String virtualExpression;
+    public String virtualText;
 
     // The position the table gave this column: kept so a restored table reports the same gaps a
     // dropped column left behind. 0 in a snapshot written before positions were recorded.

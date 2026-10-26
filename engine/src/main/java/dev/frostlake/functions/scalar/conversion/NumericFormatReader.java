@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.conversion;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -679,7 +681,7 @@ final class NumericFormatReader {
         if (alternative.hexadecimal()) {
             value = new BigDecimal(new BigInteger(whole.toString(), 16));
         } else {
-            value = new BigDecimal((whole.length() == 0 ? "0" : whole.toString())
+            value = DecimalText.parse((whole.length() == 0 ? "0" : whole.toString())
                 + (fraction.length() == 0 ? "" : "." + fraction));
         }
         if (exponent != 0) {

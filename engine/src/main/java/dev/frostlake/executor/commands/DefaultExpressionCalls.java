@@ -51,6 +51,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The user-defined functions a DEFAULT expression calls, judged as the account judges them (live-verified).
@@ -146,7 +147,7 @@ final class DefaultExpressionCalls {
      * @param written the DEFAULT's expression
      * @return the echo, or null where the plan's printer does not read the default
      */
-    String addColumnEcho(final FrostlakeParser.ExpressionContext written) {
+    String addColumnEcho(final ParserRuleContext written) {
         return printedPlan(barelyNamed(written));
     }
 
@@ -165,22 +166,138 @@ final class DefaultExpressionCalls {
             throw new RuntimeException(SqlCompilationError.at(query.getLine(), query.getCharPositionInLine(),
                 "invalid default argument expression " + resolvedText(ParseTreeText.getOriginalText(written))));
         }
-        final FrostlakeParser.QualifiedNameExprContext name = firstName(written);
-        if (name != null) {
-            final Token at = name.getStart();
-            final StringBuilder spelled = new StringBuilder();
-            for (final String part : SqlIdentifiers.canonicalTextParts(name.getText())) {
-                spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
-            }
-            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
-                "invalid identifier '" + spelled + "'"));
-        }
+        requireNoNames(written);
         if (!callsUserFunction(written)) {
             return;
         }
         final Token at = placeOf(written);
         throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
             "invalid default argument expression " + planText(barelyNamed(written))));
+    }
+
+    /**
+     * Refuse a default that reads a name: nothing is in scope where a default is compiled, so the first name it reads
+     * is an invalid identifier, placed where it stands — {@code DEFAULT NOT c2} is {@code invalid identifier 'C2'}
+     * (live-verified). A default that holds a query is refused for the query instead.
+     *
+     * @param written the default
+     */
+    void requireNoNames(final ParserRuleContext written) {
+        final FrostlakeParser.QualifiedNameExprContext name =
+            firstOfType(written, FrostlakeParser.SELECT) == null ? firstName(written) : null;
+        if (name == null) {
+            return;
+        }
+        final Token at = name.getStart();
+        final StringBuilder spelled = new StringBuilder();
+        for (final String part : SqlIdentifiers.canonicalTextParts(name.getText())) {
+            spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+        }
+        throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+            "invalid identifier '" + spelled + "'"));
+    }
+
+    /**
+     * Refuse a CREATE TABLE column's value DEFAULT that reads a name no column before it carries (all live-verified):
+     * {@code (c2 INT, c INT DEFAULT c2 + 1)} is created, and {@code (c INT DEFAULT c2 + 1, c2 INT)} refuses the c2
+     * where it stands, {@code invalid identifier 'C2'}, as it does a name no column carries and a qualified one,
+     * {@code invalid identifier 'T.C2'}; the column's own name is refused at the column, {@code Column 'C' cannot
+     * reference itself in its default value expression.} A bare name and a condition are judged as before (see
+     * requireNoNames).
+     *
+     * @param column  the column's definition
+     * @param name    the column's canonical name
+     * @param earlier the canonical names of the columns defined before it
+     */
+    static void requireEarlierColumns(final FrostlakeParser.ColumnDefContext column, final String name,
+                                      final Set<String> earlier) {
+        for (final FrostlakeParser.QualifiedNameExprContext read : valueDefaultNames(column)) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(read.qualifiedName());
+            if (parts.length == 1 && name.equals(parts[0])) {
+                throw new RuntimeException(SqlCompilationError.at(column.getStart().getLine(),
+                    column.getStart().getCharPositionInLine(), " Column '" + SqlIdentifiers.spellCanonical(name)
+                        + "' cannot reference itself in its default value expression."));
+            }
+            if (parts.length != 1 || !earlier.contains(parts[0])) {
+                throw invalidIdentifier(read);
+            }
+        }
+    }
+
+    /**
+     * Refuse an added column's value DEFAULT that reads a name: one the table has no column for is an invalid
+     * identifier where it stands, and one reading the table's columns is no default an added column takes, its
+     * columns named by the table, {@code Invalid column default expression [DE.C2 + 1]} (live-verified).
+     *
+     * @param column the added column's definition
+     * @param table  the table it is added to
+     */
+    void requireAddedColumnReads(final FrostlakeParser.ColumnDefContext column, final Table table) {
+        final List<FrostlakeParser.QualifiedNameExprContext> names = valueDefaultNames(column);
+        for (final FrostlakeParser.QualifiedNameExprContext read : names) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(read.qualifiedName());
+            if (parts.length != 1 || table.findColumn(parts[0]) == null) {
+                throw invalidIdentifier(read);
+            }
+        }
+        if (names.isEmpty()) {
+            return;
+        }
+        final FrostlakeParser.ExpressionContext value = valueDefault(column);
+        final String echo = printedPlan(barelyNamed(value), table);
+        throw new RuntimeException(SqlCompilationError.of("Invalid column default expression ["
+            + (echo != null ? echo : ParseTreeText.getOriginalText(value)) + "]"));
+    }
+
+    /** The names a column's value DEFAULT reads, in the order written, a sequence's NEXTVAL left out. */
+    private static List<FrostlakeParser.QualifiedNameExprContext> valueDefaultNames(
+            final FrostlakeParser.ColumnDefContext column) {
+        final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
+        final FrostlakeParser.ExpressionContext value = valueDefault(column);
+        if (value != null && !(value instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            collectNames(value, null, names);
+        }
+        return names;
+    }
+
+    /** A column's DEFAULT when it is a value expression, or null. */
+    private static FrostlakeParser.ExpressionContext valueDefault(final FrostlakeParser.ColumnDefContext column) {
+        for (final FrostlakeParser.ColumnConstraintContext constraint : column.columnConstraint()) {
+            if (constraint.DEFAULT() != null && constraint.defaultExpression() != null) {
+                return ColumnDefinitionParser.valueOf(constraint.defaultExpression());
+            }
+        }
+        return null;
+    }
+
+    private static void collectNames(final ParseTree node, final ParseTree unit,
+                                     final List<FrostlakeParser.QualifiedNameExprContext> names) {
+        if (node == unit) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            if (!"NEXTVAL".equals(parts[parts.length - 1])) {
+                names.add((FrostlakeParser.QualifiedNameExprContext) node);
+            }
+            return;
+        }
+        final ParseTree own = unitSlotOf(node);
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectNames(node.getChild(i), own != null ? own : unit, names);
+        }
+    }
+
+    /** {@code invalid identifier '<name>'} where the name stands. */
+    private static RuntimeException invalidIdentifier(final FrostlakeParser.QualifiedNameExprContext name) {
+        final Token at = name.getStart();
+        final StringBuilder spelled = new StringBuilder();
+        for (final String part : SqlIdentifiers.canonicalTextParts(name.getText())) {
+            spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+        }
+        return new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+            "invalid identifier '" + spelled + "'"));
     }
 
     /**
@@ -193,12 +310,29 @@ final class DefaultExpressionCalls {
      * @return the default as told
      */
     String toldParameterDefault(final ParserRuleContext written) {
+        return toldDefault(written, false);
+    }
+
+    /**
+     * A column's DEFAULT as the account tells it back in DESCRIBE, SHOW COLUMNS, GET_DDL and INFORMATION_SCHEMA:
+     * printed from its plan as a parameter's is, an arithmetic operation in parentheses left uncast (see
+     * {@link #toldParameterDefault}).
+     *
+     * @param written the DEFAULT's expression
+     * @return the default as told
+     */
+    String toldColumnDefault(final ParserRuleContext written) {
+        return toldDefault(written, true);
+    }
+
+    private String toldDefault(final ParserRuleContext written, final boolean column) {
         final String expression = ParseTreeText.getOriginalText(written);
         try {
             final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(
                 new Table("$DEFAULT", new ArrayList<TableColumn>(), true), null, queryExecutor.getFunctionRegistry(),
                 queryExecutor.getCatalog());
-            return printer.strictToldDefaultText(AntlrExpressionParser.parse(expression));
+            final Expression parsed = AntlrExpressionParser.parse(expression);
+            return column ? printer.strictToldColumnDefaultText(parsed) : printer.strictToldDefaultText(parsed);
         } catch (final RuntimeException unprintable) {
             return expression;
         }
@@ -578,10 +712,14 @@ final class DefaultExpressionCalls {
 
     /** An expression's text as the plan prints it, or null where the plan's printer does not read it. */
     private String printedPlan(final String expression) {
+        return printedPlan(expression, new Table("$DEFAULT", new ArrayList<TableColumn>(), true));
+    }
+
+    /** An expression as the plan prints it over a table, its columns named by it; null where it cannot be printed. */
+    private String printedPlan(final String expression, final Table table) {
         try {
-            final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(
-                new Table("$DEFAULT", new ArrayList<TableColumn>(), true), null, queryExecutor.getFunctionRegistry(),
-                queryExecutor.getCatalog());
+            final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(table, null,
+                queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog());
             return printer.strictPlanText(AntlrExpressionParser.parse(expression));
         } catch (final RuntimeException unprintable) {
             return null;

@@ -47,6 +47,8 @@ public final class StoredColumnValues {
     private final Map<String, Boolean> oneValue = new HashMap<>();
     private final Map<String, String[]> textRanges = new HashMap<>();
     private final Map<String, Boolean> nulls = new HashMap<>();
+    private final Map<String, Boolean> onlyNulls = new HashMap<>();
+    private final Map<String, Object> firstValues = new HashMap<>();
 
     /**
      * @param executor the executor whose storage the rows are read from
@@ -65,6 +67,30 @@ public final class StoredColumnValues {
     public boolean holdsOneValue(final Table owner, final String column) {
         final String key = read(owner, column);
         return key != null && Boolean.TRUE.equals(oneValue.get(key));
+    }
+
+    /**
+     * Whether a column has rows and every one of them is NULL: one value too, the NULL, where a NULL counts as one.
+     *
+     * @param owner  the relation the column belongs to
+     * @param column the column's name
+     * @return false where the rows cannot be read, the table is empty or the column's family keeps no statistic
+     */
+    public boolean holdsOnlyNulls(final Table owner, final String column) {
+        final String key = read(owner, column);
+        return key != null && Boolean.TRUE.equals(onlyNulls.get(key));
+    }
+
+    /**
+     * The one value every row of a column holds.
+     *
+     * @param owner  the relation the column belongs to
+     * @param column the column's name
+     * @return the value, or null where the rows hold no one value that is never NULL (see {@link #holdsOneValue})
+     */
+    Object oneValueOf(final Table owner, final String column) {
+        final String key = read(owner, column);
+        return key != null && Boolean.TRUE.equals(oneValue.get(key)) ? firstValues.get(key) : null;
     }
 
     /**
@@ -134,6 +160,9 @@ public final class StoredColumnValues {
         }
         nulls.put(key, Boolean.valueOf(holdsNull));
         oneValue.put(key, Boolean.valueOf(same));
+        firstValues.put(key, first);
+        onlyNulls.put(key,
+            Boolean.valueOf(!rows.isEmpty() && first == null && keepsStatistics(declared.getDataType())));
         if (least != null) {
             textRanges.put(key, new String[] {least, greatest});
         }

@@ -182,7 +182,14 @@ public final class ShowResultHelpers {
         if (clock != null) {
             return clock;
         }
-        if (def instanceof DefaultValueExpression || def instanceof Number || def instanceof Boolean) {
+        if (def instanceof DefaultValueExpression) {
+            return ((DefaultValueExpression) def).getToldText();
+        }
+        if (def instanceof Boolean) {
+            // A boolean default is told in capitals, TRUE (live-verified).
+            return def.toString().toUpperCase(Locale.ROOT);
+        }
+        if (def instanceof Number) {
             return def.toString();
         }
         final String s = def.toString();

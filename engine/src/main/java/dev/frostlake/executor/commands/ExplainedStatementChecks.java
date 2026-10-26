@@ -36,10 +36,11 @@ import dev.frostlake.parser.FrostlakeParser;
  *       {@code Object 'ET' already exists.}, and over one another kind of relation holds, {@code Object 'ET' already
  *       exists as TABLE}, whatever OR REPLACE says; IF NOT EXISTS over a taken name makes it do nothing. The source of
  *       a CLONE or a LIKE, and the table a stream is created on, must be there;</li>
- *   <li>a DROP of a table, a view, a sequence, a schema or a function, an ALTER of a table or a view and a TRUNCATE
- *       must find their object, unless IF EXISTS forgives it, and a DROP naming a relation of another kind is refused
- *       as the running statement refuses it; an ALTER TABLE … RENAME TO is refused onto a taken name, and an ALTER
- *       SESSION's parameters are judged as the running statement judges them.</li>
+ *   <li>a DROP of a table, a view, a sequence, a schema, a function, a procedure, a stage, a file format, a pipe, a
+ *       stream, a task, a tag or a masking policy, an ALTER of a table or a view and a TRUNCATE must find their object,
+ *       unless IF EXISTS forgives it, and a DROP naming a relation of another kind is refused as the running statement
+ *       refuses it, as is an ALTER TABLE naming a view; an ALTER TABLE … RENAME TO is refused onto a taken name, and an
+ *       ALTER SESSION's parameters are judged as the running statement judges them.</li>
  * </ul>
  *
  * <p>What only running the statement finds is not judged: a column added twice, a column dropped that is not there,
@@ -151,6 +152,9 @@ public final class ExplainedStatementChecks {
                 requireNamed(executor, parts, "Stage", true);
             } else if (drop.FILE() != null && drop.FORMAT() != null && !ifExists) {
                 requireNamed(executor, parts, "File format", false);
+            } else if (!ifExists && (drop.PIPE() != null || drop.STREAM() != null || drop.TASK() != null
+                    || drop.TAG() != null || drop.MASKING() != null)) {
+                requireSchemaObject(executor, parts, drop);
             } else if (drop.SCHEMA() != null && !ifExists) {
                 final Catalog catalog = executor.getCatalog();
                 final String[] named = catalog.withoutAccount(parts, 2);
@@ -167,6 +171,46 @@ public final class ExplainedStatementChecks {
                     .getFunctionOverloads(qualified[2]).isEmpty()) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Function", QualifiedName.join(qualified)));
             }
+        } else if (drop.PROCEDURE() != null && !ifExists) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(drop.qualifiedName());
+            final String[] qualified = qualified(executor.getCatalog(), parts);
+            if (executor.getCatalog().requireOwningSchema(QualifiedName.of(parts))
+                    .getProcedureOverloads(qualified[2]).isEmpty()) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure",
+                    QualifiedName.join(qualified)));
+            }
+        }
+    }
+
+    /**
+     * A pipe, a stream, a task, a tag or a masking policy a DROP names is there, refused in full with the privilege
+     * hint where it is not, as the running statement refuses it (live-verified).
+     */
+    private static void requireSchemaObject(final QueryExecutor executor, final String[] parts,
+                                            final FrostlakeParser.DropStatementContext drop) {
+        final Schema schema = executor.getCatalog().requireOwningSchema(QualifiedName.of(parts));
+        final String[] qualified = qualified(executor.getCatalog(), parts);
+        final String name = qualified[2];
+        final String noun;
+        final boolean held;
+        if (drop.PIPE() != null) {
+            noun = "Pipe";
+            held = schema.hasPipeExact(name);
+        } else if (drop.STREAM() != null) {
+            noun = "Stream";
+            held = schema.hasStreamExact(name);
+        } else if (drop.TASK() != null) {
+            noun = "Task";
+            held = schema.hasTaskExact(name);
+        } else if (drop.TAG() != null) {
+            noun = "Tag";
+            held = schema.hasTagExact(name);
+        } else {
+            noun = "Masking policy";
+            held = schema.hasMaskingPolicy(name);
+        }
+        if (!held) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist(noun, QualifiedName.join(qualified)));
         }
     }
 
@@ -218,6 +262,13 @@ public final class ExplainedStatementChecks {
         if (alter.TABLE() != null && alter.tableAction() != null && alter.ICEBERG() == null
                 && alter.EXTERNAL() == null && alter.DYNAMIC() == null) {
             requireRelation(executor, parts, "Table");
+            final String[] qualified = qualified(executor.getCatalog(), parts);
+            if (executor.getCatalog().requireOwningSchema(QualifiedName.of(parts)).relationKindOf(qualified[2])
+                    == RelationKind.VIEW) {
+                // A view is no table to alter: "Object found is of type 'VIEW', not specified type 'TABLE'."
+                throw new RuntimeException(SqlCompilationError.objectOfOtherType(RelationKind.VIEW.spelling(),
+                    RelationKind.TABLE.spelling()));
+            }
             final FrostlakeParser.WholeObjectNameContext renamed = alter.tableAction().wholeObjectName();
             if (renamed != null && renamed.qualifiedName() != null) {
                 final String[] target = ParseTreeText.qualifiedNameParts(renamed.qualifiedName());

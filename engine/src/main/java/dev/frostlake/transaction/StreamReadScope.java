@@ -16,35 +16,31 @@
 
 package dev.frostlake.transaction;
 
-import dev.frostlake.metastore.model.StreamRecord;
-
-import java.util.List;
-
 /**
- * What a consuming DML's stream read actually SAW, captured at read time so the commit can advance the
- * stream past exactly that — and nothing more. {@code committedCut} is the stream's record count at the
- * read (every committed record before it was visible); {@code seenTransient} are the transaction's own
- * buffered changes folded into the read (synthesized by
- * {@link TransactionWriteSet#bufferedChangeRecords}), which the commit will re-emit as real records.
- * Changes the transaction buffers AFTER the read are not in either part, so they stay unconsumed —
- * mirroring Snowflake, where the flush-then-load pattern runs each statement in its own transaction and
- * a stream read never consumes changes made after it.
+ * Where a consuming DML's stream read ended, so the commit can advance the stream to exactly that point and no
+ * further. A read inside a transaction lists the changes captured before the transaction began: {@code cut} counts
+ * the stream's records up to there and {@code sequence} is the transaction's start among the snapshot numbers. The
+ * changes committed after it, the transaction's own among them, stay unconsumed (live-verified).
  */
 public final class StreamReadScope {
 
-    private final long committedCut;
-    private final List<StreamRecord> seenTransient;
+    private final long cut;
+    private final long sequence;
 
-    public StreamReadScope(final long committedCut, final List<StreamRecord> seenTransient) {
-        this.committedCut = committedCut;
-        this.seenTransient = seenTransient;
+    /**
+     * @param cut      the stream's records the read ended at
+     * @param sequence the snapshot number the reading transaction began at
+     */
+    public StreamReadScope(final long cut, final long sequence) {
+        this.cut = cut;
+        this.sequence = sequence;
     }
 
-    public long getCommittedCut() {
-        return committedCut;
+    public long getCut() {
+        return cut;
     }
 
-    public List<StreamRecord> getSeenTransient() {
-        return seenTransient;
+    public long getSequence() {
+        return sequence;
     }
 }

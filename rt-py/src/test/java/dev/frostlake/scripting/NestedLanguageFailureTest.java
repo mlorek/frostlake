@@ -61,6 +61,9 @@ public class NestedLanguageFailureTest extends MeasuredCellsTestSupport {
             def run(session):
                 return session.sql("CALL js_fails()").collect()[0][0]
             $$""");
+        // The thread's Python interpreter is made outside any JavaScript frame first: one first made under a
+        // JavaScript procedure trips the polyglot runtime's sharing assertion, which a JVM running with -ea checks.
+        engine.execute("CALL py_answers()");
     }
 
     /** A JavaScript procedure answering the first cell of {@code statement}, run through snowflake.execute. */

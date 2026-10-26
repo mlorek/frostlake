@@ -20,6 +20,7 @@ import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.SqlCompilationError;
 import java.util.ArrayList;
 import java.util.List;
+import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
@@ -71,6 +72,9 @@ public final class EmptySchemaPartSyntax {
     /** The most lines live reports for the dots past a column reference's fourth part. */
     private static final int MAX_EXTRA_PART_LINES = 2;
 
+    /** The most words before a parse's fault a statement is read again without. */
+    private static final int MAX_CUT_WORDS = 2;
+
     private EmptySchemaPartSyntax() {
     }
 
@@ -119,18 +123,87 @@ public final class EmptySchemaPartSyntax {
         }
         final List<EmptyPartFault> written = new ArrayList<>();
         collect(script, tokens, written);
+        final List<EmptyPartFault> before = writtenBefore(written, parseFaultAt, sql);
+        List<Token> reported = new ArrayList<>();
+        boolean complete = !before.isEmpty() && report(before, tokens, reported);
+        if (!complete) {
+            // A parse that broke off at the statement's end keeps no tree of what came before it: the statement is
+            // read again without the words it broke off at, and that reading speaks when it tells the names whole.
+            final List<EmptyPartFault> again = new ArrayList<>();
+            final TokenStream cut = cutBack(sql, tokens, parseFaultAt, again);
+            final List<EmptyPartFault> againBefore = writtenBefore(again, parseFaultAt, sql);
+            final List<Token> againReported = new ArrayList<>();
+            if (cut != null && !againBefore.isEmpty() && report(againBefore, cut, againReported)) {
+                reported = againReported;
+                complete = true;
+            }
+        }
+        if (reported.isEmpty()) {
+            return;
+        }
+        refuse(reported, complete ? new ArrayList<String>() : parserLines, sql);
+    }
+
+    /** The refusals written before the parse's fault, in order. */
+    private static List<EmptyPartFault> writtenBefore(final List<EmptyPartFault> written, final int[] parseFaultAt,
+                                                      final String sql) {
         final List<EmptyPartFault> before = new ArrayList<>();
         for (final EmptyPartFault fault : written) {
             if (precedes(fault.first(), parseFaultAt, sql)) {
                 before.add(fault);
             }
         }
-        if (before.isEmpty()) {
-            return;
+        return before;
+    }
+
+    /**
+     * The statement read again without its last words up to the parse's fault, one more each time, until it reads
+     * cleanly: {@code SELECT COUNT(T..x) FROM} is read as {@code SELECT COUNT(T..x)}. Collects the refusals of that
+     * reading into {@code faults} and answers its token stream, or null when no such reading is clean.
+     */
+    private static TokenStream cutBack(final String sql, final TokenStream tokens, final int[] parseFaultAt,
+                                       final List<EmptyPartFault> faults) {
+        if (sql == null) {
+            return null;
         }
-        final List<Token> reported = new ArrayList<>();
-        final boolean complete = report(before, tokens, reported);
-        refuse(reported, complete ? new ArrayList<String>() : parserLines, sql);
+        final List<Token> spoken = new ArrayList<>();
+        int fault = -1;
+        for (int i = 0; i < tokens.size(); i++) {
+            final Token token = tokens.get(i);
+            if (token.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            final int[] at = shownAt(token, sql);
+            if (fault < 0 && (token.getType() == Token.EOF || at[0] > parseFaultAt[0]
+                    || at[0] == parseFaultAt[0] && at[1] >= parseFaultAt[1])) {
+                fault = spoken.size();
+            }
+            spoken.add(token);
+        }
+        for (int cut = 1; cut <= MAX_CUT_WORDS && fault - cut > 0; cut++) {
+            final StringBuilder text = new StringBuilder(sql);
+            for (int c = spoken.get(fault - cut).getStartIndex(); c < text.length(); c++) {
+                if (text.charAt(c) != '\n' && text.charAt(c) != '\r') {
+                    text.setCharAt(c, ' ');
+                }
+            }
+            final SyntaxErrorListener listener = new SyntaxErrorListener(text.toString(), true);
+            listener.statementParse();
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text.toString()));
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(listener);
+            final CommonTokenStream stream = new CommonTokenStream(lexer);
+            final FrostlakeParser parser = new FrostlakeParser(stream);
+            ColdPrediction.arm(parser);
+            parser.removeErrorListeners();
+            parser.addErrorListener(listener);
+            final FrostlakeParser.SqlScriptContext read = parser.sqlScript();
+            if (!listener.hasErrors()) {
+                collect(read, stream, faults);
+                return stream;
+            }
+        }
+        return null;
     }
 
     /**

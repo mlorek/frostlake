@@ -92,10 +92,10 @@ public class DeclaredReturnConversionTest extends BaseDatabaseTest {
         assertRefused("CALL p_e4()",
             "Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 38 : Failed to cast variant value 5 to DATE");
         engine.execute("CREATE OR REPLACE PROCEDURE p_e5() RETURNS NUMBER(5,2) LANGUAGE SQL AS $$ BEGIN RETURN TRUE; END; $$");
-        assertEquals("1",
+        assertEquals("1.00",
             rows("CALL p_e5()"));
         engine.execute("CREATE OR REPLACE PROCEDURE p_e19() RETURNS NUMBER(5,2) LANGUAGE SQL AS $$ DECLARE x BOOLEAN := TRUE; BEGIN RETURN x; END; $$");
-        assertEquals("1",
+        assertEquals("1.00",
             rows("CALL p_e19()"));
     }
 

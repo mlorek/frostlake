@@ -37,12 +37,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * A FLOAT through the HTTP transport answers as it does in process: {@code getString} is Snowflake's
- * width and {@code getObject} is a Double, decided by the column's declared type carried in the wire
- * metadata. The JSON wire parses every fraction as a BigDecimal so a NUMBER stays exact, which is why
- * the FLOAT cell has to be re-typed on the client from the type it was declared with. The one number a
- * BigDecimal cannot hold, a negative zero, is read off the wire token's own text as a double, so the
- * sign survives the transport the way it does in process.
+ * A FLOAT through the HTTP transport answers as it does in process: {@code getString} is Snowflake's width
+ * and {@code getObject} is a Double, decided by the column's declared type carried in the wire metadata,
+ * with the digits the account's JSON results carry it with (see FloatWireDigits). The JSON wire parses every
+ * fraction as a BigDecimal so a NUMBER stays exact, which is why the FLOAT cell has to be re-typed on the
+ * client from the type it was declared with. The one number a BigDecimal cannot hold, a negative zero, is
+ * read off the wire token's own text as a double, so the sign survives the transport the way it does in
+ * process.
  */
 public class FloatHttpTransportTest {
 
@@ -116,7 +117,7 @@ public class FloatHttpTransportTest {
     /** The object is a Double for the approximate family and a BigDecimal for the exact one. */
     @Test
     public void getObjectFollowsTheDeclaredFamily() throws SQLException {
-        assertEquals(Double.valueOf(Math.sqrt(2)), object("SELECT SQRT(2) AS v"));
+        assertEquals(Double.valueOf(1.414213562), object("SELECT SQRT(2) AS v"));
         assertEquals(Double.valueOf(3.0), object("SELECT 3.0::FLOAT AS v"));
         assertEquals(Double.valueOf(0.1), object("SELECT 0.1::FLOAT AS v"));
         assertEquals(Double.valueOf(1.0E18), object("SELECT 1e18::FLOAT AS v"));

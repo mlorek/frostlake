@@ -29,6 +29,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementBoundaries;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementNesting;
+import dev.frostlake.executor.udf.RunningEngine;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.executor.udf.UserAggregates;
@@ -71,6 +72,7 @@ import dev.frostlake.stream.StreamManager;
 import dev.frostlake.system.SystemViews;
 import dev.frostlake.task.TaskExecutor;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.transaction.TableLockGate;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.transaction.WalSink;
 import dev.frostlake.transaction.WalStatementContext;
@@ -138,9 +140,10 @@ public class DatabaseEngine {
 
         this.started = StatementClock.instant();
         this.config = config;
-        // Hand every discovered language runtime this engine's configuration (e.g. python.venv).
-        // Runtime state is JVM-wide by nature (polyglot contexts are per-thread, not per-engine), so
-        // implementations are idempotent; without the optional udf modules the loop is empty.
+        // Hand every discovered language runtime this engine's configuration (e.g. python.runtime, python.venv). A
+        // runtime keeps what the configuration chooses for this engine, found by the engine each statement runs for
+        // (see RunningEngine), and engines configured alike share it; without the optional udf modules the loop is
+        // empty.
         for (final UdfLanguageRuntime udfRuntime : UdfRuntimes.all()) {
             udfRuntime.configure(config);
         }
@@ -176,25 +179,36 @@ public class DatabaseEngine {
         final TaskExecutor taskExecutor = new TaskExecutor() {
             @Override
             public int execute(final String sql) {
-                // Serialize with direct-connection statements (same monitor): the scheduler thread
-                // must not interleave with an interactive statement inside the engine's procedural
-                // state.
-                synchronized (DatabaseEngine.this) {
-                    persistenceManager.noteStatementExecuted();
-                    final List<ResultSet> results = queryExecutor.execute(sql);
-                    transactionManager.autocommitStatementEnd();
-                    // DML statements report their affected-row count as a Snowflake-style result set.
-                    return (int) new ExecutionResult(true, results, null).getRowsAffected();
-                }
+                // DML statements report their affected-row count as a Snowflake-style result set.
+                return (int) new ExecutionResult(true, executeQuery(sql), null).getRowsAffected();
             }
 
             @Override
             public List<ResultSet> executeQuery(final String sql) {
+                // Serialize with direct-connection statements (same monitor): the scheduler thread
+                // must not interleave with an interactive statement inside the engine's procedural
+                // state. A request that may wait for a table lock runs alone under its own engine's lock
+                // already, and gives that lock up while it waits: holding the monitor too, it would keep
+                // every request that takes the engine's lock meanwhile waiting for the monitor, the
+                // holder's COMMIT among them (see TableLockGate).
+                if (TableLockGate.mayWait()) {
+                    return runTaskStatement(sql);
+                }
                 synchronized (DatabaseEngine.this) {
-                    persistenceManager.noteStatementExecuted();
+                    return runTaskStatement(sql);
+                }
+            }
+
+            /** One statement of a task's run, ended as a top-level statement ends. */
+            private List<ResultSet> runTaskStatement(final String sql) {
+                persistenceManager.noteStatementExecuted();
+                final EngineConfig displaced = RunningEngine.enter(config);
+                try {
                     final List<ResultSet> results = queryExecutor.execute(sql);
                     transactionManager.autocommitStatementEnd();
                     return results;
+                } finally {
+                    RunningEngine.leave(displaced);
                 }
             }
 
@@ -211,9 +225,14 @@ public class DatabaseEngine {
             @Override
             public List<ResultSet> evaluateCondition(final String sql) {
                 synchronized (DatabaseEngine.this) {
-                    final List<ResultSet> results = queryExecutor.executeUnrecorded(sql);
-                    transactionManager.autocommitStatementEnd();
-                    return results;
+                    final EngineConfig displaced = RunningEngine.enter(config);
+                    try {
+                        final List<ResultSet> results = queryExecutor.executeUnrecorded(sql);
+                        transactionManager.autocommitStatementEnd();
+                        return results;
+                    } finally {
+                        RunningEngine.leave(displaced);
+                    }
                 }
             }
 
@@ -284,6 +303,7 @@ public class DatabaseEngine {
         // A temporary object ends with the session that created it, and none of the sessions whose state a snapshot
         // restored or the log replayed exists any more: whatever they created TEMPORARY is gone.
         TemporaryObjects.drop(catalog, storageEngine, null);
+        queryExecutor.discardTemporaryStageFiles(null);
 
         // After every restore path, so an existing database survives untouched and the
         // exists-check sees the restored world.
@@ -297,6 +317,10 @@ public class DatabaseEngine {
         logger.info("Frostlake SQL Engine initialized successfully");
     }
 
+    /**
+     * The write-ahead log durability asks for: an engine that cannot open it refuses to start, as one whose strict
+     * replay fails does, rather than run on without the durability it was configured for.
+     */
     private WriteAheadLog initWal() {
         if (!config.isWalEnabled()) {
             return null;
@@ -304,8 +328,8 @@ public class DatabaseEngine {
         try {
             return new WriteAheadLog(Path.of(config.getWalFile()), started);
         } catch (final Exception e) {
-            logger.error("Failed to open write-ahead log at {}", config.getWalFile(), e);
-            return null;
+            throw new IllegalStateException("Cannot open the write-ahead log at " + config.getWalFile() + ": "
+                + e.getMessage(), e);
         }
     }
 
@@ -620,7 +644,8 @@ public class DatabaseEngine {
         catalog.beginSessionScope(context.getDatabase(), context.getSchema());
         if (context.carriesSessionState()) {
             sessionContext.restoreSessionState(context.getParameters(), context.getVariables(),
-                context.getUnkeptParameters(), context.getUnkeptVariables());
+                context.getUnkeptParameters(), context.getUnkeptVariables(), context.getDecfloatVariables(),
+                context.getVariablePrecisions());
         }
     }
 
@@ -914,7 +939,8 @@ public class DatabaseEngine {
             catalog.getCurrentSchema(), null, Collections.<CounterDraw>emptyList(),
             sessionContext.getAllSessionVariables(), sessionContext.getAllSessionParameters(),
             Collections.<String>emptySet(), Collections.<String>emptySet(), Collections.<RecordedResult>emptyList(),
-            -1L, 0));
+            -1L, 0).withDecfloatVariables(sessionContext.getDecfloatVariableNames())
+            .withVariablePrecisions(sessionContext.getVariablePrecisions()));
         StatementDraws.beginRecording();
         StatementResults.beginRecording();
         StatementAnswers.beginRecording();
@@ -950,7 +976,9 @@ public class DatabaseEngine {
             catalog.getCurrentDatabase(), catalog.getCurrentSchema(), null, recorded.getDraws(),
             sessionContext.getAllSessionVariables(), sessionContext.getAllSessionParameters(),
             Collections.<String>emptySet(), Collections.<String>emptySet(), recorded.getResults(),
-            recorded.getAnswers(), false, walAppends.get(), 0);
+            recorded.getAnswers(), false, walAppends.get(), 0)
+            .withDecfloatVariables(sessionContext.getDecfloatVariableNames())
+            .withVariablePrecisions(sessionContext.getVariablePrecisions());
         appendTransactionToWal(Collections.singletonList(statementText),
             Collections.singletonList(recorded.getStarted()), Collections.singletonList(context));
         runsLoggedApart.set(Boolean.TRUE);
@@ -1313,11 +1341,14 @@ public class DatabaseEngine {
         // neither logged again nor rolled back again below.
         final boolean[] statementByStatement = {false};
         final WriteSetSavepoint[] statementSavepoint = {null};
+        // Set when a stage of a ->> chain failed and undid itself: the statement's own undo then leaves be.
+        final boolean[] stageUndone = {false};
         statementDepth.set(Integer.valueOf(statementDepth.get().intValue() + 1));
         if (statementDepth.get().intValue() == 1) {
             // A debt an earlier statement on this thread left unsettled is not this one's.
             CheckpointDebt.settle();
         }
+        final EngineConfig displacedEngine = RunningEngine.enter(config);
         final StatementBoundaries displacedBoundaries = queryExecutor.bindStatementBoundaries(new StatementBoundaries() {
             @Override
             public void begin() {
@@ -1342,8 +1373,38 @@ public class DatabaseEngine {
             @Override
             public void fail(final RuntimeException cause) {
                 markUnloggedDraws(StatementDraws.endRecording(), false);
-                rollbackFailedStatement(statementSavepoint[0], cause);
+                if (stageUndone[0]) {
+                    releaseRequestSavepoint(statementSavepoint[0]);
+                } else {
+                    rollbackFailedStatement(statementSavepoint[0], cause);
+                }
+                stageUndone[0] = false;
                 statementSavepoint[0] = null;
+            }
+
+            @Override
+            public WriteSetSavepoint beginStage() {
+                return config.isDeferredApply() && transactionManager.isLastingTransaction()
+                    ? transactionManager.getCurrentTransaction().beginStatementSavepoint() : null;
+            }
+
+            @Override
+            public void completeStage(final WriteSetSavepoint savepoint, final boolean commit) {
+                if (savepoint != null && transactionManager.isLastingTransaction()) {
+                    transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint(savepoint);
+                }
+                if (commit) {
+                    transactionManager.autocommitStatementEnd();
+                }
+            }
+
+            @Override
+            public void failStage(final WriteSetSavepoint savepoint, final RuntimeException cause) {
+                // Without a savepoint the stage's transaction holds its work alone: the ones before it committed, or
+                // it opened the transaction AUTOCOMMIT off holds.
+                rollbackFailedStatement(savepoint, cause);
+                stageUndone[0] = true;
+                statementByStatement[0] = true;
             }
         });
 
@@ -1393,6 +1454,9 @@ public class DatabaseEngine {
                 releaseRequestSavepoint(stmtSavepoint);
             }
             // Re-throw exception so tests and callers can handle it
+            if (statementDepth.get().intValue() == 1) {
+                throw StatementFailureSize.kept(e);
+            }
             throw e;
         } catch (final Exception e) {
             logger.error("Error executing SQL:\n{}\nError: {}", sql, e.getMessage(), e);
@@ -1402,7 +1466,11 @@ public class DatabaseEngine {
                 releaseRequestSavepoint(stmtSavepoint);
             }
             oweCheckpointForFailedStatements(sql);
-            // Re-throw exception so tests can catch it
+            // Re-throw exception so tests can catch it; the client's statement reports at most what the account
+            // sends back.
+            if (statementDepth.get().intValue() == 1 && e instanceof RuntimeException) {
+                throw StatementFailureSize.kept((RuntimeException) e);
+            }
             throw e;
         } catch (final StackOverflowError overflow) {
             // Nesting the stack could not hold is the statement's failure like any other, undone and reported as
@@ -1417,6 +1485,7 @@ public class DatabaseEngine {
             oweCheckpointForFailedStatements(sql);
             throw failure;
         } finally {
+            RunningEngine.leave(displacedEngine);
             queryExecutor.restoreStatementBoundaries(displacedBoundaries);
             statementDepth.set(Integer.valueOf(statementDepth.get().intValue() - 1));
             if (statementDepth.get().intValue() == 0) {
@@ -1631,8 +1700,11 @@ public class DatabaseEngine {
      * restored functions and procedures recompile lazily from their stored source on first use.
      */
     public synchronized void restoreStateFrom(final Path dir) throws IOException, ClassNotFoundException {
+        final Set<Object> ownTemporaries = TemporaryObjects.held(catalog);
         persistenceManager.restoreFrom(dir, catalog, storageEngine);
         queryExecutor.copyInternalStagesFrom(dir.resolve("stages"));
+        // What the snapshot holds TEMPORARY belonged to sessions of the engine that took it (see TemporaryObjects).
+        TemporaryObjects.dropAllBut(catalog, storageEngine, ownTemporaries);
     }
 
     /**
@@ -1654,6 +1726,8 @@ public class DatabaseEngine {
             clone.queryExecutor.copyInternalStagesOf(queryExecutor);
         }
         clone.persistenceManager.applyState(state, tableData, clone.catalog, clone.storageEngine);
+        // The clone has none of this engine's sessions, so nothing created TEMPORARY comes with it.
+        TemporaryObjects.drop(clone.catalog, clone.storageEngine, null);
         return clone;
     }
 
@@ -1766,9 +1840,9 @@ public class DatabaseEngine {
      * Makes a user the one the engine's sessions run as: CURRENT_USER() names it - the engine's own SYSTEM session
      * names the configured user - and no role the user may not use stays in use, the former session's primary role
      * included, which gives way to PUBLIC until the embedder names the user's with setCurrentRole. A session of the
-     * user starts with the secondary roles its DEFAULT_SECONDARY_ROLES names, when a statement wrote it: ('ALL') puts
-     * every role granted to the user in use, () none (documented); a user whose roles were never written leaves the
-     * secondary roles as they are. Switching to SYSTEM, or to a name no user has, leaves the roles as they are.
+     * user starts with the secondary roles its DEFAULT_SECONDARY_ROLES names: ('ALL'), the default a user keeps until
+     * a statement writes another, puts every role granted to the user in use, () none (documented). Switching to
+     * SYSTEM, or to a name no user has, leaves the roles as they are.
      *
      * @param username the user's name
      */
@@ -1789,20 +1863,19 @@ public class DatabaseEngine {
         if (former != null && !catalog.mayActivate(former)) {
             sessionContext.setCurrentRole("PUBLIC");
         }
-        if (user.isDefaultSecondaryRolesWritten()) {
-            catalog.useSecondaryRoles(user.getDefaultSecondaryRoles().contains("\"ALL\"")
-                ? null : Collections.singletonList("NONE"));
-        }
+        catalog.useSecondaryRoles(user.getDefaultSecondaryRoles().contains("\"ALL\"")
+            ? null : Collections.singletonList("NONE"));
     }
 
     /**
      * Makes a role the session's primary one, named in any case: the role's own name when one answers to it as
-     * given, the name in upper case otherwise.
+     * given, the name in upper case otherwise. The primary role it replaces stops acting for the session, as after
+     * USE ROLE, unless the secondary roles in use name it.
      *
      * @param roleName the role's name
      */
     public void setCurrentRole(final String roleName) {
-        sessionContext.setCurrentRole(catalog.resolveRoleName(roleName));
+        sessionContext.useRole(catalog.resolveRoleName(roleName));
     }
 
     public String getCurrentUser() {
@@ -1819,6 +1892,7 @@ public class DatabaseEngine {
      */
     private void dropTemporaryObjects() {
         TemporaryObjects.drop(catalog, storageEngine, null);
+        queryExecutor.discardTemporaryStageFiles(null);
     }
 
     /**
@@ -1830,7 +1904,9 @@ public class DatabaseEngine {
      * @return how many objects were dropped
      */
     public int dropTemporaryObjectsOf(final long sessionNumber) {
-        return TemporaryObjects.drop(catalog, storageEngine, Long.valueOf(sessionNumber));
+        final int dropped = TemporaryObjects.drop(catalog, storageEngine, Long.valueOf(sessionNumber));
+        queryExecutor.discardTemporaryStageFiles(Long.valueOf(sessionNumber));
+        return dropped;
     }
 
     /**

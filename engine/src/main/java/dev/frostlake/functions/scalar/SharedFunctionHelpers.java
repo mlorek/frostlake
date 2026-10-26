@@ -25,6 +25,7 @@ import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.executor.expressions.RawOverflowKind;
 import dev.frostlake.executor.expressions.RawRangeOverflow;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
@@ -524,12 +525,12 @@ public final class SharedFunctionHelpers {
         }
         if (value instanceof String) {
             try {
-                return new BigDecimal(((String) value).trim());
+                return DecimalText.parse(((String) value).trim());
             } catch (final NumberFormatException notANumber) {
                 throw new RuntimeException(NumericRangeRefusal.unreadableText(value));
             }
         }
-        return new BigDecimal(value.toString());
+        return DecimalText.parse(value.toString());
     }
 
     // --- shared date/datetime parsing helpers ---
@@ -825,6 +826,8 @@ public final class SharedFunctionHelpers {
         if (epoch != null) return epoch;
         try { return LocalTime.parse(s); } catch (final Exception ignored) {}
         try { return LocalTime.parse(s, DateTimeFormatter.ofPattern("HH:mm")); } catch (final Exception ignored) {}
+        final LocalTime auto = AutoTemporalParser.parseTime(s);
+        if (auto != null) return auto;
         // Live names the TYPE it could not read the text as, exactly as the DATE and TIMESTAMP
         // readers do: 'abc'::TIME and TO_TIME('abc') are both "Time 'abc' is not recognized".
         throw new RuntimeException("Time '" + s + "' is not recognized");
@@ -1005,7 +1008,7 @@ public final class SharedFunctionHelpers {
             return (BigDecimal) value;
         }
         if (value instanceof Double || value instanceof Float) {
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         return BigDecimal.valueOf(value.longValue());
     }

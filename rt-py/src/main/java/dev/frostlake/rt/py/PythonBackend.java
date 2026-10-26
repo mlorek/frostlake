@@ -74,6 +74,37 @@ interface PythonBackend {
     void leaveModule(Object frame);
 
     /**
+     * Enter the module namespace a call site of a routine keeps for the running statement, as the site's last call
+     * left it, or a namespace of its own where the site made no call yet (see PythonModuleState).
+     *
+     * @param key the call site's key
+     * @return the frame, to be left with {@link #leaveModule(Object)}
+     */
+    Object resumeModule(String key);
+
+    /**
+     * Whether a frame holds the namespace its call site kept, so that the routine's body has run in it already.
+     *
+     * @param frame a frame {@link #enterModule()} or {@link #resumeModule(String)} entered
+     * @return whether it was kept
+     */
+    boolean resumed(Object frame);
+
+    /**
+     * Keep the namespace the running call holds for its call site's next call.
+     *
+     * @param key the call site's key
+     */
+    void keepModule(String key);
+
+    /**
+     * Forget the namespace a call site kept: its statement has ended.
+     *
+     * @param key the call site's key
+     */
+    void forgetModule(String key);
+
+    /**
      * Make a helper module of the runtime's from its source, once per interpreter: what it defines lives in no
      * routine's namespace. The module is importable by its name.
      *

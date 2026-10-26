@@ -62,9 +62,6 @@ public class DatabaseStatement implements Statement {
     /** The query timeout in seconds, 0 for none (see {@link #setQueryTimeout}). */
     private volatile int queryTimeoutSeconds;
 
-    /** Whether one of this object's statements is running now, which {@link #cancel()} cancels. */
-    private volatile boolean running;
-
     /**
      * The real driver's per-statement parameter surface ({@code unwrap(...).setParameter(...)});
      * MULTI_STATEMENT_COUNT is the one parameter this driver understands.
@@ -120,13 +117,7 @@ public class DatabaseStatement implements Statement {
             currentResultSet.close();
             currentResultSet = null;
         }
-        final SqlResponse response;
-        running = true;
-        try {
-            response = httpClient.execute(sql, desiredMultiCount(), queryTimeoutSeconds);
-        } finally {
-            running = false;
-        }
+        final SqlResponse response = httpClient.execute(sql, desiredMultiCount(), queryTimeoutSeconds, this);
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         return response;
     }
@@ -329,11 +320,9 @@ public class DatabaseStatement implements Statement {
     @Override
     public void cancel() throws SQLException {
         // From any thread: the running statement ends with "SQL execution canceled", and this object runs the next
-        // one as usual (live-verified). The server cancels what its session runs, so only a statement of this
-        // object's own is canceled.
-        if (running) {
-            httpClient.cancelRunning();
-        }
+        // one as usual (live-verified). Only a request of this object's own in flight is canceled: one waiting
+        // behind another object's request on the connection cancels nothing of it.
+        httpClient.cancelRunning(this);
     }
 
     @Override

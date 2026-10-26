@@ -45,6 +45,17 @@ public final class OuterNameBindings {
         }
     };
 
+    /**
+     * Bind a bare name two relations of the outer row carry as ambiguous: reading it is live's {@code ambiguous
+     * column name}.
+     *
+     * @param bindings the bindings
+     * @param key      the name, as the column spells it
+     */
+    public static void bindAmbiguous(final Map<String, Object> bindings, final String key) {
+        bindings.put(key, AMBIGUOUS);
+    }
+
     /** The key the outer columns' canonical spellings are recorded under; no identifier spells it. */
     private static final String SPELLINGS = "\u0000outer column spellings";
 

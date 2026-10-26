@@ -19,6 +19,7 @@ package dev.frostlake.jdbc;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.http.ColumnData;
 import dev.frostlake.http.ResultSetData;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ClientValueText;
 import dev.frostlake.values.TemporalText;
@@ -129,7 +130,7 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
         }
         if (value instanceof String && "DECFLOAT".equalsIgnoreCase(typeName(column))) {
             // A DECFLOAT crosses the wire as its text; the client reads the BigDecimal of it, as the account's does.
-            return new BigDecimal((String) value);
+            return DecimalText.parse((String) value);
         }
         if (value instanceof Number && !(value instanceof Double) && isApproximateColumn(column)) {
             // The wire parses every JSON fraction as a BigDecimal to keep NUMBER exact; a FLOAT column's
@@ -151,7 +152,7 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
         }
         if (value instanceof Number && !(value instanceof BigDecimal) && "DECIMAL".equalsIgnoreCase(typeName(column))) {
             // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         if (value instanceof Number && !(value instanceof BigDecimal)
                 && !(value instanceof Double) && isWholeNumberColumn(column)) {

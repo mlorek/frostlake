@@ -33,9 +33,12 @@ import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.ConvertedValueType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.FileType;
 import dev.frostlake.types.GeoTypes;
+import dev.frostlake.types.GeographyType;
+import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.types.IntervalDayTimeType;
 import dev.frostlake.types.IntervalYearMonthType;
@@ -609,10 +612,9 @@ final class TypeInferencer {
             }
             final NumericType declaredNumber = numberTargetWithParameters(cast.getTargetType());
             final DataType target = declaredNumber != null ? declaredNumber : typeForName(cast.getTargetType());
-            // A NUMBER cast to a TIMESTAMP flavour declares the number's own SCALE as its precision,
-            // and a BOOLEAN cast to an exact number is NUMBER(2,0) whatever width the cast spells.
-            // Both rules live in ConvertedValueType, because a typed scripting declaration applies the
-            // same conversion and has to report the same type.
+            // A NUMBER cast to a TIMESTAMP flavour declares the number's own SCALE as its precision. The
+            // rule lives in ConvertedValueType, because a typed scripting declaration applies the same
+            // conversion and has to report the same type.
             return ConvertedValueType.of(infer(cast.getExpression()), target);
         }
         if (expr instanceof WindowFunctionExpression) {
@@ -646,7 +648,8 @@ final class TypeInferencer {
         if (expr instanceof FunctionCallExpression) {
             final FunctionCallExpression call = visitor.splicedStarArguments((FunctionCallExpression) expr);
             if (call.getNameExpression() != null) {
-                return null;   // IDENTIFIER(expr): the target function is dynamic
+                // IDENTIFIER(expr): the target function is dynamic, but a procedure's token answers its RETURNS type.
+                return visitor.procedureTokenType(call);
             }
             // IDENTIFIER(<value>) names a column, so it carries the column's own type — which is what
             // the predicate rule reads to refuse `WHERE IDENTIFIER('a')` over a NUMBER (live-verified).
@@ -875,13 +878,8 @@ final class TypeInferencer {
             // see — where the registry holds only the nominal NUMBER(38,0). Without this, a CASE
             // over TO_DECIMAL(x, 5, 3) folded at scale 0 and rounded the fraction away.
             if (declared instanceof NumericType && NUMERIC_CONVERSIONS.contains(funcName)) {
-                // A BOOLEAN source declares NUMBER(2,0) WHATEVER the call spells: live types
-                // TO_NUMBER(TRUE) and TO_DECIMAL(TRUE, 5, 1) alike as NUMBER(2,0), and the value is
-                // the unscaled 1 — the same pair a BOOLEAN cast to any exact number declares.
-                if (!call.getArguments().isEmpty()
-                        && infer(call.getArguments().get(0)) instanceof BooleanType) {
-                    return new NumericType("NUMBER", 2, 0);
-                }
+                // A BOOLEAN source declares what the call spells too: TO_NUMBER(TRUE) is a NUMBER(38,0) and
+                // TO_DECIMAL(TRUE, 5, 1) the 1.0 of a NUMBER(5,1) (live-verified).
                 return declaredNumericConversionType(call.getArguments());
             }
             // AS_DECIMAL and AS_NUMBER declare the (precision, scale) written after the VARIANT, NUMBER(38,0) for
@@ -1896,7 +1894,7 @@ final class TypeInferencer {
             return null;
         }
         try {
-            return NumericLiteralTypes.forDecimal(new BigDecimal(String.valueOf(value)));
+            return NumericLiteralTypes.forDecimal(DecimalText.parse(String.valueOf(value)));
         } catch (final NumberFormatException notANumber) {
             return null;
         }
@@ -2592,6 +2590,11 @@ final class TypeInferencer {
             // Each of the family over a DECFLOAT is a DECFLOAT (live-verified).
             return NumericType.DECFLOAT;
         }
+        if (!absolute && args.size() > 1 && NumericType.isApproximate(infer(args.get(1)))) {
+            // A FLOAT scale rounds in FLOAT arithmetic, so the call is a FLOAT: ROUND(1.2345, CAST(2 AS FLOAT)) is a
+            // FLOAT 1.23 (live-verified, see FloatScaleRounding).
+            return NumericType.FLOAT;
+        }
         if (!(input instanceof NumericType)) {
             if (!(input instanceof StringType) && !(input instanceof VariantType)) {
                 return null;
@@ -2643,7 +2646,7 @@ final class TypeInferencer {
                 || !(((LiteralExpression) bare).getValue() instanceof Number)) {
             return null;
         }
-        final BigDecimal written = new BigDecimal(((LiteralExpression) bare).getValue().toString());
+        final BigDecimal written = DecimalText.parse(((LiteralExpression) bare).getValue().toString());
         if (written.stripTrailingZeros().scale() > 0) {
             return null;
         }
@@ -2730,7 +2733,7 @@ final class TypeInferencer {
                 return null;
             }
             try {
-                return new BigDecimal(value.toString());
+                return DecimalText.parse(value.toString());
             } catch (final NumberFormatException notANumber) {
                 return null;
             }
@@ -2952,7 +2955,7 @@ final class TypeInferencer {
         final LiteralExpression written = (LiteralExpression) args.get(0);
         if (written.getType() == LiteralType.DECIMAL) {
             // A whole-valued decimal is the precision it spells: CURRENT_TIME(3.0) is TIME(3) (live-verified).
-            final BigDecimal value = new BigDecimal(String.valueOf(written.getValue())).stripTrailingZeros();
+            final BigDecimal value = DecimalText.parse(String.valueOf(written.getValue())).stripTrailingZeros();
             return value.scale() <= 0 && value.signum() >= 0 && value.compareTo(BigDecimal.valueOf(9)) <= 0
                 ? Integer.valueOf(value.intValue()) : null;
         }
@@ -3000,13 +3003,21 @@ final class TypeInferencer {
             // The deviation of a DECFLOAT is a DECFLOAT of 38 digits (live-verified).
             return NumericType.DECFLOAT;
         }
+        if ((PAIR_STATISTICS.contains(funcName) || funcName.equals("SKEW") || funcName.equals("KURTOSIS"))
+                && readsDecfloat(call)) {
+            // A statistic of pairs either side of which is a DECFLOAT, and the moments of one, are DECFLOATs of 38
+            // digits (live-verified).
+            return NumericType.DECFLOAT;
+        }
         if (isStandardDeviation(funcName) || PAIR_STATISTICS.contains(funcName) || funcName.equals("SKEW")) {
-            // The deviation, the skewness and the statistics of pairs answer FLOAT whatever they read.
+            // The deviation, the skewness and the statistics of pairs answer FLOAT whatever else they read.
             return new NumericType("FLOAT", 38, 9);
         }
         if (funcName.equals("KURTOSIS")) {
-            // The one statistic computed as an exact number (live: NUMBER(38,12)).
-            return new NumericType("NUMBER", 38, 12);
+            // Computed as an exact number over an exact one (live: NUMBER(38,12)), as a FLOAT over a FLOAT or a text.
+            final DataType read = call.getArguments().isEmpty() ? null : infer(call.getArguments().get(0));
+            return NumericType.isApproximate(read) || read instanceof StringType ? new NumericType("FLOAT", 38, 9)
+                : new NumericType("NUMBER", 38, 12);
         }
         if (funcName.equals("REGR_COUNT")) {
             return IntegerResultWidths.COUNTER;
@@ -3256,6 +3267,13 @@ final class TypeInferencer {
         if (funcName.equals("RATIO_TO_REPORT")) {
             return ratioToReportType(window.getArguments());
         }
+        // An aggregate that answers an ARRAY, an OBJECT or a BINARY answers it as a window function too: ARRAY_AGG(i)
+        // OVER (PARTITION BY g) is an ARRAY, with or without WITHIN GROUP, and a table created from it holds one
+        // (live-verified).
+        final DataType collected = aggregateReturnType(funcName);
+        if (collected != null) {
+            return collected;
+        }
         final List<Expression> args = window.getArguments();
         // An ORDERED aggregate is typed from its WITHIN GROUP key, exactly as the non-windowed spelling
         // is — the arguments carry only the fraction, which types nothing.
@@ -3294,9 +3312,19 @@ final class TypeInferencer {
         "REGR_SLOPE", "REGR_INTERCEPT", "REGR_R2", "REGR_AVGX", "REGR_AVGY", "REGR_SXX", "REGR_SYY", "REGR_SXY"));
 
     /** Every spelling of the three bitwise aggregates. */
-    private static final Set<String> BIT_AGGREGATES = new HashSet<>(Arrays.asList("BITAND_AGG", "BITANDAGG",
+    static final Set<String> BIT_AGGREGATES = new HashSet<>(Arrays.asList("BITAND_AGG", "BITANDAGG",
         "BIT_AND_AGG", "BIT_ANDAGG", "BITOR_AGG", "BITORAGG", "BIT_OR_AGG", "BIT_ORAGG", "BITXOR_AGG", "BITXORAGG",
         "BIT_XOR_AGG", "BIT_XORAGG"));
+
+    /** Whether any argument of a statistic is a DECFLOAT. */
+    private boolean readsDecfloat(final FunctionCallExpression call) {
+        for (final Expression argument : call.getArguments()) {
+            if (NumericType.isDecfloat(infer(argument))) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /** The three spellings that answer FLOAT for an exact input, unlike the variance they root. */
     private static boolean isStandardDeviation(final String funcName) {
@@ -3723,6 +3751,12 @@ final class TypeInferencer {
                 return ArrayType.ARRAY;
             case "UUID":
                 return UuidType.UUID;
+            // A geospatial target is the type a geospatial column has: a NULL cast to GEOGRAPHY is refused as a GROUP
+            // BY key and as TO_VARCHAR's argument, and a Snowpark schema names it GeographyType (live-verified).
+            case "GEOGRAPHY":
+                return GeographyType.GEOGRAPHY;
+            case "GEOMETRY":
+                return GeometryType.GEOMETRY;
             default:
                 return null;
         }

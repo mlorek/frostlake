@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.file;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
@@ -87,7 +88,7 @@ public final class FileFunctionHelper {
         if (found == null || found.isNull()) {
             return null;
         }
-        return new BigDecimal(found.asString());
+        return DecimalText.parse(found.asString());
     }
 
     /**

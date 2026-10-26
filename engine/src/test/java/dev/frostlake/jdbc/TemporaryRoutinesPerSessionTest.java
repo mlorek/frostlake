@@ -33,8 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * A temporary function or procedure is its own session's alone (live-verified): another session neither calls nor
  * lists it - INFORMATION_SCHEMA.FUNCTIONS alone lists it everywhere - creates its own under the same name and
- * signature, and drops only its own. A temporary routine may not take a permanent routine's signature; a permanent
- * one created after it is the one every session calls, its creator's included.
+ * signature, and drops only its own. A temporary routine may not take a permanent routine's signature, nor a session
+ * create a permanent routine over its own temporary one - each refused with the existing routine spelled, whatever OR
+ * REPLACE or IF NOT EXISTS says; a permanent one another session creates after it is the one every session calls, its
+ * creator's included.
  */
 public class TemporaryRoutinesPerSessionTest extends BaseJdbcTest {
 
@@ -156,6 +158,41 @@ public class TemporaryRoutinesPerSessionTest extends BaseJdbcTest {
                 {"B", "CREATE PROCEDURE latep() RETURNS NUMBER LANGUAGE SQL AS $$ BEGIN RETURN 6; END; $$", "OK"},
                 {"A", "CALL latep()", "6"},
                 {"B", "CALL latep()", "6"},
+            });
+        }
+    }
+
+    @Test
+    public void aRoutineMeetsOneOfTheOtherLifetimeItsSessionHolds() throws SQLException {
+        try (Connection first = another(); Connection second = another();
+             Statement a = first.createStatement(); Statement b = second.createStatement()) {
+            final String qfTaken = "REFUSED Object 'QF(X NUMBER):NUMBER(38,0)' already exists.";
+            final String qtTaken = "REFUSED Object 'QT(X NUMBER):NUMBER(38,0)' already exists.";
+            final String qpTaken = "REFUSED Object 'QP(X NUMBER):NUMBER(38,0)' already exists.";
+            assertSteps(a, b, new String[][] {
+                {"C", "CREATE OR REPLACE FUNCTION qf(x INT) RETURNS INT AS 'x * 10'", "OK"},
+                {"C", "CREATE FUNCTION qf(x INT) RETURNS INT AS 'x * 20'", "REFUSED Object 'QF' already exists."},
+                {"A", "CREATE TEMPORARY FUNCTION qf(y INT) RETURNS NUMBER(10,2) AS 'y * 100'", qfTaken},
+                {"A", "CREATE TEMPORARY FUNCTION IF NOT EXISTS qf(x INT) RETURNS INT AS 'x * 100'", qfTaken},
+                {"A", "CREATE OR REPLACE TEMPORARY FUNCTION qf(x INT) RETURNS INT AS 'x * 1000'", qfTaken},
+                {"A", "SELECT qf(1)", "10"},
+                {"C", "SELECT qf(1)", "10"},
+                {"A", "CREATE TEMPORARY FUNCTION qt(x INT) RETURNS INT AS 'x + 5'", "OK"},
+                {"A", "CREATE FUNCTION qt(x INT) RETURNS INT AS 'x + 6'", qtTaken},
+                {"A", "CREATE OR REPLACE FUNCTION qt(x INT) RETURNS INT AS 'x + 7'", qtTaken},
+                {"A", "SELECT qt(1)", "6"},
+                {"B", "SELECT qt(1)", "REFUSED Unknown function QT."},
+                {"A", "DROP FUNCTION qt(INT)", "OK"},
+                {"A", "SELECT qt(1)", "REFUSED Unknown function QT."},
+                {"C", "CREATE OR REPLACE PROCEDURE qp(x INT) RETURNS INT LANGUAGE SQL AS 'BEGIN RETURN x; END'", "OK"},
+                {"A", "CREATE TEMPORARY PROCEDURE qp(x INT) RETURNS INT LANGUAGE SQL AS 'BEGIN RETURN x * 2; END'",
+                    qpTaken},
+                {"A", "CREATE OR REPLACE TEMPORARY PROCEDURE qp(x INT) RETURNS INT LANGUAGE SQL AS"
+                    + " 'BEGIN RETURN x * 3; END'", qpTaken},
+                {"C", "CREATE PROCEDURE qp(x INT) RETURNS INT LANGUAGE SQL AS 'BEGIN RETURN x; END'",
+                    "REFUSED Object 'QP' already exists."},
+                {"A", "CALL qp(1)", "1"},
+                {"C", "CALL qp(1)", "1"},
             });
         }
     }

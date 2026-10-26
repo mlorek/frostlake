@@ -260,8 +260,8 @@ public class CreateSecurityHandler implements CommandHandler {
             requirePolicyName(schema, policyName, parts, orReplace, ifNotExists, Privilege.CREATE_MASKING_POLICY);
             if (orReplace) {
                 queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
-                if (catalog.isPolicyInUse(policyName, true)) {
-                    throw new RuntimeException("Policy " + policyName.toUpperCase(Locale.ROOT)
+                if (catalog.isPolicyInUse(schema, policyName, true)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
             } else if (!ifNotExists && schema.getMaskingPolicyExact(policyName) != null) {
@@ -456,6 +456,11 @@ public class CreateSecurityHandler implements CommandHandler {
             compileRowAccessBody(ctx, policyName, params, body, schema);
             requirePolicyKind(schema, policyName, "ROW_ACCESS_POLICY", parts, orReplace);
             if (orReplace) {
+                // A policy attached to a table or a view is replaced no more than it is dropped (live-verified).
+                if (catalog.isPolicyInUse(schema, policyName, false)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                        + " cannot be dropped/replaced as it is associated with one or more entities.");
+                }
                 if (schema.getRowAccessPolicyExact(policyName) != null) {
                     schema.dropRowAccessPolicy(policyName);
                 }
@@ -501,9 +506,8 @@ public class CreateSecurityHandler implements CommandHandler {
             requirePolicyCreatable(schema, policyName, "JOIN_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_JOIN_POLICY);
             if (orReplace) {
-                if (catalog.isJoinPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
-                        + policyName.toUpperCase(Locale.ROOT)
+                if (catalog.isJoinPolicyInUse(schema, policyName)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
                 schema.dropJoinPolicy(policyName);
@@ -555,9 +559,8 @@ public class CreateSecurityHandler implements CommandHandler {
             requirePolicyCreatable(schema, policyName, "AGGREGATION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_AGGREGATION_POLICY);
             if (orReplace) {
-                if (catalog.isAggregationPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
-                        + policyName.toUpperCase(Locale.ROOT)
+                if (catalog.isAggregationPolicyInUse(schema, policyName)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
                 if (schema.getAggregationPolicyExact(policyName) != null) {
@@ -615,9 +618,8 @@ public class CreateSecurityHandler implements CommandHandler {
             requirePolicyCreatable(schema, policyName, "PROJECTION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_PROJECTION_POLICY);
             if (orReplace) {
-                if (catalog.isProjectionPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
-                        + policyName.toUpperCase(Locale.ROOT)
+                if (catalog.isProjectionPolicyInUse(schema, policyName)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
                 if (schema.getProjectionPolicyExact(policyName) != null) {
@@ -655,11 +657,12 @@ public class CreateSecurityHandler implements CommandHandler {
         final boolean orReplace = ctx.or_replace() != null;
         try {
             final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-            final String contactName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written: a quoted name keeps its case and is another contact than its upper-case namesake
+            // (live-verified).
+            final String contactName = parts[parts.length - 1];
             ddl.checkCreatePrivilege(Privilege.CREATE_CONTACT, schema);
             if (!orReplace && schema.hasContact(contactName)) {
-                throw new RuntimeException(SqlCompilationError.of(
-                    "Object '" + contactName + "' already exists."));
+                throw policyNameTaken(parts);
             }
             final Contact contact = new Contact(contactName);
             for (final FrostlakeParser.ContactPropertyContext property : ctx.contactProperty()) {
@@ -748,7 +751,14 @@ public class CreateSecurityHandler implements CommandHandler {
 
     public Object handleCreateRole(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String roleName = getText(ctx.identifier(0));
+        // CREATE ROLE on the account, which USERADMIN and the roles above it hold (documented).
+        AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.CREATE_ROLE);
         if (ctx.or_replace() != null) {
+            if (catalog.roleExistsExact(roleName)) {
+                final Role replaced = catalog.getRoleExact(roleName);
+                AccountPrivileges.requirePrincipalOwnership(queryExecutor, "ROLE", replaced.getName(),
+                    replaced.getOwner());
+            }
             try { catalog.dropRole(roleName); } catch (final RuntimeException ignored) {}
         }
         try {

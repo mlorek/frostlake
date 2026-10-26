@@ -819,6 +819,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
         "CREDENTIALS", "STORAGE_INTEGRATION", "DIRECTORY", "COPY_OPTIONS",
         "AWS_ROLE", "AWS_EXTERNAL_ID", "SNOWFLAKE_IAM_USER", "ENCRYPTION");
 
+    /** The encryption types a stage takes: Snowflake's own, and the cloud providers' for an external stage. */
+    private static final Set<String> ENCRYPTION_TYPES = Set.of("SNOWFLAKE_FULL", "SNOWFLAKE_SSE", "AWS_CSE",
+        "AWS_SSE_S3", "AWS_SSE_KMS", "GCS_SSE_KMS", "AZURE_CSE", "NONE");
+
     /** Whether a word names a stage property a CREATE STAGE or an ALTER STAGE … SET takes by a plain name. */
     static boolean isStageOption(final String name) {
         return STAGE_OPTION_NAMES.contains(name);
@@ -994,6 +998,13 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             declaredEncryptionType = encryptionOptions.get("TYPE");
                             encryptionKey = encryptionOptions.containsKey("MASTER_KEY")
                                 || encryptionOptions.containsKey("KMS_KEY_ID");
+                            // A type no stage knows is refused by its value before what fits the stage is weighed
+                            // (live-verified).
+                            if (declaredEncryptionType != null && !ENCRYPTION_TYPES.contains(
+                                    declaredEncryptionType.toUpperCase(Locale.ROOT))) {
+                                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
+                                    declaredEncryptionType, "TYPE"));
+                            }
                             // Only Snowflake-managed encryption fits an internal stage, live-verified.
                             if (url == null && declaredEncryptionType != null
                                     && !declaredEncryptionType.toUpperCase(Locale.ROOT).startsWith("SNOWFLAKE_")) {
@@ -1052,16 +1063,18 @@ public class CreateInfrastructureHandler implements CommandHandler {
             refuseLocalUrlUnlessEnabled(url);
             // A replacement drops the stage it replaces once the new one is judged whole, so a refused statement
             // leaves that stage as it was (live-verified).
+            final boolean temporary = ctx.TEMPORARY() != null || ctx.TEMP() != null;
             if (ctx.or_replace() != null) {
                 try {
-                    catalog.dropStageExact(stageName);
+                    // A temporary stage replaces its session's own, never the permanent stage it hides.
+                    catalog.dropStageFor(stageName, temporary);
                 } catch (final RuntimeException ignored) {
                     // No stage of that name to replace.
                 }
             }
 
             final StageType type = (url == null || url.startsWith("file://")) ? StageType.INTERNAL : StageType.EXTERNAL;
-            catalog.createStage(stageName, type, url, fileFormat, encryption, comment);
+            catalog.createStage(stageName, type, url, fileFormat, encryption, comment, temporary);
             if (url == null) {
                 // A new internal stage is empty on a real account too.
                 queryExecutor.resetInternalStageDir(stageName);
@@ -1071,7 +1084,6 @@ public class CreateInfrastructureHandler implements CommandHandler {
             created.getFileFormatOptions().putAll(formatOptions);
             created.getCopyOptions().putAll(copyOptions);
             created.setEncryptionType(declaredEncryptionType);
-            created.setTemporary(ctx.TEMPORARY() != null || ctx.TEMP() != null);
             created.setCredentials(credentials);
             created.setEncryptionKey(encryptionKey);
             if (directory != null) {
@@ -1198,6 +1210,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     }
 
     public Object handleCreateFileFormat(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        requireFormatOption(ctx);
         final String name = getText(ctx.qualifiedName(0));
         // The simple name is the parse tree's last identifier part — never a re-split of the
         // flattened text, which breaks a quoted name containing a dot.
@@ -1255,6 +1268,23 @@ public class CreateInfrastructureHandler implements CommandHandler {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
         }
         return null;
+    }
+
+    /**
+     * A file format given a COMMENT and no option is refused for its TYPE, IF NOT EXISTS or not, where one given no
+     * option at all, or any option beside the COMMENT, is a CSV format (live-verified).
+     */
+    private static void requireFormatOption(final FrostlakeParser.CreateStatementContext ctx) {
+        boolean comment = !ctx.commentClause().isEmpty();
+        for (final FrostlakeParser.CopyFormatOptionContext option : ctx.copyFormatOption()) {
+            if (option.identifier() == null || !"COMMENT".equalsIgnoreCase(option.identifier().getText())) {
+                return;
+            }
+            comment = true;
+        }
+        if (comment) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): type"));
+        }
     }
 
     public Object handleAlterFileFormat(final FrostlakeParser.AlterStatementContext ctx) {

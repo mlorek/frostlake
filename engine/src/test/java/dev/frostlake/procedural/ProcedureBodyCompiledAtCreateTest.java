@@ -231,11 +231,14 @@ public class ProcedureBodyCompiledAtCreateTest extends BaseDatabaseTest {
         // The live harness pins MULTI_STATEMENT_COUNT to 1 for every statement, and the account's
         // statement counter reads a SQL body's top-level statements, so this CREATE cannot reach the
         // account through it; under MULTI_STATEMENT_COUNT = 0 the account creates it and CALL
-        // answers 1 — the block's RETURN, the trailing SELECT never running (live-verified).
+        // answers 1 — the block's RETURN, the trailing SELECT never running (live-verified). Under the count of 1 the
+        // body's two statements are refused (see ProcedureBodyFaultsAtCreateTest).
         assumeFalse(isLiveSnowflake());
+        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
         engine.execute("CREATE OR REPLACE PROCEDURE pt1() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n"
             + "  RETURN 1;\nEND;\nSELECT 1;\n$$");
         assertEquals("1", String.valueOf(firstCell("CALL pt1()")));
+        engine.execute("ALTER SESSION UNSET MULTI_STATEMENT_COUNT");
     }
 
     @Test

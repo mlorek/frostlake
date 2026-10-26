@@ -27,6 +27,7 @@ import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
@@ -68,9 +69,12 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -496,10 +500,17 @@ public class SystemViews {
         }
     }
 
-    /** COLUMN_DEFAULT's text: a default that reads the clock as the account prints it, any other as stored. */
+    /**
+     * COLUMN_DEFAULT's text: a default that reads the clock as the account prints it, an expression as it is told
+     * back, any other as stored.
+     */
     private static String columnDefault(final Object stored) {
         final String clock = ClockDefaultSpelling.of(stored);
-        return clock != null ? clock : stored.toString();
+        if (clock != null) {
+            return clock;
+        }
+        return stored instanceof DefaultValueExpression ? ((DefaultValueExpression) stored).getToldText()
+            : stored.toString();
     }
 
     /**
@@ -992,24 +1003,69 @@ public class SystemViews {
 
     // ── ENABLED_ROLES ─────────────────────────────────────────────────────────
 
-    public ResultSet queryEnabledRoles() {
+    /**
+     * ENABLED_ROLES: a row for each role enabled in the session (documented), or for every role where nothing tells
+     * the session's.
+     *
+     * @param enabled the session's enabled roles, or null
+     * @return the view's rows
+     */
+    public ResultSet queryEnabledRoles(final Collection<String> enabled) {
         // Live carries exactly these two columns — no COMMENT.
         final ResultSet result = new ResultSet(Arrays.asList(col("ROLE_NAME"), col("ROLE_OWNER")));
         for (final Role role : catalog.getAllRoles()) {
-            result.addRow(new Row(role.getName(), role.getOwner()));
+            if (enabled == null || enabled.contains(role.getName())) {
+                result.addRow(new Row(role.getName(), role.getOwner()));
+            }
         }
         return inSessionZone(result);
     }
 
     // ── APPLICABLE_ROLES ──────────────────────────────────────────────────────
 
-    public ResultSet queryApplicableRoles() {
+    /**
+     * APPLICABLE_ROLES: a row for each role grant applied to the user the session authenticated as (documented) -
+     * each role granted to the user, then each role granted to one of those, however many levels down - or for every
+     * user's grants where nothing tells the session's user.
+     *
+     * @param userName the session's user, or null
+     * @return the view's rows
+     */
+    public ResultSet queryApplicableRoles(final String userName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTEE"), col("ROLE_NAME"), col("ROLE_OWNER"), colText("IS_GRANTABLE", 2)
         ));
+        final Set<String> reached = new LinkedHashSet<>();
         for (final User user : catalog.getAllUsers()) {
+            if (userName != null && !user.getName().equalsIgnoreCase(userName)) {
+                continue;
+            }
             for (final String role : user.getGrantedRoles()) {
+                if (!catalog.roleExists(role)) {
+                    // A grant of a role no longer there names nothing to list.
+                    continue;
+                }
                 result.addRow(new Row(user.getName(), role, catalog.getRole(role).getOwner(), "NO"));
+                reached.add(role);
+            }
+        }
+        if (userName != null) {
+            final List<String> pending = new ArrayList<>(reached);
+            while (!pending.isEmpty()) {
+                final String grantee = pending.remove(0);
+                if (!catalog.roleExists(grantee)) {
+                    continue;
+                }
+                for (final String role : catalog.getRole(grantee).getGrantedRoles()) {
+                    if (!catalog.roleExists(role)) {
+                        // A grant of a role no longer there names nothing to list.
+                        continue;
+                    }
+                    result.addRow(new Row(grantee, role, catalog.getRole(role).getOwner(), "NO"));
+                    if (reached.add(role)) {
+                        pending.add(role);
+                    }
+                }
             }
         }
         return inSessionZone(result);

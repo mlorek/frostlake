@@ -18,14 +18,18 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionAstBuilder;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DecimalText;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -50,6 +54,29 @@ import java.util.Locale;
 final class ArgumentRows {
 
     private ArgumentRows() {
+    }
+
+    /**
+     * Refuse the first column a value of a list names that the call cannot see, as an invalid identifier where it
+     * stands; a query nested in the value reads names of its own.
+     */
+    private static void rejectUnseenNames(final ParseTree node, final ExpressionEvaluator evaluator) {
+        if (node instanceof FrostlakeParser.SelectStatementContext
+                || node instanceof FrostlakeParser.LambdaFunctionContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final Expression named = new ExpressionAstBuilder().visit((FrostlakeParser.QualifiedNameExprContext) node);
+            if (named instanceof ColumnReferenceExpression && evaluator.inferStaticType(named) == null) {
+                final Token at = ((ParserRuleContext) node).getStart();
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    "invalid identifier '" + named.toString().toUpperCase(Locale.ROOT) + "'"));
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rejectUnseenNames(node.getChild(i), evaluator);
+        }
     }
 
     /**
@@ -101,6 +128,9 @@ final class ArgumentRows {
                 throw new RuntimeException(SqlCompilationError.at(opening.getLine(), opening.getCharPositionInLine(),
                     "Invalid result query ID, found '('"));
             }
+            for (final FrostlakeParser.ExpressionContext value : argument.argumentRow().expression()) {
+                rejectUnseenNames(value, evaluator);
+            }
             throw new RuntimeException(SqlCompilationError.of("invalid type [" + typeText(argument.argumentRow(),
                 evaluator) + "] for parameter '" + argument.variableName().getText().toUpperCase(Locale.ROOT) + "'"));
         }
@@ -110,13 +140,13 @@ final class ArgumentRows {
      * Refuse the first positional argument written as a parenthesized list, a ROW no table function's positional
      * parameter takes, by its place: {@code FLATTEN((1, 2))} is {@code invalid type [ROW(NUMBER(1,0), NUMBER(1,0))]
      * for parameter '1'} and {@code SPLIT_TO_TABLE('a,b', (1, 2))} names parameter '2'. A name in the list is
-     * resolved first, as any argument's is: {@code FLATTEN((a, b))} before the relation holding them is an invalid
-     * identifier at the {@code a} (all live-verified). GENERATOR, TO_QUERY, RESULT_SCAN and INFER_SCHEMA keep their
-     * own rules.
+     * resolved first, as any argument's is, against the relations to the call's left alone: {@code FLATTEN((a, b))}
+     * before the relation holding them is an invalid identifier at the {@code a}, and after it the ROW of their types
+     * (all live-verified). GENERATOR, TO_QUERY, RESULT_SCAN and INFER_SCHEMA keep their own rules.
      *
      * @param functionName the table function, upper-cased
      * @param arguments    the call's arguments as written
-     * @param evaluator    the evaluator that types each value in the list
+     * @param evaluator    the evaluator that types each value in the list, over the relations the call sees
      */
     static void refusePositional(final String functionName, final List<FrostlakeParser.FunctionArgContext> arguments,
                                  final ExpressionEvaluator evaluator) {
@@ -131,6 +161,7 @@ final class ArgumentRows {
             }
             final StringBuilder types = new StringBuilder("ROW(");
             for (int j = 0; j < tuple.expression().size(); j++) {
+                rejectUnseenNames(tuple.expression(j), evaluator);
                 final Expression value = new ExpressionAstBuilder().visit(tuple.expression(j));
                 evaluator.validateStrict(value);
                 types.append(j > 0 ? ", " : "").append(evaluator.argumentTypeText(value));
@@ -203,7 +234,7 @@ final class ArgumentRows {
             return BigDecimal.valueOf(((Number) value).doubleValue()).stripTrailingZeros().toPlainString();
         }
         if (value instanceof Number) {
-            final BigDecimal number = new BigDecimal(value.toString());
+            final BigDecimal number = DecimalText.parse(value.toString());
             return number.signum() == 0 ? "0" : number.stripTrailingZeros().toPlainString();
         }
         return "'" + value.toString().replace("'", "''") + "'";

@@ -16,6 +16,8 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.types.DecimalText;
+
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -166,7 +168,7 @@ public final class DecfloatTextNode extends StringNode {
             return node;
         }
         try {
-            return new DecfloatTextNode(new BigDecimal(node.asText()));
+            return new DecfloatTextNode(DecimalText.parse(node.asText()));
         } catch (final NumberFormatException | DecfloatRangeException notADecfloat) {
             return node;
         }

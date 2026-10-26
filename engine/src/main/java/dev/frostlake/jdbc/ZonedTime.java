@@ -1,0 +1,73 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.jdbc;
+
+import java.sql.Time;
+import java.time.Instant;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.util.Locale;
+
+/**
+ * A moment as the account's driver answers {@code getTime} with it over a timestamp: the instant itself — what
+ * {@code getTime} counts, its date included — printed as its time of day in the zone it was read in: the session's
+ * for a TIMESTAMP_LTZ, the value's own offset for a TIMESTAMP_TZ, and the session's for a TIMESTAMP_NTZ, whose wall
+ * clock is read there (live-verified).
+ */
+public final class ZonedTime extends Time {
+
+    private static final long serialVersionUID = 1L;
+
+    /** The zone the moment prints its time of day in. */
+    private final ZoneId zone;
+
+    /**
+     * A moment printed as its time of day in a zone.
+     *
+     * @param instant the moment
+     * @param zone    the zone its time of day is printed in
+     */
+    public ZonedTime(final Instant instant, final ZoneId zone) {
+        super(instant.toEpochMilli());
+        this.zone = zone;
+    }
+
+    /**
+     * The zone the moment prints its time of day in.
+     *
+     * @return the zone
+     */
+    public ZoneId getZone() {
+        return zone;
+    }
+
+    @Override
+    public String toString() {
+        final LocalTime clock = Instant.ofEpochMilli(getTime()).atZone(zone).toLocalTime();
+        return String.format(Locale.ROOT, "%02d:%02d:%02d", clock.getHour(), clock.getMinute(), clock.getSecond());
+    }
+
+    @Override
+    public boolean equals(final Object other) {
+        return super.equals(other);
+    }
+
+    @Override
+    public int hashCode() {
+        return super.hashCode();
+    }
+}

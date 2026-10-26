@@ -369,7 +369,8 @@ public final class CalledRoutineSources {
             }
         }
         for (final FrostlakeParser.SelectStatementContext query : queries) {
-            if (new CorrelatedSubqueryRule(executor, rowRead).withFixedNames(fixed).refusesScalar(query)) {
+            if (new CorrelatedSubqueryRule(executor, rowRead).withFixedNames(fixed).withParametersWinning()
+                    .refusesScalar(query)) {
                 throw UnsupportedSubqueryException.inside(function);
             }
         }

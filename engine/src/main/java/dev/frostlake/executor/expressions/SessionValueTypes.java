@@ -37,7 +37,9 @@ import java.time.ZonedDateTime;
  * The static type a SESSION VARIABLE carries: the type of the VALUE it was set to, measured the way a
  * literal of that value is measured. A variable remembers a value, not an expression — {@code SET n = 2 + 3}
  * is NUMBER(1,0) for the 5 it holds, {@code SET s = 'a' || 'bc'} VARCHAR(3), {@code SET d = 1.50}
- * NUMBER(2,1) — and a variable set from NULL carries no type at all (all live-verified).
+ * NUMBER(2,1) — and a variable set from NULL carries no type at all. A time or a timestamp is typed at the precision
+ * its SET kept beside it: {@code SET t = '10:00:00'::TIME(3)} is TIME(3) and {@code SET t = $t} too (all
+ * live-verified).
  */
 final class SessionValueTypes {
 
@@ -51,6 +53,25 @@ final class SessionValueTypes {
      * @return its type, or null when the value is NULL or of a kind this does not measure
      */
     static DataType of(final Object value) {
+        return of(value, null);
+    }
+
+    /**
+     * The type a value carries, a time or a timestamp at the precision its variable kept.
+     *
+     * @param value     the value the variable holds
+     * @param precision the precision its SET kept, or null for none
+     * @return its type, or null when the value is NULL or of a kind this does not measure
+     */
+    static DataType of(final Object value, final Integer precision) {
+        final DataType measured = measured(value);
+        if (precision == null || !(measured instanceof DateTimeType) || measured == DateTimeType.DATE) {
+            return measured;
+        }
+        return new DateTimeType(measured.getName(), precision.intValue(), ((DateTimeType) measured).hasTimeZone());
+    }
+
+    private static DataType measured(final Object value) {
         if (value instanceof Boolean) {
             return BooleanType.BOOLEAN;
         }

@@ -100,6 +100,10 @@ final class SystemConstantArguments {
     /** How the account names SYSTEM$WAIT in this refusal. */
     private static final String WAIT_NAME = "SqlIdentifier{qualifierNames=[], identifierName=SYSTEM$WAIT}";
 
+    /** How the account names SYSTEM$AUTO_REFRESH_STATUS in this refusal. */
+    private static final String AUTO_REFRESH_NAME =
+        "SqlIdentifier{qualifierNames=[], identifierName=SYSTEM$AUTO_REFRESH_STATUS}";
+
     /** The plan's name for the typed NULL a missing ELSE is, which this sentence prints bare. */
     private static final String TYPED_NULL = "SYSTEM$NULL_TO_TEXT(null)";
 
@@ -164,6 +168,8 @@ final class SystemConstantArguments {
         } else if ("SYSTEM$TASK_DEPENDENTS_ENABLE".equals(funcName)) {
             // A task named by a number is refused as the converted text it would be (live-verified).
             judgeTaskName(funcName, args.get(0), visitor);
+        } else if ("SYSTEM$AUTO_REFRESH_STATUS".equals(funcName)) {
+            judgeRefreshedTable(args.get(0), visitor);
         } else if ("SYSTEM$PIPE_FORCE_RESUME".equals(funcName)) {
             // The pipe and the options are read as the statement compiles: a column is no constant (live-verified).
             for (int i = 0; i < args.size() && i < 2; i++) {
@@ -207,6 +213,24 @@ final class SystemConstantArguments {
         if (unsigned instanceof BinaryOperationExpression || unsigned instanceof CastExpression) {
             throw notConstant(WAIT_NAME, 0, ((NumericType) type).getScale() > 0
                 ? "CAST(" + written + " AS NUMBER(18,0))" : written);
+        }
+    }
+
+    /**
+     * SYSTEM$AUTO_REFRESH_STATUS's table name, a constant text (live-verified): a column, or anything over one, is no
+     * constant, and a number or a Boolean is found as the text it would be cast to, {@code CAST(5 AS
+     * VARCHAR(134217728))}; a NULL is {@code inputs may not be null}.
+     */
+    private static void judgeRefreshedTable(final Expression name, final ExpressionEvaluatorVisitor visitor) {
+        if (readsARow(name)) {
+            throw notConstant(AUTO_REFRESH_NAME, 0, visitor.strictPlanText(name));
+        }
+        if (isNull(name)) {
+            throw new RuntimeException("inputs may not be null");
+        }
+        final DataType type = visitor.inferStaticType(name);
+        if (type instanceof NumericType || type instanceof BooleanType) {
+            throw notConstant(AUTO_REFRESH_NAME, 0, "CAST(" + visitor.strictPlanText(name) + " AS VARCHAR(134217728))");
         }
     }
 

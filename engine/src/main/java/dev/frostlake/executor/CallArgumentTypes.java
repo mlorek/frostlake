@@ -34,6 +34,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
@@ -304,7 +305,7 @@ final class CallArgumentTypes {
         final NumericType declared = (NumericType) type;
         final BigDecimal written;
         try {
-            written = new BigDecimal(value.getText());
+            written = DecimalText.parse(value.getText());
         } catch (final NumberFormatException unread) {
             return type;
         }
@@ -460,14 +461,11 @@ final class CallArgumentTypes {
 
     /** Whether a CALL argument is written for a name, {@code name => value}, its value an expression or a predicate. */
     static boolean isNamed(final FrostlakeParser.CallArgumentContext argument) {
-        return argument.namedArgument() != null || argument.namedLogicalArgument() != null;
+        return argument.namedArgument() != null;
     }
 
     /** The name a CALL argument is written for, or null for a positional one. */
     static FrostlakeParser.VariableNameContext nameOf(final FrostlakeParser.CallArgumentContext argument) {
-        if (argument.namedLogicalArgument() != null) {
-            return argument.namedLogicalArgument().variableName();
-        }
         return argument.namedArgument() == null ? null : argument.namedArgument().variableName();
     }
 
@@ -476,10 +474,11 @@ final class CallArgumentTypes {
      * positional argument and for a row or a bare subquery.
      */
     static ParserRuleContext namedValueOf(final FrostlakeParser.CallArgumentContext argument) {
-        if (argument.namedLogicalArgument() != null) {
-            return argument.namedLogicalArgument().booleanExpr();
+        if (argument.namedArgument() == null) {
+            return null;
         }
-        return argument.namedArgument() == null ? null : argument.namedArgument().expression();
+        return argument.namedArgument().booleanExpr() != null ? argument.namedArgument().booleanExpr()
+            : argument.namedArgument().expression();
     }
 
     /**

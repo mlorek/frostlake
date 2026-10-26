@@ -16,6 +16,8 @@
 
 package dev.frostlake.rt.py;
 
+import dev.frostlake.executor.udf.HandlerStateFactory;
+import dev.frostlake.executor.udf.StatementHandlerStates;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
@@ -49,6 +51,9 @@ public final class PythonExecutor {
      */
     private static final String FUNCTION_ARGUMENT = "__fl_argument";
 
+    /** What a call site's kept module is told apart by among the states the site keeps (see PythonModuleState). */
+    private static final String MODULE_STATE = "python-module";
+
     public static Object executePythonFunction(final Function function, final List<Object> arguments) {
         if (function.getUdfLanguage() != UdfLanguage.PYTHON) {
             throw new RuntimeException("Function is not a Python function");
@@ -60,9 +65,18 @@ public final class PythonExecutor {
                 + parameters.size() + " arguments but got " + arguments.size());
         }
 
+        // The module this call site keeps for the running statement, its body run on the site's first call alone (see
+        // PythonModuleState); a call outside any statement has a module of its own.
+        final AutoCloseable kept = StatementHandlerStates.state(function, MODULE_STATE, new HandlerStateFactory() {
+            @Override
+            public AutoCloseable create() {
+                return new PythonModuleState(PythonInterpreter.running());
+            }
+        });
+        final String key = kept instanceof PythonModuleState ? ((PythonModuleState) kept).key() : null;
         Object frame = null;
         try {
-            frame = PythonInterpreter.enterModule();
+            frame = key != null ? PythonInterpreter.resumeModule(key) : PythonInterpreter.enterModule();
             for (int i = 0; i < parameters.size(); i++) {
                 // Each argument as the Python value its parameter's type maps to (see PythonInterpreter.bindArgument),
                 // under a name of the runtime's own, which the handler's call passes on.
@@ -81,13 +95,18 @@ public final class PythonExecutor {
                 PythonInterpreter.bind("__fl_handler_name", function.getHandler());
             }
             if (function.getHandler() != null && !function.getHandler().isEmpty()) {
-                PythonFailureReport.runSource(dedent(function.getBody()), function.getHandler());
+                if (!PythonInterpreter.resumed(frame)) {
+                    PythonFailureReport.runSource(dedent(function.getBody()), function.getHandler());
+                }
                 PythonFailureReport.run(handlerCall(function, parameters));
             } else {
                 PythonInterpreter.eval(buildCode(function, parameters));
             }
 
             final Object answer = answered(function);
+            if (key != null) {
+                PythonInterpreter.keepModule(key);
+            }
             logger.debug("Python function {} executed successfully", function.getName());
             return answer;
         } catch (final PythonReturnRefusal refused) {

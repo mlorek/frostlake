@@ -24,6 +24,7 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.XmlVariants;
 
 import java.nio.charset.StandardCharsets;
 import java.time.temporal.Temporal;
@@ -74,6 +75,11 @@ public class ToChar extends BuiltInFunction {
         // compiles (live-verified).
         if (args.size() >= 2 && args.get(1) == null) return null;
         final Object value = args.get(0);
+        if (value instanceof VariantValue && XmlVariants.isXmlElement(((VariantValue) value).node())) {
+            // An XML value converts to its XML text, as it displays: TO_VARCHAR(PARSE_XML('<r><a>1</a></r>')) is
+            // <r><a>1</a></r>, and so is a staged XML record's (live-verified).
+            return XmlVariants.compactXml(((VariantValue) value).node());
+        }
         if (value instanceof VariantValue) {
             // An explicit conversion is always the COMPACT text on a real account, whatever
             // JSON_INDENT is set to — only a variant DISPLAYED as itself follows the width. It is the

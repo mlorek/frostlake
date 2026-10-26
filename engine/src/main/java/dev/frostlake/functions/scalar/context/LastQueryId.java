@@ -20,6 +20,7 @@ import dev.frostlake.executor.QueryResultCache;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.metastore.StatementAnswers;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.StringType;
 
 import java.math.BigDecimal;
@@ -79,7 +80,7 @@ public class LastQueryId extends NumericArgumentFunction {
         }
         final BigDecimal number = value instanceof BigDecimal ? (BigDecimal) value
             : value instanceof Number ? new BigDecimal(value.toString())
-            : new BigDecimal(value.toString().trim());
+            : DecimalText.parse(value.toString().trim());
         return number.setScale(0, RoundingMode.HALF_UP);
     }
 

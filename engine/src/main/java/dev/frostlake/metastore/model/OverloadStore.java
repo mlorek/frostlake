@@ -79,6 +79,26 @@ public final class OverloadStore<R extends SqlObject & Routine> {
     }
 
     /**
+     * Refuses a routine that a routine of the other lifetime its creating session holds would meet on that signature
+     * (see {@link RoutineSignatures#refuseSignatureHeld}): what a CREATE OR REPLACE asks before it replaces anything,
+     * since it replaces only a routine of its own lifetime.
+     *
+     * @param routine the new routine
+     */
+    public void requireLifetimeFree(final R routine) {
+        final List<R> overloads = byName.get(routine.getName());
+        if (overloads == null) {
+            return;
+        }
+        for (final R existing : new ArrayList<>(overloads)) {
+            if (RoutineSignatures.exactSignature(existing.getParameters(), routine.getParameters())
+                    && RoutineSignatures.crossesLifetime(routine, existing)) {
+                throw RoutineSignatures.lifetimeConflict(existing);
+            }
+        }
+    }
+
+    /**
      * Holds an overload as it was held where it is copied from, judging nothing.
      *
      * @param routine the routine

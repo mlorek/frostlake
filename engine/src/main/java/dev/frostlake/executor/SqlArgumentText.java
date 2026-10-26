@@ -332,8 +332,9 @@ public final class SqlArgumentText {
         final int ownScale = Math.max(exact.scale(), 0);
         final int ownPrecision = Math.max(1, exact.precision() - exact.scale() + ownScale);
         if (written.getScale() >= declared.getScale() && written.getScale() == ownScale
-                && written.getPrecision() == ownPrecision) {
-            // A type the digits give themselves, a literal's: the number as it is (see exactNumber).
+                && written.getPrecision() == ownPrecision && exact.stripTrailingZeros().scale() == exact.scale()) {
+            // A type the digits give themselves, a literal's: the number as it is (see exactNumber). Digits ending
+            // in zeros type a narrower literal, so CAST(1.5 AS NUMBER(38,37)) is spelled with its type (live-verified).
             return null;
         }
         final int precision = written.getScale() >= declared.getScale() ? written.getPrecision()

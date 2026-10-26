@@ -93,6 +93,10 @@ final class SqlUdfBodyCalls {
                 throw SystemFunctionNames.unknownLoggingFunction(
                     ((FrostlakeParser.SystemFuncExprContext) one).SYSTEM_FUNC().getText());
             }
+            if (one instanceof FrostlakeParser.SystemFuncExprContext
+                    && knownSystemFunction(queryExecutor, (FrostlakeParser.SystemFuncExprContext) one)) {
+                continue;
+            }
             if (!(one instanceof FrostlakeParser.FunctionCallExprContext)) {
                 // A leading '!' and a class instance's method are calls of what no account has.
                 try {
@@ -329,7 +333,7 @@ final class SqlUdfBodyCalls {
     /**
      * Every call under the node that names a function, inner calls first: the calls {@link #collect} gathers, a
      * method of a class instance written without OVER, a leading {@code !} that negates no EXISTS, the calls an
-     * ampersand and a leading tilde stand for, and a call of a block statement's SYSTEM$ name (see
+     * ampersand and a leading tilde stand for, and every SYSTEM$ call, a block statement's name among them (see
      * {@link SystemFunctionNames#isScriptingStatement}).
      */
     private static void collectNamed(final ParseTree node, final List<ParserRuleContext> calls) {
@@ -347,10 +351,38 @@ final class SqlUdfBodyCalls {
                 || node instanceof FrostlakeParser.BangExprContext
                     && !BangOperator.negatesExists((FrostlakeParser.BangExprContext) node)
                 || node instanceof FrostlakeParser.AmpExprContext || node instanceof FrostlakeParser.TildeExprContext
-                || node instanceof FrostlakeParser.SystemFuncExprContext && SystemFunctionNames.isScriptingStatement(
-                    ((FrostlakeParser.SystemFuncExprContext) node).SYSTEM_FUNC().getText())) {
+                || node instanceof FrostlakeParser.SystemFuncExprContext) {
             calls.add((ParserRuleContext) node);
         }
+    }
+
+    /**
+     * Whether a SYSTEM$ name is a function: the account's own, as it lists them and as the engine evaluates them
+     * beyond that listing - SYSTEM$TYPEOF and SYSTEM$STREAM_HAS_DATA are missing from it - so a body calling one the
+     * account does not have is refused as an unknown function, Unknown function SYSTEM$NOSUCH_FN. A table function
+     * is one only as a TABLE(…) source: where a value is read, {@code SYSTEM$STREAM_BACKLOG('s')} is unknown
+     * (live-verified).
+     */
+    private static boolean knownSystemFunction(final QueryExecutor queryExecutor,
+                                               final FrostlakeParser.SystemFuncExprContext call) {
+        final String name = call.SYSTEM_FUNC().getText();
+        final FunctionRegistry registry = queryExecutor.getFunctionRegistry();
+        if (registry.hasTableFunction(name) && !registry.hasFunction(name)) {
+            return standsAsTableSource(call);
+        }
+        return SnowflakeBuiltinNames.contains(name) || SystemFunctionNames.contains(name) || registry.hasFunction(name);
+    }
+
+    /** Whether a call is a TABLE(…) source's own: every node between the two spans the call alone. */
+    private static boolean standsAsTableSource(final ParserRuleContext call) {
+        ParserRuleContext up = call.getParent();
+        while (up != null && !(up instanceof FrostlakeParser.TableSourceContext)) {
+            if (up.getStart() != call.getStart() || up.getStop() != call.getStop()) {
+                return false;
+            }
+            up = up.getParent();
+        }
+        return up != null;
     }
 
     /**

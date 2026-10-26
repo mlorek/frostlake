@@ -22,6 +22,7 @@ import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.LoadRecord;
 import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.CheckConstraint;
@@ -58,6 +59,8 @@ import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.StreamType;
+import dev.frostlake.metastore.model.StreamVersion;
+import dev.frostlake.metastore.model.StreamVersionKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.TableStructure;
@@ -581,6 +584,11 @@ final class CatalogSnapshotReader {
             // Load views (skip INFORMATION_SCHEMA views as they're system-generated)
             if (!"INFORMATION_SCHEMA".equals(schemaSnapshot.name)) {
                 for (final ViewSnapshot viewSnapshot : schemaSnapshot.views) {
+                    if (viewSnapshot.owner == null && SystemSchema.of(db.getName(), schemaSnapshot.name) != null
+                            && schema.hasViewExact(viewSnapshot.name)) {
+                        // A view the SNOWFLAKE database starts with is seeded, never restored (see AccountUsageViews).
+                        continue;
+                    }
                     final View view = viewSnapshot.columnNames != null
                         ? new View(viewSnapshot.name, viewSnapshot.columnNames, viewSnapshot.query)
                         : new View(viewSnapshot.name, viewSnapshot.query);
@@ -603,6 +611,9 @@ final class CatalogSnapshotReader {
                         view.setRowAccessPolicyColumns(viewSnapshot.rowAccessPolicyColumns != null
                             ? viewSnapshot.rowAccessPolicyColumns : new ArrayList<>());
                     }
+                    view.setAggregationPolicyName(viewSnapshot.aggregationPolicyName);
+                    view.setAggregationEntityKey(viewSnapshot.aggregationEntityKey);
+                    view.setJoinPolicyName(viewSnapshot.joinPolicyName);
                     view.setResolvedColumns(derivedColumns(viewSnapshot.columns));
                     DataMetricSnapshots.restore(viewSnapshot.dataMetrics, viewSnapshot.dataMetricSchedule,
                         view.dataMetricAttachments());
@@ -693,6 +704,9 @@ final class CatalogSnapshotReader {
                     if (streamSnapshot.lostInClone) {
                         stream.markLostInClone();
                     }
+                    if (streamSnapshot.rebound) {
+                        stream.markRebound();
+                    }
                     stream.setComment(streamSnapshot.comment);
                     if (streamSnapshot.owner != null) {
                         stream.setOwner(streamSnapshot.owner);
@@ -700,6 +714,14 @@ final class CatalogSnapshotReader {
                     stream.restoreCreatedTime(streamSnapshot.createdAt);
                     if (streamSnapshot.offsetSequence != null) {
                         stream.restoreOffsetSequence(streamSnapshot.offsetSequence.longValue());
+                    }
+                    if (streamSnapshot.versions != null) {
+                        // The backlog past the offset, as it stood: each version keeps its place among the offsets.
+                        for (final StreamVersionSnapshot saved : streamSnapshot.versions) {
+                            stream.addVersion(new StreamVersion(saved.baseTable, saved.time,
+                                StreamVersionKind.valueOf(saved.kind), saved.rowsAdded, saved.rowsRemoved,
+                                saved.inserted, saved.sequence));
+                        }
                     }
                     if (streamSnapshot.records != null) {
                         for (final StreamRecordSnapshot recSnapshot : streamSnapshot.records) {
@@ -717,7 +739,8 @@ final class CatalogSnapshotReader {
                         stream.setInitialRecords(initial);
                     }
                     if (streamSnapshot.refreshImage != null) {
-                        stream.setRefreshImage(new ArrayList<>(streamSnapshot.refreshImage));
+                        stream.setRefreshImage(new ArrayList<>(streamSnapshot.refreshImage),
+                            streamSnapshot.refreshImageIds);
                     }
                     SnapshotTags.restore(stream, streamSnapshot.tags);
                     schema.addStream(stream);
@@ -1027,7 +1050,9 @@ final class CatalogSnapshotReader {
                         final List<DynamicTableRefresh> kept = new ArrayList<>();
                         for (int r = 0; r < dtSnapshot.refreshSequences.size(); r++) {
                             kept.add(new DynamicTableRefresh(dtSnapshot.refreshSequences.get(r).longValue(),
-                                dtSnapshot.refreshMillis.get(r).longValue(), dtSnapshot.refreshRows.get(r)));
+                                dtSnapshot.refreshMillis.get(r).longValue(), dtSnapshot.refreshRows.get(r),
+                                dtSnapshot.refreshRowIds == null || r >= dtSnapshot.refreshRowIds.size() ? null
+                                    : dtSnapshot.refreshRowIds.get(r)));
                         }
                         dt.restoreRefreshes(kept);
                     }
@@ -1168,7 +1193,7 @@ final class CatalogSnapshotReader {
         final long identityIncrement = colSnapshot.autoIncrement ? colSnapshot.identityIncrement : 1L;
         // Re-wrap an expression default so INSERT evaluates it again; a literal stays a plain value.
         final Object columnDefault = colSnapshot.defaultIsExpression && colSnapshot.defaultValue != null
-            ? new DefaultValueExpression(colSnapshot.defaultValue)
+            ? new DefaultValueExpression(colSnapshot.defaultValue, colSnapshot.defaultTold)
             : colSnapshot.defaultLiteral != null ? colSnapshot.defaultLiteral : colSnapshot.defaultValue;
         final TableColumn col = new TableColumn(
             colSnapshot.name,
@@ -1188,6 +1213,9 @@ final class CatalogSnapshotReader {
         col.setProjectionPolicyName(colSnapshot.projectionPolicyName);
         col.setCollation(colSnapshot.collation);
         col.setFormatType(colSnapshot.formatType);
+        if (colSnapshot.virtualExpression != null) {
+            col.setVirtualExpression(colSnapshot.virtualExpression, colSnapshot.virtualText);
+        }
         col.setOrdinalPosition(colSnapshot.ordinalPosition);
         SnapshotTags.restore(col, colSnapshot.tags);
         // Column-level FOREIGN KEY (REFERENCES) and its RELY flag, when present.

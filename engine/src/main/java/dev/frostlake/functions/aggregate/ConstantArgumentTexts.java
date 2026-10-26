@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.aggregate;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -84,7 +86,7 @@ public final class ConstantArgumentTexts {
             return null;
         }
         try {
-            return new BigDecimal(digits);
+            return DecimalText.parse(digits);
         } catch (final NumberFormatException notANumber) {
             return null;
         }

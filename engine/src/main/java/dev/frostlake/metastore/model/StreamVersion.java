@@ -20,9 +20,10 @@ package dev.frostlake.metastore.model;
 import java.time.LocalDateTime;
 
 /**
- * A version of a table a stream reads, written by one commit, as SYSTEM$STREAM_BACKLOG lists it (live-verified): the
- * table is rewritten whole, so the rows the version added are the table's rows after it and the rows it removed those
- * before it; an INSERT alone is an INSERT, a TRUNCATE a TRUNCATE, and every other change an UPDATE.
+ * A version of a table a stream reads, written by one statement, as SYSTEM$STREAM_BACKLOG lists it (live-verified):
+ * the table is rewritten whole, so the rows the version added are the table's rows after it and the rows it removed
+ * those before it; an INSERT is an INSERT, a TRUNCATE a TRUNCATE, and every other statement, a MERGE that only inserts
+ * included, an UPDATE.
  */
 public final class StreamVersion {
 
@@ -70,6 +71,16 @@ public final class StreamVersion {
         return rowsRemoved;
     }
 
+    /** @return what the version changed */
+    public StreamVersionKind getKind() {
+        return kind;
+    }
+
+    /** @return the rows it inserted */
+    public long getInserted() {
+        return inserted;
+    }
+
     public long getSequence() {
         return sequence;
     }
@@ -81,8 +92,9 @@ public final class StreamVersion {
 
     /**
      * The change records the account estimates the version holds for a stream (live-verified): the rows an INSERT
-     * inserted, none for a TRUNCATE, and three in ten of the rows added and removed for any other change, rounded up;
-     * an append-only stream reads none of an UPDATE, the rows a DELETE left, and the rows a MERGE inserted.
+     * inserted, none for a TRUNCATE, and three in ten of the rows added and removed for any other change, rounded half
+     * up; an append-only stream reads none of an UPDATE, the rows a DELETE left, and the rows a MERGE left where the
+     * table grew, none where it did not.
      *
      * @param appendOnly whether the stream reads inserts alone
      * @return the estimate
@@ -95,12 +107,12 @@ public final class StreamVersion {
                 return 0L;
             default:
                 if (!appendOnly) {
-                    return (3L * (rowsAdded + rowsRemoved) + 9L) / 10L;
+                    return (3L * (rowsAdded + rowsRemoved) + 5L) / 10L;
                 }
                 if (kind == StreamVersionKind.DELETE) {
                     return rowsAdded;
                 }
-                return kind == StreamVersionKind.MERGE ? inserted : 0L;
+                return kind == StreamVersionKind.MERGE && rowsAdded > rowsRemoved ? rowsAdded : 0L;
         }
     }
 }

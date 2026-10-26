@@ -19,8 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.executor.DynamicStatementCount;
-import dev.frostlake.executor.StatementCanceledException;
 import dev.frostlake.executor.StatementCancellation;
+import dev.frostlake.executor.commands.FailureCode;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -141,10 +141,11 @@ public class DirectStatement implements Statement {
             result = connection instanceof DirectConnection
                 ? ((DirectConnection) connection).executeScoped(sql)
                 : engine.execute(sql);
-        } catch (final StatementCanceledException e) {
-            throw new SQLException(e.getMessage(), StatementCanceledException.SQL_STATE, e.getCode(), e);
         } catch (final RuntimeException e) {
-            throw new SQLException(e.getMessage(), e);
+            // The exception carries the account's code and SQLSTATE of its family (live-verified).
+            final FailureCode family = FailureCode.ofClient(e);
+            throw family == null ? new SQLException(e.getMessage(), e)
+                : new SQLException(e.getMessage(), family.state(), family.code(), e);
         } finally {
             StatementCancellation.offer(null);
             running = null;
@@ -152,11 +153,9 @@ public class DirectStatement implements Statement {
         }
         lastQueryId = result.getQueryId();
         if (!result.isSuccess()) {
-            // A timeout or a cancel carries the account's SQLSTATE and vendor code (live-verified).
-            final Integer canceled = StatementCanceledException.codeOf(result.getErrorMessage());
-            throw canceled != null
-                ? new SQLException(result.getErrorMessage(), StatementCanceledException.SQL_STATE, canceled.intValue())
-                : new SQLException(result.getErrorMessage());
+            final FailureCode family = FailureCode.ofClientMessage(result.getErrorMessage());
+            throw family == null ? new SQLException(result.getErrorMessage())
+                : new SQLException(result.getErrorMessage(), family.state(), family.code());
         }
         return result.getResultSets();
     }

@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
@@ -467,7 +468,7 @@ final class ConstantRootFold {
             return one == null && other == null;
         }
         if (one instanceof Number && other instanceof Number) {
-            return new BigDecimal(one.toString()).compareTo(new BigDecimal(other.toString())) == 0;
+            return DecimalText.parse(one.toString()).compareTo(DecimalText.parse(other.toString())) == 0;
         }
         return one.equals(other);
     }
@@ -701,7 +702,7 @@ final class ConstantRootFold {
             return operand;
         }
         try {
-            return floatConstant(new BigDecimal(trimmed));
+            return floatConstant(DecimalText.parse(trimmed));
         } catch (final NumberFormatException notANumber) {
             return operand;
         }
@@ -722,7 +723,7 @@ final class ConstantRootFold {
         if (NumericType.isApproximate(target)) {
             return new FoldedConstantExpression(Double.valueOf(((Number) value).doubleValue()), target);
         }
-        final BigDecimal exact = value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(value.toString());
+        final BigDecimal exact = value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(value.toString());
         return new FoldedConstantExpression(exact, target);
     }
 

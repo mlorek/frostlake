@@ -121,7 +121,7 @@ final class FinishedPredicateRecovery {
 
     /**
      * The ')' of the outermost call whose arguments hold the operator, reached through calls and their arguments
-     * alone; null where the operator stands in no call.
+     * alone, or else of the bracket of its own the operator stands in; null where it stands in neither.
      */
     private static Token outermostCallClose(final ParseTree operatorNode) {
         Token close = null;
@@ -135,9 +135,12 @@ final class FinishedPredicateRecovery {
                     return close;
                 }
                 close = stop;
-            } else if (up instanceof FrostlakeParser.ParenExprContext
-                    || !(up instanceof FrostlakeParser.ExpressionContext)
-                        && !(up instanceof FrostlakeParser.BooleanExprContext)) {
+            } else if (up instanceof FrostlakeParser.ParenExprContext) {
+                // A bracket of its own is closed early the same way: SELECT (EXISTS (SELECT 1 FROM g)::INT) is the
+                // '::' and the bracket's ')' (live-verified).
+                return close != null ? close : ((ParserRuleContext) up).getStop();
+            } else if (!(up instanceof FrostlakeParser.ExpressionContext)
+                    && !(up instanceof FrostlakeParser.BooleanExprContext)) {
                 return close;
             }
         }

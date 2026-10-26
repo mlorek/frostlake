@@ -77,6 +77,8 @@ public class Catalog {
     private final IntegrationRegistry integrations = new IntegrationRegistry();
     /** The files COPY has loaded, for LOAD_HISTORY and COPY_HISTORY. */
     private final LoadHistory loadHistory = new LoadHistory();
+    /** The refreshes the account's dynamic tables ran, for DYNAMIC_TABLE_REFRESH_HISTORY. */
+    private final DynamicTableRefreshHistory dynamicTableRefreshHistory = new DynamicTableRefreshHistory();
     /** The account's query history, whose time-travel points a restored state keeps; the executor shares it. */
     private QueryHistoryTracker queryHistory;
     /**
@@ -183,6 +185,9 @@ public class Catalog {
             schema.setOwner(null);
             schema.setComment(seeded.comment());
             system.addSchema(schema);
+            if (seeded == SystemSchema.ACCOUNT_USAGE) {
+                AccountUsageViews.seed(schema);
+            }
         }
         // Its database roles are the share's, which no role owns.
         for (final String name : SystemDatabase.roles()) {
@@ -204,6 +209,11 @@ public class Catalog {
         // beside it (live-verified).
         final Database db = new Database(name);
         db.setOwner(currentRoleForOwner());
+        // The PUBLIC schema is created by the same statement, so the creating role owns it as it owns the database
+        // (live-verified: the PUBLIC schema's owner is the database's).
+        if (db.hasSchema("PUBLIC")) {
+            db.getSchema("PUBLIC").setOwner(db.getOwner());
+        }
         databases.put(name, db);
         // A dropped database's privileges are not the new one's (GrantNames).
         GrantNames.created(this, "DATABASE", name);
@@ -412,27 +422,37 @@ public class Catalog {
     }
 
     /** True when a masking policy ({@code masking}) or row access policy is attached to any column,
-     *  table or view — Snowflake refuses to drop or replace such a policy (live-verified). Attachment
-     *  names may be stored bare or qualified, so the comparison uses the last segment. */
-    public boolean isPolicyInUse(final String policyName, final boolean masking) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+     *  table or view — Snowflake refuses to drop or replace such a policy (live-verified). An attachment
+     *  holds the policy its full name names (see {@link PolicyReferences#names}): a namesake in another
+     *  schema, or a quoted name differing only in case, is another policy, and not in use (live-verified).
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name */
+    public boolean isPolicyInUse(final Schema home, final String policyName, final boolean masking) {
         for (final Database database : getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
                     if (masking) {
                         for (final TableColumn column : table.getColumns()) {
-                            if (policyNameMatches(column.getMaskingPolicyName(), bare)) {
+                            if (holds(column.getMaskingPolicyName(), schema, home, policyName)) {
                                 return true;
                             }
                         }
-                    } else if (policyNameMatches(table.getRowAccessPolicyName(), bare)) {
+                    } else if (holds(table.getRowAccessPolicyName(), schema, home, policyName)) {
                         return true;
                     }
                 }
-                if (!masking) {
-                    for (final View view : schema.getViews()) {
-                        if (policyNameMatches(view.getRowAccessPolicyName(), bare)) {
+                for (final View view : schema.getViews()) {
+                    if (!masking) {
+                        if (holds(view.getRowAccessPolicyName(), schema, home, policyName)) {
                             return true;
+                        }
+                    } else if (view.hasResolvedColumns()) {
+                        // A view's own column masked by the policy holds it too (live-verified).
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getMaskingPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -441,12 +461,9 @@ public class Catalog {
         return false;
     }
 
-    private boolean policyNameMatches(final String attached, final String bare) {
-        if (attached == null) {
-            return false;
-        }
-        final int dot = attached.lastIndexOf('.');
-        return (dot >= 0 ? attached.substring(dot + 1) : attached).equalsIgnoreCase(bare);
+    /** Whether an attachment recorded on a relation of {@code where} holds the policy {@code home} names so. */
+    private boolean holds(final String attached, final Schema where, final Schema home, final String policyName) {
+        return PolicyReferences.names(this, attached, where, home, policyName);
     }
 
     public List<Database> getAllDatabases() {
@@ -1174,6 +1191,11 @@ public class Catalog {
         return loadHistory;
     }
 
+    /** The refreshes the account's dynamic tables ran, under the names they ran under. */
+    public DynamicTableRefreshHistory getDynamicTableRefreshHistory() {
+        return dynamicTableRefreshHistory;
+    }
+
     /**
      * The history the account's statements are kept in, whose time-travel points a snapshot keeps.
      *
@@ -1533,12 +1555,23 @@ public class Catalog {
 
     public void createStage(final String name, final StageType type, final String url,
                            final String fileFormat, final boolean encryption, final String comment) {
+        createStage(name, type, url, fileFormat, encryption, comment, false);
+    }
+
+    /**
+     * CREATE [TEMPORARY] STAGE: a temporary stage is its session's own, and takes the name of a permanent stage,
+     * hiding it from that session alone (see Schema.holdsStageFor).
+     */
+    public void createStage(final String name, final StageType type, final String url,
+                            final String fileFormat, final boolean encryption, final String comment,
+                            final boolean temporary) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasStageExact(objName)) {
+        if (schema.holdsStageFor(objName, temporary)) {
             throw new NameTakenException(alreadyExists(objName));
         }
         final Stage stage = new Stage(objName, type, url, fileFormat, encryption, comment, s3PathResolver);
+        stage.setTemporary(temporary);
         final CreationGrants grantsOfNew = FutureGrants.ofNew(this, "STAGE", schema, objName);
         stage.setOwner(grantsOfNew.owner());
         schema.addStage(stage);
@@ -1556,6 +1589,17 @@ public class Catalog {
      */
     public void dropStageExact(final String name) {
         resolveSchemaForObject(name).dropStageExact(objectName(name));
+    }
+
+    /**
+     * Drops the stage a CREATE OR REPLACE of that lifetime replaces: a temporary stage replaces its session's own
+     * temporary one, a permanent stage a permanent one (see Schema.dropStageFor).
+     *
+     * @param name      the name as written, qualified or not
+     * @param temporary whether the new stage is temporary
+     */
+    public void dropStageFor(final String name, final boolean temporary) {
+        resolveSchemaForObject(name).dropStageFor(objectName(name), temporary);
     }
 
     /** ALTER STAGE … RENAME TO — rekey the schema's map and rename the object itself. */
@@ -1899,13 +1943,23 @@ public class Catalog {
         return resolveSchemaForObject(qualifiedName).getJoinPolicy(objectName(qualifiedName));
     }
 
-    /** True when a join policy is attached to any table — live refuses to drop or replace one. */
-    public boolean isJoinPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+    /**
+     * True when a join policy is attached to any table or view — live refuses to drop or replace one. An attachment
+     * holds the policy its full name names, as {@link #isPolicyInUse} reads it.
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name
+     */
+    public boolean isJoinPolicyInUse(final Schema home, final String policyName) {
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
-                    if (policyNameMatches(table.getJoinPolicyName(), bare)) {
+                    if (holds(table.getJoinPolicyName(), schema, home, policyName)) {
+                        return true;
+                    }
+                }
+                for (final View view : schema.getViews()) {
+                    if (holds(view.getJoinPolicyName(), schema, home, policyName)) {
                         return true;
                     }
                 }
@@ -1935,13 +1989,23 @@ public class Catalog {
         return resolveSchemaForObject(qualifiedName).getAggregationPolicyExact(objectName(qualifiedName));
     }
 
-    /** True when an aggregation policy is attached to any table — live refuses to drop or replace one. */
-    public boolean isAggregationPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+    /**
+     * True when an aggregation policy is attached to any table or view — live refuses to drop or replace one (a
+     * table, live-verified). An attachment holds the policy its full name names, as {@link #isPolicyInUse} reads it.
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name
+     */
+    public boolean isAggregationPolicyInUse(final Schema home, final String policyName) {
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
-                    if (policyNameMatches(table.getAggregationPolicyName(), bare)) {
+                    if (holds(table.getAggregationPolicyName(), schema, home, policyName)) {
+                        return true;
+                    }
+                }
+                for (final View view : schema.getViews()) {
+                    if (holds(view.getAggregationPolicyName(), schema, home, policyName)) {
                         return true;
                     }
                 }
@@ -1971,15 +2035,30 @@ public class Catalog {
         return resolveSchemaForObject(qualifiedName).getProjectionPolicyExact(objectName(qualifiedName));
     }
 
-    /** True when a projection policy is attached to any column — live refuses to drop or replace one. */
-    public boolean isProjectionPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+    /**
+     * True when a projection policy is attached to any column of a table or a view — live refuses to drop or replace
+     * one (a table's, live-verified). An attachment holds the policy its full name names, as {@link #isPolicyInUse}
+     * reads it.
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name
+     */
+    public boolean isProjectionPolicyInUse(final Schema home, final String policyName) {
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
                     for (final TableColumn column : table.getColumns()) {
-                        if (policyNameMatches(column.getProjectionPolicyName(), bare)) {
+                        if (holds(column.getProjectionPolicyName(), schema, home, policyName)) {
                             return true;
+                        }
+                    }
+                }
+                for (final View view : schema.getViews()) {
+                    if (view.hasResolvedColumns()) {
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getProjectionPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -2084,6 +2163,14 @@ public class Catalog {
         final Role publicRole = new Role("PUBLIC");
         publicRole.setComment("Public role is automatically available to every user in the account.");
         roles.put("PUBLIC", publicRole);
+        // PUBLIC holds the SNOWFLAKE database's roles every role may use, granted by none (see SystemDatabase).
+        final Database system = getDatabase(SystemDatabase.NAME);
+        for (final String held : SystemDatabase.publicRoles()) {
+            final DatabaseRole role = system == null ? null : system.getDatabaseRole(held);
+            if (role != null) {
+                publicRole.grantDatabaseRole(role.getQualifiedName(), "");
+            }
+        }
 
         // Set up role hierarchy (roles inherit privileges from granted roles)
         // ACCOUNTADMIN inherits from SECURITYADMIN and SYSADMIN
@@ -2642,11 +2729,14 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.of("Object '" + spelled + "' already exists."));
         }
         final String was = source.qualifiedName(view.getName());
+        // A stream on the view follows it, as a table stream follows its table (StreamSources).
+        StreamSources.bindAll(this);
         source.dropView(view.getName());
         view.rename(newName);
         target.addView(view);
         // Its privileges go with it (GrantNames).
         GrantNames.renamed(this, "VIEW", was, target.qualifiedName(view.getName()));
+        StreamSources.respellAll(this);
     }
 
     /**

@@ -77,6 +77,7 @@ final class StatementSourceCheck {
     private void checkLevel(final FrostlakeParser.SelectClauseContext level) {
         final FrostlakeParser.TableExpressionContext from = level.tableExpression();
         if (from != null) {
+            FromSourceNames.rejectRealiasedGroups(from);
             executor.requireRelationsIn(from, cteNames);
             final FromSourceNames names = new FromSourceNames(executor);
             for (final ParseTree source : from.children) {

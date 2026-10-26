@@ -18,13 +18,21 @@ package dev.frostlake.transaction;
 
 /**
  * What a statement that waits for another session's table lock gives up while it waits: the engine's own lock,
- * which the holder's requests need to commit or roll back. The concurrent engine hands one to the request it runs
- * (see {@link TableLockGate#register}).
+ * which the holder's requests need to commit or roll back. The concurrent engine and an in-process connection hand
+ * one to the request they run (see {@link TableLockGate#register}).
  */
 public interface EngineLockRelease {
 
     /** Gives the engine's lock up, the request's session kept as it stands. */
     void release();
+
+    /**
+     * Waits a while with the engine's lock given up, before the wait looks at the holder again.
+     *
+     * @param millis how long
+     * @throws InterruptedException when the waiting thread is interrupted
+     */
+    void pause(long millis) throws InterruptedException;
 
     /** Takes the engine's lock back and puts the request's session in force again. */
     void reacquire();

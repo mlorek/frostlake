@@ -119,11 +119,46 @@ public final class FutureGrants {
             holders, covering);
         if (covering.isEmpty()) {
             collect(catalog, futureKind, "DATABASE", databaseName, holders, covering);
+            if (schema.isManagedAccess()) {
+                // A database's future OWNERSHIP grant does not reach a schema WITH MANAGED ACCESS, its other future
+                // grants do (documented).
+                for (int i = covering.size() - 1; i >= 0; i--) {
+                    if (Privilege.OWNERSHIP.name().equals(covering.get(i).getPrivilege())) {
+                        covering.remove(i);
+                        holders.remove(i);
+                    }
+                }
+            }
         }
         // The privileges a dropped object of this name held are not the new object's (GrantNames). A temporary
         // table that takes a permanent one's name only hides it, and the permanent table keeps its privileges.
         final boolean takesName = !("TABLE".equals(objectKind) && schema.shadowedTable(objectName) != null);
         return new CreationGrants(catalog, objectKind, qualified, takesName, holders, covering);
+    }
+
+    /**
+     * Whether any role or database role holds a future grant on objects of the schema: one that must be revoked
+     * before the schema becomes a managed access one, and that asks MANAGE GRANTS to turn managed access off
+     * (documented).
+     *
+     * @param catalog the catalog holding the roles
+     * @param schema  the schema
+     * @return whether a future grant in the schema is open
+     */
+    public static boolean openIn(final Catalog catalog, final Schema schema) {
+        final String scopeName = QualifiedName.join(schema.getDatabaseName(), schema.getName());
+        final List<Role> candidates = new ArrayList<>(catalog.getAllRoles());
+        for (final Database database : catalog.getAllDatabases()) {
+            candidates.addAll(database.getDatabaseRoles());
+        }
+        for (final Role role : candidates) {
+            for (final FutureGrant grant : role.getFutureGrants()) {
+                if ("SCHEMA".equals(grant.getScopeKind()) && scopeName.equalsIgnoreCase(grant.getScopeName())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** The owner a set of future grants gives a new object: a future OWNERSHIP's holder, else the current role. */

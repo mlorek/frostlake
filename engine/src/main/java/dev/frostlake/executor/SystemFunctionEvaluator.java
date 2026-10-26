@@ -196,7 +196,7 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$EXTERNAL_TABLE_PIPE_STATUS":
                 return "{\"executionState\": \"RUNNING\", \"pendingFileCount\": 0}";
             case "SYSTEM$AUTO_REFRESH_STATUS":
-                return "{\"state\": \"Active\"}";
+                return AutoRefreshStatus.answer(catalog, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$QUERY_REFERENCE":
                 return UUID.randomUUID().toString();
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":

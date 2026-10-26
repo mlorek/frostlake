@@ -105,6 +105,12 @@ public final class StatementSeparation {
             if (bracketed != null) {
                 throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", bracketed)), bracketed, sql);
             }
+            // So is a statement word straight after one: both readings refuse it.
+            final List<String> runIn = sql == null ? null
+                : RowLimitWordLines.runInValueLines(sql, tokens, fault.firstLine());
+            if (runIn != null) {
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", runIn)), runIn, sql);
+            }
             throw fault.refusal(sql);
         }
     }
@@ -143,8 +149,74 @@ public final class StatementSeparation {
             if (bracketed != null) {
                 throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", bracketed)), bracketed, sql);
             }
+            // So is a statement word straight after one: both readings refuse it.
+            final List<String> runIn = sql == null ? null
+                : RowLimitWordLines.runInValueLines(sql, tokens, fault.firstLine());
+            if (runIn != null) {
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", runIn)), runIn, sql);
+            }
             throw readingOn(script, tokens, sql, listener, fault);
         }
+        final List<String> later = fault == null || fault.precedes(parseFaultAt) || sql == null ? null
+            : laterRunIn(script, tokens, listener, fault);
+        if (later != null) {
+            throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", later)), later, sql);
+        }
+    }
+
+    /**
+     * The lines of a missing separator in a later statement that the report reads past: the earlier lines, the word
+     * the statement is run into, and the lines after the run-in statement where a word of {@link #readsOnWhenRunIn}
+     * lets the report go on — {@code SELECT 1 +; SELECT 1 FROM t DROP TABLE t; SELECT 1 x y} is the ';', 'DROP' and
+     * 'y' (live-verified). Null when the run-in statement is the script's first or opens with no statement's keyword,
+     * the statement it is run into has a fault of its own, or the report does not reach it.
+     */
+    private static List<String> laterRunIn(final FrostlakeParser.SqlScriptContext script, final TokenStream tokens,
+                                           final SyntaxErrorListener listener, final MissingSeparator fault) {
+        final List<FrostlakeParser.FlowChainContext> chains = script.flowChain();
+        final int second = fault.secondChain();
+        if (second < 2 || second >= chains.size() || fault.lines().size() != 1
+                || !separated(chains.get(second - 2), chains.get(second - 1), tokens)
+                || !opensOnlyAStatement(script, fault)) {
+            return null;
+        }
+        final Token word = chains.get(second).getStart();
+        final Token opened = chains.get(second - 1).getStart();
+        if (word == null || opened == null) {
+            return null;
+        }
+        final int[] wordAt = SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(word));
+        final int[] openedAt = SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(opened));
+        final List<String> parsed = listener.reportedSyntaxLines();
+        final List<String> lines = new ArrayList<>();
+        boolean past = false;
+        for (final String line : parsed) {
+            final int[] at = SyntaxErrorListener.sentenceCoordinates(line);
+            if (at == null) {
+                return null;
+            }
+            if (!precedes(at, wordAt)) {
+                past = true;
+            } else if (!precedes(at, openedAt)) {
+                return null;
+            } else {
+                lines.add(line);
+            }
+        }
+        if (!past || lines.isEmpty()) {
+            return null;
+        }
+        lines.add(SyntaxErrorListener.sentence(word));
+        if (readsOnWhenRunIn(word.getType())) {
+            lines.addAll(listener.reportedLinesAfter(
+                SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(statementEnd(tokens, word)))));
+        }
+        return lines;
+    }
+
+    /** Whether the line-and-position pair {@code at} lies before {@code place}. */
+    private static boolean precedes(final int[] at, final int[] place) {
+        return at[0] < place[0] || at[0] == place[0] && at[1] < place[1];
     }
 
     /**
@@ -168,8 +240,26 @@ public final class StatementSeparation {
             return fault.refusal(sql);
         }
         final List<String> lines = new ArrayList<>(fault.lines());
-        lines.addAll(listener.reportedLinesAfter(
-            SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(end))));
+        final int[] endAt = SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(end));
+        final List<String> after = listener.reportedLinesAfter(endAt);
+        if (after.isEmpty() && word.getType() == FrostlakeLexer.DROP && end.getType() == FrostlakeLexer.SEMI) {
+            // A run-in DROP's words after its name are read past, and the statements after its semicolon are read on
+            // even where this parse's report ended at those words: SELECT 1 FROM t WHERE a = 1 DROP TABLE t x y;
+            // SELECT 1 x y is 'DROP', then the later 'y' (live-verified).
+            final StringBuilder text = new StringBuilder(sql);
+            for (int i = 0; i <= end.getStopIndex() && i < text.length(); i++) {
+                if (text.charAt(i) != '\n' && text.charAt(i) != '\r') {
+                    text.setCharAt(i, ' ');
+                }
+            }
+            for (final String line : SyntaxErrorListener.linesReportedFor(text.toString(), true)) {
+                final int[] at = SyntaxErrorListener.sentenceCoordinates(line);
+                if (at != null && (at[0] > endAt[0] || at[0] == endAt[0] && at[1] > endAt[1])) {
+                    after.add(line);
+                }
+            }
+        }
+        lines.addAll(after);
         return new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
     }
 
@@ -394,9 +484,10 @@ public final class StatementSeparation {
             // A DROP or a DESCRIBE is not resumed: DESCRIBE TABLE t UPDATE t SET a = 1 x y is 'UPDATE' alone, though
             // the t after the word could be read as a property's name. Nor is a bracketed query run into the statement
             // before it, refused at its '(' alone whatever follows the bracket: SELECT a x (SELECT 1) FROM t) is '('
-            // at 11 and nothing more (live-verified).
+            // at 11 and nothing more; nor a MERGE run in, the report's last line: SELECT 1 FROM t WHERE a = 1 MERGE
+            // INTO t USING n ON t.a = n.a WHEN MATCHED THEN DELETE is 'MERGE' alone (live-verified).
             final boolean resumes = stackSecondLine && !endsInSignableName(chain)
-                && word.getType() != FrostlakeLexer.LPAREN;
+                && word.getType() != FrostlakeLexer.LPAREN && word.getType() != FrostlakeLexer.MERGE;
             return fault(word.getText(), word.getLine(), word.getCharPositionInLine(),
                 resumes ? resumedFault(tokens, sql, word, !endsInUnaliasedTable(chain)) : null).between(i + 1);
         }

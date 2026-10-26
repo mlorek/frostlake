@@ -49,7 +49,8 @@ public class IntegrationPrivilegesTest {
         engine.execute("CREATE DATABASE p");
         engine.execute("USE SCHEMA p.public");
         engine.execute("CREATE ROLE r1");
-        engine.execute("CREATE USER u1");
+        // The user puts no secondary role in use, so a refusal names the primary role alone.
+        engine.execute("CREATE USER u1 DEFAULT_SECONDARY_ROLES = ()");
         engine.execute("GRANT ROLE r1 TO USER u1");
         engine.execute("GRANT USAGE ON DATABASE p TO ROLE r1");
         engine.execute("GRANT USAGE, CREATE STAGE, CREATE FUNCTION ON SCHEMA p.public TO ROLE r1");

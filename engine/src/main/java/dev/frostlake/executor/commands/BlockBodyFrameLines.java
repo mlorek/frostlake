@@ -46,7 +46,10 @@ import java.util.List;
  * names the second IS — and a quantifier no predicate takes is refused before the token that opens its list:
  * {@code RETURN a NOT LIKE ANY ('x', 'y');} names the ANY and the {@code 'x'}, as a negated LIKE, ILIKE or
  * RLIKE and an RLIKE or REGEXP with ANY or ALL do; an ILIKE ALL names the token alone. Nothing after the
- * semicolon is read: {@code BEGIN RETURN 1; RETURN 2 +; END} is the RETURN alone (all live-verified).
+ * semicolon is read: {@code BEGIN RETURN 1; RETURN 2 +; END} is the RETURN alone. A comma the semicolon follows
+ * before the first parenthesis or operator is refused, where one an item follows is passed over:
+ * {@code BEGIN RETURN [1, ; END} names the comma, {@code BEGIN RETURN 1, 2; END} the RETURN alone; a parenthesis of
+ * the body's own that closes the frame early is passed over as any token there is (all live-verified).
  */
 final class BlockBodyFrameLines {
 
@@ -84,7 +87,8 @@ final class BlockBodyFrameLines {
             if (type == FrostlakeLexer.SEMI) {
                 return refused;
             }
-            if (isSecondTest(framed, i)) {
+            if (isSecondTest(framed, i)
+                    || type == FrostlakeLexer.COMMA && framed.get(i + 1).getType() == FrostlakeLexer.SEMI) {
                 refused.add(framed.get(i));
                 return refused;
             }

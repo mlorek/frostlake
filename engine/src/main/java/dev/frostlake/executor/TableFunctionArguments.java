@@ -67,7 +67,8 @@ public final class TableFunctionArguments {
         new HashSet<>(Arrays.asList(QUERY_HISTORY, "QUERY_HISTORY_BY_SESSION", "QUERY_HISTORY_BY_USER",
             "QUERY_HISTORY_BY_WAREHOUSE", TASK_HISTORY, TAG_REFERENCES, "TAG_REFERENCES_ALL_COLUMNS",
             ALERT_HISTORY, COPY_HISTORY, "TASK_DEPENDENTS",
-            "CURRENT_TASK_GRAPHS", "COMPLETE_TASK_GRAPHS", "SERVERLESS_TASK_HISTORY"));
+            "CURRENT_TASK_GRAPHS", "COMPLETE_TASK_GRAPHS", "SERVERLESS_TASK_HISTORY",
+            "DYNAMIC_TABLE_REFRESH_HISTORY"));
 
     /**
      * How live NAMES a positional parameter, by function. Most report the 1-based position

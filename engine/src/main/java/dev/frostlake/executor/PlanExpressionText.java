@@ -41,6 +41,7 @@ import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.TypeCategory;
 
@@ -80,6 +81,8 @@ import java.util.Set;
  *       {@code EXTRACT(year from x)}; DATEADD of a whole amount is {@code DATE_ADDDAYSTODATE(1, ET.D)} and DATEDIFF
  *       of two values of one kind {@code DATE_DIFFDATEINDAYS(ET.D, ET.E)}, each kin of theirs alike.</li>
  *   <li>A window is {@code F(x) OVER (PARTITION BY p ORDER BY k ASC NULLS LAST)}, its frame left out.</li>
+ *   <li>A call of a procedure's SYSTEM$REFERENCE token is the procedure over its parameters' names,
+ *       {@code PR_ARG(X)}.</li>
  *   <li>Literals are printed as values, {@code 1.5}, {@code 1000}, {@code 'it''s'}, {@code null}; function names are
  *       upper-cased.</li>
  * </ul>
@@ -91,6 +94,7 @@ final class PlanExpressionText extends AstPrinterVisitor {
 
     private final PlanScope scope;
     private final FunctionRegistry functions;
+    private final IdentifierCallText identifierCalls;
     private final List<PlanRead> reads = new ArrayList<>();
     private final Set<String> owners = new LinkedHashSet<>();
     private final List<String> aggregateKeys = new ArrayList<>();
@@ -101,12 +105,15 @@ final class PlanExpressionText extends AstPrinterVisitor {
     private boolean unresolved;
 
     /**
-     * @param scope     the names the expression is read in, or null to resolve none
-     * @param functions the functions, which tell an aggregate
+     * @param scope           the names the expression is read in, or null to resolve none
+     * @param functions       the functions, which tell an aggregate
+     * @param identifierCalls what a call named by IDENTIFIER is written as
      */
-    PlanExpressionText(final PlanScope scope, final FunctionRegistry functions) {
+    PlanExpressionText(final PlanScope scope, final FunctionRegistry functions,
+                       final IdentifierCallText identifierCalls) {
         this.scope = scope;
         this.functions = functions;
+        this.identifierCalls = identifierCalls;
     }
 
     /**
@@ -299,6 +306,14 @@ final class PlanExpressionText extends AstPrinterVisitor {
 
     @Override
     public String visitFunctionCall(final FunctionCallExpression expr) {
+        final String identified = expr.getNameExpression() == null ? null : identifierCalls.spell(expr);
+        if (identified != null) {
+            // The arguments are read all the same, their columns the scan's.
+            for (final Expression argument : expr.getArguments()) {
+                spell(argument);
+            }
+            return identified;
+        }
         if (expr.getFunctionName() == null || expr.getNameExpression() != null) {
             return super.visitFunctionCall(expr);
         }
@@ -629,6 +644,16 @@ final class PlanExpressionText extends AstPrinterVisitor {
      * A sum, a difference, a remainder or a comparison, the operand with fewer decimals converted to the other's.
      */
     private String aligned(final Expression left, final String symbol, final Expression right) {
+        // A number written beside a FLOAT in a sum or a difference is the FLOAT literal it becomes: FZF.F + 1.0
+        // (live-verified).
+        if (("+".equals(symbol) || "-".equals(symbol)) && "FLOAT".equals(familyOf(typeOf(left)))
+                && floatLiteral(right) != null) {
+            return operand(left, false) + " " + symbol + " " + floatLiteral(right);
+        }
+        if (("+".equals(symbol) || "-".equals(symbol)) && "FLOAT".equals(familyOf(typeOf(right)))
+                && floatLiteral(left) != null) {
+            return floatLiteral(left) + " " + symbol + " " + operand(right, false);
+        }
         final Integer leftScale = scaleOf(left);
         final Integer rightScale = scaleOf(right);
         final boolean known = leftScale != null && rightScale != null;
@@ -899,8 +924,8 @@ final class PlanExpressionText extends AstPrinterVisitor {
     }
 
     /**
-     * A sort key as the plan lists it: its direction, and the NULLS placement written or the direction's default —
-     * last for ASC, first for DESC.
+     * A sort key as the plan lists it: its direction, and the NULLS placement written or the one the session's
+     * DEFAULT_NULL_ORDERING gives the direction (see {@link SessionNullOrdering}).
      *
      * @param key        the key's text
      * @param ascending  whether it sorts ascending
@@ -908,7 +933,7 @@ final class PlanExpressionText extends AstPrinterVisitor {
      * @return the text
      */
     static String sortKey(final String key, final boolean ascending, final Boolean nullsFirst) {
-        final boolean first = nullsFirst == null ? !ascending : nullsFirst.booleanValue();
+        final boolean first = SessionNullOrdering.nullsFirst(ascending, nullsFirst);
         return key + (ascending ? " ASC" : " DESC") + (first ? " NULLS FIRST" : " NULLS LAST");
     }
 
@@ -946,6 +971,20 @@ final class PlanExpressionText extends AstPrinterVisitor {
     }
 
     /** A number as the plan prints a value: its digits in place, with no trailing zero after the point. */
+    /** A number literal as the FLOAT literal it becomes, {@code 1.0}, {@code 2.5}; null for any other expression. */
+    private static String floatLiteral(final Expression expression) {
+        if (!(expression instanceof LiteralExpression)) {
+            return null;
+        }
+        final LiteralExpression literal = (LiteralExpression) expression;
+        if (literal.getType() != LiteralType.INTEGER && literal.getType() != LiteralType.DECIMAL
+                || !(literal.getValue() instanceof Number)) {
+            return null;
+        }
+        final BigDecimal value = DecimalText.parse(literal.getValue().toString()).stripTrailingZeros();
+        return value.scale() <= 0 ? value.setScale(1).toPlainString() : value.toPlainString();
+    }
+
     private static String numberText(final Object value) {
         if (value instanceof BigDecimal) {
             return ((BigDecimal) value).stripTrailingZeros().toPlainString();

@@ -112,6 +112,15 @@ public final class HybridKeys {
         return values;
     }
 
+    /**
+     * The refusal of a TRUNCATE of a hybrid table another hybrid table's foreign key references, which documented
+     * cannot be truncated as long as the relationship exists.
+     */
+    public static String referencedTableTruncated(final Table table) {
+        return "Table '" + table.getName() + "' cannot be truncated as long as a FOREIGN KEY constraint references"
+            + " it.";
+    }
+
     /** The refusal of a row whose foreign key no parent row holds, a NULL one included. */
     public static String foreignKeyViolated(final Table table, final ForeignKeyConstraint key) {
         return "Foreign key constraint \"SYS_INDEX_" + table.getName() + "_FOREIGN_KEY_"

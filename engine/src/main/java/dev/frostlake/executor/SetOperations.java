@@ -30,6 +30,7 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
@@ -37,6 +38,7 @@ import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ApproximateValues;
+import dev.frostlake.values.CodePointText;
 import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
@@ -145,7 +147,9 @@ public final class SetOperations {
      * {@code SELECT TRUE UNION ALL SELECT 0} answers TRUE and FALSE, and any other number TRUE; every other
      * shape is left to the key coercion.
      *
-     * <p>The leading type comes from the first branch's VALUES when it produced any, and otherwise from
+     * <p>The leading type comes from the first branch's VALUES when it produced any — each column's first one that
+     * is not NULL, whichever row holds it: {@code VALUES (NULL), (TRUE) INTERSECT SELECT 5} keeps TRUE, as the same
+     * rows in the other order do (live-verified) — and otherwise from
      * its declared COLUMN types — an EMPTY leading branch still types the union in Snowflake
      * (live-verified on a real account: {@code SELECT ts FROM t WHERE FALSE UNION ALL
      * SELECT '9999-12-31 00:00:003'} answers the TIMESTAMP {@code 9999-12-31 00:00:03.000}, and
@@ -158,8 +162,7 @@ public final class SetOperations {
         if (rightRows.isEmpty()) {
             return rightRows;
         }
-        final List<Object> firstValues = leftRows.isEmpty()
-            ? Collections.emptyList() : leftRows.get(0).getValues();
+        final List<Object> firstValues = leadingValues(leftRows);
         final List<Row> converted = new ArrayList<>(rightRows.size());
         for (final Row row : rightRows) {
             final List<Object> values = row.getValues();
@@ -198,6 +201,34 @@ public final class SetOperations {
         return converted;
     }
 
+    /**
+     * Each column's leading value: the first row's, or where that is NULL the first value a later row holds that is
+     * neither NULL nor a fault; NULL where the column holds none.
+     */
+    private static List<Object> leadingValues(final List<Row> leftRows) {
+        if (leftRows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        final List<Object> leading = new ArrayList<>(leftRows.get(0).getValues());
+        int missing = 0;
+        for (final Object value : leading) {
+            if (value == null) {
+                missing++;
+            }
+        }
+        for (int r = 1; r < leftRows.size() && missing > 0; r++) {
+            final List<Object> values = leftRows.get(r).getValues();
+            for (int i = 0; i < leading.size() && i < values.size(); i++) {
+                final Object value = values.get(i);
+                if (leading.get(i) == null && value != null && !(value instanceof DeferredFault)) {
+                    leading.set(i, value);
+                    missing--;
+                }
+            }
+        }
+        return leading;
+    }
+
     private static boolean isNonZero(final Number value) {
         if (value instanceof BigDecimal) {
             return ((BigDecimal) value).signum() != 0;
@@ -223,11 +254,27 @@ public final class SetOperations {
     public static void coerceStringBranches(final List<List<Row>> branchRows,
                                             final List<List<ResultSetColumn>> branchColumns,
                                             final List<ResultSetColumn> unified) {
+        coerceStringBranches(branchRows, branchColumns, unified, -1);
+    }
+
+    /**
+     * {@link #coerceStringBranches(List, List, List)} for the rows of one arm, or of several where {@code arm} is
+     * negative.
+     *
+     * @param arm the position of the arm the rows are all from, from 0, or -1 for rows of several arms
+     */
+    public static void coerceStringBranches(final List<List<Row>> branchRows,
+                                            final List<List<ResultSetColumn>> branchColumns,
+                                            final List<ResultSetColumn> unified, final int arm) {
         if (unified == null) {
             return;
         }
         for (int col = 0; col < unified.size(); col++) {
             final DataType target = unified.get(col).getStaticType();
+            if (target instanceof StringType && !(target instanceof UuidType)) {
+                variantsAsText(branchRows, col, (StringType) target, uncheckedVariants(branchColumns, col, arm));
+                continue;
+            }
             if (!isStringCoercionTarget(target) && !isSemiStructuredTarget(target)) {
                 continue;
             }
@@ -280,6 +327,74 @@ public final class SetOperations {
                 }
             }
         }
+    }
+
+    /**
+     * Converts a VARIANT arm's values under a text column to the column's text, as a cast to the column's type
+     * converts them: a string to itself, a JSON null to NULL, a temporal to its output form, an array or an object
+     * to its JSON text, each held to the column's length as such a cast holds it. Live keeps the text type of an arm
+     * that leads a VARIANT one, and compares and returns the VARIANT arm's values as that text: {@code 'a' UNION
+     * SELECT 'a'::VARIANT} is one row, {@code 'a' EXCEPT SELECT 'a'::VARIANT} none, and {@code 'x' UNION ALL SELECT
+     * PARSE_JSON('{"k":1}')} is refused {@code String '{"k":1}' is too long and would be truncated}. As in the cast,
+     * a number or a boolean constant wrapped into the VARIANT is never held to the length: {@code 'x' UNION ALL
+     * SELECT TO_VARIANT(1.5)} answers 1.5 (live-verified). Under a text column only a VARIANT arm holds anything but
+     * text.
+     *
+     * @param unchecked whether the rows' VARIANT values are such constants
+     */
+    private static void variantsAsText(final List<List<Row>> branchRows, final int col, final StringType target,
+                                       final boolean unchecked) {
+        for (final List<Row> rows : branchRows) {
+            for (int r = 0; r < rows.size(); r++) {
+                final Row row = rows.get(r);
+                if (col >= row.getValues().size()) {
+                    continue;
+                }
+                final Object value = row.getValue(col);
+                if (value == null || value instanceof CharSequence || value instanceof DeferredFault) {
+                    continue;
+                }
+                Object converted;
+                try {
+                    converted = value instanceof VariantValue && ((VariantValue) value).node().isNull() ? null
+                        : ValueCaster.castValue(value, "VARCHAR");
+                    if (!unchecked && !target.isUnsized() && converted instanceof String
+                            && CodePointText.length((String) converted) > target.getMaxLength()) {
+                        throw new ColumnLengthException(target.getMaxLength(), (String) converted);
+                    }
+                } catch (final RuntimeException unconvertible) {
+                    if (!DeferredFault.deferrable(unconvertible)) {
+                        throw unconvertible;
+                    }
+                    converted = new DeferredFault(unconvertible);
+                }
+                final List<Object> replaced = new ArrayList<>(row.getValues());
+                replaced.set(col, converted);
+                rows.set(r, new Row(replaced));
+            }
+        }
+    }
+
+    /**
+     * Whether a column's VARIANT values are constants wrapped into the VARIANT, which converts to text unheld by a
+     * length: the one arm's column, or every VARIANT arm's where the rows are several arms'.
+     */
+    private static boolean uncheckedVariants(final List<List<ResultSetColumn>> branchColumns, final int col,
+                                             final int arm) {
+        if (arm >= 0) {
+            return arm < branchColumns.size() && col < branchColumns.get(arm).size()
+                && branchColumns.get(arm).get(col).isUncheckedConstant();
+        }
+        boolean any = false;
+        for (final List<ResultSetColumn> columns : branchColumns) {
+            if (col < columns.size() && !(columns.get(col).getStaticType() instanceof StringType)) {
+                if (!columns.get(col).isUncheckedConstant()) {
+                    return false;
+                }
+                any = true;
+            }
+        }
+        return any;
     }
 
     /**
@@ -434,9 +549,9 @@ public final class SetOperations {
                 // re-wrapping it as a BigDecimal would alter what the driver hands back without
                 // altering a single rendered digit.
                 final BigDecimal scaled =
-                    new BigDecimal(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
+                    DecimalText.parse(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
                 if (numeric.getScale() == 0 && !(value instanceof BigDecimal)
-                        && scaled.compareTo(new BigDecimal(value.toString())) == 0) {
+                        && scaled.compareTo(DecimalText.parse(value.toString())) == 0) {
                     return value;
                 }
                 return scaled;
@@ -550,7 +665,7 @@ public final class SetOperations {
             return hex;
         }
         try {
-            return new BigDecimal(text.trim());
+            return DecimalText.parse(text.trim());
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
         }
@@ -570,7 +685,7 @@ public final class SetOperations {
         final String trimmed = text.trim();
         final BigDecimal parsed;
         try {
-            parsed = new BigDecimal(trimmed);
+            parsed = DecimalText.parse(trimmed);
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
         }
@@ -1060,7 +1175,7 @@ public final class SetOperations {
             case NUMERIC:
                 if (value instanceof Number || value instanceof CharSequence) {
                     try {
-                        return new BigDecimal(value.toString().trim()).stripTrailingZeros();
+                        return DecimalText.parse(value.toString().trim()).stripTrailingZeros();
                     } catch (final NumberFormatException notANumericValue) {
                         throw new RuntimeException("Numeric value '" + value + "' is not recognized");
                     }

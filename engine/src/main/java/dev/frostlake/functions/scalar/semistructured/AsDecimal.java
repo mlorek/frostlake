@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -58,7 +59,7 @@ public class AsDecimal extends BuiltInFunction {
         } else if (node != null && node.isNumber()) {
             raw = node.decimalValue();
         } else if (args.get(0) instanceof Number) {
-            raw = new BigDecimal(args.get(0).toString());
+            raw = DecimalText.parse(args.get(0).toString());
         } else {
             return null;
         }

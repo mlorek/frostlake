@@ -38,6 +38,7 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.transaction.StreamLock;
 import dev.frostlake.transaction.TableLock;
 import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionManager;
@@ -158,7 +159,8 @@ final class ShowSessionExecutor {
             final String setByUser = sessionUser == null ? null : sessionUser.getParameters().get(key);
             final String setByAccount = AccountParameters.value(catalog, key);
             // JSON_INDENT is the one row whose unset value the ENGINE decides rather than the table:
-            // it is a real setting here, and SHOW must report what the renderer is actually using.
+            // it is a real setting here, and SHOW must report what the renderer is actually using. The account's
+            // own listing reads the account's value, its default where it sets none (live-verified).
             final String inForce;
             if (setBySession) {
                 inForce = String.valueOf(sessionParams.get(key));
@@ -168,7 +170,7 @@ final class ShowSessionExecutor {
                 inForce = setByAccount;
             } else if (SystemParameters.value(key) != null) {
                 inForce = SystemParameters.value(key);
-            } else if ("JSON_INDENT".equals(key)) {
+            } else if ("JSON_INDENT".equals(key) && !inAccount) {
                 inForce = String.valueOf(VariantJsonFormat.indent());
             } else {
                 inForce = parameter.getDefaultValue();
@@ -769,13 +771,15 @@ final class ShowSessionExecutor {
     }
 
     /**
-     * SHOW LOCKS, in live's shape: one row per (transaction, table) a partition-rewriting DML
-     * statement touched — UPDATE / DELETE / MERGE / TRUNCATE, while an append-only INSERT holds no
-     * lock — with {@code type=PARTITIONS} and {@code status=HOLDING}, the resource as the table's
-     * fully qualified name, and the lock's own {@code acquired_on} / {@code query_id} beside the
-     * owning transaction's id and start; and one row with {@code status=WAITING}, no {@code acquired_on} and
-     * the waiting statement's query ID for a table a statement waits for (live-verified). {@code IN ACCOUNT}
-     * prepends a {@code session} column; the rows are otherwise identical.
+     * SHOW LOCKS, in live's shape: one row per (transaction, table) a DML statement wrote or touched —
+     * an UPDATE, DELETE, MERGE or TRUNCATE, and an INSERT into a table that holds committed rows, where
+     * one into an empty table takes none — with {@code type=PARTITIONS} and
+     * {@code status=HOLDING}, the resource as the table's fully qualified name, and the lock's own
+     * {@code acquired_on} (its first touch) and {@code query_id} (the latest statement that changed a
+     * row of the table) beside the owning transaction's id and start; and one row with
+     * {@code status=WAITING}, no {@code acquired_on} and the waiting statement's query ID for a table a
+     * statement waits for (live-verified). {@code IN ACCOUNT} prepends a {@code session} column; the rows
+     * are otherwise identical.
      */
     public ResultSet showLocks(final boolean inAccount) {
         final List<ResultSetColumn> columns = new ArrayList<>();
@@ -813,13 +817,28 @@ final class ShowSessionExecutor {
                 cells.add(entry.getValue().getQueryId());
                 rows.add(new Row(cells));
             }
+            // A stream a read of the transaction holds is listed in full with the type STREAM (live-verified).
+            for (final StreamLock lock : txn.getStreamLocks()) {
+                final List<Object> cells = new ArrayList<>();
+                if (inAccount) {
+                    cells.add(sessionNumberOf(txn));
+                }
+                cells.add(lock.getResource());
+                cells.add("STREAM");
+                cells.add(transactionDisplayId(txn));
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));
+                cells.add("HOLDING");
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(lock.getAcquiredOn())));
+                cells.add(lock.getQueryId());
+                rows.add(new Row(cells));
+            }
             if (waitingFor != null) {
                 final List<Object> cells = new ArrayList<>();
                 if (inAccount) {
                     cells.add(sessionNumberOf(txn));
                 }
                 cells.add(waitingFor);
-                cells.add("PARTITIONS");
+                cells.add(txn.isWaitingForStream() ? "STREAM" : "PARTITIONS");
                 cells.add(transactionDisplayId(txn));
                 cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));
                 cells.add("WAITING");
@@ -914,7 +933,7 @@ final class ShowSessionExecutor {
         final SecurityManager securityManager = facade.getSecurityManager();
         // Live layout: session_id | created_on | updated_on | name | value | type | comment —
         // the variable NAME is folded upper, an unset comment is '', and type names the value's
-        // family (fixed / text / boolean).
+        // family (see VariableListingText).
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("session_id", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
@@ -933,22 +952,14 @@ final class ShowSessionExecutor {
                 continue;
             }
             final Object value = e.getValue();
-            final String type;
-            if (securityManager != null && securityManager.getSessionContext().isDecfloatSessionVariable(e.getKey())) {
-                type = "decfloat";
-            } else if (value instanceof Number) {
-                type = "fixed";
-            } else if (value instanceof Boolean) {
-                type = "boolean";
-            } else {
-                type = "text";
-            }
+            final String type = VariableListingText.type(value, securityManager != null
+                && securityManager.getSessionContext().isDecfloatSessionVariable(e.getKey()));
             rows.add(new Row(Arrays.asList(
                 currentSessionNumber(),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
                 e.getKey().toUpperCase(Locale.ROOT),
-                value != null ? value.toString() : null,
+                VariableListingText.value(value),
                 type,
                 "")));
         }

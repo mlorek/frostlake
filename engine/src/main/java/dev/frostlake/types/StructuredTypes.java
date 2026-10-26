@@ -101,6 +101,51 @@ public final class StructuredTypes {
     }
 
     /**
+     * Whether a value of the structured type {@code source} coerces to the structured type {@code target}, as a
+     * write to a structured column asks (Snowflake's structured-type coercion rules): both are the same kind — an
+     * ARRAY, an OBJECT or a MAP — an OBJECT's keys are the same names in the same order, and each element, value
+     * and key coerces to its counterpart. A number coerces to any number, a timestamp to its own flavour, and
+     * TIMESTAMP_LTZ and TIMESTAMP_TZ to each other; every other leaf, a MAP's key among them, only to its own type.
+     * {@code ARRAY(VARCHAR)} does not reach an {@code ARRAY(INT)} column, nor a MAP an OBJECT one (live-verified).
+     *
+     * @param source the value's static type
+     * @param target the column's declared type
+     * @return whether the value coerces
+     */
+    public static boolean coercible(final DataType source, final DataType target) {
+        if (source instanceof StructuredObjectType && target instanceof StructuredObjectType) {
+            final List<StructuredField> from = ((StructuredObjectType) source).getFields();
+            final List<StructuredField> to = ((StructuredObjectType) target).getFields();
+            if (from.size() != to.size()) {
+                return false;
+            }
+            for (int i = 0; i < from.size(); i++) {
+                if (!from.get(i).getName().equals(to.get(i).getName())
+                        || !coercible(from.get(i).getDataType(), to.get(i).getDataType())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (source instanceof MapType && target instanceof MapType) {
+            return SqlTypeNames.sameFamily(((MapType) source).getKeyType(), ((MapType) target).getKeyType())
+                && coercible(((MapType) source).getValueType(), ((MapType) target).getValueType());
+        }
+        if (source instanceof StructuredArrayType && target instanceof StructuredArrayType) {
+            return coercible(((ArrayType) source).getElementType(), ((ArrayType) target).getElementType());
+        }
+        if (isStructured(source) || isStructured(target)) {
+            return false;
+        }
+        if (source instanceof NumericType && target instanceof NumericType) {
+            return true;
+        }
+        return SqlTypeNames.sameFamily(source, target) || source instanceof DateTimeType
+            && target instanceof DateTimeType && ((DateTimeType) source).hasTimeZone()
+            && ((DateTimeType) target).hasTimeZone();
+    }
+
+    /**
      * Whether an argument of type {@code argument} binds to a user-defined function parameter of type
      * {@code parameter} as far as structured types decide it: a structured parameter takes only an argument
      * of its own binding shape ({@link #sameBindingShape}), and a plainly semi-structured parameter (OBJECT,

@@ -237,7 +237,7 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
     public void testShowLocksWithActiveTransaction() {
         // Live-verified: partition-rewriting DML — UPDATE, DELETE (even matching no rows), MERGE —
         // holds one PARTITIONS lock per (transaction, table), however many statements rewrite the
-        // table; an append-only INSERT holds NO lock; COMMIT releases them.
+        // table; an INSERT into an empty table holds NO lock; COMMIT releases them.
         engine.execute("CREATE TABLE lock_test (id INTEGER)");
         engine.execute("CREATE TABLE lock_test2 (id INTEGER)");
         engine.execute("INSERT INTO lock_test2 VALUES (0)");
@@ -245,7 +245,7 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         engine.execute("BEGIN");
         engine.execute("INSERT INTO lock_test VALUES (1)");
         assertEquals(0, engine.executeQuery("SHOW LOCKS").getRowCount(),
-            "an append-only INSERT holds no lock");
+            "an INSERT into an empty table holds no lock");
 
         engine.execute("UPDATE lock_test2 SET id = 1");
         final ResultSet rs = engine.executeQuery("SHOW LOCKS");

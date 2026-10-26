@@ -20,8 +20,8 @@ package dev.frostlake.metastore.model;
  * The parent container a CREATE authorization check targets — the scope that must grant the CREATE
  * privilege. A schema-level object (table, view, stream, function, ...) is contained by a
  * {@link #SCHEMA}; a schema is contained by a {@link #DATABASE}. Restricting the check's container
- * argument to these two kinds (rather than a bare string or the broader {@code SecurableObjectType})
- * makes an invalid container unrepresentable. The catalog name matches the object-type string used
+ * argument to these two kinds (rather than a bare string naming any securable kind) makes an invalid
+ * container unrepresentable. The catalog name matches the object-type string used
  * by owner resolution and the privilege store.
  */
 public enum ContainerType {

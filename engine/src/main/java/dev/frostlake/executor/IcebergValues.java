@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.IcebergNumericType;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.StructuredArrayType;
@@ -179,14 +180,14 @@ final class IcebergValues {
     /** A MAP's key as the number it spells, or null for one that spells none. */
     private static BigDecimal keyNumber(final String key) {
         try {
-            return new BigDecimal(key);
+            return DecimalText.parse(key);
         } catch (final NumberFormatException notNumber) {
             return null;
         }
     }
 
     private static BigDecimal decimal(final Number value) {
-        return value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(value.toString());
+        return value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(value.toString());
     }
 
     private static void requireHeld(final IcebergNumericType type, final BigDecimal value) {

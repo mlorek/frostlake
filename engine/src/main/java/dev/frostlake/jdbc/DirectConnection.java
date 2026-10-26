@@ -18,11 +18,14 @@ package dev.frostlake.jdbc;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.AbortableSession;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.security.SessionSettings;
+import dev.frostlake.transaction.EngineLockRelease;
+import dev.frostlake.transaction.TableLockGate;
 import dev.frostlake.transaction.TransactionManager;
 
 import java.sql.Array;
@@ -41,6 +44,8 @@ import java.sql.SQLXML;
 import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Struct;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
@@ -52,7 +57,7 @@ import java.util.concurrent.Executor;
  * Direct JDBC connection that wraps a DatabaseEngine instance without HTTP.
  * Used for testing and embedded usage.
  */
-public class DirectConnection implements Connection, AbortableSession, ResultColumnCase {
+public class DirectConnection implements Connection, AbortableSession, ResultColumnCase, SessionZoneSource {
 
     private final DatabaseEngine engine;
     private boolean closed = false;
@@ -104,6 +109,8 @@ public class DirectConnection implements Connection, AbortableSession, ResultCol
     // Whether a column label is matched ignoring case: once the session set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to
     // TRUE, for the rest of the connection (see ResultColumnCase).
     private volatile boolean labelsIgnoreCase;
+    /** The TIMEZONE the session named when its last statement ran, its own or inherited; null before any ran. */
+    private volatile String sessionTimezone;
     /** Whether the aborted session held an open transaction, for the refusal's report. */
     private volatile boolean abortedInTransaction;
 
@@ -174,6 +181,26 @@ public class DirectConnection implements Connection, AbortableSession, ResultCol
      * shared engine) and the post-statement context — a USE, an ALTER of autocommit, an opened or
      * closed transaction — is captured back into the connection.
      */
+    /** How a statement waiting for a table lock gives up the engine's monitor: each pause waits on it. */
+    private EngineLockRelease monitorRelease() {
+        return new EngineLockRelease() {
+            @Override
+            public void release() {
+                // The monitor is given up by each pause.
+            }
+
+            @Override
+            public void pause(final long millis) throws InterruptedException {
+                engine.wait(millis);
+            }
+
+            @Override
+            public void reacquire() {
+                // Each pause takes the monitor back as it returns.
+            }
+        };
+    }
+
     ExecutionResult executeScoped(final String sql) {
         if (aborted) {
             throw new IllegalStateException(SESSION_GONE);
@@ -195,9 +222,19 @@ public class DirectConnection implements Connection, AbortableSession, ResultCol
             // let this connection inherit whatever the previous one on this thread left open, and read
             // its uncommitted writes.
             bindOwnTransaction(transactions);
+            // A statement that waits for another connection's table lock waits on the engine's monitor, which it
+            // gives up meanwhile, so the holder's own statements can end its transaction (see TableLockGate). The
+            // session's context is bound to this thread, so nothing of it moves.
+            final boolean mayWait = sessionSettings != null;
+            final EngineLockRelease displaced = mayWait ? TableLockGate.register(monitorRelease()) : null;
             try {
                 return engine.execute(sql);
             } finally {
+                if (mayWait) {
+                    TableLockGate.restore(displaced);
+                }
+                // A statement that waits for a lock this one may have let go looks again at once.
+                engine.notifyAll();
                 // Captured when the request fails too: a request of several statements that fails part-way
                 // keeps what its earlier statements did — a transaction a BEGIN opened stays open in the
                 // session (live-verified) — so the connection must take it as its own. Left on the thread
@@ -213,6 +250,8 @@ public class DirectConnection implements Connection, AbortableSession, ResultCol
                 if (session.resultColumnsCaseInsensitive()) {
                     labelsIgnoreCase = true;
                 }
+                final Object timezone = session.getSessionParameter("TIMEZONE");
+                sessionTimezone = timezone == null ? null : timezone.toString();
                 catalog.clearSessionScope();
                 transactions.clearSessionAutoCommit();
                 if (sessionSettings != null) {
@@ -319,6 +358,12 @@ public class DirectConnection implements Connection, AbortableSession, ResultCol
     @Override
     public boolean labelsIgnoreCase() {
         return labelsIgnoreCase;
+    }
+
+    @Override
+    public ZoneId sessionZone() {
+        final ZoneId zone = sessionTimezone == null ? null : SessionZone.named(sessionTimezone);
+        return zone != null ? zone : ZoneOffset.UTC;
     }
 
     @Override

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -183,7 +184,7 @@ public class PercentileDigest {
             return ((Number) value).doubleValue();
         }
         if (value instanceof Number) {
-            return new BigDecimal(value.toString()).doubleValue();
+            return DecimalText.parse(value.toString()).doubleValue();
         }
         if (value instanceof VariantValue) {
             final JsonNode member = ((VariantValue) value).node();
@@ -208,7 +209,7 @@ public class PercentileDigest {
 
     private static BigDecimal spelledNumber(final String text) {
         try {
-            return new BigDecimal(text.trim());
+            return DecimalText.parse(text.trim());
         } catch (final NumberFormatException notANumber) {
             return null;
         }

@@ -36,9 +36,12 @@ import org.antlr.v4.runtime.Token;
  * <p>A list is read the way an operand in brackets is, so the text is parsed again with the IN spelled as an equals
  * sign followed by a blank, every position where it was written. A list holding a subquery that cannot be read is
  * refused at its SELECT or WITH instead; live's recovery then closes the list at the first ')' after it, and a fault
- * after that still speaks. Where no operator may stand either, the line falls at the IN's own place, and names the IN
- * as written ({@code SHOW VARIABLES IN ACCOUNT} is {@code unexpected 'IN'} at 15), never the equals sign read in its
- * stead. A SHOW listing that reads no scope is that one line alone, whatever follows its IN.
+ * after that still speaks — unless the query's fault stands inside a call of a later select item, which reads as a
+ * query compared in a WHERE does: {@code a IN (SELECT n, ABS(1 2) FROM t)} is 'SELECT', '2', then the 'FROM'
+ * ({@link ValueSubqueryLines#inListCallFault}). Where no operator may stand either, the line falls at the IN's own
+ * place, and names the IN as written ({@code SHOW VARIABLES IN ACCOUNT} is {@code unexpected 'IN'} at 15), never the
+ * equals sign read in its stead. A SHOW listing that reads no scope is that one line alone, whatever follows its
+ * IN.
  */
 final class InListRecovery {
 
@@ -85,6 +88,11 @@ final class InListRecovery {
                 && (spoken.get(opener).getType() == FrostlakeLexer.SELECT
                     || spoken.get(opener).getType() == FrostlakeLexer.WITH)) {
             lines.add(SyntaxErrorListener.sentence(spoken.get(opener)));
+            final List<String> called = ValueSubqueryLines.inListCallFault(sql, spoken, in + 1);
+            if (called != null) {
+                lines.addAll(called);
+                return lines;
+            }
             int close = -1;
             for (int i = opener + 1; i < spoken.size() && close < 0; i++) {
                 if (spoken.get(i).getType() == FrostlakeLexer.RPAREN) {
@@ -115,6 +123,13 @@ final class InListRecovery {
         final int[] inAt = SyntaxErrorListener.sentenceCoordinates(inPlace);
         for (final String line : SyntaxErrorListener.linesReportedFor(new String(text), statementParse)) {
             final int[] place = SyntaxErrorListener.sentenceCoordinates(line);
+            if (place != null && inAt != null && (place[0] < inAt[0] || place[0] == inAt[0] && place[1] < inAt[1])) {
+                // The equals sign read the words before it otherwise — SELECT SHOW TABLES = a as an assignment after
+                // a statement — so no predicate stands there: the IN after a select item's alias is refused alone.
+                final List<String> alone = new ArrayList<>();
+                alone.add(inPlace);
+                return alone;
+            }
             lines.add(place != null && inAt != null && place[0] == inAt[0] && place[1] == inAt[1] ? inPlace : line);
         }
         return lines.isEmpty() ? null : lines;

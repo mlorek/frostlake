@@ -21,6 +21,7 @@ import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
+import dev.frostlake.types.DecimalText;
 import java.math.BigDecimal;
 import java.util.Locale;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -216,7 +217,7 @@ public final class WindowedOperand {
         }
         if (literal.INTEGER_LITERAL() != null || literal.FLOAT_LITERAL() != null) {
             try {
-                final BigDecimal number = new BigDecimal(text);
+                final BigDecimal number = DecimalText.parse(text);
                 return number.signum() == 0 ? "0" : number.stripTrailingZeros().toPlainString();
             } catch (final NumberFormatException unread) {
                 return text;

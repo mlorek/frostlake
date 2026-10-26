@@ -122,6 +122,79 @@ final class DriverSurfaceChecks {
     }
 
     /**
+     * The numeric getters over a VARCHAR or a VARIANT read the cell's text as a number of their kind and refuse, in the
+     * driver's conversion sentence, a text that spells none: every getter a word, a JSON string, an ARRAY or an OBJECT,
+     * an integer getter a fraction, a padded number or an exponent; getBigDecimal a padded number, getDouble a word;
+     * getBoolean a number (live-verified, the account's getByte aside, whose parser's exception escapes).
+     *
+     * @param c the connection
+     */
+    static void textAndVariantReads(final Connection c) throws SQLException {
+        final String[] numbers = {"int", "long", "short", "big decimal", "double", "float", "boolean"};
+        final String[][] spellNone = {
+            {"SELECT 'jd.004'::VARCHAR", "jd.004"}, {"SELECT PARSE_JSON('\"1.5\"')", "\"1.5\""},
+            {"SELECT ARRAY_CONSTRUCT(1)", "[1]"}, {"SELECT OBJECT_CONSTRUCT('a', 1)", "{\"a\":1}"}};
+        for (final String[] cell : spellNone) {
+            for (final String target : numbers) {
+                unconvertible(12, target, cell[1], reading(firstRow(c, cell[0]), target));
+            }
+        }
+        final String[][] integerRefusals = {
+            {"SELECT '1.25'::VARCHAR", "1.25"}, {"SELECT ' 42 '::VARCHAR", " 42 "}, {"SELECT '1e3'::VARCHAR", "1e3"},
+            {"SELECT PARSE_JSON('1.5')", "1.5"}, {"SELECT PARSE_JSON('true')", "true"},
+            {"SELECT PARSE_JSON('1e3')", "1.000000000000000e+03"}};
+        for (final String[] cell : integerRefusals) {
+            for (final String target : new String[] {"int", "long", "short"}) {
+                unconvertible(12, target, cell[1], reading(firstRow(c, cell[0]), target));
+            }
+        }
+        assertEquals(42, firstRow(c, "SELECT '42'::VARCHAR").getInt(1));
+        assertEquals(new BigDecimal("1.25"), firstRow(c, "SELECT '1.25'::VARCHAR").getBigDecimal(1));
+        assertEquals(new BigDecimal("1E+3"), firstRow(c, "SELECT '1e3'::VARCHAR").getBigDecimal(1));
+        assertEquals(42.0, firstRow(c, "SELECT ' 42 '::VARCHAR").getDouble(1));
+        assertEquals(7L, firstRow(c, "SELECT PARSE_JSON('7')").getLong(1));
+        assertEquals(new BigDecimal("1.5"), firstRow(c, "SELECT PARSE_JSON('1.5')").getBigDecimal(1));
+        assertEquals(new BigDecimal("1000.000000000000"), firstRow(c, "SELECT PARSE_JSON('1e3')").getBigDecimal(1));
+        assertTrue(firstRow(c, "SELECT 'true'::VARCHAR").getBoolean(1));
+        assertTrue(firstRow(c, "SELECT PARSE_JSON('true')").getBoolean(1));
+        unconvertible(12, "big decimal", " 42 ", reading(firstRow(c, "SELECT ' 42 '::VARCHAR"), "big decimal"));
+        unconvertible(12, "double", "true", reading(firstRow(c, "SELECT 'true'::VARCHAR"), "double"));
+        unconvertible(12, "boolean", "7", reading(firstRow(c, "SELECT PARSE_JSON('7')"), "boolean"));
+    }
+
+    /** A read of the first column by the getter the driver's refusal names as its target. */
+    private static Executable reading(final ResultSet rs, final String target) {
+        return new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                switch (target) {
+                    case "int":
+                        rs.getInt(1);
+                        break;
+                    case "long":
+                        rs.getLong(1);
+                        break;
+                    case "short":
+                        rs.getShort(1);
+                        break;
+                    case "big decimal":
+                        rs.getBigDecimal(1);
+                        break;
+                    case "double":
+                        rs.getDouble(1);
+                        break;
+                    case "float":
+                        rs.getFloat(1);
+                        break;
+                    default:
+                        rs.getBoolean(1);
+                        break;
+                }
+            }
+        };
+    }
+
+    /**
      * The integer getters parse a cell's text: a FLOAT's cut at its point, a text that spells an integer, a BOOLEAN's
      * 1; a number past the getter's type and a text that is no integer are refused.
      *

@@ -18,10 +18,12 @@ package dev.frostlake.transaction;
 
 /**
  * One table-level lock a transaction is HOLDING, as {@code SHOW LOCKS} reports it (live-verified):
- * partition-rewriting DML — UPDATE, DELETE (even one matching no rows), MERGE, TRUNCATE — registers
- * a {@code PARTITIONS} lock on the table's fully qualified name, one row per (transaction, table)
- * however many statements touch it, released when the transaction ends. An append-only INSERT holds
- * no lock. {@code acquiredOn} is the FIRST touch; {@code queryId} is the query that acquired it.
+ * DML that writes a table — an UPDATE, DELETE, MERGE or TRUNCATE, an UPDATE, DELETE or MERGE even
+ * when it matches no rows, and an INSERT into a table that holds committed rows, though not into an
+ * empty one — registers a {@code PARTITIONS} lock on the table's fully qualified name, one row per
+ * (transaction, table) however many statements touch it, released when the transaction ends.
+ * {@code acquiredOn} is the FIRST touch; {@code queryId} names the latest statement that changed a
+ * row of the table, or the one that touched it first while none has.
  */
 public class TableLock {
 
@@ -38,7 +40,7 @@ public class TableLock {
         return acquiredOn;
     }
 
-    /** The id of the query that acquired the lock. */
+    /** The id of the statement a lock refusal and SHOW LOCKS name for the lock. */
     public String getQueryId() {
         return queryId;
     }

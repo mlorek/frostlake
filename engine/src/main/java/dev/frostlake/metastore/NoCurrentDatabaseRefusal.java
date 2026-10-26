@@ -114,10 +114,13 @@ public final class NoCurrentDatabaseRefusal extends RuntimeException {
             : new NoCurrentDatabaseRefusal(kind, "schema", "SCHEMA");
     }
 
-    /** Whether a statement, by the name the refusals give it, makes, drops or changes an object. */
+    /**
+     * Whether a statement, by the name the refusals give it, makes, drops or changes an object, or lists or removes a
+     * stage's files: {@code Cannot perform STAGE LS. This session does not have a current schema. …} (live-verified).
+     */
     private static boolean changesObjects(final String kind) {
         return kind.startsWith("CREATE") || kind.startsWith("DROP") || kind.startsWith("ALTER")
-            || "TRUNCATE".equals(kind) || "RENAME".equals(kind);
+            || "TRUNCATE".equals(kind) || "RENAME".equals(kind) || kind.startsWith("STAGE ");
     }
 
     /**

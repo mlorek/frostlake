@@ -198,12 +198,25 @@ public class ShowFunctionsTest extends BaseDatabaseTest {
             assertTrue(names.contains(fn), "SHOW FUNCTIONS should list " + fn);
         }
         // SYSTEM$TYPEOF and SYSTEM$STREAM_HAS_DATA both work on a real account yet are absent from the
-        // 156 SYSTEM$ names its SHOW BUILTIN FUNCTIONS returns, so this half only holds embedded: the
-        // listing describes what Frostlake dispatches, and both of these it does.
-        Assumptions.assumeFalse(isLiveSnowflake(), "a real account omits these from its own listing");
-        assertTrue(names.contains("SYSTEM$TYPEOF"), "SHOW FUNCTIONS should list SYSTEM$TYPEOF");
-        assertTrue(names.contains("SYSTEM$STREAM_HAS_DATA"),
-            "SHOW FUNCTIONS should list SYSTEM$STREAM_HAS_DATA");
+        // 172 SYSTEM$ names its SHOW BUILTIN FUNCTIONS returns, so the listing leaves them out too.
+        assertTrue(!names.contains("SYSTEM$TYPEOF"), "SHOW FUNCTIONS should not list SYSTEM$TYPEOF");
+        assertTrue(!names.contains("SYSTEM$STREAM_HAS_DATA"),
+            "SHOW FUNCTIONS should not list SYSTEM$STREAM_HAS_DATA");
+    }
+
+    /**
+     * The account's {@code SHOW BUILTIN FUNCTIONS LIKE 'SYSTEM$%'} lists 172 names and none of these ten, which
+     * it still runs (live-verified), so a pattern naming one of them exactly answers no row.
+     */
+    @Test
+    public void theSystemNamesTheAccountLeavesOutAreNotListed() {
+        for (final String name : new String[] {"SYSTEM$ALLOWLIST", "SYSTEM$AUTO_REFRESH_STATUS",
+                "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN", "SYSTEM$GET_SNOWFLAKE_PLATFORM_INFO", "SYSTEM$STREAM_BACKLOG",
+                "SYSTEM$STREAM_GET_TABLE_TIMESTAMP", "SYSTEM$STREAM_HAS_DATA", "SYSTEM$TYPEOF",
+                "SYSTEM$VERIFY_CATALOG_INTEGRATION", "SYSTEM$WHITELIST"}) {
+            assertEquals(0, engine.executeQuery("SHOW BUILTIN FUNCTIONS LIKE '" + name + "'").getRowCount(), name);
+        }
+        assertEquals(1, engine.executeQuery("SHOW BUILTIN FUNCTIONS LIKE 'SYSTEM$WAIT'").getRowCount());
     }
 
     /**

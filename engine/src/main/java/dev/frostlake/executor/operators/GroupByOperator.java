@@ -18,6 +18,7 @@ package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.ValueComparisons;
+import dev.frostlake.executor.expressions.AggregateOuterRow;
 import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.Expression;
@@ -288,11 +289,17 @@ public class GroupByOperator implements Operator {
 
     @Override
     public List<Row> execute(final List<Row> input, final OperatorContext context) {
-        if (implicitGrouping) {
-            return executeImplicitGrouping(input);
+        // The aggregates' arguments read the row around this query too (see AggregateOuterRow).
+        final Map<String, Object> displacedOuter = AggregateOuterRow.begin(outerBindings);
+        try {
+            if (implicitGrouping) {
+                return executeImplicitGrouping(input);
+            }
+            rejectFileGroupKeys(context);
+            return executeExplicitGrouping(input);
+        } finally {
+            AggregateOuterRow.end(displacedOuter);
         }
-        rejectFileGroupKeys(context);
-        return executeExplicitGrouping(input);
     }
 
     /**

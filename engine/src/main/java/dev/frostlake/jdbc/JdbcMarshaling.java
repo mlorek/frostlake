@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.NonFiniteDoubles;
@@ -630,7 +631,7 @@ public final class JdbcMarshaling {
         }
         if (x instanceof String) {
             try {
-                return new BigDecimal(((String) x).trim());
+                return DecimalText.parse(((String) x).trim());
             } catch (final NumberFormatException notANumber) {
                 return null;
             }
@@ -713,7 +714,7 @@ public final class JdbcMarshaling {
     }
 
     /** The moment, in milliseconds, a wall clock names in the Calendar's zone, counted in the Calendar's calendar. */
-    private static long wallClockMillis(final Calendar cal, final LocalDateTime wall) {
+    static long wallClockMillis(final Calendar cal, final LocalDateTime wall) {
         final Calendar fields = (Calendar) cal.clone();
         fields.clear();
         if (wall.getYear() <= 0) {
@@ -1009,6 +1010,8 @@ public final class JdbcMarshaling {
     private static String substitute(final String sql, final Map<Integer, Object> params, final Set<Integer> unbound,
                                      final boolean numbered, final List<int[]> written) {
         final List<Token> tokens = lex(sql).getTokens();
+        // A number bound as a whole sort or grouping key is a constant there (see BoundKeyPlaces).
+        final Set<Integer> keyPlaces = numbered ? Collections.<Integer>emptySet() : keyPlaces(sql, tokens, params);
         final StringBuilder out = new StringBuilder(sql.length() + 16);
         int param = 0;
         int cursor = 0;
@@ -1025,19 +1028,25 @@ public final class JdbcMarshaling {
                     // A NULL bound there is no limit, as a NULL written there is (live-verified).
                     requireNoRowCount(tokens, i);
                 }
-                final String literal = !numbered ? preparedLiteral(params.get(param), tokens, i)
+                final String text = !numbered ? preparedLiteral(params.get(param), tokens, i)
                     : aloneInValuesRow(tokens, i) || rowCountPlace(tokens, i) ? formatLiteral(params.get(param))
                     : usingLiteral(params.get(param));
+                final String literal = writtenAsNumber(params.get(param))
+                    && keyPlaces.contains(Integer.valueOf(t.getStartIndex())) ? constantKey(params.get(param), text)
+                    : text;
                 out.append(sql, cursor, t.getStartIndex());
                 out.append(literal);
                 cursor = t.getStopIndex() + 1;
                 written.add(new int[] {t.getLine(), t.getCharPositionInLine(), 1, literal.length()});
-            } else if (numbered && t.getType() == FrostlakeLexer.COLON && i + 1 < tokens.size()
+            } else if (t.getType() == FrostlakeLexer.COLON && i + 1 < tokens.size()
                     && tokens.get(i + 1).getType() == FrostlakeLexer.INTEGER_LITERAL) {
+                // A numbered bind takes the value of its number, in a prepared statement as in a USING list:
+                // CALL p(:1) binds the first parameter set (live-verified through the account's driver).
                 final Token digits = tokens.get(i + 1);
                 final Integer number = bindNumber(digits.getText());
                 if (number != null && params.containsKey(number) && !unbound.contains(number)) {
-                    final String literal = aloneInValuesRow(tokens, i + 1) ? formatLiteral(params.get(number))
+                    final String literal = !numbered ? preparedLiteral(params.get(number), tokens, i)
+                        : aloneInValuesRow(tokens, i + 1) ? formatLiteral(params.get(number))
                         : usingLiteral(params.get(number));
                     out.append(sql, cursor, t.getStartIndex());
                     out.append(literal);
@@ -1050,6 +1059,50 @@ public final class JdbcMarshaling {
         }
         out.append(sql, cursor, sql.length());
         return out.toString();
+    }
+
+    /**
+     * Where a prepared statement's placeholders are whole sort or grouping keys (see {@link BoundKeyPlaces}), read only
+     * where a number is bound and the statement has a BY at all.
+     *
+     * @param sql    the statement
+     * @param tokens its tokens
+     * @param params its values
+     * @return the offsets of those placeholders, or none
+     */
+    private static Set<Integer> keyPlaces(final String sql, final List<Token> tokens,
+                                          final Map<Integer, Object> params) {
+        boolean number = false;
+        for (final Object value : params.values()) {
+            number |= writtenAsNumber(value);
+        }
+        if (number) {
+            for (final Token token : tokens) {
+                if (token.getType() == FrostlakeLexer.BY) {
+                    return BoundKeyPlaces.of(sql);
+                }
+            }
+        }
+        return Collections.<Integer>emptySet();
+    }
+
+    /** Whether a prepared value is written as a bare number, which a sort or grouping key reads as a position. */
+    private static boolean writtenAsNumber(final Object value) {
+        return value instanceof Number && !(value instanceof Double) && !(value instanceof Float);
+    }
+
+    /**
+     * A number bound as a whole sort or grouping key, written as a constant of its type — {@code 2::NUMBER},
+     * {@code 1.5::NUMBER(38, 1)} — which names no select-list position (see {@link BoundKeyPlaces}).
+     *
+     * @param value   the value
+     * @param literal its text
+     * @return the text written in the placeholder's place
+     */
+    private static String constantKey(final Object value, final String literal) {
+        final int scale = value instanceof BigDecimal ? Math.max(((BigDecimal) value).stripTrailingZeros().scale(), 0)
+            : 0;
+        return literal + (scale == 0 ? "::NUMBER" : "::NUMBER(38, " + scale + ")");
     }
 
     /**
@@ -1376,7 +1429,7 @@ public final class JdbcMarshaling {
         return sb.toString().toUpperCase(Locale.ROOT);
     }
 
-    private static LocalDateTime parseDateTime(final String s) {
+    static LocalDateTime parseDateTime(final String s) {
         // Three spellings reach here: ISO 'T' ("2025-06-17T14:30:00"), a SQL space
         // ("2025-06-17 14:30:00"), and the zoned form the HTTP wire now carries for a TIMESTAMP_LTZ
         // ("2025-06-17 14:30:00.000 -0700"). Drop a trailing numeric offset before normalizing —
@@ -1396,7 +1449,7 @@ public final class JdbcMarshaling {
     }
 
     /** Whether a trailing token is a {@code ±HHMM} / {@code ±HH:MM} zone offset rather than text. */
-    private static boolean isNumericOffset(final String token) {
+    static boolean isNumericOffset(final String token) {
         if (token.length() < 3 || (token.charAt(0) != '+' && token.charAt(0) != '-')) {
             return false;
         }

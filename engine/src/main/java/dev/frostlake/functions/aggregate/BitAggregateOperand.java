@@ -17,6 +17,8 @@
 
 package dev.frostlake.functions.aggregate;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -38,7 +40,7 @@ final class BitAggregateOperand {
     static BigInteger of(final Object value) {
         final BigDecimal number;
         try {
-            number = value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(value.toString().trim());
+            number = value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(value.toString().trim());
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + value + "' is not recognized");
         }

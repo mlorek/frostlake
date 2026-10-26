@@ -19,6 +19,7 @@ package dev.frostlake.functions.aggregate;
 import dev.frostlake.executor.AggregateRangeRefusal;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.VariantValue;
@@ -79,7 +80,7 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
             }
             approximate.add(NumericAggregateInput.asApproximate(value));
             if (!anyVariant && !anyApproximate) {
-                sum = sum.add(new BigDecimal(value.toString()));
+                sum = sum.add(DecimalText.parse(value.toString()));
                 requireSumFits(sum);
             }
             hasValue = true;

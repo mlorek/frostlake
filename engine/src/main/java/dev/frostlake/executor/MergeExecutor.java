@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.operators.MemoizedRows;
 import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.StreamVersionKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -89,11 +90,14 @@ final class MergeExecutor {
      * Whether a value a MERGE writes can be NULL, judged over the source relation as a select item is (see
      * {@link ResultNullability}): a number too wide for a NOT NULL column prints its type {@code {nullable}} when it
      * comes from a nullable source column, through an INSERT clause and an UPDATE alike (live-verified, as for INSERT;
-     * see {@link QueryExecutor#enforceColumnConstraintsForDml}). A scalar subquery counts as never NULL, as UPDATE's.
+     * see {@link QueryExecutor#enforceColumnConstraintsForDml}). A scalar subquery answers what it can answer, as
+     * UPDATE's does (see {@link ScalarSubqueryNullability}).
      */
-    private static boolean mergeValueNullable(final Expression value, final Table sourceTable,
-                                              final String sourceAlias) {
-        if (value instanceof DefaultMarkerExpression || value instanceof SubqueryExpression || sourceTable == null) {
+    private boolean mergeValueNullable(final Expression value, final Table sourceTable, final String sourceAlias) {
+        if (value instanceof SubqueryExpression) {
+            return ScalarSubqueryNullability.of(executor, (SubqueryExpression) value);
+        }
+        if (value instanceof DefaultMarkerExpression || sourceTable == null) {
             return false;
         }
         final Map<String, Table> aliases = new HashMap<>();
@@ -473,6 +477,8 @@ final class MergeExecutor {
                                             final List<Integer> writtenColumns = new ArrayList<>();
                                             final boolean[] nullableWritten =
                                                 new boolean[targetTable.getColumns().size()];
+                                            final boolean[] foldedWritten =
+                                                new boolean[targetTable.getColumns().size()];
                                             for (final FrostlakeParser.AssignmentContext assign
                                                     : matchedClause.assignmentList().assignment()) {
                                                 // Handle qualified identifiers (table.column) or simple identifiers
@@ -499,12 +505,15 @@ final class MergeExecutor {
                                                 nullableWritten[colIndex] = mergeValueNullable(
                                                     ExpressionEvaluator.parse(valueExpr), mergeSourceTable,
                                                     mergeSourceAlias);
+                                                foldedWritten[colIndex] =
+                                                    FoldedAggregateSources.foldsWithItsConversion(executor, valueExpr);
                                             }
                                             final Row updatedRow = new Row(newValues);
                                             executor.enforceColumnConstraintsForDml(targetTable, updatedRow, false,
                                                 targetTableName, null, JsonTextWrites.keptAsWritten(targetTable,
                                                     jsonColumns(targetTable, matchedClause.assignmentList()
-                                                        .assignment(), jsonValues), writtenColumns), nullableWritten);
+                                                        .assignment(), jsonValues), writtenColumns), nullableWritten,
+                                                foldedWritten);
                                             changed.add(targetRow);
                                             images.add(updatedRow);
                                             changedAt.add(targetPositions.take(targetRow));
@@ -674,8 +683,11 @@ final class MergeExecutor {
                                             ? targetTable.getColumn(listed).getName() : listed);
                                     }
                                 } else {
+                                    // Positionally, every column but a virtual one (see VirtualColumns).
                                     for (final TableColumn col : targetTable.getColumns()) {
-                                        columnNames.add(col.getName());
+                                        if (!col.isVirtual()) {
+                                            columnNames.add(col.getName());
+                                        }
                                     }
                                 }
                                 final Map<String, Object> valueMap = new HashMap<>();
@@ -730,6 +742,7 @@ final class MergeExecutor {
             executor.recordPlan(plan);
             plan.execute();
             logger.info("Executed MERGE on table: {}", targetTableName);
+            executor.noteStatementTarget(fullyQualifiedTargetName, StreamVersionKind.MERGE);
             // LAST_ALTERED moves for the statement, whether or not a branch fired.
             targetTable.markDmlRan(StatementClock.commitInstant());
             return mergeCountResult(ctx, counts[0], counts[1], counts[2]);
@@ -1036,6 +1049,10 @@ final class MergeExecutor {
                 final List<FrostlakeParser.IdentifierContext> parts = columns.get(index).identifier();
                 return executor.getIdentifier(parts.get(parts.size() - 1));
             }
+        }
+        final List<String> written = VirtualColumns.writtenNames(targetTable);
+        if (written != null) {
+            return index < written.size() ? written.get(index) : "?";
         }
         return index < targetTable.getColumns().size()
             ? targetTable.getColumns().get(index).getName() : "?";

@@ -65,8 +65,9 @@ public final class RecursiveViewChain {
      * @return the chain, or null
      */
     public static RecursiveViewChain of(final FrostlakeParser.SelectStatementContext body, final String view) {
-        final List<FrostlakeParser.SelectOperandContext> operands = body.selectOperand();
-        final List<FrostlakeParser.SetOperatorContext> operators = body.setOperator();
+        final FrostlakeParser.SelectStatementContext held = unwrapped(body);
+        final List<FrostlakeParser.SelectOperandContext> operands = held.selectOperand();
+        final List<FrostlakeParser.SetOperatorContext> operators = held.setOperator();
         final List<List<Integer>> elements = new ArrayList<>();
         final List<FrostlakeParser.SetOperatorContext> between = new ArrayList<>();
         List<Integer> element = new ArrayList<>();
@@ -100,6 +101,23 @@ public final class RecursiveViewChain {
             }
         }
         return new RecursiveViewChain(elements.get(run + 1).get(0).intValue(), elements.get(run + 1));
+    }
+
+    /**
+     * The query a recursive body holds when the body is one parenthesized query, to any depth: {@code ((anchor UNION
+     * ALL term))} recurses as its query does, and an ORDER BY, LIMIT or FETCH written outside the parentheses changes
+     * nothing, as one written after the term changes nothing (live-verified).
+     *
+     * @param body the body as written
+     * @return the query it holds, or the body itself
+     */
+    public static FrostlakeParser.SelectStatementContext unwrapped(final FrostlakeParser.SelectStatementContext body) {
+        FrostlakeParser.SelectStatementContext held = body;
+        while (held.withClause() == null && held.selectOperand().size() == 1
+                && held.selectOperand(0).selectStatement() != null) {
+            held = held.selectOperand(0).selectStatement();
+        }
+        return held;
     }
 
     /** The first operand of the recursive term: every operand before it is the anchor. */

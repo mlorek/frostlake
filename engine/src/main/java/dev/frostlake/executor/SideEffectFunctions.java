@@ -29,16 +29,16 @@ import java.util.Set;
  * The functions that act on the account when they are called, which no stored query may hold (live-verified): a
  * view's query, the query a table is created from and a SQL function's body are each refused while they compile, with
  * {@code View or UDF contains a function with side effects [<name>]}, whether the name is written bare, in any case,
- * or quoted. They are SYSTEM$ABORT_TRANSACTION, SYSTEM$CANCEL_QUERY, SYSTEM$CANCEL_ALL_QUERIES,
- * SYSTEM$SET_RETURN_VALUE, SYSTEM$TASK_DEPENDENTS_ENABLE and SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS. A column's
- * DEFAULT, an INSERT's source, an UPDATE's value and a task's body may call one, and SYSTEM$WAIT, SYSTEM$TYPEOF and
- * SYSTEM$PIPE_FORCE_RESUME are none of them.
+ * or quoted. They are SYSTEM$ABORT_TRANSACTION, SYSTEM$AUTO_REFRESH_STATUS, SYSTEM$CANCEL_QUERY,
+ * SYSTEM$CANCEL_ALL_QUERIES, SYSTEM$SET_RETURN_VALUE, SYSTEM$TASK_DEPENDENTS_ENABLE and
+ * SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS. A column's DEFAULT, an INSERT's source, an UPDATE's value and a task's
+ * body may call one, and SYSTEM$WAIT, SYSTEM$TYPEOF and SYSTEM$PIPE_FORCE_RESUME are none of them.
  */
 public final class SideEffectFunctions {
 
-    private static final Set<String> NAMES = Set.of("SYSTEM$ABORT_TRANSACTION", "SYSTEM$CANCEL_QUERY",
-        "SYSTEM$CANCEL_ALL_QUERIES", "SYSTEM$SET_RETURN_VALUE", "SYSTEM$TASK_DEPENDENTS_ENABLE",
-        "SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS");
+    private static final Set<String> NAMES = Set.of("SYSTEM$ABORT_TRANSACTION", "SYSTEM$AUTO_REFRESH_STATUS",
+        "SYSTEM$CANCEL_QUERY", "SYSTEM$CANCEL_ALL_QUERIES", "SYSTEM$SET_RETURN_VALUE",
+        "SYSTEM$TASK_DEPENDENTS_ENABLE", "SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS");
 
     private SideEffectFunctions() {
     }

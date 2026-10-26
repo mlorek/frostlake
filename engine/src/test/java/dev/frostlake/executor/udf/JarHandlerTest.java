@@ -145,11 +145,11 @@ public class JarHandlerTest {
     }
 
     @Test
-    public void handlerClassIsLoadedOnceAndReusedAcrossCalls() throws Exception {
+    public void handlerClassIsLoadedOncePerStatement() throws Exception {
         // The handler used to be re-loaded through a fresh classloader on EVERY invocation — one
-        // class-load per ROW for jar UDFs. The loaded class is now cached (keyed by class name +
-        // jar size/mtime), which a static counter observes: it keeps incrementing across calls
-        // instead of resetting with a fresh class each time.
+        // class-load per ROW for jar UDFs. It is loaded once for the statement and the call that names it,
+        // which a static counter observes: it counts the statement's rows, and starts over in the next
+        // statement, as the account's does (live-verified).
         final Path out = Files.createDirectories(workDir.resolve("counterOut"));
         writeSource(out, "CounterUdf.java",
             "public class CounterUdf { static int n = 0; public static int bump(int ignored) { return ++n; } }");
@@ -158,9 +158,10 @@ public class JarHandlerTest {
         engine.execute("CREATE FUNCTION bump(x INTEGER) RETURNS INTEGER LANGUAGE JAVA "
             + "IMPORTS = ('" + jar + "') HANDLER = 'CounterUdf.bump'");
 
-        engine.executeQuery("SELECT bump(0)");
-        final ResultSet rs = engine.executeQuery("SELECT bump(0)");
-        assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        final ResultSet rows = engine.executeQuery("SELECT bump(column1) FROM VALUES (0), (0), (0) ORDER BY 1");
+        assertEquals(3L, ((Number) rows.getRows().get(2).getValue(0)).longValue());
+        final ResultSet later = engine.executeQuery("SELECT bump(0)");
+        assertEquals(1L, ((Number) later.getRows().get(0).getValue(0)).longValue());
     }
 
     @Test

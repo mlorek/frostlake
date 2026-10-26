@@ -139,6 +139,10 @@ public class GrantRevokeHandler implements CommandHandler {
             if (ctx.grantCaller() != null) {
                 return new CallerGrantHandler(catalog, queryExecutor).grant(ctx.grantCaller());
             }
+            if (ctx.ownedPrincipal() != null) {
+                grantPrincipalOwnership(ctx);
+                return null;
+            }
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
                 : AccessControlHandler.databaseRole(catalog,
                     PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
@@ -178,6 +182,10 @@ public class GrantRevokeHandler implements CommandHandler {
                 }
                 requireBulkAuthority(isFuture, objectKind, scopeType, scopeName,
                     ownership ? Collections.<String>emptyList() : privileges);
+                if (ownership) {
+                    requireManagedOwnershipGrantees(isFuture, objectType, objectKind, scopeType, scopeName,
+                        databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName));
+                }
                 if (ownership && !isFuture && databaseGrantee == null) {
                     // The objects are counted before they change hands, as the privileges of a bulk grant are.
                     final int inScope = AccessControlHandler.objectsInScope(catalog, objectKind, scopeType, scopeName)
@@ -196,12 +204,14 @@ public class GrantRevokeHandler implements CommandHandler {
                         holder.addFutureGrant(objectKind, scopeType, scopeName, privilege, grantOption);
                     }
                 } else {
-                    final List<String> inScope = AccessControlHandler.objectsInScope(catalog, objectKind, scopeType,
-                        scopeName);
-                    for (final String objectName : inScope) {
+                    // A bulk grant is a grant on each object it reaches (documented), each recorded in its owner's
+                    // name as a grant naming the object is.
+                    final Map<String, String> inScope = ownersInScope(objectKind, scopeType, scopeName);
+                    for (final Map.Entry<String, String> object : inScope.entrySet()) {
                         for (final String privilege : privileges) {
-                            grantTo(databaseGrantee, isUser, targetName, privilege, objectKind, objectName, null,
-                                grantOption);
+                            grantTo(databaseGrantee, isUser, targetName, privilege, objectKind, object.getKey(),
+                                grantorFor(objectKind, object.getKey(), object.getValue(), privilege),
+                                object.getValue(), grantOption);
                         }
                     }
                     logger.trace("Granted {} on ALL {} in {} {} to {}", privileges, objectType, scopeType, scopeName,
@@ -319,6 +329,12 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                 }
 
+                if (ownership && !isUser && queryExecutor.getSecurityManager() != null) {
+                    queryExecutor.getSecurityManager().checkManagedOwnershipGrantee(
+                        GrantNames.managedSchema(catalog, objectType, objectName),
+                        objectType + " '" + recordedNames.get(0) + "'",
+                        databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName));
+                }
                 if (ownership && databaseGrantee == null) {
                     // Ownership belongs to ROLES only. Live-verified on a real account:
                     // GRANT OWNERSHIP ON TABLE t TO USER u fails "SQL execution error: Cannot grant
@@ -380,6 +396,12 @@ public class GrantRevokeHandler implements CommandHandler {
         try {
             if (ctx.revokeCaller() != null) {
                 return new CallerGrantHandler(catalog, queryExecutor).revoke(ctx.revokeCaller());
+            }
+            if (ctx.ownedPrincipal() != null) {
+                // A principal always has an owner too: its ownership is only transferred, once both are found.
+                ownedPrincipalOf(ctx.ownedPrincipal());
+                requireGrantee(ctx.USER() != null, principal(ctx.principalName(0)));
+                throw new RuntimeException("SQL execution error: OWNERSHIP can only be transferred.");
             }
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
                 : AccessControlHandler.databaseRole(catalog,
@@ -723,6 +745,31 @@ public class GrantRevokeHandler implements CommandHandler {
     }
 
     /**
+     * A bulk OWNERSHIP grant passes ownership only as a grant on each object would (see
+     * {@link SecurityManager#checkManagedOwnershipGrantee}), every object asked before anything changes; a future one
+     * in a schema WITH MANAGED ACCESS only to the schema's owner or a role granted to it (documented).
+     */
+    private void requireManagedOwnershipGrantees(final boolean future, final String objectType,
+                                                 final String objectKind, final String scopeType,
+                                                 final String scopeName, final Role grantee) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null) {
+            return;
+        }
+        if (future) {
+            if ("SCHEMA".equals(scopeType)) {
+                security.checkManagedOwnershipGrantee(catalog.resolveSchema(QualifiedName.parse(scopeName)),
+                    "future " + objectType + " in schema '" + scopeName + "'", grantee);
+            }
+            return;
+        }
+        for (final String name : ownersInScope(objectKind, scopeType, scopeName).keySet()) {
+            security.checkManagedOwnershipGrantee(GrantNames.managedSchema(catalog, objectKind, name),
+                objectKind + " '" + name + "'", grantee);
+        }
+    }
+
+    /**
      * The role that owns each object a bulk statement reaches, by the name {@link AccessControlHandler#objectsInScope}
      * gives it: a routine's overloads each by their own signature.
      */
@@ -801,6 +848,65 @@ public class GrantRevokeHandler implements CommandHandler {
         final Role role = catalog.getRoleExact(roleName);
         security.checkManageGrants("role '" + role.getName() + "'", "ROLE", role.getName(),
             catalog.isSystemRole(role.getName()) ? null : role.getOwner());
+    }
+
+    /**
+     * GRANT OWNERSHIP ON ROLE | USER | DATABASE ROLE: the principal passes to another role, which from then on decides
+     * the principal's grants as its owner (documented). The principal is found first, then the role it passes to,
+     * and only then is the move judged: the principal's owner may move it, and so may the roles that decide every
+     * grant. Ownership never passes to a user. A role's own grants never block the move: COPY CURRENT GRANTS keeps
+     * the roles granted to it, granted from then on by its new owner, REVOKE CURRENT GRANTS takes them back, and with
+     * neither they stay as they are.
+     */
+    private void grantPrincipalOwnership(final FrostlakeParser.GrantStatementContext ctx) {
+        final FrostlakeParser.OwnedPrincipalContext owned = ctx.ownedPrincipal();
+        final Object principal = ownedPrincipalOf(owned);
+        final User user = principal instanceof User ? (User) principal : null;
+        final Role role = principal instanceof Role ? (Role) principal : null;
+        final String kind = owned.USER() != null ? "USER" : owned.DATABASE() != null ? "DATABASE_ROLE" : "ROLE";
+        final boolean toUser = ctx.USER() != null;
+        final String targetName = principal(ctx.principalName(0));
+        requireGrantee(toUser, targetName);
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security != null) {
+            final String name = user != null ? user.getName() : role instanceof DatabaseRole
+                ? ((DatabaseRole) role).getQualifiedName() : role.getName();
+            final String owner = user != null ? user.getOwner()
+                : catalog.isSystemRole(role.getName()) ? null : role.getOwner();
+            security.checkManageGrants(kind.toLowerCase(Locale.ROOT).replace('_', ' ') + " '" + name + "'", kind,
+                name, owner);
+        }
+        if (toUser) {
+            throw new RuntimeException(OWNERSHIP_TO_USER);
+        }
+        final String newOwner = catalog.getRoleExact(targetName).getName();
+        if (user != null) {
+            user.setOwner(newOwner);
+            return;
+        }
+        final FrostlakeParser.CurrentGrantsContext tail = ctx.currentGrants();
+        if (tail != null) {
+            for (final String child : new ArrayList<>(role.getGrantedRoles())) {
+                if (tail.REVOKE_CURRENT_GRANTS() != null) {
+                    role.revokeRole(child);
+                } else {
+                    role.grantRole(child, newOwner);
+                }
+            }
+        }
+        role.setOwner(newOwner);
+    }
+
+    /** The principal an OWNERSHIP grant or revoke names, found as a GRANT ROLE finds it: a User or a Role. */
+    private Object ownedPrincipalOf(final FrostlakeParser.OwnedPrincipalContext owned) {
+        if (owned.USER() != null) {
+            return catalog.getUserExact(principal(owned.principalName()));
+        }
+        if (owned.DATABASE() != null) {
+            return AccessControlHandler.databaseRole(catalog,
+                PrincipalNames.parts(owned.referencedName(), queryExecutor));
+        }
+        return catalog.getRoleExact(principal(owned.principalName()));
     }
 
     /** A privilege on the account is granted and revoked by the roles that decide every grant alone. */

@@ -37,6 +37,7 @@ import java.sql.SQLXML;
 import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Struct;
+import java.time.ZoneId;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
@@ -44,7 +45,7 @@ import java.util.concurrent.Executor;
 /**
  * JDBC Connection implementation for Frostlake SQL Engine
  */
-public class DatabaseConnection implements Connection, ResultColumnCase {
+public class DatabaseConnection implements Connection, ResultColumnCase, SessionZoneSource {
     private static final Logger logger = LoggerFactory.getLogger(DatabaseConnection.class);
 
     private final HttpClient httpClient;
@@ -203,6 +204,11 @@ public class DatabaseConnection implements Connection, ResultColumnCase {
     @Override
     public boolean labelsIgnoreCase() {
         return httpClient.labelsIgnoreCase();
+    }
+
+    @Override
+    public ZoneId sessionZone() {
+        return httpClient.sessionZone();
     }
 
     @Override

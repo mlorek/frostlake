@@ -29,13 +29,13 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -98,9 +98,6 @@ final class AlterStageHandler {
         }
         // Named exactly: a quoted name in another case is another stage, which is not there (live-verified).
         final Stage stage = catalog.getStageExact(stageName);
-        if (queryExecutor.getSecurityManager() != null) {
-            queryExecutor.getSecurityManager().checkAlter(SecurableObjectType.STAGE, stageName);
-        }
         if (action.RENAME() == null) {
             queryExecutor.requirePrivilege(Privilege.MODIFY, "STAGE", stageName);
         }
@@ -156,13 +153,19 @@ final class AlterStageHandler {
         } else if (setting.FILE_FORMAT() != null) {
             setFileFormat(stage, setting, apply);
         } else if (setting.COMMENT() != null) {
-            if (setting.STRING_LITERAL() == null && setting.NULL() == null) {
+            // A session variable is read into the value's place: a text, or NULL for no comment (see
+            // PropertyVariables).
+            final FrostlakeParser.CopyOptionValueContext value = setting.copyOptionValue();
+            final TerminalNode text = setting.STRING_LITERAL() != null ? setting.STRING_LITERAL()
+                : value == null ? null : value.STRING_LITERAL();
+            final boolean none = setting.NULL() != null
+                || value != null && value.getToken(FrostlakeParser.NULL, 0) != null;
+            if (text == null && !none) {
                 throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
-                    ParseTreeText.getOriginalText(setting.copyOptionValue()), "COMMENT"));
+                    ParseTreeText.getOriginalText(value), "COMMENT"));
             }
             if (apply) {
-                stage.setComment(setting.NULL() != null ? null
-                    : visitor.extractStringLiteral(setting.STRING_LITERAL()));
+                stage.setComment(none ? null : visitor.extractStringLiteral(text));
             }
         } else if (setting.COPY_OPTIONS() != null) {
             if (setting.stageCopyOptionList() != null) {

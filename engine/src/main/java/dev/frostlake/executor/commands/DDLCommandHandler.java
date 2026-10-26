@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ChangeTrackedQuery;
 import dev.frostlake.executor.ClonePoint;
 import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.ConditionalDdlOutcome;
@@ -56,6 +57,7 @@ import dev.frostlake.metastore.model.RoutineSignatures;
 import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.SignatureLifetimeConflict;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.State;
 import dev.frostlake.metastore.model.Stream;
@@ -197,6 +199,16 @@ public class DDLCommandHandler implements CommandHandler {
 
     public Object handleDropClassStatement(final FrostlakeParser.DropClassStatementContext ctx) {
         return dropHandler.handleDropClassStatement(ctx);
+    }
+
+    /**
+     * The procedure a CALL defines for itself (see CreateRoutineHandler#anonymousProcedure).
+     *
+     * @param ctx the definition, read as the CREATE PROCEDURE it is
+     * @return the procedure, for its CALL alone
+     */
+    public Procedure anonymousProcedure(final FrostlakeParser.CreateStatementContext ctx) {
+        return routineHandler.anonymousProcedure(ctx);
     }
 
     public Object handleCreateStatement(final FrostlakeParser.CreateStatementContext ctx) {
@@ -548,11 +560,20 @@ public class DDLCommandHandler implements CommandHandler {
             }
             sourceView = sourceSchema.getView(sourceObjectName);
         }
+        // A view whose query change tracking cannot follow is refused in the account's words first, ahead of any
+        // shape this engine's view streams do not take (see ChangeTrackedQuery).
+        if (sourceType == StreamSourceType.VIEW) {
+            final String untracked = ChangeTrackedQuery.streamRefusal(catalog, queryExecutor.getFunctionRegistry(),
+                sourceSchema.getDatabaseName(), sourceSchema.getName(), sourceView);
+            if (untracked != null) {
+                throw new RuntimeException(untracked);
+            }
+        }
         // Resolve a view stream's base table(s) up front (outside the creation try) so ineligible
         // views are always rejected instead of being swallowed by IF NOT EXISTS handling. Change
         // capture on the stream matches DML against these base tables (one per UNION ALL branch).
         final List<String> viewBaseTables = sourceType == StreamSourceType.VIEW
-            ? queryExecutor.resolveViewStreamBaseTables(sourceView) : null;
+            ? queryExecutor.resolveViewStreamBaseTables(sourceView, sourceSchema) : null;
         if (insertOnly && viewBaseTables != null && !viewBaseTables.isEmpty()) {
             // A view names the first table it reads and itself, fully qualified (live-verified layout).
             throw new RuntimeException("SQL compilation error: line 0 at position -1:\nChange tracking of type "
@@ -610,9 +631,12 @@ public class DDLCommandHandler implements CommandHandler {
             } else if (sourceDynamicTable != null) {
                 start.forDynamicTable(stream, sourceSchema, sourceDynamicTable, ctx.streamPoint(), showInitialRows);
             } else if (sourceView != null) {
-                // A stream on a view turns change tracking on for the view and for the tables it reads
-                // (live-verified), each read where the view lives.
+                // A stream on a view turns change tracking on for the view, for the views below it and for the
+                // tables it reads (live-verified), each read where the view lives.
                 sourceView.setChangeTracking(true);
+                for (final View inner : queryExecutor.viewStreamInnerViews(sourceView, sourceSchema)) {
+                    inner.setChangeTracking(true);
+                }
                 final List<Table> viewTables = StreamSources.viewBases(catalog, sourceSchema, viewBaseTables);
                 if (viewTables != null) {
                     for (final Table baseTable : viewTables) {
@@ -991,6 +1015,8 @@ public class DDLCommandHandler implements CommandHandler {
             MaterializedViewValidity.resumed(mv);
             logger.trace("Resumed materialized view: {}", qualifiedName);
         } else if (action.RENAME() != null) {
+            // Renaming an object needs OWNERSHIP of it, as replacing or dropping it does.
+            queryExecutor.requireOwnership("MATERIALIZED_VIEW", parts, null);
             renameMaterializedView(schema, mv, qualifiedNameParts(action.qualifiedName()));
             logger.trace("Renamed materialized view {}", qualifiedName);
         } else if (action.SECURE() != null) {
@@ -1593,9 +1619,11 @@ public class DDLCommandHandler implements CommandHandler {
 
     public Object handleUndropStatement(final FrostlakeParser.UndropStatementContext ctx) {
         final Object restored = undrop(ctx);
-        if (ctx.ICEBERG() != null && restored == null) {
+        // A two-word kind is named with an underscore: Dynamic_table D successfully restored. (live-verified).
+        if ((ctx.ICEBERG() != null || ctx.DYNAMIC() != null) && restored == null) {
             final String[] parts = qualifiedNameParts(ctx.qualifiedName());
-            return StatusResults.of("Iceberg_table " + parts[parts.length - 1] + " successfully restored.");
+            return StatusResults.of((ctx.ICEBERG() != null ? "Iceberg_table " : "Dynamic_table ")
+                + parts[parts.length - 1] + " successfully restored.");
         }
         return restored;
     }
@@ -1884,7 +1912,8 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     void handleIfNotExists(final boolean ifNotExists, final RuntimeException e, final String objectName) {
-        if (!ifNotExists) throw e;
+        // A routine of the other lifetime holding the signature is no name taken (see SignatureLifetimeConflict).
+        if (!ifNotExists || e instanceof SignatureLifetimeConflict) throw e;
         final String msg = e.getMessage() != null ? e.getMessage().toLowerCase(Locale.ROOT) : "";
         // A name another KIND holds is refused whatever IF NOT EXISTS says (live-verified).
         if (!msg.contains("already exists") || msg.contains("already exists as") || msg.contains("column '")
@@ -1976,8 +2005,9 @@ public class DDLCommandHandler implements CommandHandler {
         return null;
     }
 
+    /** A string literal's text, or null where the place holds none, as a session variable holding NULL leaves it. */
     String extractStringLiteral(final TerminalNode node) {
-        return SqlStringLiterals.decode(node.getText());
+        return node == null ? null : SqlStringLiterals.decode(node.getText());
     }
 
     /**

@@ -23,6 +23,7 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.conversion.BooleanWords;
 import dev.frostlake.functions.scalar.datetime.DateShiftAmount;
 import dev.frostlake.functions.scalar.datetime.ZonedTimestampShift;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DayTimeInterval;
@@ -80,7 +81,7 @@ public final class ExpressionArithmetic {
             final String text = value.toString().trim();
             if (!text.isEmpty()) {
                 try {
-                    return new BigDecimal(text);
+                    return DecimalText.parse(text);
                 } catch (final NumberFormatException notNumeric) {
                     return null;
                 }
@@ -227,7 +228,7 @@ public final class ExpressionArithmetic {
             return ((Number) value).doubleValue() != 0.0;
         }
         if (value instanceof Number) {
-            return new BigDecimal(value.toString()).compareTo(BigDecimal.ZERO) != 0;
+            return DecimalText.parse(value.toString()).compareTo(BigDecimal.ZERO) != 0;
         }
         return false;
     }
@@ -299,8 +300,8 @@ public final class ExpressionArithmetic {
             }
             // Otherwise, use BigDecimal for precision — inside the exact carrier: each operand must be
             // representable at the common scale, and the raw sum must fit the 128-bit window.
-            final BigDecimal l = new BigDecimal(left.toString());
-            final BigDecimal r = new BigDecimal(right.toString());
+            final BigDecimal l = DecimalText.parse(left.toString());
+            final BigDecimal r = DecimalText.parse(right.toString());
             requireRescalable(l, r, true);
             requireRescalable(r, l, false);
             final BigDecimal result = l.add(r);
@@ -368,7 +369,7 @@ public final class ExpressionArithmetic {
         }
         final String numberType;
         if (isIntegerType(number)) {
-            final String digits = new BigDecimal(number.toString()).abs().toBigInteger().toString();
+            final String digits = DecimalText.parse(number.toString()).abs().toBigInteger().toString();
             numberType = "NUMBER(" + digits.length() + ",0)";
         } else {
             numberType = "FLOAT";
@@ -410,8 +411,8 @@ public final class ExpressionArithmetic {
                 return ((Number) left).doubleValue() - ((Number) right).doubleValue();
             }
             // Otherwise, use BigDecimal for precision — with the same carrier checks as addition.
-            final BigDecimal l = new BigDecimal(left.toString());
-            final BigDecimal r = new BigDecimal(right.toString());
+            final BigDecimal l = DecimalText.parse(left.toString());
+            final BigDecimal r = DecimalText.parse(right.toString());
             requireRescalable(l, r, true);
             requireRescalable(r, l, false);
             final BigDecimal result = l.subtract(r);
@@ -533,7 +534,7 @@ public final class ExpressionArithmetic {
             return amount.longValue();
         }
         final BigDecimal exact = amount instanceof Double || amount instanceof Float
-            ? BigDecimal.valueOf(amount.doubleValue()) : new BigDecimal(amount.toString());
+            ? BigDecimal.valueOf(amount.doubleValue()) : DecimalText.parse(amount.toString());
         return DateShiftAmount.rounded(exact);
     }
 
@@ -752,7 +753,7 @@ public final class ExpressionArithmetic {
             if (isFloatType(left) || isFloatType(right)) {
                 return ((Number) left).doubleValue() * ((Number) right).doubleValue();
             }
-            final BigDecimal exact = new BigDecimal(left.toString()).multiply(new BigDecimal(right.toString()));
+            final BigDecimal exact = DecimalText.parse(left.toString()).multiply(DecimalText.parse(right.toString()));
             final BigDecimal product = declaredScale != null && exact.scale() > declaredScale.intValue()
                 ? exact.setScale(declaredScale.intValue(), RoundingMode.HALF_UP) : exact;
             requireRawResultFits(product);
@@ -792,7 +793,7 @@ public final class ExpressionArithmetic {
                 return ((Number) left).doubleValue() / divisor;
             }
             final BigDecimal quotient = SharedFunctionHelpers.divideWithSnowflakeScale(
-                new BigDecimal(left.toString()), new BigDecimal(right.toString()));
+                DecimalText.parse(left.toString()), DecimalText.parse(right.toString()));
             requireQuotientFits(quotient);
             return quotient;
         }
@@ -830,7 +831,7 @@ public final class ExpressionArithmetic {
             }
             // Otherwise use BigDecimal.remainder (also dividend-signed) for precision. Only the operand
             // RESCALE can overflow here — the remainder's raw is bounded by the divisor's, which fit.
-            return checkedRemainder(new BigDecimal(left.toString()), new BigDecimal(right.toString()));
+            return checkedRemainder(DecimalText.parse(left.toString()), DecimalText.parse(right.toString()));
         }
         // The same VARIANT and numeric-text retries the other four operators make: '5' % 2 is 1 live.
         final Number[] moduloVariant = coerceVariantOperands(left, right);
@@ -937,7 +938,7 @@ public final class ExpressionArithmetic {
             if (isFloatType(left) || isFloatType(right)) {
                 return ((Number) left).doubleValue() == ((Number) right).doubleValue();
             }
-            return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString())) == 0;
+            return DecimalText.parse(left.toString()).compareTo(DecimalText.parse(right.toString())) == 0;
         }
         final Integer intervals = intervalOrder(left, right);
         if (intervals != null) {
@@ -997,7 +998,7 @@ public final class ExpressionArithmetic {
                 return ApproximateValues.compare(((Number) left).doubleValue(),
                     ((Number) right).doubleValue());
             }
-            return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString()));
+            return DecimalText.parse(left.toString()).compareTo(DecimalText.parse(right.toString()));
         }
         final Integer intervalPair = intervalOrder(left, right);
         if (intervalPair != null) {
@@ -1062,7 +1063,7 @@ public final class ExpressionArithmetic {
         if (isFloatType(leftNumber) || isFloatType(rightNumber)) {
             return ApproximateValues.compare(leftNumber.doubleValue(), rightNumber.doubleValue());
         }
-        return new BigDecimal(leftNumber.toString()).compareTo(new BigDecimal(rightNumber.toString()));
+        return DecimalText.parse(leftNumber.toString()).compareTo(DecimalText.parse(rightNumber.toString()));
     }
 
     /** The variant's numeric content, or null when it does not hold a JSON number. */
@@ -1152,10 +1153,10 @@ public final class ExpressionArithmetic {
      */
     private static Integer booleanVsNumber(final Object left, final Object right) {
         if (left instanceof Boolean && right instanceof Number) {
-            return Boolean.compare((Boolean) left, new BigDecimal(right.toString()).signum() != 0);
+            return Boolean.compare((Boolean) left, DecimalText.parse(right.toString()).signum() != 0);
         }
         if (left instanceof Number && right instanceof Boolean) {
-            return Boolean.compare(new BigDecimal(left.toString()).signum() != 0, (Boolean) right);
+            return Boolean.compare(DecimalText.parse(left.toString()).signum() != 0, (Boolean) right);
         }
         return null;
     }
@@ -1288,8 +1289,8 @@ public final class ExpressionArithmetic {
         final BigDecimal leftValue;
         final BigDecimal rightValue;
         try {
-            leftValue = new BigDecimal(left.toString().trim());
-            rightValue = new BigDecimal(right.toString().trim());
+            leftValue = DecimalText.parse(left.toString().trim());
+            rightValue = DecimalText.parse(right.toString().trim());
         } catch (final NumberFormatException notANumericString) {
             // Against a FLOAT the text converts to FLOAT, as a cast to FLOAT reads it: a hexadecimal number, a
             // type suffix and the words inf, -inf and NaN read too - 1.5::FLOAT = '1.5d' is TRUE (live-verified).
@@ -1344,7 +1345,7 @@ public final class ExpressionArithmetic {
         // The one exact value whose negation leaves the carrier is -2^127 itself: arithmetic can
         // produce it, and negating it is refused in the raw-result form, where -(a + 1) — a 39-digit
         // value still inside the window — answers (live-verified).
-        final BigDecimal negated = new BigDecimal(value.toString()).negate();
+        final BigDecimal negated = DecimalText.parse(value.toString()).negate();
         requireRawResultFits(negated);
         return negated;
     }

@@ -383,6 +383,12 @@ public class TagReferencesFunction extends TableFunction {
             addDatabaseRoleTags(parts, objectName, rows);
         } else if ("CORTEX SEARCH SERVICE".equals(domain)) {
             requireCortexSearchService(parts, objectName);
+        } else if ("ACCOUNT".equals(domain) && parts.length == 1
+                && parts[0].equalsIgnoreCase(catalog.getAccountLocator())) {
+            // The account is named by its locator, as CURRENT_ACCOUNT() answers it; by its name it is refused as any
+            // account no session can see is (live-verified).
+            addLineage(rows, new Taggable[] {catalog.getAccountTags()}, new String[] {domain}, null, null, parts[0],
+                domain, null);
         } else if (UNMODELLED_NOUNS.containsKey(domain)) {
             refuseUnmodelled(domain, parts, objectName);
         }

@@ -52,6 +52,7 @@ public class SubqueryMemo {
     private final Map<String, PreparedInSet> inSets = new HashMap<>();
     private final Map<String, PreparedKeyedValues> keyedValues = new HashMap<>();
     private final Map<String, PreparedKeySet> keySets = new HashMap<>();
+    private final Map<String, PreparedKeyedMembers> keyedMembers = new HashMap<>();
     private final Set<String> correlated = new HashSet<>();
     private final Set<String> redrawn = new HashSet<>();
 
@@ -128,5 +129,21 @@ public class SubqueryMemo {
      */
     public void recordKeyedValues(final String subquery, final PreparedKeyedValues values) {
         keyedValues.put(subquery, values);
+    }
+
+    /**
+     * @param subquery a members query's text (see {@link dev.frostlake.executor.EqualityCorrelation#membersQuery})
+     * @return its members by key, or null when not computed in this statement
+     */
+    public PreparedKeyedMembers cachedKeyedMembers(final String subquery) {
+        return keyedMembers.get(subquery);
+    }
+
+    /**
+     * @param subquery a members query's text
+     * @param members  its members by key
+     */
+    public void recordKeyedMembers(final String subquery, final PreparedKeyedMembers members) {
+        keyedMembers.put(subquery, members);
     }
 }

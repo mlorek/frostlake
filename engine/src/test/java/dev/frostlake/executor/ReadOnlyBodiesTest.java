@@ -50,7 +50,7 @@ public class ReadOnlyBodiesTest extends BaseDatabaseTest {
     }
 
     private boolean reaches(final String sql) {
-        return ReadOnlyBodies.reachWrite(engine.getCatalog(), sql);
+        return ReadOnlyBodies.reachWrite(engine.getCatalog(), sql, null);
     }
 
     @Test
@@ -73,6 +73,28 @@ public class ReadOnlyBodiesTest extends BaseDatabaseTest {
         engine.execute("CREATE OR REPLACE VIEW rbv AS SELECT rb_outer() AS x");
         assertTrue(reaches("SELECT x FROM rbv"));
         assertTrue(reaches("SELECT x FROM IDENTIFIER('rbv')"));
+    }
+
+    @Test
+    public void aSessionVariableNamingAWritingViewIsFollowed() {
+        final ConcurrentDatabaseEngine concurrent = new ConcurrentDatabaseEngine();
+        try {
+            final SessionContext session = concurrent.createSession();
+            concurrent.execute("CREATE OR REPLACE DATABASE rb_db", session);
+            concurrent.execute("CREATE OR REPLACE SEQUENCE rbs", session);
+            concurrent.execute("CREATE OR REPLACE FUNCTION rb_next() RETURNS NUMBER AS 'SELECT rbs.NEXTVAL'", session);
+            concurrent.execute("CREATE OR REPLACE VIEW rbv AS SELECT rb_next() AS x", session);
+            concurrent.execute("CREATE OR REPLACE TABLE rbt (a INT)", session);
+            final String read = "SELECT x FROM IDENTIFIER($v)";
+            assertFalse(ReadOnlyBodies.reachWrite(concurrent.getEngine().getCatalog(), read, session.getSettings()));
+            concurrent.execute("SET v = 'rbv'", session);
+            assertTrue(ReadOnlyBodies.reachWrite(concurrent.getEngine().getCatalog(), read, session.getSettings()));
+            assertFalse(ReadOnlyBodies.reachWrite(concurrent.getEngine().getCatalog(), read, null));
+            concurrent.execute("SET v = 'rbt'", session);
+            assertFalse(ReadOnlyBodies.reachWrite(concurrent.getEngine().getCatalog(), read, session.getSettings()));
+        } finally {
+            concurrent.shutdown();
+        }
     }
 
     @Test

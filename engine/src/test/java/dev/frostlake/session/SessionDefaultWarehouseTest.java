@@ -112,7 +112,12 @@ public class SessionDefaultWarehouseTest {
         assertNull(warehouse(engine.createSession()));
         run(setup, "ALTER USER dw_user SET DEFAULT_WAREHOUSE = dw_two");
         assertEquals("DW_TWO", warehouse(engine.createSession()));
-        run(setup, "DROP WAREHOUSE dw_two");
+        // The warehouse's owner drops it, and the user's default goes on naming it.
+        engine.getEngine().setCurrentUser("SYSTEM");
+        final SessionContext owner = engine.createSession();
+        run(owner, "USE ROLE SYSADMIN");
+        run(owner, "DROP WAREHOUSE dw_two");
+        engine.getEngine().setCurrentUser("dw_user");
         assertNull(warehouse(engine.createSession()));
     }
 

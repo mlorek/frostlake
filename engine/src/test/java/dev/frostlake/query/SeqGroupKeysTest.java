@@ -22,9 +22,9 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
 /**
- * SEQ1, SEQ2, SEQ4 and SEQ8 number the rows a grouping reads: in a GROUP BY key, in an item computed on a group's
- * first row, and inside an aggregate, where each row reads its place in the scan rather than in its group
- * (live-verified).
+ * SEQ1, SEQ2, SEQ4 and SEQ8 number the rows a grouping reads in a GROUP BY key and inside an aggregate, where each row
+ * reads its place in the scan rather than in its group; an item outside an aggregate numbers the rows the query
+ * answers (live-verified).
  */
 public class SeqGroupKeysTest extends BaseDatabaseTest {
 
@@ -49,7 +49,7 @@ public class SeqGroupKeysTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void anItemReadsItsGroupsFirstRow() {
+    public void anItemNumbersTheAnsweredRows() {
         assertCells(engine, new String[][] {
             {"SELECT SEQ4() % 3 AS b, COUNT(*) AS n FROM g9 GROUP BY SEQ4() % 3 ORDER BY 2, 1", "0, 3 | 1, 3 | 2, 3"},
             {"SELECT i % 3 AS k, SEQ4() AS s FROM g9 GROUP BY k ORDER BY 1", "0, 0 | 1, 1 | 2, 2"},

@@ -169,6 +169,19 @@ refused, as there, and `IN DATA EXCHANGE` is not read).
 Adding CREATE for one of these kinds is a separate decision, to be made when a use case needs the object rather
 than its listing.
 
+## Virtual columns — computed when the row is written, not when it is read
+
+The account computes a virtual column (`b INT AS (a + 1)`) from its expression whenever a query reads the column.
+Frostlake computes it once, when the row is written, and stores the value with the row. The writes that compute it
+are INSERT, UPDATE, MERGE, a CTAS over a typed column list, COPY, and ALTER TABLE … ADD COLUMN for the rows already
+there (`executor/VirtualColumns`). The expression may read only its row and may call no function whose answer moves,
+so a write and a read give the same value, and every read path stays as it is: scans, joins, streams, clones, time
+travel and persistence.
+
+Two cases still differ. A row fault in the expression, such as `1 / a` over a zero, refuses the statement that
+writes the row, where the account refuses only a query that reads the column. A value that depends on a session
+parameter, such as a TIMESTAMP_LTZ rendered as text, follows the writing session's setting.
+
 ## Related
 
 - [functions.md](functions.md) — the catalog of supported functions, including the function families

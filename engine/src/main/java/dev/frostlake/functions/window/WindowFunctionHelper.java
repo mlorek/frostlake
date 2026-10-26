@@ -18,6 +18,7 @@ package dev.frostlake.functions.window;
 
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.Decfloats;
 
@@ -105,7 +106,7 @@ public final class WindowFunctionHelper {
             return ApproximateValues.written(v).doubleValue();
         }
         try {
-            return new BigDecimal(v.toString().trim()).doubleValue();
+            return DecimalText.parse(v.toString().trim()).doubleValue();
         } catch (final NumberFormatException noNumber) {
             if (v instanceof String) {
                 throw new RuntimeException("Numeric value '" + v + "' is not recognized");

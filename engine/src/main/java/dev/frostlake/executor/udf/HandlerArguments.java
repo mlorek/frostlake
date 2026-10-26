@@ -19,6 +19,7 @@ package dev.frostlake.executor.udf;
 import com.snowflake.snowpark_java.types.Variant;
 import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
@@ -104,10 +105,10 @@ public final class HandlerArguments {
             return Byte.valueOf(whole(value, Byte.SIZE, "int8", where).byteValueExact());
         }
         if (target == BigDecimal.class && value instanceof Number) {
-            return value instanceof BigDecimal ? value : new BigDecimal(value.toString());
+            return value instanceof BigDecimal ? value : DecimalText.parse(value.toString());
         }
         if (target == BigInteger.class && value instanceof Number) {
-            return new BigDecimal(value.toString()).toBigInteger();
+            return DecimalText.parse(value.toString()).toBigInteger();
         }
         if ((target == double.class || target == Double.class) && value instanceof Number) {
             return Double.valueOf(((Number) value).doubleValue());
@@ -146,7 +147,7 @@ public final class HandlerArguments {
     private static BigInteger whole(final Object value, final int bits, final String name, final String where) {
         final BigDecimal number = value instanceof BigDecimal ? (BigDecimal) value
             : value instanceof Boolean ? (((Boolean) value).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO)
-            : new BigDecimal(String.valueOf(value));
+            : DecimalText.parse(String.valueOf(value));
         final BigInteger rounded = number.setScale(0, RoundingMode.HALF_UP).toBigInteger();
         if (rounded.bitLength() >= bits) {
             throw new RuntimeException("Number out of representable range: type " + name + ", value "

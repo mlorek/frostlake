@@ -121,6 +121,16 @@ final class DroppedObjectSnapshots {
         saved.tableRows = values(version.getTableRows());
         saved.hiddenTableRows = values(version.getHiddenTableRows());
         saved.keptTables = keptTables(version, storageEngine);
+        final String setAside = version.getStorageSetAside();
+        if ("TABLE".equals(kind) && setAside != null && object instanceof Table) {
+            // Storage set aside for the transactions that wrote the table holds what they committed since the drop:
+            // it is saved as the storage that waits with the version, so a restart brings that back.
+            final TableStorage storage = storageEngine.retiredStorage(setAside);
+            if (storage != null) {
+                saved.keptTables.put(key.substring(colon + 1),
+                    CatalogSnapshotWriter.buildTableData(parts[0], parts[1], (Table) object, storage));
+            }
+        }
         return saved;
     }
 

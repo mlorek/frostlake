@@ -39,6 +39,8 @@ import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Calendar;
 import java.util.Map;
 
@@ -73,6 +75,8 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     private static final int CLOSED_CODE = 200037;
 
     private final Statement statement;
+    /** The zone the session's TIMEZONE named when the result was made (see {@link #sessionZone}). */
+    private final ZoneId zone;
     private boolean closed;
     private boolean lastReadWasNull;
     // The row the cursor stands on, from 0: -1 before the first, rowCount() or more once next() has passed the last.
@@ -90,6 +94,18 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     protected AbstractFrostlakeResultSet(final Statement statement) {
         this.statement = statement;
         this.rowLimit = maxRowsOf(statement);
+        this.zone = zoneOf(statement);
+    }
+
+    /** The zone the statement's session named when the result was made, UTC for a statement of no such session. */
+    private static ZoneId zoneOf(final Statement statement) {
+        try {
+            final Connection connection = statement == null ? null : statement.getConnection();
+            return connection instanceof SessionZoneSource ? ((SessionZoneSource) connection).sessionZone()
+                : ZoneOffset.UTC;
+        } catch (final SQLException closed) {
+            return ZoneOffset.UTC;
+        }
     }
 
     /** The statement's setMaxRows, which bounds the rows its result hands out (live-verified); 0 when unset. */
@@ -191,6 +207,16 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     }
 
     /**
+     * The zone the session's TIMEZONE named when the statement ran: what a DATE's midnight and a wall clock read as a
+     * time are read in (see {@link TemporalCellReads}).
+     *
+     * @return the zone
+     */
+    protected ZoneId sessionZone() {
+        return zone;
+    }
+
+    /**
      * Called once the cursor has moved onto a row, before any getter reads it.
      *
      * @param row the row, from 1
@@ -239,6 +265,11 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     /** A column's JDBC type, as the result's metadata names it. */
     private int jdbcType(final int column) throws SQLException {
         return getMetaData().getColumnType(column);
+    }
+
+    /** A column's temporal family, by the type its metadata names; null for a column that is not temporal. */
+    private TemporalColumnKind temporalKind(final int column) throws SQLException {
+        return TemporalColumnKind.of(getMetaData().getColumnTypeName(column));
     }
 
     /**
@@ -395,7 +426,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getDate(interval);
         }
-        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"));
+        final Object cell = temporalCell(columnIndex, "date");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toDate(cell)
+            : TemporalCellReads.date(cell, kind, sessionZone());
     }
 
     @Override
@@ -404,7 +438,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getTime(interval);
         }
-        return JdbcMarshaling.toTime(temporalCell(columnIndex, "time"), jdbcType(columnIndex));
+        final Object cell = temporalCell(columnIndex, "time");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toTime(cell, jdbcType(columnIndex))
+            : TemporalCellReads.time(cell, kind, sessionZone(), jdbcType(columnIndex));
     }
 
     @Override
@@ -413,7 +450,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getTimestamp(interval);
         }
-        return JdbcMarshaling.toTimestamp(temporalCell(columnIndex, "timestamp"), jdbcType(columnIndex));
+        final Object cell = temporalCell(columnIndex, "timestamp");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toTimestamp(cell, jdbcType(columnIndex))
+            : TemporalCellReads.timestamp(cell, kind, sessionZone());
     }
 
     @Override
@@ -421,8 +461,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (cal == null || intervalKind(columnIndex, read(columnIndex)) != null) {
             return getDate(columnIndex);
         }
-        // The day's midnight in the Calendar's zone.
-        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"), cal);
+        final Object cell = temporalCell(columnIndex, "date");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toDate(cell, cal)
+            : TemporalCellReads.date(cell, kind, sessionZone(), cal);
     }
 
     @Override
@@ -437,10 +479,13 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
             return getTimestamp(columnIndex);
         }
         final Object cell = temporalCell(columnIndex, "timestamp");
-        // A TIME is read without the Calendar; a wall clock with no zone is read in the Calendar's zone; a zoned cell
-        // keeps its moment (live-verified).
-        return jdbcType(columnIndex) == Types.TIME ? JdbcMarshaling.toTimestamp(cell, Types.TIME)
-            : JdbcMarshaling.toTimestamp(cell, cal);
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        if (cell == null || kind == null) {
+            // A TIME is read without the Calendar, and any other cell in the Calendar's zone.
+            return jdbcType(columnIndex) == Types.TIME ? JdbcMarshaling.toTimestamp(cell, Types.TIME)
+                : JdbcMarshaling.toTimestamp(cell, cal);
+        }
+        return TemporalCellReads.timestamp(cell, kind, sessionZone(), cal);
     }
 
     @Override
@@ -450,7 +495,11 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getObject(interval, intervalCount(cell));
         }
-        return cell == null ? null : object(columnIndex, cell);
+        if (cell == null) {
+            return null;
+        }
+        final Object temporal = TemporalCellReads.object(cell, temporalKind(columnIndex), sessionZone());
+        return temporal != null ? temporal : object(columnIndex, cell);
     }
 
     /** The account's driver reads no cell through a type map (live-verified), so neither does this one. */

@@ -17,6 +17,7 @@
 package dev.frostlake.rt.py;
 
 import dev.frostlake.executor.SessionZone;
+import dev.frostlake.executor.udf.GuestWatch;
 import dev.frostlake.executor.udf.TruffleLogBridge;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.DataType;
@@ -45,7 +46,6 @@ import java.util.TimeZone;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import org.graalvm.polyglot.Context;
@@ -198,6 +198,7 @@ public final class PythonRuntime {
         _setcontext = _decimal.setcontext
         _cwd_base = None
         _decimal_base = None
+        _kept = {}
         def bind(namespace, runtime):
             global _namespace, _base, _builtins_base, _environ_base
             _namespace = namespace
@@ -289,6 +290,16 @@ public final class PythonRuntime {
         def leave(saved):
             _namespace.clear()
             _namespace.update(saved)
+        def resume(key):
+            saved = dict(_namespace)
+            _namespace.clear()
+            kept = _kept.get(key)
+            _namespace.update(_base if kept is None else kept)
+            return [saved, kept is not None]
+        def keep(key):
+            _kept[key] = dict(_namespace)
+        def forget(key):
+            _kept.pop(key, None)
         def _owned(value):
             module = str(getattr(value, '__module__', ''))
             return module.startswith('__frostlake') or module.startswith('snowflake.snowpark')
@@ -465,10 +476,16 @@ public final class PythonRuntime {
         }
     };
 
-    /** Longest a single Python execution may run before its context is treated as wedged. */
-    private static final long EXECUTION_TIMEOUT_SECONDS = 60;
+    /** Longest a discarded context's close may take before the thread closing it is interrupted. */
+    private static final long CLOSE_TIMEOUT_SECONDS = 60;
 
-    /** Watchdog that cancels a wedged Python execution. One daemon thread for the whole JVM. */
+    /**
+     * The watch the outermost Python execution on this thread keeps on its statement (see {@link #eval}), or null
+     * while none runs: the executions a handler's queries make inside it are covered by it.
+     */
+    private static final ThreadLocal<Object> WATCH = new ThreadLocal<>();
+
+    /** Watchdog that interrupts a wedged close of a discarded context. One daemon thread for the JVM. */
     private static final ScheduledExecutorService WATCHDOG =
         Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
             @Override
@@ -521,6 +538,48 @@ public final class PythonRuntime {
     static PythonModuleFrame enterModule() {
         final Context context = context();
         return new PythonModuleFrame(context, RUNTIME.get().invokeMember("enter"));
+    }
+
+    /**
+     * Enter the module namespace a call site of a routine keeps for the running statement, as the site's last call
+     * left it, or a namespace of its own where the site made no call yet (see {@link #enterModule()} and
+     * PythonModuleState).
+     *
+     * @param key the call site's key
+     * @return the frame, to be left with {@link #leaveModule(PythonModuleFrame)} once the call is through
+     */
+    static PythonModuleFrame resumeModule(final String key) {
+        final Context context = context();
+        final Value entered = RUNTIME.get().invokeMember("resume", key);
+        return new PythonModuleFrame(context, entered.getArrayElement(0), entered.getArrayElement(1).asBoolean());
+    }
+
+    /**
+     * Keep the namespace the running call holds for its call site's next call (see {@link #resumeModule}).
+     *
+     * @param key the call site's key
+     */
+    static void keepModule(final String key) {
+        if (CONTEXT.get() != null && RUNTIME.get() != null) {
+            RUNTIME.get().invokeMember("keep", key);
+        }
+    }
+
+    /**
+     * Forget the namespace a call site kept: its statement has ended. An interpreter thrown away meanwhile kept
+     * nothing, and one that cannot forget is thrown away.
+     *
+     * @param key the call site's key
+     */
+    static void forgetModule(final String key) {
+        if (CONTEXT.get() == null || RUNTIME.get() == null) {
+            return;
+        }
+        try {
+            RUNTIME.get().invokeMember("forget", key);
+        } catch (final RuntimeException unforgettable) {
+            discardContext();
+        }
     }
 
     /**
@@ -627,7 +686,7 @@ public final class PythonRuntime {
             public void run() {
                 closer.interrupt();
             }
-        }, EXECUTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }, CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     /**
@@ -676,10 +735,10 @@ public final class PythonRuntime {
     /**
      * Execute Python source in this thread's context, reusing a cached {@link Source} per body.
      *
-     * <p>Guarded by a watchdog that cancels the context after {@link #EXECUTION_TIMEOUT_SECONDS}. A leaked
-     * Python lock (see {@link #discardContext()}) otherwise blocks the calling thread FOREVER, and callers
-     * hold the engine's lock while running a UDF — one wedged thread stalled 16 others in a vendor test
-     * run. Cancellation turns that into an ordinary statement error, which callers already handle.
+     * <p>The statement the execution runs for bounds it, and nothing else does: once the statement is canceled, times
+     * out or its session is aborted, the context is cancelled (see {@link GuestWatch}), and the failure is the
+     * statement's (see TrackedRuntime). A procedure runs as long as its statement may, past any minute (live-verified).
+     * The outermost execution on this thread keeps the watch; those a handler's queries make inside it share it.
      */
     public static Value eval(final String code) {
         final Map<String, Source> cache = SOURCES.get();
@@ -689,20 +748,26 @@ public final class PythonRuntime {
             cache.put(code, source);
         }
         final Context context = context();
-        final ScheduledFuture<?> alarm = WATCHDOG.schedule(new Runnable() {
+        final Object watch = WATCH.get() != null ? null : GuestWatch.begin(new Runnable() {
             @Override
             public void run() {
                 try {
-                    context.close(true);   // cancels the in-flight execution on the blocked thread
+                    context.close(true);   // cancels the in-flight execution on the statement's thread
                 } catch (final RuntimeException alreadyUnwinding) {
                     // Best effort.
                 }
             }
-        }, EXECUTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        });
+        if (watch != null) {
+            WATCH.set(watch);
+        }
         try {
             return context.eval(source);
         } finally {
-            alarm.cancel(false);
+            if (watch != null) {
+                GuestWatch.end(watch);
+                WATCH.remove();
+            }
             // Undo any process-global time-zone mutation the executed Python caused (pandas import
             // sets the JVM default to GMT) so the engine's clock stays consistent across the run.
             if (!HOST_TIME_ZONE.equals(TimeZone.getDefault())) {

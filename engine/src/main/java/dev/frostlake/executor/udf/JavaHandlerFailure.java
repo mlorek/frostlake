@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.udf;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -26,11 +27,20 @@ import java.util.Locale;
  * of the handler's source reads {@code function_handler_0//H.f(InlineCode.java:1)}, its line the source's own —
  * then {@code  in function F with handler H.f}. Frames below the handler's, the engine's, are not shown, and an
  * exception that arose with no frame of the handler above the engine has none. A cause follows as Java prints
- * one, {@code Caused by: }, with the frames it shares with what it caused counted: {@code ... 1 more}.
+ * one, {@code Caused by: }, with the frames it shares with what it caused counted: {@code ... 1 more}. A report of
+ * more than 4096 bytes of UTF-8 is cut to its first 4093 and ended by {@code ...} before the sentence's end; a
+ * character the cut splits is kept as one U+FFFD (live-verified, for functions, procedures and table functions, in
+ * Java and in Scala).
  */
 public final class JavaHandlerFailure {
 
     private static final String HEAD = "User Error Report: \nJava Stack Trace:\n";
+
+    /** The most bytes of UTF-8 a report keeps whole. */
+    private static final int REPORT_BYTES = 4096;
+
+    /** What ends a report the account cut short. */
+    private static final String CUT = "...";
 
     /** The name the report places a frame of an inline Java body in. */
     private static final String JAVA_SOURCE = "InlineCode.java";
@@ -90,7 +100,7 @@ public final class JavaHandlerFailure {
             cause = cause.getCause();
             depth++;
         }
-        return text.append('\n').append(where).toString();
+        return kept(text.append('\n').toString()) + where;
     }
 
     /**
@@ -116,6 +126,21 @@ public final class JavaHandlerFailure {
     }
 
     /**
+     * The report of a handler method the account calls in a form the handler does not give it: the error its
+     * runtime raised, then the rule the method breaks - a table function's getOutputClass that is no static method
+     * is {@code java.lang.NoSuchMethodError: getOutputClass}, then {@code The getOutputClass() method must be static
+     * and return a java.lang.Class} (live-verified).
+     *
+     * @param method the method's name
+     * @param rule   the sentence naming what the method must be
+     * @param where  the sentence's end
+     * @return the report
+     */
+    public static String missingMethod(final String method, final String rule, final String where) {
+        return HEAD + "java.lang.NoSuchMethodError: " + method + "\n\n" + rule + where;
+    }
+
+    /**
      * An exception with no frame to show: what an account reports for a class it cannot make an instance of.
      *
      * @param named the exception as Java prints it
@@ -123,7 +148,28 @@ public final class JavaHandlerFailure {
      * @return the report
      */
     public static String report(final String named, final String where) {
-        return HEAD + named + '\n' + where;
+        return kept(HEAD + named + '\n') + where;
+    }
+
+    /** A report as the account keeps it, before the sentence's end. */
+    private static String kept(final String report) {
+        if (report.getBytes(StandardCharsets.UTF_8).length <= REPORT_BYTES) {
+            return report;
+        }
+        final int room = REPORT_BYTES - CUT.length();
+        int used = 0;
+        int end = 0;
+        while (end < report.length()) {
+            final int point = report.codePointAt(end);
+            final int size = point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+            if (used + size > room) {
+                break;
+            }
+            used += size;
+            end += Character.charCount(point);
+        }
+        // The bytes of the character the cut runs through read as one replacement character.
+        return report.substring(0, end) + (used < room ? "\uFFFD" : "") + CUT;
     }
 
     /**

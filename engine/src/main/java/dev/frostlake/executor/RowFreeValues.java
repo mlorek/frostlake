@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.parser.FrostlakeParser;
+
 import org.antlr.v4.runtime.ParserRuleContext;
 
 /** Answers the value of an expression that reads no row, before any row is read. */
@@ -36,4 +38,22 @@ interface RowFreeValues {
      * @return its plan text, or the text as written, upper-cased, where the plan's printer does not read it
      */
     String planText(final ParserRuleContext expression);
+
+    /**
+     * Whether the planner folds a subquery to a constant while the statement compiles: a FROM-less constant, or a
+     * MIN, MAX or COUNT a table's statistics answer (see ConstantSubqueries).
+     *
+     * @param subquery the subquery
+     * @return whether it folds
+     */
+    boolean folds(final FrostlakeParser.ScalarSubqueryExprContext subquery);
+
+    /**
+     * Whether the statistics pin a column a bound reads to one value on every row, which the bound is read as (see
+     * BoundColumnPins).
+     *
+     * @param column the column as written
+     * @return whether it is pinned
+     */
+    boolean pinsOneValue(final FrostlakeParser.QualifiedNameExprContext column);
 }

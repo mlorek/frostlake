@@ -21,6 +21,7 @@ import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.VariantValue;
 
@@ -132,7 +133,7 @@ public class Random extends BuiltInFunction {
     private static BigDecimal wholeNumberIn(final String text) {
         final BigDecimal number;
         try {
-            number = new BigDecimal(text.trim());
+            number = DecimalText.parse(text.trim());
         } catch (final NumberFormatException notANumber) {
             return null;
         }
@@ -143,7 +144,7 @@ public class Random extends BuiltInFunction {
         return rounded.compareTo(LONG_MAX) > 0 || rounded.compareTo(LONG_MIN) < 0 ? null : rounded;
     }
 
-    private static long floatSeed(final double value, final String type) {
+    static long floatSeed(final double value, final String type) {
         if (Double.isFinite(value)) {
             final BigDecimal rounded = new BigDecimal(value).setScale(0, RoundingMode.HALF_UP);
             if (rounded.abs().compareTo(EIGHTEEN_NINES) <= 0) {
@@ -184,7 +185,7 @@ public class Random extends BuiltInFunction {
      * A double as the range refusal spells it: six significant digits with no trailing zeros, an exponent from
      * 1e+06 up and below 1e-04, and {@code nan} and {@code inf} for the values that are no number.
      */
-    private static String generalText(final double value) {
+    static String generalText(final double value) {
         if (Double.isNaN(value)) {
             return "nan";
         }

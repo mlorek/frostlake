@@ -22,6 +22,7 @@ import dev.frostlake.executor.expressions.NonFiniteCastRefusal;
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.VariantValue;
@@ -68,11 +69,12 @@ public class ToNumber extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        // A SQL BOOLEAN converts to the unscaled 1 or 0 and IGNORES the declared width: live answers
-        // 1 for TO_NUMBER(TRUE), 0 for TO_NUMBER(FALSE) and 1 — not 1.0 — for TO_DECIMAL(TRUE, 5, 1),
-        // all typed NUMBER(2,0); an approximate conversion of the same value is refused at compile time.
+        // A SQL BOOLEAN converts to 1 or 0 at the declared scale: TO_NUMBER(TRUE) is 1 and TO_DECIMAL(TRUE, 5, 1)
+        // 1.0 (live-verified); an approximate conversion of the same value is refused at compile time.
         if (args.get(0) instanceof Boolean) {
-            return ((Boolean) args.get(0)).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
+            final Integer scale = targetScale(args);
+            final BigDecimal number = ((Boolean) args.get(0)).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;
+            return scale == null ? number : number.setScale(scale.intValue());
         }
         // A NaN or an infinity, a FLOAT's or a VARIANT's, has no NUMBER value: TO_NUMBER is the conversion the cast
         // performs (documented), so it is refused in the cast's own sentence naming the declared width,
@@ -95,7 +97,8 @@ public class ToNumber extends BuiltInFunction {
             if (member == null) {
                 return null;
             }
-            source = member;
+            final Double binary = VariantNumbers.binaryDouble(variant);
+            source = binary != null ? binary : member;
         }
         if (source instanceof DayTimeInterval) {
             // An interval converts to its seconds, as its cast does: 90000 for +1 01:00:00 (live-verified).
@@ -200,7 +203,7 @@ public class ToNumber extends BuiltInFunction {
             return new BigDecimal(((Number) o).doubleValue());
         }
         if (o instanceof Number) {
-            return new BigDecimal(o.toString());
+            return DecimalText.parse(o.toString());
         }
         if (format != null) {
             return NumericFormatModel.readOrRefuse(o.toString(), format, NumericFormatModel.FIXED);
@@ -209,7 +212,7 @@ public class ToNumber extends BuiltInFunction {
         if (!PLAIN_NUMBER.matcher(text).matches()) {
             throw new RuntimeException(NumericRangeRefusal.unreadableText(text));
         }
-        return new BigDecimal(text);
+        return DecimalText.parse(text);
     }
 
     /**

@@ -75,6 +75,8 @@ final class CreatedObjectProperties {
     private static final String WORD = "WORD";
     private static final String COPY = "COPY";
     private static final String METRIC_SCHEDULE = "DATA_METRIC_SCHEDULE";
+    /** The parser's word for a parenthesized list of constants, which a refusal names in its place. */
+    private static final String CONSTANT_LIST = "TOK_CONSTANT_LIST";
     private static final String ICEBERG_OPTION = "Iceberg table options (e.g. BASE_LOCATION) require"
         + " DEFAULT_METADATA_WRITE_FORMAT=ICEBERG or CREATE ICEBERG TABLE";
 
@@ -116,10 +118,13 @@ final class CreatedObjectProperties {
         final List<String> names = new ArrayList<String>();
         final List<FrostlakeParser.CopyOptionValueContext> values =
             new ArrayList<FrostlakeParser.CopyOptionValueContext>();
+        final List<FrostlakeParser.TablePropertyConstantContext> constants =
+            new ArrayList<FrostlakeParser.TablePropertyConstantContext>();
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
             if (tail.optionKey() != null) {
                 names.add(tail.optionKey().getText());
                 values.add(tail.copyOptionValue());
+                constants.add(tail.tablePropertyConstant());
             }
         }
         rejectDuplicates(names);
@@ -137,9 +142,15 @@ final class CreatedObjectProperties {
         }
         if (ctx.ICEBERG() != null || ctx.HYBRID() != null) {
             // What else an Iceberg or a hybrid table may be given is judged where the table is made.
+            for (final Integer i : order) {
+                final String key = ParameterRegistry.canonical(names.get(i));
+                if (constants.get(i) != null && typeOf(key) != null) {
+                    rejectConstant(key, typeOf(key), constants.get(i));
+                }
+            }
             return;
         }
-        rejectValuesOfAnotherType(names, values, order, new HashSet<String>());
+        rejectValuesOfAnotherType(names, values, constants, order, new HashSet<String>());
         for (final Integer i : order) {
             final String key = ParameterRegistry.canonical(names.get(i));
             if (OTHER_TABLE_KIND_PROPERTIES.contains(key)) {
@@ -282,7 +293,7 @@ final class CreatedObjectProperties {
                 unread.add(key);
             }
         }
-        rejectValuesOfAnotherType(names, values, order, unread);
+        rejectValuesOfAnotherType(names, values, null, order, unread);
         for (final Integer i : order) {
             final String key = ParameterRegistry.canonical(names.get(i));
             if (unread.contains(key)) {
@@ -383,7 +394,7 @@ final class CreatedObjectProperties {
         for (int i = 0; i < names.size(); i++) {
             written.add(i);
         }
-        rejectValuesOfAnotherType(names, values, written, new HashSet<String>());
+        rejectValuesOfAnotherType(names, values, null, written, new HashSet<String>());
         if (!names.isEmpty()) {
             throw cannotSet(ParameterRegistry.canonical(names.get(0)), "SEQUENCE");
         }
@@ -441,11 +452,15 @@ final class CreatedObjectProperties {
 
     /**
      * A value that is not of its name's type is refused as written: a switch takes TRUE and FALSE alone, a count
-     * an unsigned whole number, a text anything but a number or a switch value. The names in {@code unread}
-     * are judged by the name alone.
+     * an unsigned whole number, a text anything but a number or a switch value. A value no copy option takes is
+     * judged in the same order (see {@link #rejectConstant}). The names in {@code unread} are judged by the name
+     * alone.
+     *
+     * @param constants the values no copy option takes, by name, or null when the statement reads none
      */
     private static void rejectValuesOfAnotherType(final List<String> names,
                                                   final List<FrostlakeParser.CopyOptionValueContext> values,
+                                                  final List<FrostlakeParser.TablePropertyConstantContext> constants,
                                                   final List<Integer> order, final Set<String> unread) {
         for (final Integer i : order) {
             final String key = ParameterRegistry.canonical(names.get(i));
@@ -453,8 +468,15 @@ final class CreatedObjectProperties {
             if (COPY.equals(key)) {
                 throw copyValue(value);
             }
-            final String type = TABLE_PROPERTIES.containsKey(key) ? TABLE_PROPERTIES.get(key) : PARAMETER_TYPES.get(key);
-            if (value == null || type == null || unread.contains(key)) {
+            final String type = typeOf(key);
+            if (type == null || unread.contains(key)) {
+                continue;
+            }
+            if (constants != null && constants.get(i) != null) {
+                rejectConstant(key, type, constants.get(i));
+                continue;
+            }
+            if (value == null) {
                 continue;
             }
             final boolean number = value.INTEGER_LITERAL() != null;
@@ -474,6 +496,50 @@ final class CreatedObjectProperties {
         }
     }
 
+    /** The type of value a table's property or a parameter takes, or null when its value is judged elsewhere. */
+    private static String typeOf(final String key) {
+        return TABLE_PROPERTIES.containsKey(key) ? TABLE_PROPERTIES.get(key) : PARAMETER_TYPES.get(key);
+    }
+
+    /**
+     * A value no copy option takes, judged by its name's type (live-verified). NULL is a text's: a switch or a count
+     * is refused it as {@code invalid value 'null' for property}. A decimal is refused as written but by a decimal
+     * parameter. A parenthesized list is a text parameter's, and refused a parameter of another type by the
+     * parser's word for it, {@code TOK_CONSTANT_LIST}; a switch property is refused it as an invalid value
+     * specified, and a text property by its first element that is no text, or by the parser's word.
+     */
+    private static void rejectConstant(final String key, final String type,
+                                       final FrostlakeParser.TablePropertyConstantContext constant) {
+        final boolean text = STRING.equals(type);
+        if (constant.NULL() != null) {
+            if (!text) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForProperty("null", key));
+            }
+            return;
+        }
+        if (constant.FLOAT_LITERAL() != null) {
+            if (!"FLOAT".equals(type) || constant.MINUS() != null) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(constant.getText(), key));
+            }
+            return;
+        }
+        if (!TABLE_PROPERTIES.containsKey(key)) {
+            if (!text) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(CONSTANT_LIST, key));
+            }
+            return;
+        }
+        if (!text) {
+            throw new RuntimeException("Invalid value specified for property '" + key + "'");
+        }
+        for (final FrostlakeParser.CopyOptionValueContext element : constant.copyOptionValue()) {
+            if (element.INTEGER_LITERAL() != null || element.booleanValue() != null) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(element.getText(), key));
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.invalidValueForParameter(CONSTANT_LIST, key));
+    }
+
     /**
      * COPY given a value: a number or a switch value is no value of it, a text or a word no type of it, and a
      * parenthesized list is named by the parser's own word for one.
@@ -488,6 +554,20 @@ final class CreatedObjectProperties {
         }
         return new RuntimeException(SqlCompilationError.of(
             "invalid type of property '" + value.getText() + "' for '" + COPY + "'"));
+    }
+
+    /**
+     * A table's switch set by ALTER takes TRUE or FALSE alone: a quoted {@code 'TRUE'} or a number is refused as
+     * written, {@code invalid value ['TRUE'] for parameter 'CHANGE_TRACKING'} (live-verified).
+     *
+     * @param name  the property as written
+     * @param value its value, or null for a list
+     */
+    static void requireSwitchValue(final String name, final FrostlakeParser.CopyOptionValueContext value) {
+        final String key = ParameterRegistry.canonical(name);
+        if (value != null && BOOLEAN.equals(TABLE_PROPERTIES.get(key)) && value.booleanValue() == null) {
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.getText(), key));
+        }
     }
 
     /**

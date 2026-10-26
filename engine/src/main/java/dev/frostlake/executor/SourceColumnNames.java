@@ -281,7 +281,7 @@ final class SourceColumnNames {
     }
 
     /** The name a source is qualified by: its alias, else its own name's last part; null for a nameless one. */
-    private static String keyOf(final FrostlakeParser.TableSourceContext source) {
+    static String keyOf(final FrostlakeParser.TableSourceContext source) {
         if (source.getParent() instanceof FrostlakeParser.TableReferenceContext) {
             final FrostlakeParser.TableReferenceContext reference =
                 (FrostlakeParser.TableReferenceContext) source.getParent();

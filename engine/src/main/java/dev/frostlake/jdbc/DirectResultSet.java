@@ -22,6 +22,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.ClientValueText;
@@ -192,7 +193,7 @@ public class DirectResultSet extends AbstractFrostlakeResultSet {
         }
         if (value instanceof Number && !(value instanceof BigDecimal) && JdbcMarshaling.isClientDecimal(declared)) {
             // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         if (value instanceof Number && NumericType.isDecfloat(declared)) {
             return ClientValueText.decfloatObject((Number) value);

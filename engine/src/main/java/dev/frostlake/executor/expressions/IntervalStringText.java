@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -196,7 +198,7 @@ public final class IntervalStringText {
             if (kinds.get(at) != NUMBER_TOKEN || !NUMBER.matcher(tokens.get(at)).matches()) {
                 throw unexpected(at, false);
             }
-            final BigDecimal amount = new BigDecimal(tokens.get(at));
+            final BigDecimal amount = DecimalText.parse(tokens.get(at));
             amounts.add((negative ? amount.negate() : amount).setScale(0, RoundingMode.HALF_UP));
             written.add(sign + tokens.get(at));
             at++;

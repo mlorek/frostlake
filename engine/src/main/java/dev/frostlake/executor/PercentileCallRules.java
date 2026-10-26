@@ -26,6 +26,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -400,7 +401,7 @@ final class PercentileCallRules {
         }
         final String text = String.valueOf(((LiteralExpression) parsed).getValue()).trim();
         try {
-            new BigDecimal(text);
+            DecimalText.parse(text);
             return text;
         } catch (final NumberFormatException noNumber) {
             return null;
@@ -409,7 +410,7 @@ final class PercentileCallRules {
 
     private BigDecimal constantFraction(final String written) {
         try {
-            return new BigDecimal(written);
+            return DecimalText.parse(written);
         } catch (final NumberFormatException notALiteral) {
             return null;
         }

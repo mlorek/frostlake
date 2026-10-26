@@ -366,6 +366,12 @@ public final class AccessControlListings {
                     shown, "USER", user.getName(), grantor)));
             }
         }
+        if (SystemDatabase.is(role.getDatabase())) {
+            // Each of the SNOWFLAKE database's roles is granted to the SNOWFLAKE application too, by no role, listed
+            // after the account's grantees (live-verified).
+            rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(role.getCreatedTime()), shown,
+                "APPLICATION", SystemDatabase.NAME, "")));
+        }
         return new ResultSet(columns, rows);
     }
 

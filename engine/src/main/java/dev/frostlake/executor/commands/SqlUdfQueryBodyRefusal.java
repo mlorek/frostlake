@@ -91,8 +91,10 @@ final class SqlUdfQueryBodyRefusal {
     /**
      * Whether the framed body's parse stopped on a fault every grammar has: a word right after a name that is already
      * an alias or a relation's — {@code SELECT a a a FROM t}, {@code SELECT a b c}, {@code FROM t x y},
-     * {@code FROM t t2 t3} — or a text after TOP, {@code SELECT TOP 'x' a FROM t}. The account refuses such a body
-     * at its first word as it refuses one that runs out (live-verified).
+     * {@code FROM t t2 t3} — a name after OVER, a window named where only a bracketed one is read,
+     * {@code SUM(a) OVER w}, a WINDOW clause, {@code … WHERE a > 0 WINDOW w AS (ORDER BY a)}, or a text after TOP,
+     * {@code SELECT TOP 'x' a FROM t}. The account refuses such a body at its first word as it refuses one that runs
+     * out (live-verified).
      *
      * @param tokens  the framed body's spoken tokens
      * @param stopped the token the parse stopped on, or null
@@ -103,19 +105,44 @@ final class SqlUdfQueryBodyRefusal {
             return false;
         }
         Token before = null;
-        for (final Token token : tokens) {
-            if (token.getStartIndex() >= stopped.getStartIndex()) {
+        Token after = null;
+        for (int i = 0; i < tokens.size(); i++) {
+            if (tokens.get(i).getStartIndex() >= stopped.getStartIndex()) {
+                after = i + 1 < tokens.size() ? tokens.get(i + 1) : null;
                 break;
             }
-            before = token;
+            before = tokens.get(i);
         }
         if (before == null) {
             return false;
         }
         final boolean wordAfterName = isName(stopped) && isName(before);
+        final boolean nameAfterOver = stopped.getType() == FrostlakeLexer.OVER && after != null && isName(after);
         final boolean textAfterTop = stopped.getType() == FrostlakeLexer.STRING_LITERAL
             && before.getType() == FrostlakeLexer.TOP;
-        return wordAfterName || textAfterTop;
+        return wordAfterName || nameAfterOver || textAfterTop || opensWindowClause(tokens, stopped);
+    }
+
+    /**
+     * Whether the framed body's parse stopped on the WINDOW of a {@code WINDOW name AS (} clause, which this grammar
+     * reads nowhere; after a clause other than the FROM the account names that WINDOW after the body's first word
+     * (live-verified).
+     *
+     * @param tokens  the framed body's spoken tokens
+     * @param stopped the token the parse stopped on, or null
+     * @return whether the stop is such a WINDOW
+     */
+    static boolean opensWindowClause(final List<Token> tokens, final Token stopped) {
+        if (stopped == null || !"WINDOW".equals(String.valueOf(stopped.getText()).toUpperCase(Locale.ROOT))) {
+            return false;
+        }
+        for (int i = 0; i + 3 < tokens.size(); i++) {
+            if (tokens.get(i).getStartIndex() == stopped.getStartIndex()) {
+                return isName(tokens.get(i + 1)) && tokens.get(i + 2).getType() == FrostlakeLexer.AS
+                    && tokens.get(i + 3).getType() == FrostlakeLexer.LPAREN;
+            }
+        }
+        return false;
     }
 
     private static boolean isName(final Token token) {

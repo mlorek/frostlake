@@ -80,7 +80,9 @@ public class WriteAheadLog {
     private static final Logger logger = LoggerFactory.getLogger(WriteAheadLog.class);
 
     private static final int MAGIC = 0x53465731;          // "SFW1"
-    private static final byte VERSION = 7;                // v7: v6 + the engine's first start in the header
+    private static final byte VERSION = 9;                // v9: v8 + the precisions of time and timestamp variables
+    private static final byte VERSION_WITH_DECFLOATS = 8;    // still readable; its temporal variables replay at 9
+    private static final byte VERSION_WITH_FIRST_START = 7;   // still readable; its DECFLOATs replay as NUMBERs
     private static final byte VERSION_WITH_ANSWERS = 6;   // still readable; its first start is its first record's
     private static final byte VERSION_WITH_STATE = 5;     // still readable; its identities answer as they do now
     private static final byte VERSION_WITH_CONTEXT = 4;   // still readable; its statements replay where logged
@@ -99,6 +101,10 @@ public class WriteAheadLog {
     private boolean readsStatementState = true;
     /** False while reading a log before v6, whose contexts carry no identity answers. */
     private boolean readsAnswers = true;
+    /** False while reading a log before v8, whose contexts name no variable a SET gave a DECFLOAT. */
+    private boolean readsDecfloatVariables = true;
+    /** False while reading a log before v9, whose contexts keep no precision of a time or a timestamp variable. */
+    private boolean readsVariablePrecisions = true;
     private static final byte REC_CHECKPOINT = 2;
     /** Where counters stood once a statement drew from them (see {@link CounterMark}). */
     private static final byte REC_COUNTERS = 3;
@@ -136,7 +142,9 @@ public class WriteAheadLog {
         // first start, which it did not keep, is taken from its first record's instant, the earliest it tells.
         if (writtenVersion() < VERSION) {
             final List<WalRecord> records = readAll();
-            firstStart = firstRecordInstant(records, engineStart);
+            if (written == null) {
+                firstStart = firstRecordInstant(records, engineStart);
+            }
             rewrite(records);
         }
     }
@@ -151,13 +159,13 @@ public class WriteAheadLog {
         return firstStart;
     }
 
-    /** The first start a v7 header keeps, or null for a log with no such header. */
+    /** The first start a header from v7 on keeps, or null for a log with no such header. */
     private Instant writtenFirstStart() throws IOException {
         if (!Files.exists(path) || Files.size(path) < Integer.BYTES + 1L + Long.BYTES) {
             return null;
         }
         try (DataInputStream in = new DataInputStream(new FileInputStream(path.toFile()))) {
-            if (in.readInt() != MAGIC || in.readByte() < VERSION) {
+            if (in.readInt() != MAGIC || in.readByte() < VERSION_WITH_FIRST_START) {
                 return null;
             }
             return instantFrom(in.readLong());
@@ -284,6 +292,23 @@ public class WriteAheadLog {
             }
         }
         o.writeBoolean(context.isRunsLoggedApart());
+        final Set<String> decfloats = context.getDecfloatVariables();
+        o.writeBoolean(decfloats != null);
+        if (decfloats != null) {
+            o.writeInt(decfloats.size());
+            for (final String name : decfloats) {
+                writeString(o, name);
+            }
+        }
+        final Map<String, Integer> precisions = context.getVariablePrecisions();
+        o.writeBoolean(precisions != null);
+        if (precisions != null) {
+            o.writeInt(precisions.size());
+            for (final Map.Entry<String, Integer> precision : precisions.entrySet()) {
+                writeString(o, precision.getKey());
+                o.writeInt(precision.getValue().intValue());
+            }
+        }
     }
 
     /**
@@ -327,7 +352,9 @@ public class WriteAheadLog {
     }
 
     private static WalStatementContext readContext(final DataInputStream in, final boolean withState,
-                                                   final boolean withAnswers) throws IOException {
+                                                   final boolean withAnswers, final boolean withDecfloats,
+                                                   final boolean withPrecisions)
+            throws IOException {
         if (!in.readBoolean()) {
             return null;
         }
@@ -377,8 +404,26 @@ public class WriteAheadLog {
             }
             runsLoggedApart = in.readBoolean();
         }
+        Set<String> decfloats = null;
+        if (withDecfloats && in.readBoolean()) {
+            decfloats = new HashSet<>();
+            final int named = readCount(in);
+            for (int i = 0; i < named; i++) {
+                decfloats.add(readString(in));
+            }
+        }
+        Map<String, Integer> precisions = null;
+        if (withPrecisions && in.readBoolean()) {
+            precisions = new HashMap<>();
+            final int kept = readCount(in);
+            for (int i = 0; i < kept; i++) {
+                final String name = readString(in);
+                precisions.put(name, Integer.valueOf(in.readInt()));
+            }
+        }
         return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws,
-            variables, parameters, unkeptVariables, unkeptParameters, results, answers, runsLoggedApart, -1L, lag);
+            variables, parameters, unkeptVariables, unkeptParameters, results, answers, runsLoggedApart, -1L, lag)
+            .withDecfloatVariables(decfloats).withVariablePrecisions(precisions);
     }
 
     /** A session's variables or parameters, into {@code into}, the names of those not kept into {@code unkept}. */
@@ -489,13 +534,17 @@ public class WriteAheadLog {
             }
             // v2 records carry no instant; v3 onwards prefix each statement with one, v4 with its context, v5
             // adds the session state, results and place to the context, and v6 its identities' answers and whether
-            // its runs went to records of their own. A v7 header goes on with the engine's first start.
+            // its runs went to records of their own. A v7 header goes on with the engine's first start, v8 names
+            // the variables a SET gave a DECFLOAT, and v9 keeps the precision a SET gave each time or timestamp
+            // variable.
             final byte version = in.readByte();
             readsInstants = version >= VERSION_WITH_INSTANT;
             readsContexts = version >= VERSION_WITH_CONTEXT;
             readsStatementState = version >= VERSION_WITH_STATE;
             readsAnswers = version >= VERSION_WITH_ANSWERS;
-            if (version >= VERSION) {
+            readsDecfloatVariables = version >= VERSION_WITH_DECFLOATS;
+            readsVariablePrecisions = version >= VERSION;
+            if (version >= VERSION_WITH_FIRST_START) {
                 try {
                     in.readLong();
                 } catch (final EOFException torn) {
@@ -543,7 +592,9 @@ public class WriteAheadLog {
                 final List<WalStatementContext> contexts = new ArrayList<>(count);
                 for (int i = 0; i < count; i++) {
                     instants.add(readsInstants ? instantFrom(in.readLong()) : null);
-                    contexts.add(readsContexts ? readContext(in, readsStatementState, readsAnswers) : null);
+                    contexts.add(readsContexts
+                        ? readContext(in, readsStatementState, readsAnswers, readsDecfloatVariables,
+                            readsVariablePrecisions) : null);
                     statements.add(readString(in));
                 }
                 return WalRecord.transaction(statements, instants, contexts);

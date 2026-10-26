@@ -74,6 +74,9 @@ final class DescribeResultTarget {
             final Object value = evaluated(read, executor);
             return value instanceof Number ? statementAt((Number) value, executor) : null;
         }
+        if (read instanceof FrostlakeParser.FunctionCallExprContext) {
+            QueryIdBindArgument.rejectUnsetBind((FrostlakeParser.FunctionCallExprContext) read, executor);
+        }
         if (callsLastQueryId(read)) {
             requireOneIndex(read, executor);
         }

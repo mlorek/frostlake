@@ -23,6 +23,7 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.VariantType;
@@ -144,7 +145,7 @@ public final class DuplicateRowRefusal {
         }
         if (value instanceof Number) {
             if (type instanceof NumericType && !NumericType.isApproximate(type)) {
-                return new BigDecimal(value.toString()).movePointRight(((NumericType) type).getScale())
+                return DecimalText.parse(value.toString()).movePointRight(((NumericType) type).getScale())
                     .toBigInteger().toString();
             }
             return String.valueOf(value);

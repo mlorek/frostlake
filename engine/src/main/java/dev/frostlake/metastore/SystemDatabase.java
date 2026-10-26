@@ -55,6 +55,15 @@ public final class SystemDatabase {
         "SPCS_REGISTRY_VIEWER", "SPCS_VIEWER", "USAGE_ADMIN", "USAGE_VIEWER", "WORKLOAD_INSIGHTS_USER",
         "WORKLOAD_OPTIMIZATION_USER"));
 
+    /**
+     * The database roles the account grants to PUBLIC, so that every role holds them: SHOW GRANTS TO ROLE PUBLIC lists
+     * USAGE on each, granted by no role (live-verified).
+     */
+    private static final List<String> PUBLIC_ROLES = Collections.unmodifiableList(Arrays.asList("ALERT_VIEWER",
+        "ANACONDA_REPOSITORY_USER", "CLASSIFICATION_VIEWER", "COPILOT_USER", "CORE_VIEWER", "CORTEX_USER",
+        "DATA_METRIC_USER", "DATA_PRIVACY_VIEWER", "ML_USER", "NOTIFICATION_VIEWER", "PYPI_REPOSITORY_USER",
+        "SPCS_REGISTRY_VIEWER", "SPCS_VIEWER"));
+
     private SystemDatabase() {
     }
 
@@ -82,6 +91,11 @@ public final class SystemDatabase {
     /** @return the names of the database's own database roles */
     public static List<String> roles() {
         return ROLES;
+    }
+
+    /** @return the names of the database roles PUBLIC holds */
+    public static List<String> publicRoles() {
+        return PUBLIC_ROLES;
     }
 
     /**

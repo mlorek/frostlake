@@ -29,9 +29,10 @@ import java.util.List;
  *
  * <p>Its column list is read as a table's: a type's parameter list the type does not take is refused as in CREATE
  * TABLE, {@code (a VARCHAR(5,2) AS (value:a::VARCHAR))} at the ',' and the '2' and then the AS the list's first ')'
- * leaves unread, {@code (a NUMBER() AS …)} at the '(' (live-verified). The reading is the CREATE TABLE this grammar
- * reads, the kind word blanked and every position where it was written; it speaks only where its first fault falls
- * inside a type's parameter list there.
+ * leaves unread, {@code (a NUMBER() AS …)} at the '(' (live-verified), whatever columns stand before it. The reading
+ * is the CREATE TABLE this grammar reads, the kind word blanked and every position where it was written, and with the
+ * {@code AS (…)} of each column before the fault blanked too, which that reading does not take; it speaks only where
+ * its first fault falls inside a type's parameter list there.
  */
 final class ExternalTableListLines {
 
@@ -85,7 +86,18 @@ final class ExternalTableListLines {
         for (int c = spoken.get(external).getStartIndex(); c <= spoken.get(external).getStopIndex(); c++) {
             text[c] = ' ';
         }
-        final List<String> read = SyntaxErrorListener.linesReportedFor(new String(text), true);
+        List<String> read = SyntaxErrorListener.linesReportedFor(new String(text), true);
+        int blanked = virtualColumnAt(spoken, open, close, read);
+        while (blanked > 0) {
+            final int expressionClose = closeOf(spoken, blanked + 1);
+            for (int c = spoken.get(blanked).getStartIndex(); c <= spoken.get(expressionClose).getStopIndex(); c++) {
+                if (text[c] != '\n' && text[c] != '\r') {
+                    text[c] = ' ';
+                }
+            }
+            read = SyntaxErrorListener.linesReportedFor(new String(text), true);
+            blanked = virtualColumnAt(spoken, open, close, read);
+        }
         if (read.isEmpty()) {
             return null;
         }
@@ -103,6 +115,26 @@ final class ExternalTableListLines {
             return read;
         }
         return null;
+    }
+
+    /**
+     * The AS of a column's {@code AS (…)} where the reading's first fault falls, in the list between {@code open} and
+     * {@code close}, its expression closed there; -1 where the fault is any other.
+     */
+    private static int virtualColumnAt(final List<Token> spoken, final int open, final int close,
+                                       final List<String> read) {
+        final int[] first = read.isEmpty() ? null : SyntaxErrorListener.sentenceCoordinates(read.get(0));
+        int depth = 0;
+        for (int i = open; first != null && close > 0 && i < close; i++) {
+            final Token token = spoken.get(i);
+            depth += token.getType() == FrostlakeLexer.LPAREN ? 1 : token.getType() == FrostlakeLexer.RPAREN ? -1 : 0;
+            if (depth == 1 && token.getType() == FrostlakeLexer.AS && type(spoken, i + 1) == FrostlakeLexer.LPAREN
+                    && token.getLine() == first[0] && token.getCharPositionInLine() == first[1]) {
+                final int expressionClose = closeOf(spoken, i + 1);
+                return expressionClose > 0 && expressionClose < close ? i : -1;
+            }
+        }
+        return -1;
     }
 
     /** Whether a token is a word: a name or a keyword, written with letters. */

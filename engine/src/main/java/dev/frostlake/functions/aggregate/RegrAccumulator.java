@@ -28,8 +28,11 @@ import dev.frostlake.functions.AggregateFunction;
  * COUNT = n; AVGX = Σx/n; AVGY = Σy/n; SXX = Sxx; SYY = Syy; SXY = Sxy; SLOPE = Sxy/Sxx;
  * INTERCEPT = AVGY − SLOPE·AVGX; R2 = NULL if Sxx=0, else 1 if Syy=0, else Sxy²/(Sxx·Syy) (= CORR²).
  */
-public class RegrAccumulator implements AggregateFunction.Accumulator {
+public class RegrAccumulator implements AggregateFunction.Accumulator, PairStatisticAccumulator {
 
+    /** The pairs of a DECFLOAT argument, whose terms are DECFLOATs of 38 digits (see DecfloatPairStatistics). */
+    private final DecfloatPairStatistics decfloatPairs = new DecfloatPairStatistics();
+    private boolean decfloat;
     private final RegrKind kind;
     private long n = 0;
     private double sumX = 0;
@@ -63,9 +66,30 @@ public class RegrAccumulator implements AggregateFunction.Accumulator {
     }
 
     @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
+
+    @Override
+    public boolean isDecfloat() {
+        return decfloat;
+    }
+
+    /** Reads only the sides the member reads, as the double path converts only those (see {@link #kind}). */
+    @Override
+    public void accumulateDecfloat(final Object y, final Object x) {
+        final boolean readsY = kind != RegrKind.AVGX && kind != RegrKind.SXX && kind != RegrKind.COUNT;
+        final boolean readsX = kind != RegrKind.AVGY;
+        decfloatPairs.add(readsY ? y : null, readsX ? x : null, "REGR_" + kind.name());
+    }
+
+    @Override
     public Object getResult() {
         if (kind == RegrKind.COUNT) {
-            return n;
+            return decfloat ? Long.valueOf(decfloatPairs.count()) : n;
+        }
+        if (decfloat) {
+            return decfloatResult();
         }
         if (n == 0) {
             return null;
@@ -103,8 +127,33 @@ public class RegrAccumulator implements AggregateFunction.Accumulator {
         }
     }
 
+    /** The member over DECFLOAT pairs. */
+    private Object decfloatResult() {
+        switch (kind) {
+            case AVGX:
+                return decfloatPairs.averageOfX();
+            case AVGY:
+                return decfloatPairs.averageOfY();
+            case SXX:
+                return decfloatPairs.centeredSquaresOfX();
+            case SYY:
+                return decfloatPairs.centeredSquaresOfY();
+            case SXY:
+                return decfloatPairs.centeredProducts();
+            case SLOPE:
+                return decfloatPairs.slope();
+            case INTERCEPT:
+                return decfloatPairs.intercept();
+            case R2:
+                return decfloatPairs.determination();
+            default:
+                return null;
+        }
+    }
+
     @Override
     public void reset() {
+        decfloatPairs.reset();
         n = 0;
         sumX = 0;
         sumY = 0;
@@ -116,6 +165,7 @@ public class RegrAccumulator implements AggregateFunction.Accumulator {
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
         final RegrAccumulator o = (RegrAccumulator) other;
+        decfloatPairs.merge(o.decfloatPairs);
         n += o.n;
         sumX += o.sumX;
         sumY += o.sumY;

@@ -34,8 +34,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * width the call itself declares — not the family's nominal NUMBER(38,0), which only a bare call
  * echoes. The whole sentence rides under the compilation prefix.
  *
- * <p>★ A BOOLEAN SOURCE IS ITS OWN CELL: it echoes NUMBER(2,0) whatever the call declares — even
- * against an explicit (5,1).
+ * <p>★ A BOOLEAN SOURCE IS NO EXCEPTION: {@code TRY_TO_NUMBER(TRUE)} names NUMBER(38,0), and an explicit
+ * (5,1) is NUMBER(5,1).
  *
  * <p>★ A PAIR THE PLAIN CAST CANNOT CARRY changes family entirely: it is "invalid type [&lt;the call,
  * replayed&gt;] for parameter '&lt;the base conversion&gt;'" — the call echoed with its arguments,
@@ -94,15 +94,15 @@ public class TryToRefusalShapeTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aBooleanSourceAlwaysEchoesNumberTwoZero() {
+    public void aBooleanSourceEchoesTheDeclaredPair() {
         assertEquals("SQL compilation error:\nFunction TRY_CAST cannot be used with arguments"
-            + " of types BOOLEAN and NUMBER(2,0)",
+            + " of types BOOLEAN and NUMBER(38,0)",
             refusal("SELECT TRY_TO_NUMBER(TRUE)"));
         assertEquals("SQL compilation error:\nFunction TRY_CAST cannot be used with arguments"
-            + " of types BOOLEAN and NUMBER(2,0)",
+            + " of types BOOLEAN and NUMBER(5,1)",
             refusal("SELECT TRY_TO_NUMBER(TRUE, 5, 1)"));
         assertEquals("SQL compilation error:\nFunction TRY_CAST cannot be used with arguments"
-            + " of types BOOLEAN and NUMBER(2,0)",
+            + " of types BOOLEAN and NUMBER(38,0)",
             refusal("SELECT TRY_TO_DECIMAL(TRUE)"));
     }
 
@@ -157,7 +157,7 @@ public class TryToRefusalShapeTest extends BaseDatabaseTest {
         assertEquals(tryCast("NUMBER(5,2)", "NUMBER(38,0)"), refusal("SELECT TRY_TO_NUMBER(n) FROM tt"));
         assertEquals(tryCast("NUMBER(3,0)", "FLOAT"), refusal("SELECT TRY_TO_DOUBLE(123)"));
         assertEquals(tryCast("NUMBER(5,2)", "BOOLEAN"), refusal("SELECT TRY_TO_BOOLEAN(n) FROM tt"));
-        assertEquals(tryCast("BOOLEAN", "NUMBER(2,0)"), refusal("SELECT TRY_TO_DECIMAL(TRUE)"));
+        assertEquals(tryCast("BOOLEAN", "NUMBER(38,0)"), refusal("SELECT TRY_TO_DECIMAL(TRUE)"));
         assertEquals(tryCast("VARIANT", "TIMESTAMP_LTZ(9)"), refusal("SELECT TRY_TO_TIMESTAMP_LTZ(v) FROM tt"));
         assertEquals(tryCast("VARIANT", "TIME(9)"), refusal("SELECT TRY_TO_TIME(v) FROM tt"));
         assertEquals(tryCast("VARIANT", "BINARY(67108864)"), refusal("SELECT TRY_TO_BINARY(v) FROM tt"));

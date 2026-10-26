@@ -38,6 +38,10 @@ import java.util.regex.Pattern;
  *       (live-verified).</li>
  *   <li>{@code DD-MON-YYYY}, e.g. {@code 17-DEC-1980}, with no time after it (live-verified).</li>
  *   <li>an ISO date with an hour alone, {@code 2013-04-28 20} (documented, live-verified).</li>
+ *   <li>the Internet (RFC) forms {@code DY, DD MON YYYY HH24:MI:SS[.FF] [TZHTZM]} and
+ *       {@code DY, DD MON YYYY HH12:MI:SS[.FF] AM [TZHTZM]}, e.g. {@code Thu, 21 Dec 2000 04:01:07 PM +0200}, and
+ *       {@code DY MON DD HH24:MI:SS TZHTZM YYYY}, e.g. {@code Mon Jul 08 18:09:51 +0000 2013} (Snowflake's AUTO
+ *       detection table). The day's name is read and not checked against the date.</li>
  *   <li>whitespace variation between the date and the time — Snowflake "allows some whitespace differences
  *       in order to handle variably-formatted data", so {@code 2024-03-29  15:00:11} (two blanks) is the same
  *       instant as with one. The previous implementation swapped a single blank for {@code T}, which turned a
@@ -65,6 +69,11 @@ public final class AutoTemporalParser {
     private static final String[] MONTH_NAMES = {
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
     };
+
+    private static final String[] DAY_NAMES = {"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
+
+    /** The hours of a half day: HH12 reads 1 to 12, and 12 AM is midnight. */
+    private static final int HALF_DAY_HOURS = 12;
 
     /** The widest digit run still read as one field; anything longer overflows a year and is not a temporal. */
     private static final int MAX_FIELD_DIGITS = 9;
@@ -126,6 +135,9 @@ public final class AutoTemporalParser {
             return null;
         }
         offsetOut[0] = NO_OFFSET;
+        if (isLetter(s.charAt(0))) {
+            return internetDateTime(s, offsetOut);
+        }
         final int[] pos = {0};
         final int[] form = {ISO_DATE};
         final LocalDate date = scanDate(s, pos, form);
@@ -150,6 +162,182 @@ public final class AutoTemporalParser {
             return null;   // trailing text that is not a zone designator
         }
         return LocalDateTime.of(date, time);
+    }
+
+    /**
+     * Parse a time of day as AUTO detection reads one (Snowflake's AUTO detection table): {@code HH24:MI[:SS[.FF]]},
+     * a zone after the seconds, as in {@code 20:57:01.123456789+07:00}, which is dropped because a TIME has none, and
+     * the Internet forms {@code HH12:MI[:SS[.FF]] AM} with AM or PM, as in {@code 04:01 AM}.
+     *
+     * @param raw the text
+     * @return the time, or null when the text is none of these
+     */
+    public static LocalTime parseTime(final String raw) {
+        if (raw == null) {
+            return null;
+        }
+        final String s = raw.trim();
+        final int[] pos = {0};
+        final int hour = scanDigits(s, pos, 2);
+        if (hour < 0 || !skipChar(s, pos, ':')) {
+            return null;
+        }
+        final int minute = scanDigits(s, pos, 2);
+        if (minute < 0) {
+            return null;
+        }
+        int second = 0;
+        int nano = 0;
+        final boolean seconds = pos[0] < s.length() && s.charAt(pos[0]) == ':';
+        if (seconds) {
+            pos[0]++;
+            second = scanDigits(s, pos, 2);
+            nano = second < 0 ? -1 : scanFraction(s, pos);
+            if (nano < 0) {
+                return null;
+            }
+        }
+        final int beforeMeridiem = pos[0];
+        final int clockHour = meridiemHour(s, pos, hour);
+        if (clockHour < 0) {
+            return null;
+        }
+        if (seconds && pos[0] == beforeMeridiem) {
+            readZone(s, pos, new int[] {NO_OFFSET});
+        }
+        return pos[0] == s.length() ? timeOf(clockHour, minute, second, nano) : null;
+    }
+
+    /**
+     * The Internet (RFC) timestamp forms, which start with the day's name: {@code DY, DD MON YYYY} with a time and an
+     * optional zone, or {@code DY MON DD HH24:MI:SS TZHTZM YYYY}; null for any other text.
+     */
+    private static LocalDateTime internetDateTime(final String s, final int[] offsetOut) {
+        final int[] pos = {0};
+        if (!scanDayName(s, pos)) {
+            return null;
+        }
+        if (skipChar(s, pos, ',')) {
+            if (!skipBlanks(s, pos)) {
+                return null;
+            }
+            final int day = scanDigits(s, pos, 2);
+            final int month = day < 0 || !skipBlanks(s, pos) ? -1 : scanMonthName(s, pos);
+            final int year = month < 0 || !skipBlanks(s, pos) ? -1 : scanDigits(s, pos, 4);
+            final LocalDate date = year < 0 || !skipBlanks(s, pos) ? null : dateOf(year, month, day);
+            final LocalTime time = date == null ? null : clockTime(s, pos, true);
+            if (time == null) {
+                return null;
+            }
+            readZone(s, pos, offsetOut);
+            return pos[0] == s.length() ? LocalDateTime.of(date, time) : null;
+        }
+        if (!skipBlanks(s, pos)) {
+            return null;
+        }
+        final int month = scanMonthName(s, pos);
+        final int day = month < 0 || !skipBlanks(s, pos) ? -1 : scanDigits(s, pos, 2);
+        final LocalTime time = day < 0 || !skipBlanks(s, pos) ? null : clockTime(s, pos, false);
+        if (time == null) {
+            return null;
+        }
+        readZone(s, pos, offsetOut);
+        final int year = offsetOut[0] == NO_OFFSET || !skipBlanks(s, pos) ? -1 : scanDigits(s, pos, 4);
+        final LocalDate date = year < 0 || pos[0] != s.length() ? null : dateOf(year, month, day);
+        return date == null ? null : LocalDateTime.of(date, time);
+    }
+
+    /**
+     * An Internet form's {@code HH24:MI:SS[.FF]}, or with {@code meridiem} also its {@code HH12:MI:SS[.FF] AM};
+     * null when it is neither.
+     */
+    private static LocalTime clockTime(final String s, final int[] pos, final boolean meridiem) {
+        final int hour = scanDigits(s, pos, 2);
+        final int minute = hour < 0 || !skipChar(s, pos, ':') ? -1 : scanDigits(s, pos, 2);
+        final int second = minute < 0 || !skipChar(s, pos, ':') ? -1 : scanDigits(s, pos, 2);
+        final int nano = second < 0 ? -1 : scanFraction(s, pos);
+        final int clockHour = nano < 0 ? -1 : meridiem ? meridiemHour(s, pos, hour) : hour;
+        return clockHour < 0 ? null : timeOf(clockHour, minute, second, nano);
+    }
+
+    /**
+     * The hour of the day an hour and an AM or PM after it name, stepping over them: HH12 reads 1 to 12, 12 AM is
+     * midnight and 12 PM noon. The hour as it is, with {@code pos} left alone, when no AM or PM follows; -1 when one
+     * follows an hour outside 1 to 12.
+     */
+    private static int meridiemHour(final String s, final int[] pos, final int hour) {
+        final int[] ahead = {pos[0]};
+        if (!skipBlanks(s, ahead) || ahead[0] + 2 > s.length()) {
+            return hour;
+        }
+        final boolean am = s.regionMatches(true, ahead[0], "AM", 0, 2);
+        if (!am && !s.regionMatches(true, ahead[0], "PM", 0, 2)
+                || ahead[0] + 2 < s.length() && isLetter(s.charAt(ahead[0] + 2))) {
+            return hour;
+        }
+        if (hour < 1 || hour > HALF_DAY_HOURS) {
+            return -1;
+        }
+        pos[0] = ahead[0] + 2;
+        return hour % HALF_DAY_HOURS + (am ? 0 : HALF_DAY_HOURS);
+    }
+
+    /** Read a three-letter day abbreviation at {@code pos}; false when it is not one. */
+    private static boolean scanDayName(final String s, final int[] pos) {
+        for (final String day : DAY_NAMES) {
+            if (s.regionMatches(true, pos[0], day, 0, 3)
+                    && (pos[0] + 3 == s.length() || !isLetter(s.charAt(pos[0] + 3)))) {
+                pos[0] += 3;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Step over a run of blanks at {@code pos}; false when there is none. */
+    private static boolean skipBlanks(final String s, final int[] pos) {
+        final int start = pos[0];
+        while (pos[0] < s.length() && isBlank(s.charAt(pos[0]))) {
+            pos[0]++;
+        }
+        return pos[0] > start;
+    }
+
+    /** Step over the character at {@code pos} when it is {@code c}; false when it is not. */
+    private static boolean skipChar(final String s, final int[] pos, final char c) {
+        if (pos[0] < s.length() && s.charAt(pos[0]) == c) {
+            pos[0]++;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * A {@code .FF} fraction at {@code pos} as nanoseconds, stepping over it: 0 when no point follows, -1 when a point
+     * has no digit after it.
+     */
+    private static int scanFraction(final String s, final int[] pos) {
+        if (!skipChar(s, pos, '.')) {
+            return 0;
+        }
+        final int fracStart = pos[0];
+        final int fraction = scanDigits(s, pos, 9);
+        if (fraction < 0) {
+            return -1;
+        }
+        int scaled = fraction;
+        for (int digits = pos[0] - fracStart; digits < 9; digits++) {
+            scaled *= 10;
+        }
+        return scaled;
+    }
+
+    private static LocalTime timeOf(final int hour, final int minute, final int second, final int nano) {
+        try {
+            return LocalTime.of(hour, minute, second, nano);
+        } catch (final DateTimeException outOfRange) {
+            return null;
+        }
     }
 
     /** Parse a date, tolerating (and discarding) a trailing time and zone; null if unrecognised. */
@@ -273,18 +461,9 @@ public final class AutoTemporalParser {
             if (second < 0) {
                 return null;
             }
-            if (pos[0] < s.length() && s.charAt(pos[0]) == '.') {
-                pos[0]++;
-                final int fracStart = pos[0];
-                final int fraction = scanDigits(s, pos, 9);
-                if (fraction < 0) {
-                    return null;
-                }
-                int scaled = fraction;
-                for (int digits = pos[0] - fracStart; digits < 9; digits++) {
-                    scaled *= 10;
-                }
-                nano = scaled;
+            nano = scanFraction(s, pos);
+            if (nano < 0) {
+                return null;
             }
         }
         try {

@@ -27,6 +27,7 @@ import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -70,6 +71,215 @@ final class ConstantSubqueries {
             return folds(executor, executor.parseSelectStatement(subquery.getSubquery()));
         } catch (final RuntimeException unreadable) {
             return false;
+        }
+    }
+
+    /**
+     * Whether a VALUES item's subquery folds to a constant: as {@link #folds} has it, and over the statistics through a
+     * LIMIT that keeps a row, {@code (SELECT MIN(id) FROM t LIMIT 1)}, and through a view that passes its one table's
+     * columns on, {@code (SELECT MAX(id) FROM v)} over {@code v AS SELECT id FROM t} (live-verified).
+     *
+     * @param executor the executor that reads the tables
+     * @param subquery the subquery
+     * @return true when it folds
+     */
+    static boolean foldsInValues(final QueryExecutor executor, final SubqueryExpression subquery) {
+        if (folds(executor, subquery)) {
+            return true;
+        }
+        try {
+            final FrostlakeParser.SelectStatementContext statement = executor.parseSelectStatement(
+                subquery.getSubquery());
+            if (statement.withClause() != null || statement.orderByClause() != null
+                    || statement.fetchClause() != null || statement.selectOperand().size() != 1
+                    || statement.selectOperand(0).selectClause() == null
+                    || statement.limitClause() != null && !keepsARow(statement.limitClause())) {
+                return false;
+            }
+            final FrostlakeParser.SelectClauseContext clause = statement.selectOperand(0).selectClause();
+            final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
+            if (clause.DISTINCT() != null || clause.topClause() != null || clause.connectByClause() != null
+                    || clause.havingClause() != null || clause.qualifyClause() != null || from == null
+                    || from.tableReference().size() != 1 || !from.joinClause().isEmpty()) {
+                return false;
+            }
+            final FrostlakeParser.TableReferenceContext reference = from.tableReference(0);
+            if (reference.LATERAL() != null || reference.identifierList() != null || reference.pivotClause() != null
+                    || reference.unpivotClause() != null || reference.matchRecognizeClause() != null
+                    || reference.sampleClause() != null || reference.tableSource().tableQualifiedName() == null
+                    || reference.tableSource().timeTravelClause() != null) {
+                return false;
+            }
+            final String[] read = new String[1];
+            final Table table = passedThroughTable(executor, reference, read);
+            return table != null && answeredFromStatistics(executor, clause, reference, table, read[0]);
+        } catch (final RuntimeException unreadable) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a GENERATOR bound's subquery folds to a constant: as {@link #folds} has it, and over the statistics
+     * through a derived table that passes one table on whole, {@code (SELECT COUNT(*) FROM (SELECT * FROM t))}
+     * (live-verified).
+     *
+     * @param executor the executor that reads the tables
+     * @param subquery the subquery
+     * @return true when it folds
+     */
+    static boolean foldsAsGeneratorBound(final QueryExecutor executor, final SubqueryExpression subquery) {
+        if (folds(executor, subquery)) {
+            return true;
+        }
+        try {
+            final FrostlakeParser.SelectStatementContext statement = executor.parseSelectStatement(
+                subquery.getSubquery());
+            if (statement.withClause() != null || statement.orderByClause() != null
+                    || statement.limitClause() != null || statement.fetchClause() != null
+                    || statement.selectOperand().size() != 1 || statement.selectOperand(0).selectClause() == null) {
+                return false;
+            }
+            final FrostlakeParser.SelectClauseContext clause = statement.selectOperand(0).selectClause();
+            final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
+            if (clause.DISTINCT() != null || clause.topClause() != null || clause.connectByClause() != null
+                    || clause.havingClause() != null || clause.qualifyClause() != null || from == null
+                    || from.tableReference().size() != 1 || !from.joinClause().isEmpty()) {
+                return false;
+            }
+            final FrostlakeParser.TableReferenceContext reference = from.tableReference(0);
+            if (reference.LATERAL() != null || reference.identifierList() != null || reference.pivotClause() != null
+                    || reference.unpivotClause() != null || reference.matchRecognizeClause() != null
+                    || reference.sampleClause() != null || reference.tableSource().selectStatement() == null) {
+                return false;
+            }
+            final String[] read = new String[1];
+            final Table table = passedOnWhole(executor, reference.tableSource().selectStatement(), read, true);
+            return table != null && answeredFromStatistics(executor, clause, reference, table, read[0]);
+        } catch (final RuntimeException unreadable) {
+            return false;
+        }
+    }
+
+    /** Whether a LIMIT keeps one row or more, and skips none. */
+    private static boolean keepsARow(final FrostlakeParser.LimitClauseContext limit) {
+        return limit.OFFSET() == null && limit.getChildCount() > 1
+            && limit.getChild(1).getText().matches("[0-9]+") && Long.parseLong(limit.getChild(1).getText()) > 0;
+    }
+
+    /**
+     * The catalog table a FROM item reads: the table it names, or the one table a view of the current schema it names
+     * passes on whole, its columns under their own names with nothing filtered; null for any other. The table's name
+     * as written lands in {@code read}.
+     */
+    private static Table passedThroughTable(final QueryExecutor executor,
+                                            final FrostlakeParser.TableReferenceContext reference,
+                                            final String[] read) {
+        final String name = ParseTreeText.getQualifiedName(reference.tableSource().tableQualifiedName());
+        try {
+            final Table table = executor.getCatalog().resolveTableAsWritten(name, "Object");
+            if (table != null) {
+                read[0] = name;
+                return table.isCatalogResident() ? table : null;
+            }
+        } catch (final RuntimeException notATable) {
+            // a view, read below
+        }
+        if (ParseTreeText.qualifiedNameParts(reference.tableSource().tableQualifiedName()).length != 1) {
+            return null;
+        }
+        final View view;
+        try {
+            view = executor.getCatalog().resolveView(SqlIdentifiers.canonicalText(name));
+        } catch (final RuntimeException notAView) {
+            return null;
+        }
+        if (view == null || view.getDefinition() == null) {
+            return null;
+        }
+        return passedOnWhole(executor, executor.parseSelectStatement(view.getDefinition()), read, false);
+    }
+
+    /**
+     * The one catalog table a query passes on whole, its columns under their own names - every one of them through a
+     * star where {@code star} allows it - with nothing filtered; null for any other query. The table's name as
+     * written lands in {@code read}.
+     */
+    private static Table passedOnWhole(final QueryExecutor executor, final FrostlakeParser.SelectStatementContext body,
+                                       final String[] read, final boolean star) {
+        if (body.withClause() != null || body.orderByClause() != null || body.limitClause() != null
+                || body.fetchClause() != null || body.selectOperand().size() != 1
+                || body.selectOperand(0).selectClause() == null) {
+            return null;
+        }
+        final FrostlakeParser.SelectClauseContext select = body.selectOperand(0).selectClause();
+        if (select.DISTINCT() != null || select.topClause() != null || select.whereClause() != null
+                || select.groupByClause() != null || select.havingClause() != null || select.qualifyClause() != null
+                || select.connectByClause() != null || select.tableExpression() == null
+                || select.tableExpression().tableReference().size() != 1
+                || !select.tableExpression().joinClause().isEmpty()) {
+            return null;
+        }
+        for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
+            if (star && SelectItemAccessors.isStarItem(item) && select.selectList().selectItem().size() == 1) {
+                continue;
+            }
+            if (!(item instanceof FrostlakeParser.ExprItemContext)
+                    || SelectItemAccessors.getItemAlias((FrostlakeParser.ExprItemContext) item) != null) {
+                return null;
+            }
+            final Expression passed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(
+                ((FrostlakeParser.ExprItemContext) item).booleanExpr()));
+            if (!(passed instanceof ColumnReferenceExpression)) {
+                return null;
+            }
+        }
+        final FrostlakeParser.TableReferenceContext inner = select.tableExpression().tableReference(0);
+        if (inner.tableSource() == null || inner.tableSource().tableQualifiedName() == null
+                || inner.tableSource().timeTravelClause() != null) {
+            return null;
+        }
+        try {
+            read[0] = ParseTreeText.getQualifiedName(inner.tableSource().tableQualifiedName());
+            final Table table = executor.getCatalog().resolveTableAsWritten(read[0], "Object");
+            return table != null && table.isCatalogResident() ? table : null;
+        } catch (final RuntimeException notATable) {
+            return null;
+        }
+    }
+
+    /**
+     * The one item of a FROM-less SELECT of a constant, parsed - {@code 2 + 3} for {@code (SELECT 2 + 3)} - or null
+     * for any other subquery.
+     *
+     * @param executor the executor that parses the subquery
+     * @param subquery the subquery
+     * @return the item, or null
+     */
+    static Expression soleConstantItem(final QueryExecutor executor, final SubqueryExpression subquery) {
+        try {
+            final FrostlakeParser.SelectStatementContext statement = executor.parseSelectStatement(
+                subquery.getSubquery());
+            if (statement.withClause() != null || statement.orderByClause() != null
+                    || statement.limitClause() != null || statement.fetchClause() != null
+                    || statement.selectOperand().size() != 1 || statement.selectOperand(0).selectClause() == null) {
+                return null;
+            }
+            final FrostlakeParser.SelectClauseContext clause = statement.selectOperand(0).selectClause();
+            if (clause.tableExpression() != null || clause.whereClause() != null || clause.groupByClause() != null
+                    || clause.DISTINCT() != null || clause.topClause() != null || clause.connectByClause() != null
+                    || clause.havingClause() != null || clause.qualifyClause() != null
+                    || clause.selectList().selectItem().size() != 1
+                    || !SelectItemAccessors.isExprItem(clause.selectList().selectItem(0))) {
+                return null;
+            }
+            final ParserRuleContext text = itemText(clause.selectList().selectItem(0));
+            if (text == null) {
+                return null;
+            }
+            final Expression item = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(text));
+            return constant(item, false) ? item : null;
+        } catch (final RuntimeException unreadable) {
+            return null;
         }
     }
 
@@ -174,10 +384,6 @@ final class ConstantSubqueries {
     private static boolean answeredFromStatistics(final QueryExecutor executor,
                                                   final FrostlakeParser.SelectClauseContext clause,
                                                   final FrostlakeParser.TableReferenceContext reference) {
-        final FrostlakeParser.GroupByClauseContext groupBy = clause.groupByClause();
-        if (groupBy != null && groupBy.ALL() == null) {
-            return false;
-        }
         final String name = ParseTreeText.getQualifiedName(reference.tableSource().tableQualifiedName());
         final Table table;
         try {
@@ -186,6 +392,18 @@ final class ConstantSubqueries {
             return false;
         }
         if (table == null || !table.isCatalogResident()) {
+            return false;
+        }
+        return answeredFromStatistics(executor, clause, reference, table, name);
+    }
+
+    /** {@link #answeredFromStatistics} over the catalog table the FROM item reads, by its name as written. */
+    private static boolean answeredFromStatistics(final QueryExecutor executor,
+                                                  final FrostlakeParser.SelectClauseContext clause,
+                                                  final FrostlakeParser.TableReferenceContext reference,
+                                                  final Table table, final String name) {
+        final FrostlakeParser.GroupByClauseContext groupBy = clause.groupByClause();
+        if (groupBy != null && groupBy.ALL() == null) {
             return false;
         }
         table.setQualifiedName(executor.getFullyQualifiedTableName(name));

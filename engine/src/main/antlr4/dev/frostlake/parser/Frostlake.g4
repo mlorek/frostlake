@@ -70,8 +70,47 @@ import java.util.List;
             // A statement's end closes whatever it left open.
             rowPatternClauses.clear();
             parentheses = 0;
+        } else if (type == BEGIN) {
+            final int next = typeAhead(0);
+            if (next != SEMI && next != Token.EOF && next != WORK && next != TRANSACTION && next != NAME) {
+                blocksOpen++;
+            }
+        } else if (type == CASE) {
+            casesOpen++;
+        } else if (type == END) {
+            closeConstruct(typeAhead(0));
+        } else if (type == FLOW_ARROW && blocksOpen > 0 && parentheses == 0 && token instanceof WritableToken) {
+            // A block's statements chained with the flow arrow run in turn, each ended where the arrow stands
+            // (live-verified: BEGIN SELECT 1 ->> SELECT 2; RETURN 1; END is 1): the parser reads the arrow as the
+            // semicolon, so a block's statement list keeps the one shape it has. In parentheses the arrow chains
+            // the stages a RESULTSET is filled from (see resultSetSource).
+            ((WritableToken) token).setType(SEMI);
+            previousType = SEMI;
+            rowPatternClauses.clear();
+            parentheses = 0;
         }
         return token;
+    }
+
+    /** How many BEGIN … END blocks the text has opened and not yet closed. */
+    private int blocksOpen;
+
+    /** How many CASEs, expressions and statements alike, the text has opened and not yet closed. */
+    private int casesOpen;
+
+    /**
+     * An END closes the innermost CASE open, or else the innermost block: an END a loop's or an IF's word follows
+     * closes that construct, and neither.
+     */
+    private void closeConstruct(final int next) {
+        if (next == IF || next == LOOP || next == WHILE || next == FOR || next == REPEAT) {
+            return;
+        }
+        if (casesOpen > 0) {
+            casesOpen--;
+        } else if (blocksOpen > 0) {
+            blocksOpen--;
+        }
     }
 
     /** The type the lexer's rules gave the token handed out last. */
@@ -84,11 +123,12 @@ import java.util.List;
     private int statementOpener = Token.INVALID_TYPE;
 
     /**
-     * Whether the word TABLE opens a query here (see selectOperand): at a statement's start, and where a query may
-     * begin — after a '(' that follows no name, a set operator, AS or EXPLAIN, or after an INSERT's target or a
-     * WITH's last CTE — with a name after it. Anywhere else it stays the word a statement names a table by, so that
-     * what a fault there is read as, and where its lines fall, stays as it was: CREATE TABLE t, DESCRIBE TABLE t, a
-     * signature's TABLE(…), (TABLE) and (TABLE x) after the object's name, a field named TABLE in OBJECT(TABLE INT).
+     * Whether the word TABLE opens a query here (see selectOperand): at a statement's start — a block's first
+     * statement and a branch's or a loop's included — and where a query may begin — after a '(' that follows no
+     * name, a set operator, AS or EXPLAIN, or after an INSERT's target or a WITH's last CTE — with a name after
+     * it. Anywhere else it stays the word a statement names a table by, so that what a fault there is read as, and
+     * where its lines fall, stays as it was: CREATE TABLE t, DESCRIBE TABLE t, a signature's TABLE(…), (TABLE) and
+     * (TABLE x) after the object's name, a field named TABLE in OBJECT(TABLE INT).
      */
     private boolean opensTableQuery(final int before, final int beforeThat) {
         if (before == Token.INVALID_TYPE || before == SEMI) {
@@ -102,7 +142,8 @@ import java.util.List;
             return beforeThat != IDENTIFIER && beforeThat != QUOTED_IDENTIFIER;
         }
         if (before == UNION || before == INTERSECT || before == EXCEPT || before == MINUS_KW || before == ALL
-                || before == DISTINCT || before == AS || before == EXPLAIN) {
+                || before == DISTINCT || before == AS || before == EXPLAIN || before == BEGIN || before == THEN
+                || before == ELSE || before == DO || before == LOOP || before == REPEAT) {
             return true;
         }
         return (before == IDENTIFIER || before == QUOTED_IDENTIFIER || before == RPAREN)
@@ -457,16 +498,54 @@ import java.util.List;
 
     /**
      * Refuses LONG where it reads as no type: outside a table column's type, at the word, and with parameters after
-     * it, at their parenthesis (live-verified).
+     * it, at their parenthesis (live-verified). After a :: the account reads on, and tells the token after the word
+     * as well unless a whole select item may end there: {@code SELECT 1::LONG AS b} is 'LONG', then 'AS', and so is
+     * an operator, a name, a '(' or a stray ')' after the word, while a ',', a clause's word, the end and a ')'
+     * closing a bracket opened before the cast end the report (live-verified).
      */
     private void refuseLongWord(final ParserRuleContext type, final Token word) {
         if (!tableColumnType()) {
-            notifyErrorListeners(word, "unexpected '" + word.getText() + "'", new RefusedWordFault(this, type, true));
+            final Token next = _input.LT(1);
+            final boolean readsOn = type.getParent() instanceof CastExpr2Context && !endsTheItem(next, word);
+            notifyErrorListeners(word, "unexpected '" + word.getText() + "'",
+                new RefusedWordFault(this, type, !readsOn));
+            if (readsOn) {
+                notifyErrorListeners(next, "unexpected '" + next.getText() + "'",
+                    new RefusedWordFault(this, type, true));
+            }
             return;
         }
         final Token next = _input.LT(1);
         if (next.getType() == LPAREN) {
             notifyErrorListeners(next, "unexpected '('", new RefusedWordFault(this, type, true));
+        }
+    }
+
+    /**
+     * Whether a token may follow a whole select item: a ',', a clause's word, the end of the statement, or a ')'
+     * closing a bracket opened before {@code from}.
+     */
+    private boolean endsTheItem(final Token next, final Token from) {
+        switch (next.getType()) {
+            case COMMA: case FROM: case WHERE: case GROUP: case HAVING: case QUALIFY: case ORDER: case LIMIT:
+            case OFFSET: case FETCH: case UNION: case INTERSECT: case EXCEPT: case MINUS_KW: case SEMI: case EOF:
+                return true;
+            case RPAREN:
+                int depth = 0;
+                for (int i = from.getTokenIndex() - 1; i >= 0; i--) {
+                    final int type = _input.get(i).getType();
+                    if (type == SEMI) {
+                        return false;
+                    }
+                    if (type == RPAREN) {
+                        depth++;
+                    } else if (type == LPAREN && depth-- == 0) {
+                        return true;
+                    }
+                }
+                return false;
+            default:
+                return false;
         }
     }
 
@@ -1440,7 +1519,7 @@ notebookStatement
 
 notebookOption
     : MAIN_FILE EQ STRING_LITERAL
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | QUERY_WAREHOUSE EQ identifier
     | IDLE_AUTO_SHUTDOWN_TIME_SECONDS EQ INTEGER_LITERAL
     | RUNTIME_NAME EQ STRING_LITERAL
@@ -1450,7 +1529,7 @@ notebookOption
     ;
 
 notebookSetOption
-    : COMMENT EQ STRING_LITERAL
+    : COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | QUERY_WAREHOUSE EQ identifier
     | IDLE_AUTO_SHUTDOWN_TIME_SECONDS EQ INTEGER_LITERAL
     | SECRETS EQ appSecretList
@@ -1530,7 +1609,7 @@ streamlitOption
     | QUERY_WAREHOUSE EQ identifier
     | RUNTIME_NAME EQ STRING_LITERAL
     | COMPUTE_POOL EQ identifier
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | TITLE EQ STRING_LITERAL
     | IMPORTS EQ LPAREN (STRING_LITERAL (COMMA STRING_LITERAL)*)? RPAREN
     | EXTERNAL_ACCESS_INTEGRATIONS EQ LPAREN (identifier (COMMA identifier)*)? RPAREN
@@ -1555,8 +1634,9 @@ securityObjectStatement
     | CREATE (or_replace | or_alter)? NETWORK POLICY if_not_exists? identifier securityProperty* SEMI?
     | CREATE or_replace? PASSWORD POLICY if_not_exists? qualifiedName securityProperty* SEMI?
     | CREATE or_replace? SESSION POLICY if_not_exists? qualifiedName securityProperty* SEMI?
-    // An authentication policy takes its properties separated by blanks or commas alike (live-verified).
-    | CREATE or_replace? AUTHENTICATION POLICY if_not_exists? qualifiedName
+    // An authentication policy takes its properties separated by blanks or commas alike, and CREATE OR ALTER makes
+    // or alters one (live-verified).
+    | CREATE (or_replace | or_alter)? AUTHENTICATION POLICY if_not_exists? qualifiedName
       (securityProperty (COMMA? securityProperty)*)? SEMI?
     // A packages policy names its language right after its name, and its properties after that separated by blanks
     // or commas alike (live-verified).
@@ -1584,7 +1664,38 @@ securityObjectStatement
     ;
 
 securityProperty
-    : optionKey EQ securityPropertyValue
+    // An authentication policy's MFA, PAT, workload identity and client settings each take a list of properties of
+    // their own (see AuthenticationPolicyLists); any other value of theirs is refused as no property list.
+    : {PropertyListKeys.opens(_input.LT(1))}? optionKey EQ securityPropertyList
+    | optionKey EQ securityPropertyValue
+    ;
+
+// A list of properties, separated by commas or blanks alike (live-verified).
+securityPropertyList
+    : LPAREN securityListEntry (COMMA? securityListEntry)* RPAREN
+    ;
+
+securityListEntry
+    : optionKey EQ (securityPropertyList | securityListValue)
+    ;
+
+securityListValue
+    : STRING_LITERAL
+    | MINUS? INTEGER_LITERAL
+    | MINUS? FLOAT_LITERAL
+    | TRUE
+    | FALSE
+    | NULL
+    | ALL
+    | identifier
+    | LPAREN (securityListItem (COMMA securityListItem)*)? RPAREN
+    ;
+
+securityListItem
+    : STRING_LITERAL
+    | MINUS? INTEGER_LITERAL
+    | ALL
+    | identifier
     ;
 
 securityPropertyValue
@@ -1593,9 +1704,12 @@ securityPropertyValue
     // A fraction is read, and refused by a whole number's property as no value of that parameter (live-verified).
     | MINUS? FLOAT_LITERAL
     | identifier
-    | LPAREN (STRING_LITERAL (COMMA STRING_LITERAL)*)? RPAREN
+    // A list's item may be a session variable too, bound or refused as a scalar one is (see PropertyVariables).
+    | LPAREN ((STRING_LITERAL | SESSION_VAR_REF) (COMMA (STRING_LITERAL | SESSION_VAR_REF))*)? RPAREN
     // NULL takes a session policy's agent scope away; any other property refuses it where it stands.
     | NULL
+    // A session variable, bound where a property takes one and refused anywhere else (see PropertyVariables).
+    | SESSION_VAR_REF
     ;
 
 // SET takes its properties separated by blanks or commas alike.
@@ -1660,7 +1774,8 @@ createStatement
     // boundary: `CREATE LOCAL TEMPORARY SCHEMA` IS a syntax error, so the pair below is deliberately
     // not the (LOCAL | GLOBAL)? group the TABLE alternative uses.
     // A comma may stand between two properties, but not after WITH MANAGED ACCESS (refused in Java, at the comma).
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | VOLATILE)? SCHEMA if_not_exists? qualifiedName
+    // OR ALTER is read whatever follows: IF NOT EXISTS, a CLONE and a tag are refused in Java (live-verified).
+    | CREATE (or_replace | or_alter)? (TRANSIENT | TEMPORARY | TEMP | VOLATILE)? SCHEMA if_not_exists? qualifiedName
         (CLONE qualifiedName (timeTravelClause cloneTimedOption* | cloneContentOption*))?
         (schemaProperty (COMMA? schemaProperty)*)? SEMI?
     // A table must say what its columns ARE: an explicit column list, CLONE, LIKE, or CTAS. A body-less
@@ -1679,7 +1794,9 @@ createStatement
     // `CREATE TEMPORARY SECURE VIEW` is a syntax error) — the opposite of a function, below.
     // RECURSIVE stands where the temporariness would, and excludes it: `CREATE SECURE RECURSIVE VIEW`
     // parses, `CREATE TEMPORARY RECURSIVE VIEW` is a syntax error at RECURSIVE (live-verified).
-    | CREATE (or_replace | or_alter)? SECURE? (RECURSIVE | (LOCAL | GLOBAL)? (TEMPORARY | TEMP | VOLATILE))? VIEW if_not_exists? objectName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement SEMI?
+    | CREATE (or_replace | or_alter)? SECURE? (RECURSIVE | (LOCAL | GLOBAL)? (TEMPORARY | TEMP | VOLATILE))? VIEW
+      if_not_exists? objectName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty*
+      viewPolicyClause* rowAccessPolicyClause? commentClause? viewPolicyClause* tagList? AS selectStatement SEMI?
     // A clustering key may stand on either side of the view's COMMENT, and more than once; a COMMENT written
     // twice is read and then refused as a duplicate property (live-verified). Any other word among them is read as
     // a property's name, so that what follows it is what is refused: CLUSTER BY (x) COPY GRANTS AS … is a syntax
@@ -1845,8 +1962,9 @@ contactAssignment
 // The '=' is positional (live-verified): an OBJECT-level comment REQUIRES it — CREATE TABLE t (x INT)
 // COMMENT 'x' is a syntax error at the string — while a COLUMN-level comment FORBIDS it — id INT
 // COMMENT = 'x' is a syntax error at the '='. The two rules below carry that split.
+// A session variable is a property's value too, bound before the statement runs (see PropertyVariables).
 commentClause
-    : COMMENT EQ (STRING_LITERAL | DOLLAR_QUOTED_STRING)
+    : COMMENT EQ (STRING_LITERAL | DOLLAR_QUOTED_STRING | SESSION_VAR_REF)
     ;
 
 // A policy's properties after its body, in any order. A repeated one, a value other than TRUE or FALSE, and
@@ -2028,7 +2146,7 @@ packagesClause
 // The properties and parameters CREATE DATABASE takes, in any order: the retention, the comment, inline
 // tags, and any other database parameter by name (the handler refuses a name that is none).
 databaseProperty
-    : DATA_RETENTION_TIME_IN_DAYS EQ MINUS? INTEGER_LITERAL
+    : DATA_RETENTION_TIME_IN_DAYS EQ (MINUS? INTEGER_LITERAL | SESSION_VAR_REF)
     | commentClause
     | tagList
     | optionKey EQ copyOptionValue
@@ -2415,6 +2533,8 @@ grantStatement
         TO ((USER | ROLE)? principalName | databaseRoleGrantee | SHARE principalName | APPLICATION ROLE referencedName
             | ROLE) currentGrants? withGrantOption? SEMI?
     | GRANT OWNERSHIP ON objectType grantedObjectName TO (USER | ROLE)? principalName currentGrants? SEMI?  // GRANT OWNERSHIP ON type name TO USER/ROLE target_name
+    // A role, a user or a database role passes to another owning role too (documented).
+    | GRANT OWNERSHIP ON ownedPrincipal TO (USER | ROLE)? principalName currentGrants? SEMI?
     | GRANT privilegeList ON ACCOUNT TO (USER | ROLE)? principalName withGrantOption? SEMI?  // GRANT privs ON ACCOUNT TO USER/ROLE target_name
     | GRANT privilegeList ON ALL bulkObjectType IN bulkScope TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON ALL <types> IN <scope>
     | GRANT privilegeList ON FUTURE bulkObjectType IN bulkScope TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON FUTURE <types> IN <scope>
@@ -2476,6 +2596,13 @@ currentGrants
 // A grantee that is a database role, named with its database or relative to the current one.
 databaseRoleGrantee
     : DATABASE ROLE referencedName
+    ;
+
+// A principal GRANT OWNERSHIP passes to another owner: a role, a user or a database role (documented).
+ownedPrincipal
+    : ROLE principalName
+    | USER principalName
+    | DATABASE ROLE referencedName
     ;
 
 // A privilege granted WITH GRANT OPTION may be granted on by its grantee.
@@ -2566,6 +2693,7 @@ revokeStatement
     | REVOKE grantOptionFor? globalPrivilegeList ON ACCOUNT FROM ROLE? principalName revokeMode? SEMI?  // REVOKE global_privs ON ACCOUNT FROM ROLE role_name
     | REVOKE grantOptionFor? privilegeList ON objectType? grantedObjectName (LPAREN identifierList? RPAREN)? FROM ((USER | ROLE)? principalName | databaseRoleGrantee) revokeMode? SEMI?  // REVOKE privs ON type name [(col1, col2)] FROM USER/ROLE target_name
     | REVOKE OWNERSHIP ON objectType grantedObjectName FROM (USER | ROLE)? principalName SEMI?  // REVOKE OWNERSHIP ON type name FROM USER/ROLE target_name
+    | REVOKE OWNERSHIP ON ownedPrincipal FROM (USER | ROLE)? principalName SEMI?
     | REVOKE grantOptionFor? privilegeList ON ACCOUNT FROM (USER | ROLE)? principalName revokeMode? SEMI?  // REVOKE privs ON ACCOUNT FROM USER/ROLE target_name
     | REVOKE grantOptionFor? privilegeList ON ALL bulkObjectType IN bulkScope FROM ((USER | ROLE)? principalName | databaseRoleGrantee) revokeMode? SEMI?
     | REVOKE grantOptionFor? privilegeList ON FUTURE bulkObjectType IN bulkScope FROM ((USER | ROLE)? principalName | databaseRoleGrantee) revokeMode? SEMI?
@@ -2725,7 +2853,7 @@ userProperty
     | MUST_CHANGE_PASSWORD EQ booleanValue
     | DISABLED EQ booleanValue
     | TYPE EQ (identifier | STRING_LITERAL)
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | DAYS_TO_EXPIRY EQ userPropertyValue
     | MINS_TO_UNLOCK EQ userPropertyValue
     | MINS_TO_BYPASS_MFA EQ userPropertyValue
@@ -2872,7 +3000,7 @@ warehouseClause
     ;
 
 scheduleClause
-    : SCHEDULE EQ STRING_LITERAL
+    : SCHEDULE EQ (STRING_LITERAL | SESSION_VAR_REF)
     ;
 
 afterClause
@@ -2890,18 +3018,18 @@ taskContacts
     ;
 
 taskOption
-    : ALLOW_OVERLAPPING_EXECUTION EQ booleanValue
-    | USER_TASK_TIMEOUT_MS EQ INTEGER_LITERAL
-    | SUSPEND_TASK_AFTER_NUM_FAILURES EQ INTEGER_LITERAL
-    | TASK_AUTO_RETRY_ATTEMPTS EQ INTEGER_LITERAL
-    | USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE EQ STRING_LITERAL
+    : ALLOW_OVERLAPPING_EXECUTION EQ (booleanValue | SESSION_VAR_REF)
+    | USER_TASK_TIMEOUT_MS EQ (INTEGER_LITERAL | SESSION_VAR_REF)
+    | SUSPEND_TASK_AFTER_NUM_FAILURES EQ (INTEGER_LITERAL | SESSION_VAR_REF)
+    | TASK_AUTO_RETRY_ATTEMPTS EQ (INTEGER_LITERAL | SESSION_VAR_REF)
+    | USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE EQ (STRING_LITERAL | SESSION_VAR_REF)
     // A warehouse size takes either spelling here — live accepts both the quoted 'MEDIUM' and the
     // bare MEDIUM (the sibling USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE is quoted-only).
-    | SERVERLESS_TASK_MAX_STATEMENT_SIZE EQ (identifier | STRING_LITERAL)
-    | TARGET_COMPLETION_INTERVAL EQ STRING_LITERAL
-    | USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS EQ INTEGER_LITERAL
+    | SERVERLESS_TASK_MAX_STATEMENT_SIZE EQ (identifier | STRING_LITERAL | SESSION_VAR_REF)
+    | TARGET_COMPLETION_INTERVAL EQ (STRING_LITERAL | SESSION_VAR_REF)
+    | USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS EQ (INTEGER_LITERAL | SESSION_VAR_REF)
     | ERROR_INTEGRATION EQ identifier
-    | COMMENT EQ? STRING_LITERAL
+    | COMMENT EQ? (STRING_LITERAL | SESSION_VAR_REF)
     | scheduleClause
     // Every other property — CONFIG, OVERLAP_POLICY, FINALIZE, SUCCESS_INTEGRATION, LOG_LEVEL,
     // SERVERLESS_TASK_MIN_STATEMENT_SIZE and the session parameters. The handler reads the name and
@@ -2911,6 +3039,7 @@ taskOption
 
 taskPropertyValue
     : STRING_LITERAL
+    | SESSION_VAR_REF
     | DOLLAR_QUOTED_STRING
     | MINUS? (INTEGER_LITERAL | FLOAT_LITERAL)
     | booleanValue
@@ -2936,7 +3065,7 @@ pipeOption
     | AWS_SNS_TOPIC EQ STRING_LITERAL
     | ERROR_INTEGRATION EQ (STRING_LITERAL | identifier)
     | INTEGRATION EQ STRING_LITERAL
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     ;
 
 // A load's clauses may be separated by commas (live-verified for its options).
@@ -3036,13 +3165,15 @@ copyFormatOptions
 copyFormatOption
     : TYPE EQ copyOptionValue
     | FIELD_DELIMITER EQ copyOptionValue
-    | SKIP_HEADER EQ MINUS? INTEGER_LITERAL
+    | SKIP_HEADER EQ (MINUS? INTEGER_LITERAL | SESSION_VAR_REF)
     | DATE_FORMAT EQ copyOptionValue
     | COMPRESSION EQ copyOptionValue
     | RECORD_DELIMITER EQ copyOptionValue
     | ESCAPE EQ copyOptionValue
     // A parenthesized string list, e.g. NULL_IF = ('\\N', 'NULL', '') — must precede the scalar catch-all.
     | identifier EQ LPAREN stringLiteralList? RPAREN
+    // A session variable among the strings, refused where it stands (see PropertyVariables).
+    | identifier EQ LPAREN (STRING_LITERAL | SESSION_VAR_REF) (COMMA (STRING_LITERAL | SESSION_VAR_REF))* RPAREN
     | identifier EQ copyOptionValue
     ;
 
@@ -3059,6 +3190,8 @@ copyOptionValue
     // consumer validates its own values in Java, so widening here does not widen what they accept.
     | DEFAULT
     | qualifiedName
+    // A session variable, bound where a property takes one and refused anywhere else (see PropertyVariables).
+    | SESSION_VAR_REF
     ;
 
 copyStatement
@@ -3091,7 +3224,7 @@ warehouseProperty
     | GENERATION EQ (STRING_LITERAL | INTEGER_LITERAL)
     | RESOURCE_CONSTRAINT EQ (identifier | STRING_LITERAL)
     | WAIT_FOR_COMPLETION EQ booleanValue
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     ;
 
 // A comma may stand between two options, and neither before the first nor after the last (live-verified).
@@ -3101,9 +3234,9 @@ stageProperties
     ;
 
 stageOption
-    : FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName)
+    : FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName | SESSION_VAR_REF)
     | ENCRYPTION EQ (booleanValue | parenOptionList)
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | COPY_OPTIONS EQ (stageCopyOptionList | copyOptionValue)
     | identifier EQ (parenOptionList | copyOptionValue)   // CREDENTIALS=(...), TEMPORARY-stage props, ...
     ;
@@ -3203,7 +3336,7 @@ sequenceAlterOption
     | START (WITH | EQ)? MINUS? INTEGER_LITERAL
     | ORDER
     | NOORDER
-    | COMMENT EQ (STRING_LITERAL | DOLLAR_QUOTED_STRING | NULL)
+    | COMMENT EQ (STRING_LITERAL | DOLLAR_QUOTED_STRING | NULL | SESSION_VAR_REF)
     ;
 
 tagAssign
@@ -3308,6 +3441,9 @@ tableAction
     // Automatic reclustering is paused and resumed on a CLUSTERED table; SHOW TABLES'
     // automatic_clustering cell follows it (live-verified: ON -> OFF -> ON).
     | (SUSPEND | RESUME) RECLUSTER
+    // Manual reclustering, which the account no longer runs: refused as an unsupported feature, with or without its
+    // WHERE (live-verified); the documented budget, MAX_SIZE = n, is read as a name and a number.
+    | RECLUSTER (identifier EQ INTEGER_LITERAL)? (WHERE booleanExpr)?
     | RENAME COLUMN identifier TO identifier
     // A constraint may be renamed, and its enforcement properties changed through either spelling
     // (live-verified). VALIDATE / NOVALIDATE are deliberately ABSENT: the documentation lists them,
@@ -3388,7 +3524,7 @@ cortexSearchOption
     : WAREHOUSE EQ identifier
     | TARGET_LAG EQ STRING_LITERAL
     | EMBEDDING_MODEL EQ STRING_LITERAL
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     ;
 
 // ALTER CORTEX SEARCH SERVICE. UNSET takes PRIMARY KEY and ATTRIBUTES and nothing else: UNSET COMMENT and UNSET
@@ -3503,7 +3639,7 @@ computePoolOption
     | AUTO_RESUME EQ booleanValue
     | INITIALLY_SUSPENDED EQ booleanValue
     | AUTO_SUSPEND_SECS EQ INTEGER_LITERAL
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | PLACEMENT_GROUP EQ STRING_LITERAL
     | BACKUP_INSTANCE_FAMILIES EQ LPAREN stringLiteralList RPAREN
     ;
@@ -3532,7 +3668,7 @@ computePoolSetOption
     | INSTANCE_FAMILY EQ identifier
     | PLACEMENT_GROUP EQ STRING_LITERAL
     | BACKUP_INSTANCE_FAMILIES EQ LPAREN stringLiteralList RPAREN
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     ;
 
 computePoolUnsetKey
@@ -3567,6 +3703,11 @@ viewAction
     | (SET | UNSET) SECURE
     // Any other SET reads a list of properties and an UNSET a list of names, any name, judged in Java
     // (AlteredViewProperties, live-verified).
+    // A view's aggregation and join policy are set and unset as a table's (live-verified).
+    | SET aggregationPolicyClause FORCE?
+    | UNSET AGGREGATION POLICY
+    | SET joinPolicyClause FORCE?
+    | UNSET JOIN POLICY
     | SET viewSetItem (COMMA? viewSetItem)*
     | UNSET optionKey (COMMA optionKey)*
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
@@ -3636,7 +3777,7 @@ dynamicTableOption
     | INITIALIZE EQ (ON_CREATE | ON_SCHEDULE)
     | DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL
     | MAX_FILE_SIZE EQ INTEGER_LITERAL
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | CLUSTER BY clusterKeyOrder? LPAREN expression (COMMA expression)* RPAREN
     ;
 
@@ -3676,7 +3817,7 @@ dynamicTableProperty
     ;
 
 streamAction
-    : SET COMMENT EQ STRING_LITERAL
+    : SET COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | UNSET COMMENT
     | tagSet
     | tagUnset
@@ -3695,7 +3836,7 @@ stageAction
 // One property of ALTER STAGE … SET. A value of the wrong kind is refused by the handler, by the property's name.
 stageSetting
     : URL EQ STRING_LITERAL
-    | FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName)
+    | FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName | SESSION_VAR_REF)
     | COMMENT EQ (STRING_LITERAL | NULL | copyOptionValue)
     | ENCRYPTION EQ parenOptionList
     | COPY_OPTIONS EQ (stageCopyOptionList | copyOptionValue)
@@ -3756,7 +3897,7 @@ alertDefinition
 alertProperty
     : scheduleClause
     | warehouseClause
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | CONFIG EQ STRING_LITERAL
     | RUNBOOK EQ STRING_LITERAL
     | SUSPEND_ALERT_AFTER_NUM_FAILURES EQ INTEGER_LITERAL
@@ -3830,6 +3971,7 @@ policyScalarValue
     : literal
     | MINUS (INTEGER_LITERAL | FLOAT_LITERAL)
     | identifier (DOT identifier)*
+    | SESSION_VAR_REF
     ;
 
 fileFormatAction
@@ -3853,7 +3995,7 @@ routineAlterAction
 // syntax error — while SET without a value stays the syntax error live gives it, at the end of the
 // statement. SET takes a LIST, and a repeated property is taken with the last one winning.
 routineSetProperty
-    : COMMENT EQ STRING_LITERAL
+    : COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | SECRETS EQ routineSecretList
     | EXTERNAL_ACCESS_INTEGRATIONS EQ routineIntegrationList
     | identifier EQ literal
@@ -3911,7 +4053,7 @@ userUnsetProperty
 
 roleAction
     : RENAME TO identifier
-    | SET COMMENT EQ STRING_LITERAL
+    | SET COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | UNSET COMMENT
     | tagSet
     | tagUnset
@@ -3920,7 +4062,7 @@ roleAction
 // ALTER DATABASE ROLE's actions.
 databaseRoleAction
     : RENAME TO qualifiedName
-    | SET COMMENT EQ STRING_LITERAL
+    | SET COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | UNSET COMMENT
     | tagSet
     | tagUnset
@@ -3939,7 +4081,7 @@ accountProperty
     | EDITION EQ identifier
     | REGION_GROUP EQ identifier
     | REGION EQ identifier
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | POLARIS EQ booleanValue
     ;
 
@@ -3948,7 +4090,7 @@ managedAccountProperty
     : ADMIN_NAME EQ (STRING_LITERAL | identifier)
     | ADMIN_PASSWORD EQ STRING_LITERAL
     | TYPE EQ identifier
-    | COMMENT EQ STRING_LITERAL
+    | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     ;
 
 // Database roles, accounts and managed accounts, and the grant listings that name database roles, roles as
@@ -4047,7 +4189,13 @@ hybridIndex
 columnDef
     // columnDefName, not identifier: INNER/JOIN/LEFT/CROSS and CASE are live-legal column names in a
     // column DEFINITION (measured — CREATE TABLE kw (inner INT, join INT, case INT, …) runs).
-    : columnDefName dataTypeName typeParameters?  columnConstraint* columnCommentClause?
+    : columnDefName dataTypeName typeParameters? virtualColumnClause? columnConstraint* columnCommentClause?
+    ;
+
+// A virtual column: its values are computed from the expression, which reads the row's other columns. GENERATED
+// ALWAYS and VIRTUAL are the ANSI spellings around it and change nothing.
+virtualColumnClause
+    : (GENERATED ALWAYS)? AS LPAREN booleanExpr RPAREN VIRTUAL?
     ;
 
 typeParameters
@@ -4291,8 +4439,10 @@ signedInteger
     : MINUS? INTEGER_LITERAL
     ;
 
+// A column's default is read as a select item is, so it may be a condition: DEFAULT NOT FALSE, DEFAULT TRUE AND x,
+// and DEFAULT NOT NULL is the NOT of a NULL, leaving the column nullable (live-verified).
 defaultExpression
-    : expression
+    : booleanExpr
     ;
 
 relyOption
@@ -4364,6 +4514,11 @@ joinPolicyClause
     : JOIN POLICY qualifiedName
     ;
 
+// A view's aggregation or join policy, WITH or without it, before or after the view's COMMENT (live-verified).
+viewPolicyClause
+    : WITH? (aggregationPolicyClause | joinPolicyClause)
+    ;
+
 // CREATE TABLE tail modifiers, in any order: comments, clustering, tags, a row access policy.
 // A comma may follow a property written name = value, the last one's too, but no other option: CLUSTER BY (a),
 // COMMENT = 'x' is a syntax error at the comma (live-verified).
@@ -4375,7 +4530,15 @@ tableTailOption
     | rowAccessPolicyClause
     | WITH? aggregationPolicyClause
     | WITH? joinPolicyClause
-    | optionKey EQ (parenOptionList | copyOptionValue) COMMA?   // CHANGE_TRACKING=TRUE etc. — accepted, not modeled
+    | optionKey EQ (parenOptionList | copyOptionValue | tablePropertyConstant) COMMA?   // CHANGE_TRACKING=TRUE etc.
+    ;
+
+// What else a table property may be given: NULL, a decimal, or a parenthesized list of constants. The name judges
+// it (see CreatedObjectProperties), and a name that is no property is refused whatever its value (live-verified).
+tablePropertyConstant
+    : NULL
+    | MINUS? FLOAT_LITERAL
+    | LPAREN copyOptionValue (COMMA copyOptionValue)* RPAREN
     ;
 
 // CREATE VIEW key=value properties (CHANGE_TRACKING=TRUE, ...) — accepted, not modeled. A comma may follow each,
@@ -4443,8 +4606,17 @@ viewColumnList
     : viewColumnDef (COMMA viewColumnDef)*
     ;
 
+// A view's or a materialized view's column takes a masking or a projection policy, then a tag list and a comment
+// (live-verified); a list one of whose columns holds them otherwise is refused at its first column (see
+// ViewColumnClauses).
 viewColumnDef
-    : identifier columnCommentClause?
+    : identifier viewColumnClause* (columnCommentClause viewColumnClause*)?
+    ;
+
+viewColumnClause
+    : WITH? MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)?
+    | WITH? PROJECTION POLICY qualifiedName
+    | tagList
     ;
 
 valueTupleList
@@ -5471,6 +5643,8 @@ describeStatement
     | (DESCRIBE | DESC) CORTEX SEARCH SERVICE qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) STAGE qualifiedName {refuseStageSignature($ctx);} describeProperty* SEMI?
     | (DESCRIBE | DESC) TAG qualifiedName objectSignature? describeProperty* SEMI?
+    // The account describes no contact, whichever is named (see ShowCommandHandler).
+    | (DESCRIBE | DESC) CONTACT qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) FUNCTION qualifiedName (LPAREN dataTypeList? RPAREN)? describeProperty* SEMI?
     | (DESCRIBE | DESC) PROCEDURE qualifiedName (LPAREN dataTypeList? RPAREN)? describeProperty* SEMI?
     | (DESCRIBE | DESC) USER identifier describeProperty* SEMI?
@@ -5662,6 +5836,14 @@ assignmentStatement
     | assignedName COLON_EQ LPAREN executeImmediateStatement RPAREN SEMI?   // rs := (EXECUTE IMMEDIATE :stmt) — documented Snowflake RESULTSET form
     | assignedName COLON_EQ LPAREN resultSetBlock RPAREN SEMI?              // rs := (BEGIN … END) — an anonymous block's answer
     | assignedName COLON_EQ LPAREN resultSetStatement RPAREN SEMI?          // rs := (SHOW …), (INSERT …), … — the RESULTSET form of any other statement
+    | assignedName COLON_EQ LPAREN resultSetChain RPAREN SEMI?              // rs := (SELECT … ->> …) — a chain's answer
+    ;
+
+// A query chained to further stages with the flow arrow, assigned to a RESULTSET: the RESULTSET holds the last stage's
+// answer, each stage reading the ones before it as $n, as the same chain does where a RESULTSET is declared
+// (live-verified). A query with no arrow is the value of the assignment's expression.
+resultSetChain
+    : selectStatement forUpdateClause? (FLOW_ARROW statement)+
     ;
 
 // What a RESULTSET is filled from, where it is declared or assigned: a statement the account runs as SQL, whose
@@ -5669,9 +5851,11 @@ assignmentStatement
 // DESCRIBE listing, a CALL's result, an anonymous block's answer — and never a scripting statement or a bare VALUES
 // list (live-verified).
 // A query here takes a FOR UPDATE as a statement's own query does, and is refused for it when the RESULTSET is filled
-// (live-verified: (SELECT id FROM t FOR UPDATE) fails then, placed at its SELECT).
+// (live-verified: (SELECT id FROM t FOR UPDATE) fails then, placed at its SELECT). A query chained to further stages
+// with the flow arrow fills it with the last stage's answer, each stage reading the ones before it as $n
+// (live-verified).
 resultSetSource
-    : selectStatement forUpdateClause?
+    : selectStatement forUpdateClause? (FLOW_ARROW statement)*   // a flow chain's stages, its last one's answer held
     | executeImmediateStatement
     | callStatement
     | resultSetBlock
@@ -5830,15 +6014,29 @@ raiseStatement
 // A CALL names a stored procedure or one of the account's SYSTEM$ functions, which answers one row in a column
 // named after it (live-verified: CALL SYSTEM$WAIT(0) answers 'waited 0 seconds').
 callStatement
-    : CALL qualifiedName LPAREN callArguments? RPAREN SEMI?
+    // A procedure the CALL defines for itself may stand before it (see anonymousProcedure).
+    : anonymousProcedure? CALL qualifiedName LPAREN callArguments? RPAREN SEMI?
+    // A routine named by an IDENTIFIER() reference: CALL IDENTIFIER('p')(4) calls the procedure p, and
+    // CALL IDENTIFIER(:r)() the procedure or the function a SYSTEM$REFERENCE token r stands for (live-verified).
+    | CALL callReference LPAREN callArguments? RPAREN SEMI?
     // A method of a class instance, `CALL model!SHOW_METRICS()`: read, and refused by the instance's name.
     | CALL qualifiedName BANG identifier LPAREN callArguments? RPAREN SEMI?
     // Under a qualifier a SYSTEM$ function names no routine: the call is read, and refused by its name.
     | CALL callQualifier? systemFunctionName LPAREN callArguments? RPAREN SEMI?
     ;
 
+// A procedure a CALL defines for itself, WITH name AS PROCEDURE (…) RETURNS … AS '…' CALL name(…) (Snowflake's CALL
+// with an anonymous procedure): its definition is read as CREATE PROCEDURE reads one, and no schema keeps it.
+anonymousProcedure
+    : WITH identifier AS PROCEDURE LPAREN parameterList? RPAREN RETURNS returnType functionOption* (AS bodyDefinition)?
+    ;
+
 callQualifier
     : (identifier DOT)+
+    ;
+
+callReference
+    : KW_IDENTIFIER_REF LPAREN identifierArgument RPAREN
     ;
 
 // CALL <procedure>(...) INTO :variable: Snowflake Scripting assigns the value the procedure returns to the variable.
@@ -5865,18 +6063,12 @@ callArguments
     ;
 
 callArgument
-    : namedArgument   // name => value
-    // A NOT, AND or OR over values written for a name, CALL p(x => NOT TRUE), as a positional one may be
-    // (live-verified); a plain value is the named argument above. Function calls read namedArgument alone.
-    | namedLogicalArgument
+    // name => value, a NOT, AND or OR over values among them: CALL p(x => NOT TRUE) binds FALSE (live-verified)
+    : namedArgument
     | expression      // positional
     // A NOT, AND or OR over values, positional: CALL p(NOT TRUE) and CALL p(TRUE AND FALSE) bind their BOOLEAN
     // (live-verified). An expression stands first, so a plain value is read as one.
     | booleanExpr
-    ;
-
-namedLogicalArgument
-    : variableName ARROW booleanExpr
     ;
 
 // USING binds the text's placeholders from VARIABLES: each argument is a name, never a literal, a session variable
@@ -5986,7 +6178,8 @@ statementList
     // between two statements or before END), but a list may not START with one — live refuses
     // `THEN ; RETURN 1;` at the ';' itself.
     // A statement may assign a variable named by a word of variableName's, and a nested block may declare one (see
-    // nameAssignedWord and nameDeclaredWords).
+    // nameAssignedWord and nameDeclaredWords). A flow arrow between two of them reaches the parser as their
+    // semicolon (see the lexer's blocksOpen).
     : {nameAssignedWord(); nameDeclaredWords();}
         (statement {_input.LT(-1).getType() == SEMI}? SEMI* {nameAssignedWord(); nameDeclaredWords();})+
     ;
@@ -6382,6 +6575,9 @@ namedArgument
     // The list in parentheses stands first: it is the argument's ROW, where the value alternative would read the
     // same text as a ROW value of its own.
     : variableName ARROW (argumentRow | expression | selectStatement)   // Snowflake allows a bare subquery value: INPUT => SELECT ...
+    // A NOT, AND or OR over values written for a name, f(x => NOT TRUE) and FLATTEN's OUTER => TRUE AND TRUE, binds
+    // its BOOLEAN (live-verified). It stands last, so a plain value is read by the alternative above.
+    | variableName ARROW booleanExpr
     ;
 
 // Two or more parenthesized values as a named argument's value, which the account reads as one ROW value:
@@ -6516,6 +6712,9 @@ identifier
     | BEFORE        // Allow BEFORE as identifier
     | CALLER        // Allow CALLER as identifier
     | INHERITED     // Allow INHERITED as identifier: only a caller grant reads it
+    | GENERATED     // Allow GENERATED, ALWAYS and VIRTUAL as identifiers: only a virtual column's definition reads them
+    | ALWAYS
+    | VIRTUAL
     | SCORING       // Allow SCORING and PROFILE as identifiers: only a Cortex search service's ALTER reads them
     | PROFILE
     | EXCHANGE      // Allow EXCHANGE as identifier: only a listing's DATA EXCHANGE scope reads it
@@ -7703,6 +7902,9 @@ EXECUTE: E X E C U T E;
 OWNER: O W N E R;
 CALLER: C A L L E R;
 INHERITED: I N H E R I T E D;
+GENERATED: G E N E R A T E D;
+ALWAYS: A L W A Y S;
+VIRTUAL: V I R T U A L;
 SCORING: S C O R I N G;
 PROFILE: P R O F I L E;
 EXCHANGE: E X C H A N G E;

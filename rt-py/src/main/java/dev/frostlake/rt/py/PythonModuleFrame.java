@@ -32,13 +32,26 @@ final class PythonModuleFrame {
     /** What the namespace held before the frame was entered. */
     private final Value saved;
 
+    /** Whether the frame holds the namespace a call site kept (see PythonRuntime#resumeModule). */
+    private final boolean resumed;
+
     /**
      * @param context the interpreter the frame was entered on
      * @param saved   what the namespace held before the frame was entered
      */
     PythonModuleFrame(final Context context, final Value saved) {
+        this(context, saved, false);
+    }
+
+    /**
+     * @param context the interpreter the frame was entered on
+     * @param saved   what the namespace held before the frame was entered
+     * @param resumed whether the frame holds the namespace a call site kept
+     */
+    PythonModuleFrame(final Context context, final Value saved, final boolean resumed) {
         this.context = context;
         this.saved = saved;
+        this.resumed = resumed;
     }
 
     /** The interpreter the frame was entered on. */
@@ -49,5 +62,10 @@ final class PythonModuleFrame {
     /** What the namespace held before the frame was entered. */
     Value getSaved() {
         return saved;
+    }
+
+    /** Whether the frame holds the namespace a call site kept. */
+    boolean isResumed() {
+        return resumed;
     }
 }

@@ -45,6 +45,7 @@ import java.util.Map;
  *   STRIP_OUTER_ARRAY               FALSE    STRIP_NULL_VALUES FALSE, ALLOW_DUPLICATE FALSE (JSON)
  *   STRIP_OUTER_ELEMENT             FALSE    DISABLE_AUTO_CONVERT FALSE, PRESERVE_SPACE FALSE (XML)
  *   REPLACE_INVALID_CHARACTERS      FALSE    IGNORE_UTF8_ERRORS FALSE, its other spelling
+ *   SKIP_BYTE_ORDER_MARK            TRUE     a CSV file's leading BOM is passed over; a JSON file's is either way
  * </pre>
  *
  * <p>The options come from a stage's own format, from a named format and from the statement's inline list, each
@@ -71,10 +72,13 @@ public final class FileFormatOptions {
     private String fileExtension;
     private String encoding;
     private boolean replaceInvalidCharacters;
+    /** Whether the staged-file query reading the files reads none of their positional columns. */
+    private boolean noPositionalRead;
     private int skipHeader;
     private boolean parseHeader;
     private boolean trimSpace;
     private boolean skipBlankLines;
+    private boolean skipByteOrderMark = true;
     private boolean errorOnColumnCountMismatch = true;
     private boolean stripOuterArray;
     private boolean stripNullValues;
@@ -192,6 +196,9 @@ public final class FileFormatOptions {
                 break;
             case "TRIM_SPACE":
                 trimSpace = "TRUE".equalsIgnoreCase(value);
+                break;
+            case "SKIP_BYTE_ORDER_MARK":
+                skipByteOrderMark = !"FALSE".equalsIgnoreCase(value);
                 break;
             case "SKIP_BLANK_LINES":
                 skipBlankLines = "TRUE".equalsIgnoreCase(value);
@@ -350,6 +357,25 @@ public final class FileFormatOptions {
         return replaceInvalidCharacters || ignoreUtf8Errors;
     }
 
+    /**
+     * Marks the options of a staged-file query that reads none of the files' positional columns — COUNT(*), a
+     * constant, METADATA$ columns alone: a refusal of a file names no column, and a binary record format decodes no
+     * value (live-verified).
+     */
+    public void readNoPositionalColumn() {
+        noPositionalRead = true;
+    }
+
+    /**
+     * Whether the staged-file query reading the files reads none of their positional columns (see
+     * {@link #readNoPositionalColumn}).
+     *
+     * @return true when no positional column is read
+     */
+    public boolean readsNoPositionalColumn() {
+        return noPositionalRead;
+    }
+
     /** Whether an XML file's records are the elements its outer elements hold (STRIP_OUTER_ELEMENT). */
     public boolean stripsOuterElement() {
         return stripOuterElement;
@@ -378,6 +404,14 @@ public final class FileFormatOptions {
     /** Whether TRIM_SPACE trims an unenclosed field. */
     public boolean trimsSpace() {
         return trimSpace;
+    }
+
+    /**
+     * Whether SKIP_BYTE_ORDER_MARK passes over the byte order mark a CSV file starts with; FALSE reads it into the
+     * first field (live-verified).
+     */
+    public boolean skipsByteOrderMark() {
+        return skipByteOrderMark;
     }
 
     /** Whether SKIP_BLANK_LINES passes over a blank line rather than reading it as a record of one empty field. */

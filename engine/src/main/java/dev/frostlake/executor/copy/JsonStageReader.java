@@ -50,7 +50,8 @@ public class JsonStageReader implements StageFileReader {
      * @throws IOException when the file cannot be read
      */
     public List<JsonNode> readRecords(final Path file, final boolean stripOuterArray) throws IOException {
-        return records(StagedFileIo.readString(file).trim(), stripOuterArray, file);
+        // A JSON file's byte order mark is passed over whatever SKIP_BYTE_ORDER_MARK says (live-verified).
+        return records(StagedFileIo.withoutByteOrderMark(StagedFileIo.readString(file)).trim(), stripOuterArray, file);
     }
 
     /**
@@ -68,12 +69,30 @@ public class JsonStageReader implements StageFileReader {
      */
     public List<JsonNode> readRecords(final Path file, final boolean stripOuterArray, final boolean replaceInvalid,
                                       final String shownName) throws IOException {
+        return readRecords(file, stripOuterArray, replaceInvalid, shownName, true);
+    }
+
+    /**
+     * {@link #readRecords(Path, boolean, boolean, String)}, the refusal naming the column being read only where the
+     * reading query reads one (see {@link StagedFileIo#unreadableRefusal(String, String, int, String, boolean)}).
+     *
+     * @param file             the file
+     * @param stripOuterArray  whether a top-level array's elements are records of their own
+     * @param replaceInvalid   whether REPLACE_INVALID_CHARACTERS = TRUE
+     * @param shownName        the file as the refusal names it
+     * @param namesColumn      whether a refusal names the column, $1
+     * @return the records
+     * @throws IOException when the file cannot be read
+     */
+    public List<JsonNode> readRecords(final Path file, final boolean stripOuterArray, final boolean replaceInvalid,
+                                      final String shownName, final boolean namesColumn) throws IOException {
         final String marked = StagedFileIo.readMarked(file, StandardCharsets.UTF_8);
         final int unreadable = StagedFileIo.firstUnreadable(marked);
         if (unreadable >= 0 && !replaceInvalid) {
-            throw StagedFileIo.unreadableRefusal("JSON", marked, unreadable, shownName);
+            throw StagedFileIo.unreadableRefusal("JSON", marked, unreadable, shownName, namesColumn);
         }
-        return records(StagedFileIo.unreadableReplaced(marked).trim(), stripOuterArray, file);
+        return records(StagedFileIo.withoutByteOrderMark(StagedFileIo.unreadableReplaced(marked)).trim(),
+            stripOuterArray, file);
     }
 
     private static List<JsonNode> records(final String text, final boolean stripOuterArray, final Path file) {

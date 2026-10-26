@@ -33,6 +33,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
@@ -156,7 +157,7 @@ final class ValuesColumnFold {
                 && ((LiteralExpression) cell).getValue() != null) {
             try {
                 return NumericLiteralTypes.forDecimal(
-                    new BigDecimal(String.valueOf(((LiteralExpression) cell).getValue())));
+                    DecimalText.parse(String.valueOf(((LiteralExpression) cell).getValue())));
             } catch (final NumberFormatException notANumber) {
                 return UNSPELLED_STRING_NUMBER;
             }
@@ -253,7 +254,7 @@ final class ValuesColumnFold {
     private static Boolean numberAsBoolean(final Object value) {
         final String text = SharedFunctionHelpers.textOf(value);
         try {
-            final BigDecimal number = value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(text);
+            final BigDecimal number = value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(text);
             if (number.signum() == 0) {
                 return Boolean.FALSE;
             }

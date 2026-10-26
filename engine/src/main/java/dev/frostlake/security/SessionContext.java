@@ -495,7 +495,45 @@ public class SessionContext {
         if (name != null) {
             settings().variables().put(name.toUpperCase(Locale.ROOT), value);
             settings().decfloatVariables().remove(name.toUpperCase(Locale.ROOT));
+            settings().variablePrecisions().remove(name.toUpperCase(Locale.ROOT));
         }
+    }
+
+    /**
+     * Define, or redefine, a session variable a SET gave a time or a timestamp: the variable keeps the precision of
+     * the type its source was beside the value, which cannot tell it — {@code SET t = '10:00:00'::TIME(3)} reads
+     * TIME(3)[SB4] in SYSTEM$TYPEOF, a column built from it is TIME(3), and a parameter refuses it as {@code
+     * Unsupported type TIME(3)} (live-verified).
+     *
+     * @param name      the variable's name
+     * @param value     its value
+     * @param precision the precision of its source's type
+     */
+    public void setTemporalSessionVariable(final String name, final Object value, final int precision) {
+        if (name != null) {
+            setSessionVariable(name, value);
+            settings().variablePrecisions().put(name.toUpperCase(Locale.ROOT), Integer.valueOf(precision));
+        }
+    }
+
+    /**
+     * The precision a SET gave the time or timestamp variable of this name.
+     *
+     * @param name the variable's name
+     * @return the precision, or null for a variable of another type or none of the name
+     */
+    public Integer getSessionVariablePrecision(final String name) {
+        return name == null ? null : settings().variablePrecisions().get(name.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * The precisions a SET gave time and timestamp variables, by upper-case name: what the write-ahead log keeps
+     * beside their values.
+     *
+     * @return the precisions
+     */
+    public Map<String, Integer> getVariablePrecisions() {
+        return new HashMap<String, Integer>(settings().variablePrecisions());
     }
 
     /**
@@ -511,6 +549,16 @@ public class SessionContext {
             setSessionVariable(name, value);
             settings().decfloatVariables().add(name.toUpperCase(Locale.ROOT));
         }
+    }
+
+    /**
+     * The variables a SET gave a DECFLOAT, by upper-case name: what the write-ahead log keeps beside their values,
+     * which carry no type of their own.
+     *
+     * @return the names
+     */
+    public Set<String> getDecfloatVariableNames() {
+        return new HashSet<String>(settings().decfloatVariables());
     }
 
     /** Whether a SET gave the session variable of this name a DECFLOAT. */
@@ -531,6 +579,7 @@ public class SessionContext {
         if (name != null) {
             settings().variables().remove(name.toUpperCase(Locale.ROOT));
             settings().decfloatVariables().remove(name.toUpperCase(Locale.ROOT));
+            settings().variablePrecisions().remove(name.toUpperCase(Locale.ROOT));
         }
     }
 
@@ -563,9 +612,54 @@ public class SessionContext {
      */
     public void restoreSessionState(final Map<String, Object> parameters, final Map<String, Object> variables,
                                     final Set<String> unkeptParameters, final Set<String> unkeptVariables) {
+        restoreSessionState(parameters, variables, unkeptParameters, unkeptVariables, null);
+    }
+
+    /**
+     * {@link #restoreSessionState(Map, Map, Set, Set)}, the variables a SET gave a DECFLOAT typed so again.
+     *
+     * @param parameters        the parameters the session had set, by upper-case name
+     * @param variables         its variables, by upper-case name
+     * @param unkeptParameters  the parameters whose values the log could not keep
+     * @param unkeptVariables   the variables whose values the log could not keep
+     * @param decfloatVariables the variables a SET gave a DECFLOAT, by upper-case name, or null where the log kept no
+     *                          such names
+     */
+    public void restoreSessionState(final Map<String, Object> parameters, final Map<String, Object> variables,
+                                    final Set<String> unkeptParameters, final Set<String> unkeptVariables,
+                                    final Set<String> decfloatVariables) {
+        restoreSessionState(parameters, variables, unkeptParameters, unkeptVariables, decfloatVariables, null);
+    }
+
+    /**
+     * {@link #restoreSessionState(Map, Map, Set, Set, Set)}, the time and timestamp variables at the precision a SET
+     * gave them again.
+     *
+     * @param parameters         the parameters the session had set, by upper-case name
+     * @param variables          its variables, by upper-case name
+     * @param unkeptParameters   the parameters whose values the log could not keep
+     * @param unkeptVariables    the variables whose values the log could not keep
+     * @param decfloatVariables  the variables a SET gave a DECFLOAT, by upper-case name, or null where the log kept no
+     *                           such names
+     * @param variablePrecisions the precisions a SET gave time and timestamp variables, by upper-case name, or null
+     *                           where the log kept none
+     */
+    public void restoreSessionState(final Map<String, Object> parameters, final Map<String, Object> variables,
+                                    final Set<String> unkeptParameters, final Set<String> unkeptVariables,
+                                    final Set<String> decfloatVariables,
+                                    final Map<String, Integer> variablePrecisions) {
         restore(settings().parameters(), parameters, unkeptParameters);
         restore(settings().variables(), variables, unkeptVariables);
+        if (decfloatVariables != null) {
+            settings().decfloatVariables().clear();
+            settings().decfloatVariables().addAll(decfloatVariables);
+        }
         settings().decfloatVariables().retainAll(settings().variables().keySet());
+        if (variablePrecisions != null) {
+            settings().variablePrecisions().clear();
+            settings().variablePrecisions().putAll(variablePrecisions);
+        }
+        settings().variablePrecisions().keySet().retainAll(settings().variables().keySet());
     }
 
     private static void restore(final Map<String, Object> held, final Map<String, Object> logged,

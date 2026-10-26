@@ -44,7 +44,8 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
     private static final JsonMapper MAPPER =
         JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
-    private final String text;
+    /** The canonical text, rendered at once but for a value made {@link #ofNodeLazily lazily}. */
+    private String text;
     private transient JsonNode node;
     private transient String comparisonKey;
 
@@ -72,13 +73,26 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
     }
 
     /**
+     * Wraps a parsed tree whose text is rendered only when it is asked for: an array too long to render at once, the
+     * thousand million holes ARRAY_INSERT pads, still answers its size and its elements.
+     *
+     * @param node the tree
+     * @return the variant
+     */
+    public static VariantValue ofNodeLazily(final JsonNode node) {
+        final VariantValue v = new VariantValue(null);
+        v.node = node;
+        return v;
+    }
+
+    /**
      * Writes the text and, where the tree holds a DECFLOAT, the places they sit, so a checkpoint, a snapshot and a
      * clone keep the members' type that a WAL replay, re-running the statements, keeps by itself.
      */
     private void writeObject(final ObjectOutputStream out) throws IOException {
         final List<Object[]> places = node == null ? null : DecfloatTextNode.placesIn(node);
         final ObjectOutputStream.PutField fields = out.putFields();
-        fields.put("text", text);
+        fields.put("text", text());
         fields.put("decfloatPlaces", places == null || places.isEmpty() ? null : places.toArray());
         out.writeFields();
     }
@@ -98,6 +112,9 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
 
     /** The canonical JSON text. */
     public String text() {
+        if (text == null) {
+            text = VariantText.canonical(node);
+        }
         return text;
     }
 
@@ -121,7 +138,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
 
     /** A VARIANT JSON null (the text {@code null}) — distinct from SQL NULL. */
     public boolean isJsonNull() {
-        return "null".equals(text);
+        return text == null ? node.isNull() : "null".equals(text);
     }
 
     @Override
@@ -129,7 +146,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         // Snowflake renders an XML-shaped variant as XML text wherever the value is stringified
         // (display, ::VARCHAR, TO_VARCHAR); that form stays compact, as TO_XML does. The shape test
         // is structural, so gate on the cheap canonical-text prefix before parsing.
-        if (XmlVariants.mightBeXmlText(text) && XmlVariants.isXmlElement(node())) {
+        if (XmlVariants.mightBeXmlText(text()) && XmlVariants.isXmlElement(node())) {
             return XmlVariants.compactXml(node());
         }
         // A variant holding a STRING displays its CONTENT when read as a whole value — live prints
@@ -147,7 +164,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         // the canonical compact text, which is what text() returns.
         final JsonNode tree = node();
         final String displayed = tree.isArray() || tree.isObject() ? VariantJsonText.displayTextOf(this) : null;
-        return VariantJsonFormat.render(tree, displayed != null ? displayed : text);
+        return VariantJsonFormat.render(tree, displayed != null ? displayed : text());
     }
 
     /**
@@ -172,7 +189,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         final VariantValue that = (VariantValue) other;
         // The same text is the same value unless a UUID sits in either: it prints as the string of its
         // text and still differs from it, which only the comparison key tells.
-        if (text.equals(that.text) && !holdsUuid() && !that.holdsUuid()) {
+        if (text().equals(that.text()) && !holdsUuid() && !that.holdsUuid()) {
             return true;
         }
         return comparisonKey().equals(that.comparisonKey());

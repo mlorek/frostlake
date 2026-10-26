@@ -45,6 +45,17 @@ import org.antlr.v4.runtime.Token;
  *   CAST(x AS TIMESTAMP WITHOUT ZONE)               'ZONE', then 'WITHOUT'
  * </pre>
  *
+ * <p>In a DESCRIBE's argument list, a TIMESTAMP whose words break off reads on once more:
+ *
+ * <pre>
+ *   DESCRIBE TABLE t (TIMESTAMP WITH)               the ')', then 'WITH'; DESCRIBE VIEW and DESCRIBE FUNCTION alike
+ *   DESCRIBE TABLE t (TIMESTAMP WITH, INT)          the ',', 'WITH', then the list's ')'
+ *   DESCRIBE TABLE t (TIMESTAMP WITH TIME)          the ')', 'WITH', then the ')' again, as WITH LOCAL is
+ *   DESCRIBE TABLE t (TIMESTAMP WITH ZONE)          'WITH', then the ')'
+ *   DESCRIBE TABLE t (TIMESTAMP WITHOUT ZONE)       'ZONE', 'WITHOUT', then the ')'
+ *   DESCRIBE TABLE t (TIMESTAMP WITHOUT TIME)       the ')' alone
+ * </pre>
+ *
  * <p>A column's type followed by WITH and a word no column clause opens with is told at that word alone, as WITH
  * opens the column's policies and tags: {@code CREATE TABLE t (c TIMESTAMP(3) WITH TIME ZONE)} is 'TIME'. And a
  * COMMENT target of two words is told at its second word alone: {@code COMMENT ON ICEBERG TABLES t IS 'x'} is
@@ -85,6 +96,10 @@ final class WordedTypeFaultLines {
         if (column != null) {
             return column;
         }
+        final List<String> described = describeLines(spoken, start, at);
+        if (described != null) {
+            return described;
+        }
         final List<String> cast = castLines(spoken, at);
         return cast != null ? cast : lines;
     }
@@ -115,6 +130,87 @@ final class WordedTypeFaultLines {
             return null;
         }
         return Collections.singletonList(SyntaxErrorListener.sentence(after));
+    }
+
+    /** The lines of a TIMESTAMP in a DESCRIBE's argument list whose time-zone words break off, or null. */
+    private static List<String> describeLines(final List<Token> spoken, final int start, final int at) {
+        final int first = spoken.get(start).getType();
+        if (first != FrostlakeLexer.DESCRIBE && first != FrostlakeLexer.DESC || at < 3 || at + 2 >= spoken.size()
+                || spoken.get(at - 1).getType() != FrostlakeLexer.TIMESTAMP) {
+            return null;
+        }
+        final int listed = spoken.get(at - 2).getType();
+        final int open = listed == FrostlakeLexer.LPAREN ? at - 2 : listed == FrostlakeLexer.COMMA ? opening(spoken, at)
+            : -1;
+        if (open < start + 2) {
+            return null;
+        }
+        final Token opener = spoken.get(at);
+        final boolean with = opener.getType() == FrostlakeLexer.WITH;
+        final boolean without = ClauseWords.isWord(opener, "WITHOUT");
+        final Token next = spoken.get(at + 1);
+        final Token after = spoken.get(at + 2);
+        final boolean closes = after.getType() == FrostlakeLexer.RPAREN;
+        final List<String> told = new ArrayList<>();
+        if (with && (next.getType() == FrostlakeLexer.RPAREN || next.getType() == FrostlakeLexer.COMMA)) {
+            told.add(SyntaxErrorListener.sentence(next));
+            told.add(SyntaxErrorListener.sentence(opener));
+            final int close = next.getType() == FrostlakeLexer.COMMA ? closing(spoken, open) : -1;
+            if (close > 0) {
+                told.add(SyntaxErrorListener.sentence(spoken.get(close)));
+            }
+        } else if (with && closes && (next.getType() == FrostlakeLexer.TIME
+                || next.getType() == FrostlakeLexer.LOCAL)) {
+            told.add(SyntaxErrorListener.sentence(after));
+            told.add(SyntaxErrorListener.sentence(opener));
+            told.add(SyntaxErrorListener.sentence(after));
+        } else if (with && closes && next.getType() == FrostlakeLexer.ZONE) {
+            told.add(SyntaxErrorListener.sentence(opener));
+            told.add(SyntaxErrorListener.sentence(after));
+        } else if (without && closes && next.getType() == FrostlakeLexer.ZONE) {
+            told.add(SyntaxErrorListener.sentence(next));
+            told.add(SyntaxErrorListener.sentence(opener));
+            told.add(SyntaxErrorListener.sentence(after));
+        } else if (without && closes && next.getType() == FrostlakeLexer.TIME) {
+            told.add(SyntaxErrorListener.sentence(after));
+        } else {
+            return null;
+        }
+        return told;
+    }
+
+    /** The index of the '(' whose list holds the token at {@code at}, or -1. */
+    private static int opening(final List<Token> spoken, final int at) {
+        int depth = 0;
+        for (int i = at - 1; i >= 0; i--) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.SEMI) {
+                return -1;
+            }
+            if (type == FrostlakeLexer.RPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.LPAREN && depth-- == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** The index of the ')' that closes the '(' at {@code open}, or -1. */
+    private static int closing(final List<Token> spoken, final int open) {
+        int depth = 0;
+        for (int i = open; i < spoken.size(); i++) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.SEMI) {
+                return -1;
+            }
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN && --depth == 0) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** The lines of a cast's type followed by a time-zone phrase it cannot take, or null. */

@@ -19,6 +19,7 @@ package dev.frostlake.executor.udf;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Procedure;
@@ -29,7 +30,10 @@ import java.util.List;
 
 /**
  * A discovered runtime as the engine calls it: each handler it runs is counted in {@link HandlerLanguages} for as
- * long as it runs, and everything else is the runtime's own.
+ * long as it runs, and everything else is the runtime's own. A handler whose statement is over - canceled, timed out
+ * or its session aborted - fails as the statement does, whether it failed or answered: the account ends the
+ * statement whatever the handler does meanwhile (live-verified), and a guest the statement's watch stopped (see
+ * GuestWatch) fails in its own runtime's words, which are no answer of the statement's.
  */
 final class TrackedRuntime implements UdfLanguageRuntime {
 
@@ -53,52 +57,82 @@ final class TrackedRuntime implements UdfLanguageRuntime {
     public Object executeFunction(final Function function, final List<Object> arguments, final Catalog catalog,
                                   final S3PathResolver s3PathResolver) {
         HandlerLanguages.enter(language());
+        final Object answer;
         try {
-            return runtime.executeFunction(function, arguments, catalog, s3PathResolver);
+            answer = runtime.executeFunction(function, arguments, catalog, s3PathResolver);
+        } catch (final RuntimeException failed) {
+            StatementCancellation.check();
+            throw failed;
         } finally {
             HandlerLanguages.exit(language());
         }
+        StatementCancellation.check();
+        return answer;
     }
 
     @Override
     public Object executeProcedure(final Procedure procedure, final List<Object> arguments,
                                    final DatabaseEngine engine) {
         HandlerLanguages.enter(language());
+        final Object answer;
         try {
-            return runtime.executeProcedure(procedure, arguments, engine);
+            answer = runtime.executeProcedure(procedure, arguments, engine);
+        } catch (final RuntimeException failed) {
+            StatementCancellation.check();
+            throw failed;
         } finally {
             HandlerLanguages.exit(language());
         }
+        StatementCancellation.check();
+        return answer;
     }
 
     @Override
     public ResultSet executeTableFunction(final Function function, final List<Object> arguments) {
         HandlerLanguages.enter(language());
+        final ResultSet answer;
         try {
-            return runtime.executeTableFunction(function, arguments);
+            answer = runtime.executeTableFunction(function, arguments);
+        } catch (final RuntimeException failed) {
+            StatementCancellation.check();
+            throw failed;
         } finally {
             HandlerLanguages.exit(language());
         }
+        StatementCancellation.check();
+        return answer;
     }
 
     @Override
     public TablePartitionRows executeTablePartition(final Function function, final List<List<Object>> rows) {
         HandlerLanguages.enter(language());
+        final TablePartitionRows answer;
         try {
-            return runtime.executeTablePartition(function, rows);
+            answer = runtime.executeTablePartition(function, rows);
+        } catch (final RuntimeException failed) {
+            StatementCancellation.check();
+            throw failed;
         } finally {
             HandlerLanguages.exit(language());
         }
+        StatementCancellation.check();
+        return answer;
     }
 
     @Override
     public Object executeAggregate(final Function function, final List<List<Object>> rows) {
         HandlerLanguages.enter(language());
+        final Object answer;
         try {
-            return runtime.executeAggregate(function, rows);
+            answer = runtime.executeAggregate(function, rows);
+        } catch (final RuntimeException failed) {
+            StatementCancellation.check();
+            throw failed;
         } finally {
             HandlerLanguages.exit(language());
         }
+        StatementCancellation.check();
+        return answer;
     }
 
     @Override

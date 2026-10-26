@@ -30,6 +30,7 @@ import dev.frostlake.executor.operators.PipelineStage;
 import dev.frostlake.executor.operators.RowsProvider;
 import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.StreamVersionKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -186,6 +187,7 @@ final class UpdateDeleteExecutor {
                         whereExpr, cteResults, assignmentOrigins, whereOrigin, tableName);
                 logger.trace("Updated {} rows in table: {}", rowsUpdated, tableName);
             }
+            executor.noteStatementTarget(fullyQualifiedName, StreamVersionKind.UPDATE);
             // LAST_ALTERED moves for the statement, whether or not it matched a row.
             table.markDmlRan(StatementClock.commitInstant());
             // Under ERROR_ON_NONDETERMINISTIC_UPDATE no row is multi-joined, and the grid has no column for them
@@ -266,6 +268,7 @@ final class UpdateDeleteExecutor {
                     : executeDeleteImmediate(plan, table, fullyQualifiedName, deleteTargetAlias, whereExpr, cteResults);
                 logger.trace("Deleted {} rows from table: {}", rowsDeleted, tableName);
             }
+            executor.noteStatementTarget(fullyQualifiedName, StreamVersionKind.DELETE);
             // LAST_ALTERED moves for the statement, whether or not it matched a row.
             table.markDmlRan(StatementClock.commitInstant());
             return executor.dmlCountResult("number of rows deleted", rowsDeleted);
@@ -304,15 +307,34 @@ final class UpdateDeleteExecutor {
      * The columns a SET writes from an expression that can be NULL, judged over the table as a select item is (see
      * {@link ResultNullability}): a number too wide for a NOT NULL column prints its type {@code {nullable}} then, as
      * an INSERT's does (see {@link QueryExecutor#enforceColumnConstraintsForDml}) — {@code SET n = m} over a nullable
-     * column, {@code SET n = IFF(TRUE, 12345, NULL)} — where a literal, an expression over NOT NULL columns and a
-     * scalar subquery of a literal print {@code {not null}} (live-verified). One flag per column; null when none.
+     * column, {@code SET n = IFF(TRUE, 12345, NULL)} — where a literal and an expression over NOT NULL columns print
+     * {@code {not null}}, and a scalar subquery prints what it can answer (see {@link ScalarSubqueryNullability})
+     * (live-verified). One flag per column; null when none.
      */
-    private static boolean[] nullableAssignments(final Table table, final String targetAlias,
-                                                 final Map<String, String> assignments,
-                                                 final Map<String, Integer> setIndexes) {
+    private boolean[] nullableAssignments(final Table table, final String targetAlias,
+                                          final Map<String, String> assignments,
+                                          final Map<String, Integer> setIndexes) {
         final Map<String, Table> aliases = new HashMap<>();
         aliases.put(targetAlias != null ? targetAlias : table.getName(), table);
-        final ResultNullability judge = new ResultNullability(table, aliases);
+        return nullableAssignments(table, table, aliases, assignments, setIndexes);
+    }
+
+    /**
+     * The SET columns' flags over every relation an UPDATE … FROM reads: a value read
+     * from a FROM relation's column prints {@code {nullable}} as the column can be NULL, a derived table's as the
+     * projection that made it judged (live-verified).
+     *
+     * @param target      the table the UPDATE writes
+     * @param scope       the relation the SET values read, the target's columns and the sources'
+     * @param aliases     the relations a qualified name reaches, by name
+     * @param assignments the SET assignments, by column
+     * @param setIndexes  each SET column's index in the target
+     * @return one flag per target column; null when none is set
+     */
+    private boolean[] nullableAssignments(final Table target, final Table scope, final Map<String, Table> aliases,
+                                          final Map<String, String> assignments,
+                                          final Map<String, Integer> setIndexes) {
+        final ResultNullability judge = new ResultNullability(scope, aliases);
         boolean[] nullable = null;
         for (final Map.Entry<String, String> assignment : assignments.entrySet()) {
             final Integer index = setIndexes.get(assignment.getKey());
@@ -325,9 +347,11 @@ final class UpdateDeleteExecutor {
             } catch (final RuntimeException unparsed) {
                 continue;
             }
-            if (!(value instanceof DefaultMarkerExpression) && !(value instanceof SubqueryExpression)
-                    && judge.of(value)) {
-                nullable = nullable != null ? nullable : new boolean[table.getColumns().size()];
+            final boolean canBeNull = value instanceof SubqueryExpression
+                ? ScalarSubqueryNullability.of(executor, (SubqueryExpression) value)
+                : !(value instanceof DefaultMarkerExpression) && judge.of(value);
+            if (canBeNull) {
+                nullable = nullable != null ? nullable : new boolean[target.getColumns().size()];
                 nullable[index.intValue()] = true;
             }
         }
@@ -385,6 +409,7 @@ final class UpdateDeleteExecutor {
         final DataType[] decfloatColumns = decfloatColumns(table, targetAlias, assignments, setIndexes);
         final boolean[] kept = JsonTextWrites.keptAsWritten(table, jsonColumns, setIndexes.values());
         final boolean[] nullableSources = nullableAssignments(table, targetAlias, assignments, setIndexes);
+        final boolean[] foldedSources = FoldedAggregateSources.assignments(executor, table, assignments, setIndexes);
         final RowPositions rowPositions = new RowPositions(rows);
         plan.add(new StageOperator(updateDescription(table, assignments)) {
             @Override
@@ -428,8 +453,10 @@ final class UpdateDeleteExecutor {
                                 // that column, live-verified: "DML operation to table UPD failed on column
                                 // D with error: Failed to cast variant value 1 to DATE". (UPDATE … FROM
                                 // and a MERGE's UPDATE leave the same sentence bare, and so does a value whose
-                                // query reads a stream — see readsAStream.)
-                                throw DmlWriteTarget.isRowTimeFailure(failed) && !readsAStream(valueExpr)
+                                // query reads a stream — see readsAStream — or aggregates over no table, see
+                                // FoldedAggregateSources.)
+                                final boolean folded = foldedSources != null && foldedSources[colIndex];
+                                throw DmlWriteTarget.isRowTimeFailure(failed) && !readsAStream(valueExpr) && !folded
                                     ? DmlWriteTarget.failedOnColumn(tableName, colName, failed) : failed;
                             } finally {
                                 ExpressionSource.end(displaced);
@@ -437,7 +464,7 @@ final class UpdateDeleteExecutor {
                             updatedRow.setValue(colIndex, newValue);
                         }
                         executor.enforceColumnConstraintsForDml(table, updatedRow, false, tableName, null, kept,
-                            nullableSources);
+                            nullableSources, foldedSources);
                         oldRows.add(row);
                         written.add(updatedRow);
                         rowIndexes.add(rowPositions.take(row));
@@ -528,6 +555,8 @@ final class UpdateDeleteExecutor {
                     final boolean[] jsonColumns = jsonReadColumns(table, targetAlias, assignments, setIndexes);
                     final DataType[] decfloatColumns = decfloatColumns(table, targetAlias, assignments, setIndexes);
                     final boolean[] nullableSources = nullableAssignments(table, targetAlias, assignments, setIndexes);
+                    final boolean[] foldedSources =
+                        FoldedAggregateSources.assignments(executor, table, assignments, setIndexes);
                     // Every row's new image is computed before the write set takes any, so a subquery over the
                     // table sees it as the statement began (live-verified).
                     final List<Row> written = new ArrayList<>();
@@ -539,7 +568,8 @@ final class UpdateDeleteExecutor {
                         final Integer idx = pending ? pendingPositions.take(row) : effectivePositions.take(row);
                         if (idx != null) {
                             images.add(buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes,
-                                jsonColumns, decfloatColumns, nullableSources, writtenName, targetAlias));
+                                jsonColumns, decfloatColumns, nullableSources, foldedSources, writtenName,
+                                targetAlias));
                             pendingAt.add(pending ? idx : null);
                             idsAt.add(pending ? null : effectiveIds.get(idx.intValue()));
                             written.add(row);
@@ -795,7 +825,7 @@ final class UpdateDeleteExecutor {
                                 final Map<String, SourcePosition> origins,
                                 final Map<String, Integer> setIndexes, final boolean[] jsonColumns,
                                 final DataType[] decfloatColumns, final boolean[] nullableSources,
-                                final String writtenName, final String alias) {
+                                final boolean[] foldedSources, final String writtenName, final String alias) {
         final Row newRow = source.copy();
         // Every value reads the row as it was, in the table's column order (see inColumnOrder).
         for (final String column : inColumnOrder(assignments, setIndexes)) {
@@ -817,7 +847,8 @@ final class UpdateDeleteExecutor {
                     ? JsonTextWrites.stored(computed, executor.getFunctionRegistry())
                     : DecfloatWrites.stored(computed, decfloatColumns, colIndex);
             } catch (final RuntimeException failed) {
-                throw DmlWriteTarget.isRowTimeFailure(failed) && !readsAStream(valueExpr)
+                final boolean folded = foldedSources != null && foldedSources[colIndex];
+                throw DmlWriteTarget.isRowTimeFailure(failed) && !readsAStream(valueExpr) && !folded
                     ? DmlWriteTarget.failedOnColumn(writtenName, column, failed) : failed;
             } finally {
                 ExpressionSource.end(displaced);
@@ -825,7 +856,7 @@ final class UpdateDeleteExecutor {
             newRow.setValue(colIndex, newValue);
         }
         executor.enforceColumnConstraintsForDml(table, newRow, false, writtenName, null,
-            JsonTextWrites.keptAsWritten(table, jsonColumns, setIndexes.values()), nullableSources);
+            JsonTextWrites.keptAsWritten(table, jsonColumns, setIndexes.values()), nullableSources, foldedSources);
         return newRow;
     }
 
@@ -881,6 +912,8 @@ final class UpdateDeleteExecutor {
         final boolean[] jsonRead = jsonColumns;
         final DataType[] decfloatColumns = decfloatColumns(target, setByColumn, ev);
         final boolean[] kept = JsonTextWrites.keptAsWritten(target, jsonRead, setByColumn.keySet());
+        final boolean[] nullableSources = nullableAssignments(target, combined, aliasToTable, assignments,
+            setIndexes(target, assignments));
         final TransactionWriteSet writeSet = executor.isDeferredApply()
             ? executor.getTransactionManager().getCurrentTransaction().getWriteSet() : null;
         final TableStorage tableStorage = executor.getStorageEngine().getTableStorage(targetFqn);
@@ -951,7 +984,7 @@ final class UpdateDeleteExecutor {
                 final List<Row> changed = new ArrayList<>();
                 for (final Row combinedRow : combinedRows) {
                     images.add(applySet(targetOf.get(combinedRow), target, combinedRow, ev, setByColumn, jsonRead,
-                        decfloatColumns, kept, writtenName));
+                        decfloatColumns, kept, nullableSources, writtenName));
                     changed.add(targetOf.get(combinedRow));
                 }
                 guards.requireUpdate(target, targetFqn, targetRows, changed, images);
@@ -1290,7 +1323,8 @@ final class UpdateDeleteExecutor {
     /** Apply the SET assignments (evaluated over the combined target+source row) to a copy of the target. */
     private Row applySet(final Row targetRow, final Table target, final Row combinedRow,
             final ExpressionEvaluator ev, final Map<Integer, Expression> setByColumn, final boolean[] jsonColumns,
-            final DataType[] decfloatColumns, final boolean[] kept, final String writtenName) {
+            final DataType[] decfloatColumns, final boolean[] kept, final boolean[] nullableSources,
+            final String writtenName) {
         final Row newRow = targetRow.copy();
         for (final Map.Entry<Integer, Expression> s : setByColumn.entrySet()) {
             // The bare DML DEFAULT writes the column's declared default, as the single-table path does.
@@ -1305,7 +1339,7 @@ final class UpdateDeleteExecutor {
         }
         // UPDATE … FROM: a SET value that cannot be computed stays bare (live); the WRITE is enveloped, and so is a
         // text that is no JSON.
-        executor.enforceColumnConstraintsForDml(target, newRow, false, writtenName, null, kept);
+        executor.enforceColumnConstraintsForDml(target, newRow, false, writtenName, null, kept, nullableSources);
         return newRow;
     }
 
@@ -1436,7 +1470,9 @@ final class UpdateDeleteExecutor {
                         judge.validateStrict(parsed);
                     }
                 } catch (final RuntimeException unjudged) {
-                    if (SqlCompilationError.isCompilationError(unjudged.getMessage())) {
+                    // A function the role may not use is refused as the statement compiles too.
+                    if (SqlCompilationError.isCompilationError(unjudged.getMessage())
+                            || unjudged instanceof PrivilegeRefusal) {
                         throw unjudged;
                     }
                 } finally {
@@ -1545,6 +1581,7 @@ final class UpdateDeleteExecutor {
                 where.getStart().getLine(), where.getStart().getCharPositionInLine(),
                 colName.toUpperCase(Locale.ROOT)), unknown);
         }
+        VirtualColumns.refuseTarget(table, colName);
     }
 
     /** Where a WHERE clause's PREDICATE begins — the offset the extracted text was taken from. */

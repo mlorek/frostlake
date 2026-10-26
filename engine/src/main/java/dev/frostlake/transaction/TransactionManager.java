@@ -347,6 +347,21 @@ public class TransactionManager {
     }
 
     /**
+     * Whether an open transaction has written the storage of this name, a table's that was set aside among them.
+     *
+     * @param storageName the storage's name
+     * @return whether one has
+     */
+    public boolean isWrittenByOpenTransaction(final String storageName) {
+        for (final Transaction open : activeTransactions.values()) {
+            if (open.hasWritten(storageName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Discard any buffered (uncommitted) writes for a table being dropped or replaced, so a later COMMIT
      * doesn't try to flush them to storage that no longer exists — and so a drop-then-recreate of the same
      * name within one transaction doesn't resurrect the pre-drop rows. No-op when there is no active

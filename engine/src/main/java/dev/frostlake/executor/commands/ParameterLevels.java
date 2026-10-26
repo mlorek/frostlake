@@ -88,7 +88,8 @@ final class ParameterLevels {
             for (final Integer i : order) {
                 final WrittenParameterValue value = values.get(i);
                 final String canonical = ParameterRegistry.canonical(names.get(i));
-                if (value != null && !value.fits(LeveledParameterSettings.typeOf(canonical))) {
+                if (value != null && (ParameterRegistry.takesNoValue(kind, canonical)
+                        || !value.fits(LeveledParameterSettings.valueTypeOf(canonical)))) {
                     throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.written(),
                         canonical));
                 }
@@ -101,7 +102,8 @@ final class ParameterLevels {
                 throw new RuntimeException(SqlCompilationError.of("cannot set parameter '" + canonical
                     + "' at '" + kind + "'"));
             }
-            if (!taken.get(i).booleanValue()) {
+            // A parameter the level takes no value of is unset all the same (live-verified).
+            if (!taken.get(i).booleanValue() && !(values == null && ParameterRegistry.takesNoValue(kind, canonical))) {
                 throw new RuntimeException(SqlAccessControlError.insufficientPrivileges(privilegeKind, objectName));
             }
         }

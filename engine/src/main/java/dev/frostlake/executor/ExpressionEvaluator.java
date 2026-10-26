@@ -35,6 +35,7 @@ import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.StoredRead;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
@@ -71,6 +72,8 @@ public class ExpressionEvaluator {
     private Set<String> outputScopeNames;
     private Set<String> enclosingQualifiers;
     private Map<String, Table> groupedRelations;
+    /** Whether this evaluator reads a grouped query's rows (see {@link #setOverGroupedRows}). */
+    private boolean overGroupedRows;
     private Map<String, DataType> outputAliasTypes;
     private Map<String, ValueRange> outputAliasRanges;
     private Map<String, Object> resultContext;
@@ -226,6 +229,7 @@ public class ExpressionEvaluator {
         visitor.setBindsAsParameters(bindsAsParameters);
         visitor.setNotTrueNegations(notTrueNegations);
         visitor.setGroupedRelations(groupedRelations);
+        visitor.setOverGroupedRows(overGroupedRows);
         // An earlier select item's alias is typed from that item while a row is read too (SYSTEM$TYPEOF of it).
         visitor.setOutputAliasTypes(outputAliasTypes);
         visitor.setOutputAliasRanges(outputAliasRanges);
@@ -466,6 +470,7 @@ public class ExpressionEvaluator {
         reusableVisitor.setOutputScopeNames(outputScopeNames);
         reusableVisitor.setEnclosingQualifiers(enclosingQualifiers);
         reusableVisitor.setGroupedRelations(groupedRelations);
+        reusableVisitor.setOverGroupedRows(overGroupedRows);
         reusableVisitor.setOutputAliasTypes(outputAliasTypes);
         reusableVisitor.setOutputAliasRanges(outputAliasRanges);
         reusableVisitor.setScriptNameTypes(scriptNameTypes);
@@ -576,6 +581,8 @@ public class ExpressionEvaluator {
         }
         reusableVisitor.setQueryExecutor(queryExecutor);
         reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        // A key naming a select item's alias is typed from that item, as inferStaticType types it.
+        reusableVisitor.setOutputAliasTypes(outputAliasTypes);
         if (multiTableAllTables != null) {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
@@ -757,8 +764,10 @@ public class ExpressionEvaluator {
             return reusableVisitor.inferStaticType(expression);
         } catch (final RuntimeException undetermined) {
             // A COMPILATION error is a refusal the channel reached on purpose — an operand pair
-            // Snowflake rejects — not the ordinary "could not determine a type" this swallows.
-            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+            // Snowflake rejects — not the ordinary "could not determine a type" this swallows. So is a function the
+            // role may not use, refused where its call is typed.
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())
+                    || undetermined instanceof PrivilegeRefusal) {
                 throw undetermined;
             }
             return null;
@@ -814,6 +823,33 @@ public class ExpressionEvaluator {
         } catch (final RuntimeException undetermined) {
             return false;
         }
+    }
+
+    /**
+     * How a select item reads a stored table's column (see StoredRead). Never throws.
+     *
+     * @param text the item as its projection reads it, or null
+     * @return how it reads one; NONE where it reads none or cannot be told
+     */
+    public StoredRead storedReadOf(final String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return StoredRead.NONE;
+        }
+        try {
+            return preparedVisitor().storedReadOf(parse(text));
+        } catch (final RuntimeException undetermined) {
+            return StoredRead.NONE;
+        }
+    }
+
+    /**
+     * Whether this evaluator reads a grouped query's rows: an item past its grouping reads the value the group
+     * holds, which no stored table's column holds (see StoredRead).
+     *
+     * @param overGroupedRows whether it does
+     */
+    public void setOverGroupedRows(final boolean overGroupedRows) {
+        this.overGroupedRows = overGroupedRows;
     }
 
     /**

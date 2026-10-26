@@ -41,6 +41,8 @@ import org.antlr.v4.runtime.Token;
  *   … MEASURES 1 AS m DEFINE a AS TRUE)                      'DEFINE'
  *   … MEASURES … DEFINE a AS TRUE PATTERN (a))               'DEFINE', 'PATTERN', then the ')'
  * </pre>
+ *
+ * <p>A comma in the pattern's bracket reads on as {@link MatchRecognizePatternLines} tells.
  */
 final class MatchRecognizeClauseLines {
 
@@ -59,7 +61,8 @@ final class MatchRecognizeClauseLines {
      * @param firstOnly  whether only the first line is read
      * @return the lines, or null
      */
-    static List<String> lines(final List<Token> spoken, final int faultIndex, final boolean firstOnly) {
+    static List<String> lines(final String sql, final List<Token> spoken, final int faultIndex,
+                              final boolean firstOnly) {
         int open = -1;
         int fault = -1;
         for (int i = 0; i + 1 < spoken.size(); i++) {
@@ -71,7 +74,7 @@ final class MatchRecognizeClauseLines {
                 fault = i;
             }
         }
-        if (open < 0 || fault <= open) {
+        if (open < 0 || fault < open) {
             return null;
         }
         final List<Integer> keywords = new ArrayList<>();
@@ -97,6 +100,17 @@ final class MatchRecognizeClauseLines {
         }
         if (close < 0 || fault > close) {
             return null;
+        }
+        // The parse may stop at the clause's own parenthesis or the PATTERN, unable to predict a pattern that holds a
+        // comma.
+        final List<String> patternComma = MatchRecognizePatternLines.lines(spoken, open, close, fault, firstOnly);
+        if (patternComma != null || fault == open) {
+            return patternComma;
+        }
+        final List<String> readOn = firstOnly ? null
+            : readOn(sql, spoken, open, close, firstMisplaced(fault, keywords, ranks), keywords, ranks);
+        if (readOn != null) {
+            return readOn;
         }
         final List<Integer> misplaced = new ArrayList<>();
         int highest = -1;
@@ -134,8 +148,48 @@ final class MatchRecognizeClauseLines {
         return lines;
     }
 
+    /**
+     * The lines live reports past a fault at the clause's own depth, before any DEFINE and no later than the first
+     * sub-clause out of its place (see {@link MatchRecognizeReadOn}), or null.
+     */
+    private static List<String> readOn(final String sql, final List<Token> spoken, final int open, final int close,
+                                       final int fault, final List<Integer> keywords, final List<Integer> ranks) {
+        int depth = 0;
+        for (int i = open + 1; i < fault; i++) {
+            final int type = spoken.get(i).getType();
+            depth += type == FrostlakeLexer.LPAREN ? 1 : type == FrostlakeLexer.RPAREN ? -1 : 0;
+        }
+        if (depth != 0) {
+            return null;
+        }
+        final List<Integer> before = new ArrayList<>();
+        int highest = -1;
+        for (int k = 0; k < keywords.size() && keywords.get(k).intValue() < fault; k++) {
+            final int rank = ranks.get(k).intValue();
+            if (rank <= highest) {
+                return null;
+            }
+            highest = rank;
+            before.add(ranks.get(k));
+        }
+        return MatchRecognizeReadOn.lines(sql, spoken, open - 1, close, fault, before);
+    }
+
+    /** The first sub-clause keyword out of its place at or before {@code fault}, else {@code fault}. */
+    private static int firstMisplaced(final int fault, final List<Integer> keywords, final List<Integer> ranks) {
+        int highest = -1;
+        for (int k = 0; k < keywords.size() && keywords.get(k).intValue() <= fault; k++) {
+            final int rank = ranks.get(k).intValue();
+            if (rank <= highest) {
+                return keywords.get(k).intValue();
+            }
+            highest = rank;
+        }
+        return fault;
+    }
+
     /** The rank of the sub-clause a token opens, in the clause's order, or -1 when it opens none. */
-    private static int rankAt(final List<Token> spoken, final int at) {
+    static int rankAt(final List<Token> spoken, final int at) {
         final Token token = spoken.get(at);
         final int next = at + 1 < spoken.size() ? spoken.get(at + 1).getType() : Token.EOF;
         final String text = token.getText();

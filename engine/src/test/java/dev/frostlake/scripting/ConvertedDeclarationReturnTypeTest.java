@@ -27,9 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * A bare RETURN of a typed name reports the type its value was CONVERTED with, not the type the
  * declaration wrote, and hands the value back as that conversion produced it.
  *
- * <p>★ A BOOLEAN into an exact number converts as {@code TRUE::NUMBER} does, which is NUMBER(2,0)
- * whatever width the declaration spells — so {@code x NUMBER(10,2) DEFAULT TRUE} returns {@code 1},
- * never {@code 1.00}, and the declared scale never enters.
+ * <p>★ A BOOLEAN into an exact number converts as {@code TRUE::NUMBER} does, to the number the declaration
+ * spells — so {@code x NUMBER(10,2) DEFAULT TRUE} returns {@code 1.00} as a NUMBER(10,2).
  *
  * <p>★ A NUMBER into a TIMESTAMP flavour declares the number's own scale, so {@code LET x TIMESTAMP
  * := 5} is TIMESTAMP_NTZ(0) where a text initialiser keeps the default nine.
@@ -37,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * <p>★ THE VARIABLE ITSELF KEEPS ITS DECLARED TYPE. Only the bare RETURN reports the conversion:
  * bound as {@code :x} the name is its declaration, and inside an expression the declaration wins too.
  *
- * <p>Every cell is live-verified.
+ * <p>Every cell is live-verified but the BOOLEAN ones, which follow the live-verified {@code TRUE::NUMBER(5,1)}.
  */
 public class ConvertedDeclarationReturnTypeTest extends BaseDatabaseTest {
 
@@ -56,28 +55,28 @@ public class ConvertedDeclarationReturnTypeTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aBooleanIntoAnExactNumberReportsTheConversionsOwnType() {
-        assertEquals("NUMBER(2,0)",
+    public void aBooleanIntoAnExactNumberReportsTheDeclaredType() {
+        assertEquals("NUMBER(38,0)",
             returnedType("DECLARE x NUMBER DEFAULT TRUE; BEGIN RETURN x; END;"));
-        assertEquals("NUMBER(2,0)",
+        assertEquals("NUMBER(10,2)",
             returnedType("DECLARE x NUMBER(10,2) DEFAULT TRUE; BEGIN RETURN x; END;"));
-        assertEquals("NUMBER(2,0)",
+        assertEquals("NUMBER(38,0)",
             returnedType("DECLARE x NUMBER DEFAULT FALSE; BEGIN RETURN x; END;"));
     }
 
     @Test
     public void theValueComesBackAsTheConversionProducedIt() {
         assertEquals("1", returnedValue("DECLARE x NUMBER DEFAULT TRUE; BEGIN RETURN x; END;"));
-        // The declared scale never enters: 1, not 1.00.
-        assertEquals("1", returnedValue("DECLARE x NUMBER(10,2) DEFAULT TRUE; BEGIN RETURN x; END;"));
+        // The declared scale enters: 1.00, as CAST(TRUE AS NUMBER(10,2)) is.
+        assertEquals("1.00", returnedValue("DECLARE x NUMBER(10,2) DEFAULT TRUE; BEGIN RETURN x; END;"));
         assertEquals("0", returnedValue("DECLARE x NUMBER DEFAULT FALSE; BEGIN RETURN x; END;"));
     }
 
     @Test
     public void anAssignmentConvertsExactlyAsADeclarationDoes() {
-        assertEquals("NUMBER(2,0)",
+        assertEquals("NUMBER(38,0)",
             returnedType("DECLARE x NUMBER; BEGIN x := TRUE; RETURN x; END;"));
-        assertEquals("NUMBER(2,0)",
+        assertEquals("NUMBER(38,0)",
             returnedType("BEGIN LET x := 1; x := TRUE; RETURN x; END;"));
         assertEquals("1", returnedValue("DECLARE x NUMBER; BEGIN x := TRUE; RETURN x; END;"));
     }

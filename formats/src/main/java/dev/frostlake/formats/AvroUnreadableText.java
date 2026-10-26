@@ -25,10 +25,18 @@ public class AvroUnreadableText extends RuntimeException {
 
     private static final long serialVersionUID = 1L;
 
+    private final String shown;
+
     /**
      * @param shown the string, each unreadable byte spelled as its value
      */
     public AvroUnreadableText(final String shown) {
         super("Error parsing AVRO: error parsing AVRO data: Invalid UTF8 detected while decoding '" + shown + "'");
+        this.shown = shown;
+    }
+
+    /** @return the string, each unreadable byte spelled as its value */
+    public String getShown() {
+        return shown;
     }
 }

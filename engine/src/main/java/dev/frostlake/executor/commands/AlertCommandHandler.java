@@ -34,6 +34,7 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -229,6 +230,9 @@ public final class AlertCommandHandler {
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final Alert alert = require(name);
+        // OPERATE resumes and suspends an alert; every other change is its owner's (documented).
+        queryExecutor.requirePrivilege(action.RESUME() != null || action.SUSPEND() != null ? Privilege.OPERATE
+            : Privilege.MODIFY, "ALERT", parts, null);
         final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
         if (action.RESUME() != null) {
             if (scheduler != null) {
@@ -339,6 +343,8 @@ public final class AlertCommandHandler {
             }
             throw new RuntimeException(SqlCompilationError.doesNotExist("Alert", schema.qualifiedName(name)));
         }
+        // Dropping an alert needs OWNERSHIP of it, as dropping any object does.
+        queryExecutor.requireOwnership("ALERT", parts, null);
         final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
         if (scheduler != null) {
             scheduler.suspendAlert(schema.getDatabaseName(), schema.getName(), schema.getAlertExact(name));
@@ -382,7 +388,9 @@ public final class AlertCommandHandler {
                     continue;
                 }
                 for (final Alert alert : schema.getAlerts()) {
-                    rows.add(row(database.getName(), schema.getName(), alert));
+                    if (visible(schema, alert)) {
+                        rows.add(row(database.getName(), schema.getName(), alert));
+                    }
                 }
             }
         }
@@ -394,9 +402,23 @@ public final class AlertCommandHandler {
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final Alert alert = require(name);
+        if (!visible(schema, alert)) {
+            // One the session does not see is answered as one that does not exist.
+            throw new RuntimeException(
+                SqlCompilationError.doesNotExist("Alert", schema.qualifiedName(alert.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(row(schema.getDatabaseName(), schema.getName(), alert));
         return new ResultSet(columns(), rows);
+    }
+
+    /**
+     * Whether SHOW ALERTS lists an alert, and DESCRIBE answers it: only when the session sees it - its roles own it or
+     * hold a privilege on it, or hold MANAGE GRANTS (documented).
+     */
+    private boolean visible(final Schema schema, final Alert alert) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        return security == null || security.sees("ALERT", schema.qualifiedName(alert.getName()), alert.getOwner());
     }
 
     private static List<ResultSetColumn> columns() {

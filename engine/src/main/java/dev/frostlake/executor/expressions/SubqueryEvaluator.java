@@ -19,17 +19,22 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.CorrelatedSubqueryRule;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.DerivedColumnLineage;
+import dev.frostlake.executor.DmlWriteTarget;
 import dev.frostlake.executor.EqualityCorrelation;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.OuterNameConstancy;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ProjectionLineage;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RelationBody;
 import dev.frostlake.executor.RelationShapeOnly;
+import dev.frostlake.executor.ScalarBodyRowItems;
+import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StoredColumnValues;
 import dev.frostlake.executor.SubqueryAhead;
 import dev.frostlake.executor.SubqueryCompilation;
+import dev.frostlake.executor.UnreadRowItems;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.JoinedRelations;
@@ -44,6 +49,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -62,6 +68,9 @@ import java.util.Set;
  * visitor's package-private accessors rather than snapshotting it.
  */
 final class SubqueryEvaluator {
+
+    /** What {@link #keyedMembership} answers where the keys cannot settle the membership, and the subquery runs. */
+    private static final Object NOT_KEYED = new Object();
 
     private final ExpressionEvaluatorVisitor visitor;
     /** The joined relations {@link #carriers} was read from, and their columns by name: the first relation's. */
@@ -94,17 +103,48 @@ final class SubqueryEvaluator {
         if (requireSupportedCorrelation(expr, body, false, false, false, null, expr.getPosition())) {
             return false;
         }
-        final Boolean probed = probedExists(expr, body);
-        if (probed != null) {
-            return probed;
+        final String unread = unreadSelectList(expr);
+        String waived = unread != null ? UnreadRowItems.begin(unread) : null;
+        final Boolean answered;
+        try {
+            answered = probedExists(expr, body);
+        } finally {
+            if (unread != null) {
+                UnreadRowItems.end(waived);
+            }
         }
-        final List<ResultSet> results = countedSubquery(body);
+        if (answered != null) {
+            return answered;
+        }
+        waived = unread != null ? UnreadRowItems.begin(unread) : null;
+        final List<ResultSet> results;
+        try {
+            results = countedSubquery(body);
+        } finally {
+            if (unread != null) {
+                UnreadRowItems.end(waived);
+            }
+        }
 
         if (results.isEmpty()) {
             return false;
         }
 
         return results.get(0).getRowCount() > 0;
+    }
+
+    /**
+     * The select list an EXISTS's body leaves unread: that of a body of one SELECT that reads no relation and filters
+     * nothing, which answers its one row whatever its items are (see {@link UnreadRowItems}); null for any other.
+     */
+    private String unreadSelectList(final SubqueryExpression expr) {
+        if (!expr.isExistence()) {
+            return null;
+        }
+        final FrostlakeParser.SelectStatementContext parsed =
+            visitor.getQueryExecutor().subqueryStatement(expr.getSubquery());
+        return SelectItemAccessors.readsNoRelation(parsed)
+            ? ParseTreeText.getOriginalText(parsed.selectOperand(0).selectClause().selectList()) : null;
     }
 
     /**
@@ -250,6 +290,19 @@ final class SubqueryEvaluator {
         if (queryExecutor == null) {
             throw new RuntimeException("Cannot evaluate subquery: QueryExecutor not available");
         }
+        final String body = SelectItemAccessors.soleSelectListText(queryExecutor.subqueryStatement(expr.getSubquery()));
+        final String enclosingBody = body != null ? ScalarBodyRowItems.begin(body) : null;
+        try {
+            return scalarSubqueryOf(expr);
+        } finally {
+            if (body != null) {
+                ScalarBodyRowItems.end(enclosingBody);
+            }
+        }
+    }
+
+    /** {@link #evaluateScalarSubquery} with its body's select list named. */
+    private Object scalarSubqueryOf(final SubqueryExpression expr) {
 
         if (requireSupportedCorrelation(expr, true, false, false, null)) {
             return null;
@@ -416,11 +469,28 @@ final class SubqueryEvaluator {
      * @param keys  how many of them, from the first, are the correlation's keys
      */
     private ResultSet computedOnce(final String key, final String query, final int width, final int keys) {
+        return computedOnce(key, query, width, keys, false);
+    }
+
+    /**
+     * As above, told whether a row's fault the query meets is the statement's own. An IN's members are computed over
+     * every inner row the subquery's other conditions keep, whatever the outer row's key, so a member's fault in the
+     * row of another key refuses the statement: {@code ka.id IN (SELECT 10 / kb.z FROM kb WHERE kb.k = ka.v)} is
+     * "Division by zero" over an inner row of z 0 that no outer row's key reads (live-verified).
+     *
+     * @param raisesRowFaults whether a row's fault is raised, where a failure of another kind has the copy run per row
+     */
+    private ResultSet computedOnce(final String key, final String query, final int width, final int keys,
+                                   final boolean raisesRowFaults) {
         final SubqueryMemo memo = visitor.getSubqueryMemo();
         final List<ResultSet> results;
         try {
             results = executeSubquery(query);
         } catch (final RuntimeException failed) {
+            if (raisesRowFaults && (failed.getClass() == RuntimeException.class || DeferredFault.isHeld(failed))
+                    && DmlWriteTarget.isRowTimeFailure(failed)) {
+                throw failed;
+            }
             perRowOnly.add(key);
             return null;
         }
@@ -556,6 +626,10 @@ final class SubqueryEvaluator {
         if (requireSupportedCorrelation(expr, false, true, not, subject)) {
             return null;
         }
+        final Object keyed = keyedMembership(value, expr, not, subjectCollation, subject);
+        if (keyed != NOT_KEYED) {
+            return keyed;
+        }
         final List<ResultSet> results = executeSubquery(settledBody(expr));
 
         if (results.isEmpty()) {
@@ -622,6 +696,75 @@ final class SubqueryEvaluator {
             }
             if (collation != null ? CollationMatching.equalUnder(collation, value, subValue)
                     : ExpressionArithmetic.equals(value, subValue)) {
+                matched = true;
+                if (!convertsEvery) {
+                    break;
+                }
+            }
+        }
+        if (matched) {
+            return !not;
+        }
+        return anyNull && !twoValued ? null : not;
+    }
+
+    /**
+     * An IN over an equality correlation (see {@link EqualityCorrelation}), answered from the members the inner rows of
+     * the outer row's keys hold, computed once for the statement: the answer running the subquery for the row gives,
+     * each member compared with the value as the subquery's own row is, in time that grows with the two relations
+     * rather than with their product. {@link #NOT_KEYED} where the keys cannot settle it — no such correlation, a key
+     * of a kind hashing does not compare, a collation — and the subquery runs.
+     */
+    private Object keyedMembership(final Object value, final SubqueryExpression expr, final boolean not,
+                            final ExpressionCollation subjectCollation, final Expression subject) {
+        final SubqueryMemo memo = visitor.getSubqueryMemo();
+        final String key = memoKey(expr);
+        final EqualityCorrelation correlation = memo == null ? null : equalityCorrelationOf(key, settledBody(expr));
+        if (correlation == null || !correlation.answersARowPerKeptRow() || correlation.getMemberItem() == null) {
+            return NOT_KEYED;
+        }
+        final String membersQuery = correlation.membersQuery();
+        PreparedKeyedMembers members = memo.cachedKeyedMembers(membersQuery);
+        if (members == null) {
+            final ResultSet computed = computedOnce(key, membersQuery, correlation.keyCount() + 1,
+                correlation.keyCount(), true);
+            if (computed == null) {
+                return NOT_KEYED;
+            }
+            members = PreparedKeyedMembers.build(computed.getRows(), correlation.keyCount(),
+                columnCollation(computed, correlation.keyCount()));
+            memo.recordKeyedMembers(membersQuery, members);
+        }
+        final List<Object> outer = outerKeyValues(key);
+        if (outer == null || !holdsNull(outer) && !members.answers(outer)) {
+            return NOT_KEYED;
+        }
+        memo.recordCorrelated(key);
+        // An outer key that is NULL equals no inner one: the subquery keeps no row for it.
+        final List<Object> held = holdsNull(outer) ? Collections.emptyList() : members.membersOf(outer);
+        // The membership then answers as the subquery's own rows would: it reads the row around it, so a positive
+        // membership is two-valued, where NOT IN keeps the three values (see evaluateInSubquery).
+        final boolean twoValued = !not;
+        if (value == null && nullBeforeAnyRow(subject)) {
+            return null;
+        }
+        if (held.isEmpty()) {
+            return not;
+        }
+        if (value == null) {
+            return twoValued ? Boolean.FALSE : null;
+        }
+        final CollationSpec collation = ExpressionCollation.combine(members.collation(), subjectCollation).toRules();
+        final boolean convertsEvery = !(value instanceof String);
+        boolean anyNull = false;
+        boolean matched = false;
+        for (final Object member : held) {
+            if (member == null) {
+                anyNull = true;
+                continue;
+            }
+            if (collation != null ? CollationMatching.equalUnder(collation, value, member)
+                    : ExpressionArithmetic.equals(value, member)) {
                 matched = true;
                 if (!convertsEvery) {
                     break;
@@ -750,10 +893,15 @@ final class SubqueryEvaluator {
      * @return the subquery's refusal that waits for the statement around it, or null
      */
     RuntimeException compile(final SubqueryExpression expr, final Map<String, Object> enclosingNames) {
-        final Map<String, Object> outerNames = compileScope(enclosingNames);
+        final Map<String, Object> outerNames = compileScope(expr, enclosingNames);
         final boolean ranksTypes = SubqueryTypeRanking.isActive();
         final SourcePosition displaced = ExpressionSource.beginNested(expr.getQueryPosition());
         final boolean shapeOnly = RelationShapeOnly.begin();
+        final String unread = unreadSelectList(expr);
+        final String waived = unread != null ? UnreadRowItems.begin(unread) : null;
+        final String body = expr.isExistence() ? null
+            : SelectItemAccessors.soleSelectListText(visitor.getQueryExecutor().subqueryStatement(expr.getSubquery()));
+        final String enclosingBody = body != null ? ScalarBodyRowItems.begin(body) : null;
         final Map<String, Object> enclosing = SubqueryCompilation.begin(outerNames);
         final ExpressionEvaluatorVisitor enclosingScope = SubqueryCompilation.beginScope(visitor);
         final boolean enclosingRanking = SubqueryTypeRanking.begin(false);
@@ -786,6 +934,12 @@ final class SubqueryEvaluator {
             SubqueryTypeRanking.end(enclosingRanking);
             SubqueryCompilation.endScope(enclosingScope);
             SubqueryCompilation.end(enclosing);
+            if (body != null) {
+                ScalarBodyRowItems.end(enclosingBody);
+            }
+            if (unread != null) {
+                UnreadRowItems.end(waived);
+            }
             RelationShapeOnly.end(shapeOnly);
             ExpressionSource.end(displaced);
         }
@@ -852,9 +1006,11 @@ final class SubqueryEvaluator {
     /**
      * The names a subquery compiled in this scope may read from it, each bound to NULL: every column of
      * every relation in scope, qualified by the name the query gives that relation (an alias hides the
-     * table's own name) and bare, and the names of any query around this one.
+     * table's own name) and bare, and the names of any query around this one. A LATERAL derived table reads
+     * the relations to its left one by one, so a USING or NATURAL key, a column of each, is ambiguous there
+     * bare, where a subquery in an expression reads the merged key (live-verified).
      */
-    private Map<String, Object> compileScope(final Map<String, Object> enclosingNames) {
+    private Map<String, Object> compileScope(final SubqueryExpression expr, final Map<String, Object> enclosingNames) {
         final Map<String, Object> names = new HashMap<>();
         if (enclosingNames != null) {
             names.putAll(enclosingNames);
@@ -882,6 +1038,13 @@ final class SubqueryEvaluator {
             }
             for (final String shared : sharedBareNames(table, visitor.getMultiTableAllTables())) {
                 names.put(shared, OuterNameBindings.AMBIGUOUS);
+            }
+            if (expr.isLateral() && table.getJoinKeyNames() != null) {
+                for (final String key : table.getJoinKeyNames()) {
+                    if (names.containsKey(key)) {
+                        names.put(key, OuterNameBindings.AMBIGUOUS);
+                    }
+                }
             }
         }
         OuterNameBindings.recordColumns(names, columns);
@@ -1077,6 +1240,11 @@ final class SubqueryEvaluator {
                     }
                     return varies.booleanValue();
                 }
+
+                @Override
+                public Boolean settledBoolean(final String qualifier, final String column) {
+                    return settledBooleanInScope(qualifier, column);
+                }
             };
             final CorrelatedSubqueryRule rule =
                 new CorrelatedSubqueryRule(queryExecutor, outerNames, visitor.scopeRelations(), constancy);
@@ -1160,6 +1328,23 @@ final class SubqueryEvaluator {
                 .holdsOneValue(lineage.storedTable(), lineage.storedColumn());
         } catch (final RuntimeException unresolved) {
             return false;
+        }
+    }
+
+    /**
+     * The BOOLEAN this scope's statistics settle a stored number of its row to (see
+     * {@link OuterNameConstancy#settledBoolean}): null for a name of no catalog table, or one a NULL may extend.
+     */
+    private Boolean settledBooleanInScope(final String qualifier, final String column) {
+        if (visitor.getTable() == null || visitor.isScopeOpaqueToSubqueries()) {
+            return null;
+        }
+        try {
+            final Table owner = scopeRelationCarrying(qualifier, column);
+            return owner == null || mayBeNullExtended(owner) || !owner.hasColumn(column) ? null
+                : visitor.getQueryExecutor().columnSettledBoolean(owner, owner.getColumn(column).getName());
+        } catch (final RuntimeException unresolved) {
+            return null;
         }
     }
 
@@ -1273,6 +1458,16 @@ final class SubqueryEvaluator {
     }
 
     /** The names a subquery reads the visitor's row by: bare, relation-qualified and alias-qualified. */
+    /** A join key's merged value over a joined row: the first of the key's copies that is not NULL. */
+    private static Object mergedKeyValue(final List<TableColumn> columns, final Row row, final String key) {
+        for (int i = 0; i < columns.size() && i < row.getValues().size(); i++) {
+            if (columns.get(i).getName().equals(key) && row.getValue(i) != null) {
+                return row.getValue(i);
+            }
+        }
+        return null;
+    }
+
     Map<String, Object> rowBindings() {
         final Map<String, Object> bindings = new HashMap<>();
         addRowBindings(bindings);
@@ -1305,6 +1500,15 @@ final class SubqueryEvaluator {
                 if (bare.add(colName)) {
                     context.put(colName, shared.contains(colName) ? OuterNameBindings.AMBIGUOUS : value);
                     noteCollation(collated, bound, colName, collationCarrier(columns.get(i)));
+                }
+            }
+            // A bare USING or NATURAL key reads the merged column, as it does beside the subquery: the first of its
+            // copies that is not NULL, so a row only the right side holds reads its own key (live-verified).
+            if (table.getJoinKeyNames() != null) {
+                for (final String key : table.getJoinKeyNames()) {
+                    if (bare.contains(key)) {
+                        context.put(key, mergedKeyValue(columns, row, key));
+                    }
                 }
             }
             OuterNameBindings.recordColumns(context, bare);

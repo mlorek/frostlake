@@ -50,6 +50,8 @@ final class FunctionNameWalk extends AstPrinterVisitor {
     @Override
     public String visitFunctionCall(final FunctionCallExpression expr) {
         context.requireResolvableFunctionName(expr);
+        // A user's function the role may not use is refused here too, whether or not a row reaches the call.
+        context.requireUsableUserFunction(expr);
         return super.visitFunctionCall(expr);
     }
 }

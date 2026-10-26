@@ -35,7 +35,13 @@ import java.util.List;
  *   res := (SELECT v FROM t ORDER BY v OFFSET :s);         the ')': an OFFSET alone wants its ROWS
  *   res := (SELECT TOP :s v AS c FROM t ORDER BY v);       'AS', then 'FROM': TOP is a name, :s a path, v its alias
  *   res := (SELECT * FROM t UNPIVOT (x FOR y IN (:s)));    the ':': the list takes names
+ *   LET r RESULTSET := (SELECT 1 AS 1, 2 AS 2);            '1', '2': a RESULTSET's query is read as a statement of
+ *                                                          its own, and nothing after it
+ *   DECLARE x INT; BEGIN x := (SELECT 1 x y); …            'y' alone: a target declared of another type than
+ *                                                          RESULTSET reads its query so too
  * </pre>
+ *
+ * <p>A LET of any other type, or of none, reads its query as a value (see {@link BlockValueSubqueryLines}).
  */
 public final class AssignedQueryLines {
 
@@ -109,8 +115,16 @@ public final class AssignedQueryLines {
             return null;
         }
         final Token closing = spoken.get(close);
-        if (!SyntaxErrorListener.isNameLike(spoken.get(first - 3))) {
+        if (!SyntaxErrorListener.isNameLike(spoken.get(first - 3))
+                || first >= 4 && spoken.get(first - 4).getType() == FrostlakeLexer.LET) {
             return null;
+        }
+        if (first >= 5 && spoken.get(first - 5).getType() == FrostlakeLexer.LET) {
+            return spoken.get(first - 3).getType() == FrostlakeLexer.RESULTSET
+                ? resultSetLines(sql, spoken.get(first), closing) : null;
+        }
+        if (declaredScalar(spoken, first - 3)) {
+            return resultSetLines(sql, spoken.get(first), closing);
         }
         // The query as a statement of its own, standing where it stood in its block: the assignment's opening is
         // read over, and the parenthesis that closes the query ends the statement.
@@ -134,6 +148,53 @@ public final class AssignedQueryLines {
         final String ended = "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected ';'.";
         for (int i = 0; i < lines.size(); i++) {
             if (lines.get(i).equals(ended) || lines.get(i).endsWith(END_OF_INPUT)) {
+                lines.set(i, "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected ')'.");
+            }
+        }
+        return lines;
+    }
+
+    /**
+     * Whether the name at {@code target} is declared, in a DECLARE section before it, of a type other than RESULTSET
+     * or CURSOR.
+     */
+    private static boolean declaredScalar(final List<Token> spoken, final int target) {
+        final String name = spoken.get(target).getText();
+        boolean declaring = false;
+        for (int i = 0; i + 1 < target; i++) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.DECLARE) {
+                declaring = true;
+            } else if (type == FrostlakeLexer.BEGIN) {
+                declaring = false;
+            } else if (declaring && spoken.get(i).getText().equalsIgnoreCase(name) && i > 0
+                    && (spoken.get(i - 1).getType() == FrostlakeLexer.DECLARE
+                        || spoken.get(i - 1).getType() == FrostlakeLexer.SEMI)) {
+                final int declared = spoken.get(i + 1).getType();
+                return declared != FrostlakeLexer.RESULTSET && declared != FrostlakeLexer.CURSOR;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The lines of a RESULTSET's query read as a statement of its own, every place kept: a line for the end of the
+     * input names the parenthesis that closes the query.
+     */
+    private static List<String> resultSetLines(final String sql, final Token first, final Token closing) {
+        final char[] text = sql.toCharArray();
+        for (int c = 0; c < text.length; c++) {
+            if ((c < first.getStartIndex() || c >= closing.getStartIndex()) && text[c] != '\n') {
+                text[c] = ' ';
+            }
+        }
+        final List<String> lines = new ArrayList<>(SyntaxErrorListener.linesReportedFor(new String(text), true));
+        if (lines.isEmpty()) {
+            return null;
+        }
+        final int[] shown = LeadingCommentOffset.rebase(closing.getLine(), closing.getCharPositionInLine());
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).endsWith(END_OF_INPUT)) {
                 lines.set(i, "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected ')'.");
             }
         }

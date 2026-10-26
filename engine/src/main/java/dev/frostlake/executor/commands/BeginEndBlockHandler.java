@@ -16,10 +16,12 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.StatementFailureSize;
 import dev.frostlake.executor.AnonymousBlockResult;
 import dev.frostlake.executor.ApartRecording;
 import dev.frostlake.executor.BlockExpressionTypeError;
 import dev.frostlake.executor.BlockExpressionTypes;
+import dev.frostlake.executor.BlockFlowChains;
 import dev.frostlake.executor.BodyAbort;
 import dev.frostlake.executor.BodyPlacedError;
 import dev.frostlake.executor.CallDepth;
@@ -60,15 +62,19 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 
 import org.antlr.v4.runtime.CharStream;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -96,6 +102,9 @@ public class BeginEndBlockHandler implements CommandHandler {
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
     private final SQLCommandVisitor visitor;
+
+    /** Per statement list, the results of the flow chain stages it has run so far (see BlockFlowChains). */
+    private final Map<ParserRuleContext, List<ResultSet>> runningChains = new IdentityHashMap<>();
 
     public BeginEndBlockHandler(final Catalog catalog, final QueryExecutor queryExecutor,
                                 final SQLCommandVisitor visitor) {
@@ -376,6 +385,8 @@ public class BeginEndBlockHandler implements CommandHandler {
         ScriptingNameValidator.rejectUnknownLoggingNames(ctx);
         // An IDENTIFIER() text that names nothing is refused while the block compiles, placed in the block.
         BlockIdentifierLiterals.require(ctx);
+        // So is a $n no stage of its flow chain answers (see BlockFlowChains).
+        BlockFlowChains.requirePipeReferences(ctx);
         // So is a BREAK, a CONTINUE or an EXIT that stands in no loop of the body, or names no loop around it.
         if (proceduralExecutor().entersTopBlockOfBody()) {
             LoopControlPlacement.require(ctx);
@@ -788,22 +799,38 @@ public class BeginEndBlockHandler implements CommandHandler {
         // A statement that commits work in a session of its own goes to the write-ahead log by itself, apart from
         // the transaction running the block (see ApartRecording).
         final ApartRecording apart = queryExecutor.beginApartRecording(stmtCtx);
+        // A stage of a flow chain reads the results of the stages before it (see BlockFlowChains).
+        final List<ResultSet> outerStages = queryExecutor.getFlowChainResults();
+        final List<ResultSet> stages = BlockFlowChains.followsAStage(stmtCtx)
+            ? runningChains.get(stmtCtx.getParent()) : null;
         final Object stmtResult;
         try {
             if (bindsAsAStatement(stmtCtx)) {
                 InfiniteBindRefusal.requireFiniteBinds(stmtCtx, proceduralExecutor());
+            }
+            if (stages != null) {
+                queryExecutor.setFlowChainResults(stages);
             }
             stmtResult = inHandler ? visitor.visit(stmtCtx) : visitStatement(stmtCtx);
             if (apart != null) {
                 apart.complete();
             }
         } catch (final RuntimeException failure) {
+            runningChains.remove(stmtCtx.getParent());
             queryExecutor.failChildStatement(row, text, failure);
             throw failure;
         } finally {
+            queryExecutor.setFlowChainResults(outerStages);
             if (apart != null) {
                 queryExecutor.endApartRecording(apart, text, false);
             }
+        }
+        if (BlockFlowChains.feedsTheNext(stmtCtx)) {
+            final List<ResultSet> kept = stages != null ? stages : new ArrayList<ResultSet>();
+            kept.add(stmtResult instanceof ResultSet ? (ResultSet) stmtResult : queryExecutor.statusAnswer(stmtCtx));
+            runningChains.put(stmtCtx.getParent(), kept);
+        } else {
+            runningChains.remove(stmtCtx.getParent());
         }
         if (stmtResult instanceof ResultSet) {
             if (row != null) {
@@ -881,7 +908,8 @@ public class BeginEndBlockHandler implements CommandHandler {
      * code taxonomy).
      */
     private void bindHandlerErrorVariables(final Exception e) {
-        final String message = FailureCode.messageOf(e);
+        // The message is the one the account keeps of a failure, cut past 16384 bytes (see StatementFailureSize).
+        final String message = StatementFailureSize.keptMessage(FailureCode.messageOf(e));
         final FailureCode read = FailureCode.of(e);
         final int code = read.code();
         final String state = read.state();

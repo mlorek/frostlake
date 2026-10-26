@@ -18,8 +18,8 @@ package dev.frostlake.functions.scalar;
 
 import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.math.FloatingPointRefusal;
+import dev.frostlake.types.DecimalText;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 
@@ -73,7 +73,7 @@ public final class WholeNumberArgument {
         }
         final String text = value.toString().trim();
         try {
-            return new BigDecimal(text).setScale(0, RoundingMode.HALF_UP).toBigInteger();
+            return DecimalText.parse(text).setScale(0, RoundingMode.HALF_UP).toBigInteger();
         } catch (final NumberFormatException notANumber) {
             throw new RuntimeException("Numeric value '" + value + "' is not recognized");
         }

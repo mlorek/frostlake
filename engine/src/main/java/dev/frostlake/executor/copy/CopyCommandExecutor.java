@@ -154,6 +154,11 @@ public final class CopyCommandExecutor {
     // runs.
     private final Map<Transaction, List<UncommittedLoad>> uncommittedLoads = new IdentityHashMap<>();
 
+    // The tables whose load history a transaction's TRUNCATE forgot, by table key, until the transaction ends: for its
+    // own later COPY the table has loaded nothing, and the shared history forgets at its commit (see
+    // forgetLoadHistoryAtCommit). Read and written under the engine's write lock, as every COPY into a table runs.
+    private final Map<Transaction, Set<String>> pendingResets = new IdentityHashMap<>();
+
     // Set while ALTER PIPE … REFRESH runs its COPY, which loads in a session of its own inside the refreshing
     // statement and so does not wait for another session's transaction (see executeCopyRefresh).
     private boolean refreshing;
@@ -168,11 +173,28 @@ public final class CopyCommandExecutor {
      * @param temporary               whether the table is the temporary one of that name
      */
     public void forgetLoadHistory(final String fullyQualifiedTableName, final boolean temporary) {
+        forgetLoadHistoryBut(fullyQualifiedTableName, temporary, null);
+    }
+
+    /**
+     * Forgets the files a table has loaded, but for the loads one transaction has made into it and not yet committed:
+     * those its TRUNCATE left, made after it, which its commit records once the history is forgotten.
+     *
+     * @param fullyQualifiedTableName the table's qualified name
+     * @param temporary               whether the table is the temporary one of that name
+     * @param kept                    the transaction whose uncommitted loads stay, or null for none
+     */
+    private void forgetLoadHistoryBut(final String fullyQualifiedTableName, final boolean temporary,
+                                      final Transaction kept) {
         loadHistory(temporary).remove(fullyQualifiedTableName);
         final String history = historyKey(fullyQualifiedTableName, temporary);
-        final Iterator<List<UncommittedLoad>> open = uncommittedLoads.values().iterator();
+        final Iterator<Map.Entry<Transaction, List<UncommittedLoad>>> open = uncommittedLoads.entrySet().iterator();
         while (open.hasNext()) {
-            final List<UncommittedLoad> loads = open.next();
+            final Map.Entry<Transaction, List<UncommittedLoad>> entry = open.next();
+            if (entry.getKey() == kept) {
+                continue;
+            }
+            final List<UncommittedLoad> loads = entry.getValue();
             final Iterator<UncommittedLoad> each = loads.iterator();
             while (each.hasNext()) {
                 if (each.next().history().equals(history)) {
@@ -184,6 +206,70 @@ public final class CopyCommandExecutor {
             }
         }
         executor.getCatalog().getLoadHistory().forget(fullyQualifiedTableName, temporary);
+    }
+
+    /**
+     * TRUNCATE inside a transaction forgets the table's load history as it empties the rows: for the transaction's own
+     * later COPY at once, for everyone else when the transaction commits, and not at all when it rolls back, which
+     * keeps the rows and so the files they were loaded from. The transaction's own uncommitted loads into the table
+     * are emptied with their rows.
+     *
+     * @param fullyQualifiedTableName the table's qualified name
+     * @param temporary               whether the table is the temporary one of that name
+     * @param transaction             the TRUNCATE's transaction
+     */
+    public void forgetLoadHistoryAtCommit(final String fullyQualifiedTableName, final boolean temporary,
+                                          final Transaction transaction) {
+        final String history = historyKey(fullyQualifiedTableName, temporary);
+        final List<UncommittedLoad> own = uncommittedLoads.get(transaction);
+        if (own != null) {
+            final Iterator<UncommittedLoad> each = own.iterator();
+            while (each.hasNext()) {
+                if (each.next().history().equals(history)) {
+                    each.remove();
+                }
+            }
+            if (own.isEmpty()) {
+                uncommittedLoads.remove(transaction);
+            }
+        }
+        Set<String> forgotten = pendingResets.get(transaction);
+        if (forgotten == null) {
+            forgotten = new HashSet<>();
+            pendingResets.put(transaction, forgotten);
+        }
+        if (!forgotten.add(history)) {
+            return;
+        }
+        transaction.onOutcome(new TransactionOutcome() {
+            @Override
+            public void committed() {
+                endPendingReset(transaction, history);
+                forgetLoadHistoryBut(fullyQualifiedTableName, temporary, transaction);
+            }
+
+            @Override
+            public void rolledBack() {
+                endPendingReset(transaction, history);
+            }
+        });
+    }
+
+    /** Whether a transaction's TRUNCATE forgot a table's load history, which it then reads as empty. */
+    private boolean resetBy(final Transaction transaction, final String history) {
+        final Set<String> forgotten = transaction == null ? null : pendingResets.get(transaction);
+        return forgotten != null && forgotten.contains(history);
+    }
+
+    /** Ends a transaction's pending reset of a table's load history as the transaction ends. */
+    private void endPendingReset(final Transaction transaction, final String history) {
+        final Set<String> forgotten = pendingResets.get(transaction);
+        if (forgotten != null) {
+            forgotten.remove(history);
+            if (forgotten.isEmpty()) {
+                pendingResets.remove(transaction);
+            }
+        }
     }
 
     /**
@@ -545,6 +631,34 @@ public final class CopyCommandExecutor {
         // as the word), the enclosure and the escapes as characters, NULL_IF (the
         // text \N when no format names one), the header, blank-line, width and field rules, the character set,
         // a JSON format's strip flags, and the input formats the fields' text is read by.
+        // The stage's own copy options - a named stage's COPY_OPTIONS, a table stage's STAGE_COPY_OPTIONS - are the
+        // defaults of every option the statement does not write (documented).
+        final Map<String, String> stageOptions = stageCopyOptionsOf(ctx, tableName);
+        if (!seenCopyOptions.contains("ON_ERROR") && stageOptions.get("ON_ERROR") != null
+                && OnErrorOption.parse(stageOptions.get("ON_ERROR")) != null) {
+            onError = OnErrorOption.parse(stageOptions.get("ON_ERROR"));
+        }
+        if (!seenCopyOptions.contains("FORCE") && stageOptions.get("FORCE") != null) {
+            force = Boolean.parseBoolean(stageOptions.get("FORCE"));
+        }
+        if (!seenCopyOptions.contains("PURGE") && stageOptions.get("PURGE") != null) {
+            purge = Boolean.parseBoolean(stageOptions.get("PURGE"));
+        }
+        if (!seenCopyOptions.contains("SIZE_LIMIT") && stageOptions.get("SIZE_LIMIT") != null) {
+            sizeLimit = Long.parseLong(stageOptions.get("SIZE_LIMIT"));
+        }
+        if (!seenCopyOptions.contains("MATCH_BY_COLUMN_NAME") && stageOptions.get("MATCH_BY_COLUMN_NAME") != null) {
+            matchByColumnName = stageOptions.get("MATCH_BY_COLUMN_NAME");
+        }
+        if (enforceLength == null && truncateColumns == null) {
+            // The inverse pair is the stage's own only where the statement writes neither of them.
+            if (stageOptions.get("ENFORCE_LENGTH") != null) {
+                enforceLength = Boolean.valueOf(stageOptions.get("ENFORCE_LENGTH"));
+            }
+            if (stageOptions.get("TRUNCATECOLUMNS") != null) {
+                truncateColumns = Boolean.valueOf(stageOptions.get("TRUNCATECOLUMNS"));
+            }
+        }
         final String fileFormat = format.getType();
         final String fieldDelimiter = format.getFieldDelimiter() == null ? "NONE" : format.getFieldDelimiter();
         final String recordDelimiter = format.getRecordDelimiter() == null ? "NONE" : format.getRecordDelimiter();
@@ -697,13 +811,14 @@ public final class CopyCommandExecutor {
             // The load reads the stage's files as they are now, which a replay of its text would not find again.
             CheckpointDebt.owe();
 
-            final Map<String, Set<String>> histories = loadHistory(table.isTemporary());
-            final Set<String> committedKeys = histories.get(fullyQualifiedTableName);
-            final Set<String> loadedKeys = committedKeys == null ? Collections.<String>emptySet() : committedKeys;
             // The transaction's own loads count as done for it; another open transaction's are not done yet. An
-            // autocommit statement's transaction begins with its first write, so it has none of its own yet.
+            // autocommit statement's transaction begins with its first write, so it has none of its own yet. After
+            // the transaction's own TRUNCATE the table has loaded nothing, for it alone until it commits.
             final Transaction running = executor.getTransactionManager().getCurrentTransaction();
             final String history = historyKey(fullyQualifiedTableName, table.isTemporary());
+            final Map<String, Set<String>> histories = loadHistory(table.isTemporary());
+            final Set<String> committedKeys = resetBy(running, history) ? null : histories.get(fullyQualifiedTableName);
+            final Set<String> loadedKeys = committedKeys == null ? Collections.<String>emptySet() : committedKeys;
 
             // Rows are buffered and inserted only after every file is parsed + validated, so an
             // ABORT_STATEMENT failure leaves the table unchanged (atomic), matching Snowflake.
@@ -2835,6 +2950,27 @@ public final class CopyCommandExecutor {
         // One column whose rows are all NULL — or none at all — unloads cleanly: there is no
         // non-JSON value to refuse over, and an empty unload writes nothing anyway.
         return true;
+    }
+
+    /**
+     * The copy options the stage a COPY INTO a table reads keeps — a named stage's COPY_OPTIONS, a table stage's
+     * STAGE_COPY_OPTIONS — by option name; empty where it reads no stage or the stage keeps none.
+     */
+    private Map<String, String> stageCopyOptionsOf(final FrostlakeParser.CopyIntoStatementContext ctx,
+                                                   final String tableName) {
+        FrostlakeParser.StageRefContext stage = null;
+        boolean from = false;
+        for (final FrostlakeParser.CopyIntoTableClauseContext clause : ctx.copyIntoTableClause()) {
+            if (clause.FROM() != null) {
+                from = true;
+                final FrostlakeParser.CopySourceContext source = clause.copySource();
+                stage = source.stageRef() != null ? source.stageRef()
+                    : source.copyTransformation() != null ? source.copyTransformation().stageRef() : null;
+            }
+        }
+        // A COPY with no FROM reads the target table's own stage.
+        final String location = stage != null ? executor.stageRefToLocation(stage) : from ? null : "@%" + tableName;
+        return location == null ? Collections.<String, String>emptyMap() : executor.stageCopyOptions(location);
     }
 
     /**

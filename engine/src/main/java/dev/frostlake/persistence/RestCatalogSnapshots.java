@@ -86,6 +86,8 @@ final class RestCatalogSnapshots {
     /** Records the account-level objects: accounts, integrations, external volumes and compute pools. */
     static void saveCatalog(final Catalog catalog, final CatalogSnapshot snapshot) {
         snapshot.accountParameters = new HashMap<>(catalog.getAccountParameters().entries());
+        final Map<String, String> accountTags = SnapshotTags.of(catalog.getAccountTags());
+        snapshot.accountTags = accountTags == null ? null : new HashMap<>(accountTags);
         for (final Integration integration : catalog.getIntegrations().all()) {
             final IntegrationSnapshot saved = new IntegrationSnapshot();
             saved.name = integration.getName();
@@ -158,6 +160,8 @@ final class RestCatalogSnapshots {
     /** Puts the account-level objects of a snapshot back. */
     static void restoreCatalog(final CatalogSnapshot snapshot, final Catalog catalog) {
         restoreParameters(snapshot.accountParameters, catalog.getAccountParameters());
+        // ALTER ACCOUNT SET TAG holds for the account's life, as a tag on any object does.
+        SnapshotTags.restore(catalog.getAccountTags(), snapshot.accountTags);
         if (snapshot.integrations != null) {
             for (final IntegrationSnapshot saved : snapshot.integrations) {
                 final Integration integration = new Integration(saved.name, IntegrationKind.valueOf(saved.kind),

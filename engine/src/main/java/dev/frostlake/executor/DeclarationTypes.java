@@ -26,6 +26,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
@@ -196,7 +197,7 @@ public final class DeclarationTypes {
                 || !(((LiteralExpression) expression).getValue() instanceof Number)) {
             return false;
         }
-        return new BigDecimal(((LiteralExpression) expression).getValue().toString()).compareTo(BigDecimal.ONE) == 0;
+        return DecimalText.parse(((LiteralExpression) expression).getValue().toString()).compareTo(BigDecimal.ONE) == 0;
     }
 
     /** The initialiser as a SQL expression, or null when it cannot be read as one. */

@@ -24,19 +24,46 @@ package dev.frostlake.metastore.model;
  * <p>This wrapper exists to disambiguate an expression default from a literal string default: both would
  * otherwise be a bare {@code String} on {@code TableColumn.defaultValue}, so a {@code DEFAULT (1+2)} was
  * previously inserted as the text {@code "1+2"} instead of {@code 3}. A literal default stays its plain
- * value; only expression defaults are wrapped. {@link #toString()} returns the expression text so metadata
- * views (SHOW COLUMNS, INFORMATION_SCHEMA, snapshots) render the original expression.
+ * value; only expression defaults are wrapped. {@link #toString()} returns the expression text, which INSERT
+ * evaluates and a snapshot keeps; the metadata views print {@link #getToldText()}, the default as the account tells
+ * it back.
  */
 public class DefaultValueExpression {
 
     private final String expressionText;
 
+    private final String toldText;
+
     public DefaultValueExpression(final String expressionText) {
+        this(expressionText, null);
+    }
+
+    /**
+     * @param expressionText the default as written, which INSERT evaluates
+     * @param toldText       the default as the account tells it back, or null when that is the text as written
+     */
+    public DefaultValueExpression(final String expressionText, final String toldText) {
         this.expressionText = expressionText;
+        this.toldText = toldText;
     }
 
     public String getExpressionText() {
         return expressionText;
+    }
+
+    /**
+     * The default as DESCRIBE, SHOW COLUMNS, GET_DDL and INFORMATION_SCHEMA print it: printed from the plan it
+     * compiled to where that was worked out, else as written.
+     *
+     * @return the text
+     */
+    public String getToldText() {
+        return toldText != null ? toldText : toString();
+    }
+
+    /** @return the told text when one was worked out, else null */
+    public String toldTextOrNull() {
+        return toldText;
     }
 
     @Override

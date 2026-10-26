@@ -50,6 +50,20 @@ public interface OuterNameConstancy {
     }
 
     /**
+     * The BOOLEAN an outer number converts to on every row, where the statistics settle it (see
+     * {@code ValueRange#convertedToBoolean}): a subquery reading the name only so converted reads a constant, so
+     * {@code (SELECT MAX(fz.id::BOOLEAN::INT + g.v) FROM g)} over a column holding 5 and 7 reads nothing of the outer
+     * row (live-verified).
+     *
+     * @param qualifier the relation the name is qualified by, upper-cased, or null for a bare name
+     * @param column    the column, upper-cased
+     * @return TRUE or FALSE, or null where the statistics do not settle it
+     */
+    default Boolean settledBoolean(final String qualifier, final String column) {
+        return null;
+    }
+
+    /**
      * Whether an interval is one known value that is never NULL, and one a condition may be settled by.
      *
      * @param range the interval, or null where none is known

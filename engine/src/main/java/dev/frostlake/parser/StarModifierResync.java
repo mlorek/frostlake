@@ -139,7 +139,11 @@ final class StarModifierResync {
                     final String text = closedAt(sql, refused, ")", spoken.get(callClose).getStartIndex());
                     return unlessRightAfter(linesAfter(text, refused), spoken.get(callClose + 1));
                 }
-                // A word closes the enclosing call as well: one level up it may be the item's alias.
+                // A word closes the enclosing call as well: one level up it may be the item's alias. A CAST closed
+                // there leaves the item's value behind, read on as one: CAST(HASH(* REPLACE x y) AS INT) is 'y'.
+                if (enclosedByCast(spoken, place)) {
+                    return outerResume(sql, spoken, place, i);
+                }
                 return twoLevels == null ? Collections.<String>emptyList()
                     : resume(sql, spoken, refused, twoLevels, i, refused);
             }
@@ -349,6 +353,13 @@ final class StarModifierResync {
         final Token refused = spoken.get(keyword);
         return closers.length() == 0 || closers.length() > refused.getStopIndex() - refused.getStartIndex() + 1
             ? null : closers.toString();
+    }
+
+    /** Whether the call or CAST around the star's call is a CAST, whose own bracket no closer written in place ends. */
+    private static boolean enclosedByCast(final List<Token> spoken, final StarModifierPlace place) {
+        final int opener = indexOf(spoken, place.enclosingOpener());
+        return opener > 0 && (spoken.get(opener - 1).getType() == FrostlakeLexer.CAST
+            || spoken.get(opener - 1).getType() == FrostlakeLexer.TRY_CAST);
     }
 
     /** The index of {@code token} among the spoken tokens, or -1. */

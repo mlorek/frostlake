@@ -34,7 +34,10 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.SqlTypeNames;
+import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VariantValue;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -76,18 +79,14 @@ public class DataMetricReferencesFunction extends TableFunction {
     /** How a schedule given as a cron expression is written: the expression and its time zone follow. */
     private static final String CRON_PREFIX = "USING CRON ";
 
-    /** The blob live builds from the same defaults, keys in alphabetical order. */
-    private static final String PROPERTIES = "{\n"
-        + "  \"anomaly_detection_sensitivity_level\": \"MEDIUM\",\n"
-        + "  \"anomaly_detection_status\": \"DISABLED\",\n"
-        + "  \"data_quality_notification_status\": \"DISABLED\",\n"
-        + "  \"exclude_table_types\": null,\n"
-        + "  \"filter\": null,\n"
-        + "  \"group_limit\": null,\n"
-        + "  \"level\": \"Table\",\n"
-        + "  \"use_role\": null,\n"
-        + "  \"within_group\": null\n"
-        + "}";
+    /**
+     * The object live builds from the same defaults, keys in alphabetical order: a VARIANT, shown as the session's
+     * JSON_INDENT shows one (live-verified: compact under an indent of 0).
+     */
+    private static final String PROPERTIES = "{\"anomaly_detection_sensitivity_level\":\"MEDIUM\","
+        + "\"anomaly_detection_status\":\"DISABLED\",\"data_quality_notification_status\":\"DISABLED\","
+        + "\"exclude_table_types\":null,\"filter\":null,\"group_limit\":null,\"level\":\"Table\","
+        + "\"use_role\":null,\"within_group\":null}";
 
     /** The table-like kinds REF_ENTITY_DOMAIN takes, each with the noun a miss is reported in. */
     private static final Map<String, String> RELATION_NOUNS = relationNouns();
@@ -274,7 +273,7 @@ public class DataMetricReferencesFunction extends TableFunction {
                 // The account's per-attachment UUID: nothing here can stand in for it.
                 null,
                 schedule(attachments.getSchedule()), attachment.isSuspended() ? "SUSPENDED_BY_USER_ACTION" : "STARTED",
-                "DISABLED", "DISABLED", "MEDIUM", "", "Table", "", PROPERTIES)));
+                "DISABLED", "DISABLED", "MEDIUM", "", "Table", "", VariantValue.of(PROPERTIES))));
         }
         rows.addAll(ordered.values());
     }
@@ -356,10 +355,12 @@ public class DataMetricReferencesFunction extends TableFunction {
         return value;
     }
 
+    /** Every column a text at the full text width, but PROPERTIES, a VARIANT (live-verified). */
     private List<ResultSetColumn> columns() {
         final List<ResultSetColumn> columns = new ArrayList<>();
         for (final String name : COLUMN_NAMES) {
-            columns.add(new ResultSetColumn(name, StringType.VARCHAR));
+            columns.add("PROPERTIES".equals(name) ? new ResultSetColumn(name, VariantType.VARIANT)
+                : new ResultSetColumn(name, new StringType("VARCHAR", StringResultWidths.UNBOUNDED)));
         }
         return columns;
     }

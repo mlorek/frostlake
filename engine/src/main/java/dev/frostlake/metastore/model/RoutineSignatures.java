@@ -367,29 +367,35 @@ public final class RoutineSignatures {
 
     /**
      * Refuses a new routine an existing one of its signature holds the name for (live-verified): a temporary routine
-     * may not take a permanent one's signature, refused with that one's signature and return type spelled
-     * ({@code Object 'PERMF():NUMBER(38,0)' already exists.}); a permanent routine beside a temporary one, and a
-     * temporary one beside another session's, are each created; two of the same lifetime and session are refused
-     * for the name alone.
+     * over a permanent one, and a permanent routine over its own session's temporary one, are refused with the
+     * existing routine spelled — its parameters' names and types and what it returns, {@code Object
+     * 'QF(X NUMBER):NUMBER(38,0)' already exists.} — and OR REPLACE and IF NOT EXISTS answer neither (see
+     * {@link SignatureLifetimeConflict}); a permanent routine beside another session's temporary one, and a temporary
+     * one beside another session's, are each created; two of the same lifetime and session are refused for the name
+     * alone.
      *
      * @param created  the new routine
      * @param existing the existing routine of the signature
      */
     static void refuseSignatureHeld(final Routine created, final Routine existing) {
-        if (created.isTemporary() && !existing.isTemporary()) {
-            final List<Parameter> parameters = existing.getParameters();
-            final StringBuilder signature = new StringBuilder(SqlIdentifiers.spellCanonical(created.getName()))
-                .append('(');
-            for (int i = 0; i < parameters.size(); i++) {
-                signature.append(i == 0 ? "" : ", ").append(SqlTypeNames.routineType(parameters.get(i).getDataType()));
-            }
-            signature.append("):").append(existing.getReturnType() == null ? "TABLE"
-                : SqlTypeNames.routineType(existing.getReturnType(), existing.getReturnSized()));
-            throw new RuntimeException(SqlCompilationError.of("Object '" + signature + "' already exists."));
+        if (crossesLifetime(created, existing)) {
+            throw lifetimeConflict(existing);
         }
         if (sameLifetime(created, existing)) {
             throw new RuntimeException(alreadyExists(created.getName()));
         }
+    }
+
+    /** Whether a new routine meets one of the other lifetime its creating session holds: see refuseSignatureHeld. */
+    static boolean crossesLifetime(final Routine created, final Routine existing) {
+        return created.isTemporary() != existing.isTemporary() && (created.isTemporary()
+            || Objects.equals(created.getCreatedInSession(), existing.getCreatedInSession()));
+    }
+
+    /** The refusal a routine of the other lifetime meets, the existing routine spelled (see refuseSignatureHeld). */
+    static SignatureLifetimeConflict lifetimeConflict(final Routine existing) {
+        return new SignatureLifetimeConflict(SqlCompilationError.of("Object '" + spelled(existing)
+            + "' already exists."));
     }
 
     /** Whether two routines are both permanent, or both temporary to one session. */
@@ -407,14 +413,19 @@ public final class RoutineSignatures {
      * (live-verified). It is judged when the routine is added, after everything else about it.
      */
     static RuntimeException notNullOnlyTwin(final Routine created) {
-        final StringBuilder signature = new StringBuilder(SqlIdentifiers.spellCanonical(created.getName()))
-            .append('(').append(namedTypes(created.getParameters())).append("):");
-        if (created.returnsTable()) {
-            signature.append("TABLE: (").append(namedTypes(created.getReturnColumns())).append(')');
+        return new RuntimeException(SqlCompilationError.of("Object '" + spelled(created) + "' already exists."));
+    }
+
+    /** A routine as the refusals of a taken signature spell it: its name, its named parameters and what it returns. */
+    private static String spelled(final Routine routine) {
+        final StringBuilder signature = new StringBuilder(SqlIdentifiers.spellCanonical(routine.getName()))
+            .append('(').append(namedTypes(routine.getParameters())).append("):");
+        if (routine.returnsTable()) {
+            signature.append("TABLE: (").append(namedTypes(routine.getReturnColumns())).append(')');
         } else {
-            signature.append(SqlTypeNames.routineType(created.getReturnType(), created.getReturnSized()));
+            signature.append(SqlTypeNames.routineType(routine.getReturnType(), routine.getReturnSized()));
         }
-        return new RuntimeException(SqlCompilationError.of("Object '" + signature + "' already exists."));
+        return signature.toString();
     }
 
     /**

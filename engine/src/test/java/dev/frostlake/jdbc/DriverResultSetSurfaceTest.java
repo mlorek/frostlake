@@ -45,6 +45,11 @@ public class DriverResultSetSurfaceTest extends BaseJdbcTest {
     }
 
     @Test
+    public void theNumericGettersOverATextOrAVariantRefuseWhatSpellsNoNumberOfTheirKind() throws SQLException {
+        DriverSurfaceChecks.textAndVariantReads(connection);
+    }
+
+    @Test
     public void getBooleanReadsOneZeroTrueAndFalseAndRefusesAnythingElse() throws SQLException {
         DriverSurfaceChecks.booleanReads(connection);
     }

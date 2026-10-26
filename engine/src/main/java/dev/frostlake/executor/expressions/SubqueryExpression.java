@@ -24,6 +24,7 @@ public class SubqueryExpression implements Expression {
     private SourcePosition position;
     private SourcePosition queryPosition;
     private boolean existence;
+    private boolean lateral;
 
     public SubqueryExpression(final String subquery) {
         this.subquery = subquery;
@@ -36,6 +37,15 @@ public class SubqueryExpression implements Expression {
 
     public void setExistence(final boolean existence) {
         this.existence = existence;
+    }
+
+    /** Whether the subquery is a LATERAL derived table, which reads the relations to its left one by one. */
+    public boolean isLateral() {
+        return lateral;
+    }
+
+    public void setLateral(final boolean lateral) {
+        this.lateral = lateral;
     }
 
     public String getSubquery() {

@@ -396,6 +396,7 @@ import dev.frostlake.functions.table.CompleteTaskGraphsFunction;
 import dev.frostlake.functions.table.CopyHistoryFunction;
 import dev.frostlake.functions.table.CurrentTaskGraphsFunction;
 import dev.frostlake.functions.table.DataMetricReferencesFunction;
+import dev.frostlake.functions.table.DynamicTableRefreshHistoryFunction;
 import dev.frostlake.functions.table.Flatten;
 import dev.frostlake.functions.table.Generator;
 import dev.frostlake.functions.table.GetContactsFunction;
@@ -1112,6 +1113,7 @@ public class FunctionRegistry {
         registerTableFunction(new StrtokSplitToTable());
         registerTableFunction(new Flatten());
         registerTableFunction(new TaskHistoryFunction(catalog));
+        registerTableFunction(new DynamicTableRefreshHistoryFunction(catalog));
         registerTableFunction(new ServerlessTaskHistoryFunction());
         registerTableFunction(new CopyHistoryFunction(catalog));
         registerTableFunction(new TagReferencesFunction(catalog));

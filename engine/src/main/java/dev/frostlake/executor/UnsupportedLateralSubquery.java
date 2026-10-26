@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -31,7 +32,10 @@ import java.util.Set;
  * <ul>
  *   <li>a body under LIMIT or FETCH, ordered or not, however it joins — a comma, a join with or without ON;</li>
  *   <li>a body reading a table function over the outer row — {@code TABLE(FLATTEN(input => j.arr))} — however it
- *       joins;</li>
+ *       joins; a GENERATOR whose bounds read the outer row only through columns the statistics pin to one value
+ *       reads a constant there (see {@link BoundColumnPins}), and its body is evaluated unless it aggregates:
+ *       {@code LATERAL (SELECT 1 AS x FROM TABLE(GENERATOR(ROWCOUNT => g1.n + 1)))} runs over a one-row g1, its
+ *       {@code SELECT COUNT(*)} is refused;</li>
  *   <li>a FROM-less body under a LEFT or FULL join with an ON condition — unless the relation to its left holds
  *       one row and nothing outside the body reads the derived table, which the account's planner evaluates.</li>
  * </ul>
@@ -52,11 +56,14 @@ final class UnsupportedLateralSubquery {
      * @param left    the relation to its left
      * @param leftRows the rows the relation to its left holds, or -1 when that is not known before reading it
      * @param readOutside whether anything outside the body reads the derived table
+     * @param pins     the columns of the relations to its left the statistics pin, or null
+     * @param functions the functions, which tell an aggregate
      * @return the refusal, or null
      */
     static RuntimeException refusal(final FrostlakeParser.SelectStatementContext query,
                                     final FrostlakeParser.JoinClauseContext joinCtx, final Set<String> outer,
-                                    final Table left, final long leftRows, final boolean readOutside) {
+                                    final Table left, final long leftRows, final boolean readOutside,
+                                    final BoundColumnPins pins, final FunctionRegistry functions) {
         final Set<String> names = new HashSet<>();
         if (outer != null) {
             for (final String name : outer) {
@@ -71,7 +78,8 @@ final class UnsupportedLateralSubquery {
         }
         final boolean limited = query.limitClause() != null || query.fetchClause() != null;
         final boolean fromlessUnderOn = outerJoinWithOn(joinCtx) && fromless(query) && (leftRows != 1 || readOutside);
-        if (limited || readsTableFunctionOver(query, names) || fromlessUnderOn) {
+        final BoundColumnPins constants = pins == null || aggregates(query, functions) ? null : pins;
+        if (limited || readsTableFunctionOver(query, names, constants) || fromlessUnderOn) {
             return new RuntimeException(SqlCompilationError.of("Unsupported subquery type cannot be evaluated"));
         }
         return null;
@@ -144,17 +152,64 @@ final class UnsupportedLateralSubquery {
             && query.selectOperand(0).selectClause() != null && query.selectOperand(0).selectClause().FROM() == null;
     }
 
-    /** Whether a table function in the body's FROM reads one of the outer names. */
-    private static boolean readsTableFunctionOver(final ParseTree node, final Set<String> names) {
+    /**
+     * Whether a table function in the body's FROM reads one of the outer names; a GENERATOR reading them only through
+     * columns {@code pins} pins does not, where pins are given.
+     */
+    private static boolean readsTableFunctionOver(final ParseTree node, final Set<String> names,
+                                                  final BoundColumnPins pins) {
         if (node instanceof FrostlakeParser.TableSourceContext) {
             final FrostlakeParser.TableSourceContext source = (FrostlakeParser.TableSourceContext) node;
             if ((source.TABLE() != null || source.FLATTEN() != null || source.tableFunctionExpr() != null)
-                    && readsAny(source, names)) {
+                    && readsAny(source, names) && !(pins != null && readsPinnedOnly(source, names, pins))) {
                 return true;
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (readsTableFunctionOver(node.getChild(i), names)) {
+            if (readsTableFunctionOver(node.getChild(i), names, pins)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a source is a GENERATOR call whose every outer name is a column the statistics pin. */
+    private static boolean readsPinnedOnly(final FrostlakeParser.TableSourceContext source, final Set<String> names,
+                                           final BoundColumnPins pins) {
+        if (!(source.expression() instanceof FrostlakeParser.FunctionCallNamedArgsExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.FunctionCallNamedArgsExprContext call =
+            (FrostlakeParser.FunctionCallNamedArgsExprContext) source.expression();
+        return "GENERATOR".equalsIgnoreCase(call.functionName().getText()) && outerNamesPinned(call, names, pins);
+    }
+
+    private static boolean outerNamesPinned(final ParseTree node, final Set<String> names,
+                                            final BoundColumnPins pins) {
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext && readsAny(node, names)) {
+            return pins.pins((FrostlakeParser.QualifiedNameExprContext) node);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (!outerNamesPinned(node.getChild(i), names, pins)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether the body's own select lists call an aggregate, outside any query nested in them. */
+    private static boolean aggregates(final ParseTree node, final FunctionRegistry functions) {
+        if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
+            return true;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext && functions != null
+                && functions.getAggregateFunction(((FrostlakeParser.FunctionCallExprContext) node).functionName()
+                    .getText().toUpperCase(Locale.ROOT)) != null) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final ParseTree child = node.getChild(i);
+            if (!(child instanceof FrostlakeParser.SelectStatementContext) && aggregates(child, functions)) {
                 return true;
             }
         }

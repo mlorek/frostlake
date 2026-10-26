@@ -79,6 +79,23 @@ public final class VariantNumbers {
     }
 
     /**
+     * The double a VARIANT holds as a double - one TO_VARIANT made of a FLOAT, or a JSON number written with an
+     * exponent - which converts to an exact number by its binary value, as the FLOAT itself does:
+     * {@code TO_NUMBER(TO_VARIANT(0.1::FLOAT), 38, 20)} and the same VARIANT written into a NUMBER(38,20) column are
+     * 0.10000000000000000555, where {@code PARSE_JSON('0.1')}, a decimal, is 0.1 (live-verified).
+     *
+     * @param variant the value
+     * @return the double, or null when the member is no finite double
+     */
+    public static Double binaryDouble(final VariantValue variant) {
+        final JsonNode node = variant.node();
+        if (node == null || !(node.isDouble() || node.isFloat()) || !Double.isFinite(node.doubleValue())) {
+            return null;
+        }
+        return Double.valueOf(node.doubleValue());
+    }
+
+    /**
      * The refusal for a member that reads as no number.
      *
      * @param node   the member

@@ -76,8 +76,12 @@ public final class CsvRecordReader {
     private final Character escape;
     private final Character escapeUnenclosed;
     private final boolean trimSpace;
+    /** Whether the file's first character is still to be read, to be passed over when it is a byte order mark. */
+    private boolean markPending;
     /** Whether a staged-file query reads the file, whose refusals are worded as its own. */
     private final boolean stagedQuery;
+    /** Whether the staged-file query reading the file reads one of its positional columns, which refusals name. */
+    private final boolean positionsRead;
 
     /** Whether a field holding bytes its file's encoding could not read is settled here (see settlingUnreadable). */
     private boolean settlesUnreadable;
@@ -166,8 +170,10 @@ public final class CsvRecordReader {
         this.escape = options.getEscape();
         this.escapeUnenclosed = options.getEscapeUnenclosed();
         this.trimSpace = options.trimsSpace();
+        this.markPending = options.skipsByteOrderMark();
         this.skipBlankLines = options.skipsBlankLines() || !stagedQuery && !load;
         this.stagedQuery = stagedQuery;
+        this.positionsRead = !options.readsNoPositionalColumn();
         this.load = load;
     }
 
@@ -698,9 +704,13 @@ public final class CsvRecordReader {
         return atLine == startLine ? "" : " starts at line " + startLine;
     }
 
+    /**
+     * The column a refusal names. A staged-file query that reads none of the file's positional columns names each by
+     * its place alone, {@code "TRANSIENT_STAGE_TABLE"[1]} (live-verified).
+     */
     private String columnReference(final int index) {
-        return "\"TRANSIENT_STAGE_TABLE\"" + (index == 1 || stagedQuery ? "[\"$" + index + "\":" + index + "]"
-            : "[" + index + "]");
+        final boolean named = stagedQuery ? positionsRead : index == 1;
+        return "\"TRANSIENT_STAGE_TABLE\"" + (named ? "[\"$" + index + "\":" + index + "]" : "[" + index + "]");
     }
 
     /** A delimiter as a refusal spells it, a newline, a carriage return and a tab escaped. */
@@ -738,9 +748,11 @@ public final class CsvRecordReader {
     private int peek(final int offset) throws IOException {
         while (ahead.length() <= offset && !exhausted) {
             final int c = source.read();
+            final boolean mark = markPending && c == StagedFileIo.BYTE_ORDER_MARK;
+            markPending = false;
             if (c < 0) {
                 exhausted = true;
-            } else {
+            } else if (!mark) {
                 ahead.append((char) c);
             }
         }

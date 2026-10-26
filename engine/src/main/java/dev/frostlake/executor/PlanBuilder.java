@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.metastore.QualifiedName;
@@ -34,6 +35,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -466,9 +468,28 @@ final class PlanBuilder {
     }
 
     private PlanExpressionText printer(final PlanScope scope) {
-        final PlanExpressionText printer = new PlanExpressionText(scope, executor.getFunctionRegistry());
+        final PlanExpressionText printer = new PlanExpressionText(scope, executor.getFunctionRegistry(),
+            identifierCalls());
         printers.add(printer);
         return printer;
+    }
+
+    /** A call of a procedure's SYSTEM$REFERENCE token as the plan writes it (see ProcedureTokenCalls). */
+    private IdentifierCallText identifierCalls() {
+        return new IdentifierCallText() {
+            @Override
+            public String spell(final FunctionCallExpression call) {
+                final Object name;
+                try {
+                    name = new ExpressionEvaluator(null, executor.getFunctionRegistry(), executor.getCatalog(),
+                        executor).evaluate(call.getNameExpression(), null);
+                } catch (final RuntimeException unresolved) {
+                    return null;
+                }
+                return name == null ? null
+                    : ProcedureTokenCalls.planText(executor, name.toString(), call.getArguments().size());
+            }
+        };
     }
 
     /**
@@ -992,7 +1013,8 @@ final class PlanBuilder {
     /**
      * What one SELECT reads: its FROM list, a Filter for what its WHERE holds beyond the conditions that join the
      * list, an Aggregate, a Filter for a HAVING, a WindowFunction and a Filter for a QUALIFY. A SELECT with no FROM
-     * reads a Generator of one row. The operators list what they compute, and the plan answers the select list.
+     * reads a Generator of one row, or an empty ValuesClause where it calls a procedure's token. The operators list
+     * what they compute, and the plan answers the select list.
      */
     private PlanNode operandPlan(final FrostlakeParser.SelectOperandContext operand,
                                  final Map<String, FrostlakeParser.SelectStatementContext> named,
@@ -1012,6 +1034,9 @@ final class PlanBuilder {
             if (!sequences.isEmpty()) {
                 return nextvals(sequences, new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")))
                     .answering(selected(select, state));
+            }
+            if (ProcedureTokenCalls.holdsCall(executor, select.selectList())) {
+                return new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")).answering(selected(select, state));
             }
             return new PlanNode("Generator", NONE, null, Arrays.asList("1")).holding(Long.valueOf(1))
                 .answering(selected(select, state));
@@ -1350,7 +1375,7 @@ final class PlanBuilder {
     }
 
     private static PlanNode cartesian(final PlanNode left, final PlanNode right, final PlanJoinKeys keys) {
-        final boolean leftFirst = holdsFewer(left, right);
+        final boolean leftFirst = holdsFewer(left, right) || generatorTies(right, left);
         return operator("CartesianJoin").expressed(keys.texts(leftFirst ? left : right))
             .over(leftFirst ? left : right).over(leftFirst ? right : left).named(both(left, right));
     }
@@ -1422,6 +1447,15 @@ final class PlanBuilder {
         final Long firstRows = rowsOf(first);
         final Long secondRows = rowsOf(second);
         return firstRows != null && secondRows != null && firstRows.longValue() < secondRows.longValue();
+    }
+
+    /**
+     * Whether a Generator holds as many rows as the side beside it, which then stands first: {@code FROM g1,
+     * TABLE(GENERATOR(ROWCOUNT => g1.n))} over g1's one row scans g1 before the Generator of 1 (live-verified).
+     */
+    private static boolean generatorTies(final PlanNode generator, final PlanNode other) {
+        final Long rows = rowsOf(generator);
+        return "Generator".equals(generator.getOperation()) && rows != null && rows.equals(rowsOf(other));
     }
 
     /** The rows a plan is taken to answer: those its source holds, all of a union's, the larger side's of a join. */
@@ -1603,7 +1637,7 @@ final class PlanBuilder {
                     .named(Collections.<String>emptySet());
         }
         if ("GENERATOR".equals(calledName(source))) {
-            final Long rows = rowCountOf(source);
+            final Long rows = rowCountOf(source) != null ? rowCountOf(source) : pinnedRowCount(source);
             return new PlanNode("Generator", NONE, null,
                 rows == null ? NONE : Arrays.asList(rows.toString())).holding(rows);
         }
@@ -1890,6 +1924,108 @@ final class PlanBuilder {
             }
         }
         return null;
+    }
+
+    /**
+     * The rows a GENERATOR's ROWCOUNT stands for where it reads columns of the tables beside it that the statistics pin
+     * to one value: {@code FROM g1, TABLE(GENERATOR(ROWCOUNT => g1.n + 1))}, g1 holding the one row 1, is a Generator
+     * of 2 (live-verified); null where it reads anything else.
+     */
+    private Long pinnedRowCount(final FrostlakeParser.TableSourceContext source) {
+        final FrostlakeParser.ExpressionContext bound = rowCountArgument(source);
+        if (bound == null || bound.getStart() == null || bound.getStop() == null || holdsQuery(bound)
+                || !GeneratorBounds.foldsItsCalls(bound)) {
+            return null;
+        }
+        final List<FrostlakeParser.QualifiedNameExprContext> columns = new ArrayList<>();
+        collectColumns(bound, columns);
+        if (columns.isEmpty()) {
+            return null;
+        }
+        final StoredColumnValues stored = new StoredColumnValues(executor);
+        final StringBuilder text = new StringBuilder(ParseTreeText.getOriginalText(bound));
+        final int base = bound.getStart().getStartIndex();
+        for (int i = columns.size() - 1; i >= 0; i--) {
+            final FrostlakeParser.QualifiedNameExprContext column = columns.get(i);
+            final Object value = pinnedValue(stored, column);
+            if (!(value instanceof Number)) {
+                return null;
+            }
+            text.replace(column.getStart().getStartIndex() - base, column.getStop().getStopIndex() - base + 1,
+                value.toString());
+        }
+        try {
+            final Object rows = new ExpressionEvaluator(null, executor.getFunctionRegistry(), executor.getCatalog(),
+                executor).evaluate(ExpressionEvaluator.parse(text.toString()), null);
+            final BigDecimal count = rows instanceof Number ? new BigDecimal(rows.toString()) : null;
+            return count == null || count.signum() < 0 || count.stripTrailingZeros().scale() > 0 ? null
+                : Long.valueOf(count.longValueExact());
+        } catch (final RuntimeException unfolded) {
+            return null;
+        }
+    }
+
+    /** The one value the statistics pin a catalog table's column to, read as {@code t.c}; null for any other. */
+    private Object pinnedValue(final StoredColumnValues stored, final FrostlakeParser.QualifiedNameExprContext column) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(column.qualifiedName());
+        final FrostlakeParser.TableReferenceContext item = parts.length == 2
+            ? DerivedRelationPins.fromItem(column, parts[0].toUpperCase(Locale.ROOT)) : null;
+        final FrostlakeParser.TableSourceContext source = item == null ? null : item.tableSource();
+        if (source == null || source.tableQualifiedName() == null || source.timeTravelClause() != null
+                || ParseTreeText.qualifiedNameParts(source.tableQualifiedName()).length == 1
+                && DerivedRelationPins.cteNamed(item, ParseTreeText.qualifiedNameParts(
+                    source.tableQualifiedName())[0]) != null) {
+            return null;
+        }
+        try {
+            final Table table = executor.getCatalog().resolveTable(
+                ParseTreeText.getQualifiedName(source.tableQualifiedName()));
+            if (table == null || !table.isCatalogResident() || !table.hasColumn(parts[1])) {
+                return null;
+            }
+            final String declared = table.getColumn(parts[1]).getName();
+            return stored.holdsOneValue(table, declared) ? stored.oneValueOf(table, declared) : null;
+        } catch (final RuntimeException noTable) {
+            return null;
+        }
+    }
+
+    /** The ROWCOUNT a table function's call names, or null. */
+    private static FrostlakeParser.ExpressionContext rowCountArgument(final ParseTree node) {
+        if (node instanceof FrostlakeParser.NamedArgumentContext) {
+            final FrostlakeParser.NamedArgumentContext argument = (FrostlakeParser.NamedArgumentContext) node;
+            return "ROWCOUNT".equalsIgnoreCase(argument.variableName().getText()) ? argument.expression() : null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.ExpressionContext found = rowCountArgument(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static boolean holdsQuery(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsQuery(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void collectColumns(final ParseTree node,
+                                       final List<FrostlakeParser.QualifiedNameExprContext> into) {
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            into.add((FrostlakeParser.QualifiedNameExprContext) node);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectColumns(node.getChild(i), into);
+        }
     }
 
     private static Long numberOfText(final String written) {

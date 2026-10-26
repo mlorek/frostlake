@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.conversion;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.DecfloatRangeException;
 import dev.frostlake.values.Decfloats;
@@ -74,7 +75,7 @@ public class ToDecfloat extends BuiltInFunction {
             final Double formatted = ToDouble.formatted(value.toString(), args.get(1).toString(),
                 NumericFormatModel.DECFLOAT);
             // The model reads the text as a double; its shortest text is the decimal the text wrote.
-            return formatted == null ? null : Decfloats.held(new BigDecimal(formatted.toString()));
+            return formatted == null ? null : Decfloats.held(DecimalText.parse(formatted.toString()));
         }
         final BigDecimal read = parsed(value.toString());
         if (read == null) {
@@ -111,7 +112,7 @@ public class ToDecfloat extends BuiltInFunction {
     /** A decimal text, trimmed, as a DECFLOAT holds it; null when it spells no number — NaN and inf included. */
     private static BigDecimal parsed(final String text) {
         try {
-            return Decfloats.held(new BigDecimal(text.trim()));
+            return Decfloats.held(DecimalText.parse(text.trim()));
         } catch (final NumberFormatException | DecfloatRangeException unreadable) {
             return null;
         }

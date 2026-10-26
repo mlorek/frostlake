@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -57,12 +58,17 @@ public class Zipf extends NumericArgumentFunction {
         if (args.get(1) == null) {
             throw new RuntimeException("Invalid parameter value: NULL. Reason: n must not be NULL");
         }
-        final double exponent = new BigDecimal(args.get(0).toString().trim()).doubleValue();
-        if (exponent < 0) {
+        final double exponent = args.get(0) instanceof Double ? ((Double) args.get(0)).doubleValue()
+            : DecimalText.parse(args.get(0).toString().trim()).doubleValue();
+        // A NaN exponent is no exponent of a law at all, refused as a negative one is.
+        if (exponent < 0 || Double.isNaN(exponent)) {
             throw new RuntimeException("Invalid parameter value: " + plain(args.get(0))
                 + ". Reason: alpha must be >= 0.0");
         }
-        final BigDecimal elements = new BigDecimal(args.get(1).toString().trim()).setScale(0, RoundingMode.HALF_UP);
+        // N is read as a whole number, so a FLOAT that is none is out of its range (live-verified).
+        final BigDecimal elements = finite(args.get(1))
+            ? DecimalText.parse(args.get(1).toString().trim()).setScale(0, RoundingMode.HALF_UP)
+            : BigDecimal.valueOf(Random.floatSeed(((Double) args.get(1)).doubleValue(), "FIXED[SB8](18,0){not null}"));
         if (elements.signum() < 1) {
             throw new RuntimeException("Invalid parameter value: " + plain(args.get(1)) + ". Reason: n must be >= 1");
         }
@@ -73,7 +79,8 @@ public class Zipf extends NumericArgumentFunction {
         Random.seedOf(args.get(2));
         final long n = elements.min(BigDecimal.valueOf(Long.MAX_VALUE)).longValue();
         final long[] state = {((Number) args.get(2)).longValue()};
-        if (n == 1) {
+        // An infinite exponent puts every draw on the first rank (live-verified).
+        if (n == 1 || Double.isInfinite(exponent)) {
             return Long.valueOf(1L);
         }
         if (exponent == 0) {
@@ -82,9 +89,17 @@ public class Zipf extends NumericArgumentFunction {
         return Long.valueOf(sample(n, exponent, state));
     }
 
-    /** An argument as the refusal spells it: a whole number without its fraction's zeros. */
+    /** Whether an argument is a number that is not a NaN or infinite FLOAT. */
+    private static boolean finite(final Object arg) {
+        return !(arg instanceof Double) || Double.isFinite(((Double) arg).doubleValue());
+    }
+
+    /** An argument as the refusal spells it: a whole number without its fraction's zeros, nan or inf as such. */
     private static String plain(final Object value) {
-        final BigDecimal number = new BigDecimal(value.toString().trim());
+        if (value instanceof Double && !Double.isFinite(((Double) value).doubleValue())) {
+            return Random.generalText(((Double) value).doubleValue());
+        }
+        final BigDecimal number = DecimalText.parse(value.toString().trim());
         return number.stripTrailingZeros().scale() <= 0 ? number.setScale(0, RoundingMode.UNNECESSARY).toPlainString()
             : number.stripTrailingZeros().toPlainString();
     }

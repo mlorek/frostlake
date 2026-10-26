@@ -18,6 +18,7 @@ package dev.frostlake.executor.udf;
 
 import com.snowflake.snowpark_java.types.Variant;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.TypedScalarNode;
@@ -76,7 +77,7 @@ public final class SnowparkVariants {
         }
         if (value instanceof Number) {
             return new Variant(exact(value instanceof BigDecimal ? (BigDecimal) value
-                : new BigDecimal(value.toString())));
+                : DecimalText.parse(value.toString())));
         }
         if (value instanceof String) {
             return new Variant((String) value);

@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -58,7 +59,7 @@ final class PlanTextNumber {
         }
         final BigDecimal number;
         try {
-            number = new BigDecimal(text);
+            number = DecimalText.parse(text);
         } catch (final NumberFormatException notSpelled) {
             return null;
         }

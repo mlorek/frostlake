@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.AmbiguousOverload;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.ExpressionEvaluator;
@@ -24,6 +25,7 @@ import dev.frostlake.executor.OverloadConversionCosts;
 import dev.frostlake.executor.ParameterReferences;
 import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ReadOnlyRequest;
 import dev.frostlake.executor.RoutineBody;
 import dev.frostlake.executor.RoutineSecretsCheck;
 import dev.frostlake.executor.SqlArgumentText;
@@ -34,6 +36,7 @@ import dev.frostlake.executor.commands.DeferredHandlerCheck;
 import dev.frostlake.executor.commands.ExternalFunctions;
 import dev.frostlake.executor.commands.ServiceFunctions;
 import dev.frostlake.executor.udf.GuestResults;
+import dev.frostlake.executor.udf.HandlerClassNotFound;
 import dev.frostlake.executor.udf.HandlerResults;
 import dev.frostlake.executor.udf.HandlerStateFactory;
 import dev.frostlake.executor.udf.ImportLocalizer;
@@ -41,8 +44,10 @@ import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.JavaHandlerArguments;
 import dev.frostlake.executor.udf.JavaHandlerClass;
+import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.JavaHandlerInstance;
 import dev.frostlake.executor.udf.JavaHandlerInstances;
+import dev.frostlake.executor.udf.JavaHandlerMethods;
 import dev.frostlake.executor.udf.JavaRuntimeLevel;
 import dev.frostlake.executor.udf.StatementHandlerStates;
 import dev.frostlake.executor.udf.UdfRuntimes;
@@ -109,6 +114,9 @@ final class UdfInvoker {
 
     /** Names the state that holds a statement's own load of a Java handler's class. */
     private static final String JAVA_HANDLER_CLASS = "java-handler-class";
+
+    /** Names the state that holds a statement's own load of a handler class an IMPORTS jar holds. */
+    private static final String JAR_HANDLER_CLASS = "jar-handler-class";
 
     private final Catalog catalog;
     private final FunctionRegistry functionRegistry;
@@ -829,13 +837,23 @@ final class UdfInvoker {
         // parses to the same text.
         if (queryExecutor != null && queryExecutor.isProceduralBlock(trimmedBody)) {
             rejectUnsupportedScriptingReturnType(function);
-            // A block binds its parameters as variables when it starts, so it converts every argument then.
-            for (final Object arg : args) {
+            // A block binds its parameters as variables when it starts, so it converts every argument then: an
+            // exact number to its parameter's declared type too, 1.239 into a NUMBER(10,2) reading 1.24 and 1
+            // reading 1.00 (live-verified), where an expression body keeps the caller's number.
+            final List<Object> bound = new ArrayList<>(args);
+            for (int i = 0; i < bound.size(); i++) {
+                final Object arg = bound.get(i);
                 if (arg instanceof DeferredConversion) {
                     throw ((DeferredConversion) arg).getFailure();
                 }
+                final DataType declared = i < params.size() ? params.get(i).getDataType() : null;
+                if (arg instanceof Number && !(arg instanceof Double) && !(arg instanceof Float)
+                        && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                        && !NumericType.isDecfloat(declared)) {
+                    bound.set(i, ValueCaster.castValue(arg, SqlTypeNames.canonical(declared)));
+                }
             }
-            final Object returned = queryExecutor.executeScriptingFunctionBody(function, args);
+            final Object returned = queryExecutor.executeScriptingFunctionBody(function, bound);
             // Snowflake casts the RETURNed value to the DECLARED return type: `RETURNS INT` over
             // `RETURN '7'` is 7, `RETURNS VARCHAR` over `RETURN 42` is the string '42', and
             // `RETURNS INT` over `RETURN 'abc'` fails "Numeric value 'abc' is not recognized".
@@ -910,7 +928,8 @@ final class UdfInvoker {
      * compilation error, as the account reports it; anything else says where it came from.
      */
     private RuntimeException inBody(final Exception failure) {
-        if (failure instanceof RuntimeException && SqlCompilationError.isCompilationError(failure.getMessage())) {
+        if (failure instanceof RuntimeException && (SqlCompilationError.isCompilationError(failure.getMessage())
+                || ReadOnlyRequest.isRefusal(failure.getMessage()))) {
             return (RuntimeException) failure;
         }
         if (cycleIn(failure) != null) {
@@ -1057,18 +1076,25 @@ final class UdfInvoker {
                 }
             }
         }
-        final Class<?> compiledClass = fromBody != null ? fromBody
-            : JarHandlerLoader.load(queryExecutor != null
-                    ? queryExecutor.localImports(function.getImports()) : function.getImports(), className, catalog,
-                queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
-
-        final Method method = javaCompiler.handlerMethod(compiledClass, methodName, args.size());
-        if (method == null) {
-            // No one method of that name and argument count: the method is looked for by the values' own classes.
-            return convertJavaResultToSql(javaCompiler.invokeMethod(compiledClass, methodName,
-                convertSqlArgsToJava(args)));
-        }
         final String where = " in function " + function.getName() + " with handler " + handler;
+        final Class<?> compiledClass;
+        try {
+            compiledClass = fromBody != null ? fromBody
+                : importedClass(function, className, queryExecutor != null
+                        ? queryExecutor.localImports(function.getImports()) : function.getImports(),
+                    queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
+        } catch (final HandlerClassNotFound missing) {
+            // A class the imports no longer hold is refused as the account's class loader refuses one, as the
+            // function's CREATE would refuse it now (live-verified).
+            throw new RuntimeException(JavaHandlerFailure.missingClass(className,
+                JavaRuntimeLevel.declared(function.getRuntimeVersion()), where), missing);
+        }
+
+        final Method found = javaCompiler.handlerMethod(compiledClass, methodName, args.size());
+        // No one public method of that name and argument count - the function's imports changed since it was
+        // created - is refused as its CREATE would refuse it now (live-verified).
+        final Method method = found != null ? found
+            : JavaHandlerMethods.resolve(compiledClass, methodName, args.size(), function.getName(), handler);
         // Each argument, already of its parameter's SQL type, becomes the Java type the handler declares.
         final Object[] javaArgs = JavaHandlerArguments.of(method.getParameterTypes(), function.getParameters(), args,
             where);
@@ -1106,6 +1132,25 @@ final class UdfInvoker {
     }
 
     /**
+     * The class an IMPORTS jar holds for the handler: loaded anew for the statement that is running and the place
+     * that calls the function, as an inline body's is, so what the jar's static fields hold is there for the
+     * statement's later rows and for nothing else (live-verified). Outside a statement the one class every such
+     * caller shares.
+     */
+    private Class<?> importedClass(final Function function, final String className, final List<String> imports,
+                                   final S3PathResolver s3Resolver) {
+        final AutoCloseable kept = StatementHandlerStates.state(function, JAR_HANDLER_CLASS,
+            new HandlerStateFactory() {
+                @Override
+                public AutoCloseable create() {
+                    return new JavaHandlerClass(JarHandlerLoader.loadAnew(imports, className, catalog, s3Resolver));
+                }
+            });
+        return kept != null ? ((JavaHandlerClass) kept).handled()
+            : JarHandlerLoader.load(imports, className, catalog, s3Resolver);
+    }
+
+    /**
      * The instance a handler method that is not static is called on: one for the statement that is running and
      * the place that calls the function, so what it holds is there for the statement's later rows and for
      * nothing else (live-verified); outside a statement, one for the call.
@@ -1118,23 +1163,6 @@ final class UdfInvoker {
             }
         });
         return kept != null ? ((JavaHandlerInstance) kept).instance() : JavaHandlerInstances.create(handled, where);
-    }
-
-    private Object[] convertSqlArgsToJava(final List<Object> sqlArgs) {
-        final Object[] javaArgs = new Object[sqlArgs.size()];
-        for (int i = 0; i < sqlArgs.size(); i++) {
-            final Object arg = sqlArgs.get(i);
-            if (arg == null) {
-                javaArgs[i] = null;
-            } else if (arg instanceof Number || arg instanceof String || arg instanceof Boolean) {
-                // A number goes as it is: the handler's own parameter type decides which Java number it
-                // becomes (JavaFunctionCompiler.invokeMethod).
-                javaArgs[i] = arg;
-            } else {
-                javaArgs[i] = arg.toString();
-            }
-        }
-        return javaArgs;
     }
 
     private Object convertJavaResultToSql(final Object javaResult) {

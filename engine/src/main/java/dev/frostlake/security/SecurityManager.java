@@ -24,7 +24,6 @@ import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.SecurableObjectType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,44 +50,6 @@ public class SecurityManager {
     public SecurityManager(final Catalog catalog, final SessionContext sessionContext) {
         this.catalog = catalog;
         this.sessionContext = sessionContext;
-    }
-
-    /**
-     * Refuse a statement that needs a privilege the session does not hold on an object, deciding as
-     * {@link #holdsPrivilege} decides: one of the roles a privilege is asked of owns the object or was granted the
-     * privilege, and no administrative role stands in for that. The SYSTEM user, the engine's own, is asked nothing.
-     * Spoken in this engine's own words, for the kinds whose refusal is not measured; the measured ones go through
-     * {@code QueryExecutor.requirePrivilege}.
-     */
-    public void checkPermission(final Privilege requiredPrivilege, final String objectType, final String objectName) {
-        if (!sessionContext.isSecurityEnabled()) {
-            return; // Security checks disabled
-        }
-        final String currentUser = sessionContext.getCurrentUser();
-        // SYSTEM user always has all permissions, but inside a RESTRICTED CALLER body (see restricted)
-        if ("SYSTEM".equals(currentUser) && !restricted()) {
-            return;
-        }
-        if (holdsPrivilege(requiredPrivilege, objectType, objectName,
-                catalog.getObjectOwnerRole(objectType, objectName))) {
-            logger.debug("Permission granted: {} on {}:{}", requiredPrivilege, objectType, objectName);
-            return;
-        }
-        final String message = String.format(
-            "Permission denied: User '%s' with roles %s does not have %s privilege on %s '%s'",
-            currentUser, askedRoles(), requiredPrivilege, objectType, objectName);
-        logger.warn(message);
-        throw new SecurityException(message);
-    }
-
-    /**
-     * Typed overload of {@link #checkPermission(Privilege, String, String)} for the securable object kinds
-     * modelled by {@link SecurableObjectType}. The string form is retained for the open-ended GRANT object-type
-     * space (FUNCTION, PROCEDURE, SEQUENCE, ROLE, …), which reaches beyond these constants.
-     */
-    public void checkPermission(final Privilege requiredPrivilege, final SecurableObjectType objectType,
-                                final String objectName) {
-        checkPermission(requiredPrivilege, objectType.getCatalogName(), objectName);
     }
 
     /**
@@ -132,6 +93,62 @@ public class SecurityManager {
         throw new SecurityException(String.format(
             "Cannot grant privileges on %s '%s': requires OWNERSHIP of the object or an administrative"
             + " role (ACCOUNTADMIN / SECURITYADMIN / SYSADMIN)", objectType, objectName));
+    }
+
+    /**
+     * Authorize ALTER SCHEMA … ENABLE | DISABLE MANAGED ACCESS (documented). Turning it on asks the schema's owner to
+     * decide every grant too (MANAGE GRANTS, or an administrative role), and every future grant in the schema to be
+     * revoked first; turning it off asks MANAGE GRANTS beside the ownership only while a future grant in the schema is
+     * open. The ALTER's own check stands for the owner otherwise.
+     *
+     * @param schema     the schema
+     * @param enable     whether managed access is turned on
+     * @param futureOpen whether a future grant in the schema is open
+     */
+    public void checkManagedAccessSwitch(final Schema schema, final boolean enable, final boolean futureOpen) {
+        final String schemaName = QualifiedName.join(schema.getDatabaseName(), schema.getName());
+        if (enable && futureOpen) {
+            throw new SecurityException(String.format(Locale.ROOT, "Cannot enable managed access on schema '%s': the"
+                + " future grants in it must be revoked first", schemaName));
+        }
+        if (!enable && !futureOpen) {
+            return;
+        }
+        final boolean unchecked = !sessionContext.isSecurityEnabled()
+            || "SYSTEM".equals(sessionContext.getCurrentUser()) && !restricted();
+        if (unchecked || decidesGrants() && owns(schema.getOwner(), "SCHEMA", schemaName)) {
+            return;
+        }
+        throw new SecurityException(String.format(Locale.ROOT, "Cannot %s managed access on schema '%s'%s: requires"
+            + " OWNERSHIP of the schema and MANAGE GRANTS or an administrative role (ACCOUNTADMIN / SECURITYADMIN /"
+            + " SYSADMIN)",
+            enable ? "enable" : "disable", schemaName, enable ? "" : " while future grants are defined in it"));
+    }
+
+    /**
+     * Refuses to pass the ownership of an object in a schema WITH MANAGED ACCESS, now or through a future grant, to
+     * a role other than the schema's owner or a role granted to it: there ownership passes only to a subordinate role
+     * of the schema owner (documented), whichever role grants it.
+     *
+     * @param schema  the schema the object lives in or the future grant names, or null for none
+     * @param what    the object or the future objects as the refusal names them
+     * @param grantee the role, or the database role, the ownership passes to
+     */
+    public void checkManagedOwnershipGrantee(final Schema schema, final String what, final Role grantee) {
+        if (schema == null || !schema.isManagedAccess() || schema.getOwner() == null || schema.getOwner().isEmpty()) {
+            return;
+        }
+        for (final Role subordinate : holdersUnder(rolesUnder(catalog.resolveRoleName(schema.getOwner())))) {
+            if (subordinate == grantee) {
+                return;
+            }
+        }
+        throw new SecurityException(String.format(
+            "Cannot grant OWNERSHIP on %s to %s '%s': schema '%s' has managed access, where ownership passes only to"
+            + " the schema's owner or a role granted to it", what,
+            grantee instanceof DatabaseRole ? "database role" : "role",
+            grantee instanceof DatabaseRole ? ((DatabaseRole) grantee).getQualifiedName() : grantee.getName(),
+            QualifiedName.join(schema.getDatabaseName(), schema.getName())));
     }
 
     /**
@@ -272,15 +289,6 @@ public class SecurityManager {
             }
         }
         return null;
-    }
-
-    /**
-     * Authorize ALTER of an object: the current session must own the object, hold an administrative
-     * role, or have been granted ALTER (or OWNERSHIP/ALL) on it. Delegates to {@link #checkPermission}
-     * with {@link Privilege#ALTER} — the securityEnabled / SYSTEM-user bypasses are applied there.
-     */
-    public void checkAlter(final SecurableObjectType objectType, final String objectName) {
-        checkPermission(Privilege.ALTER, objectType.getCatalogName(), objectName);
     }
 
     /**
@@ -592,6 +600,23 @@ public class SecurityManager {
     }
 
     /**
+     * Whether the session may act as a role's or a user's owner, as a DROP or a replacement of either asks (see
+     * {@link #actsAsOwner}). The SYSTEM user, the engine's own, may for every one, as it holds every account
+     * privilege (see {@link #holdsAccountPrivilege}), and so may anything while security checks are off.
+     *
+     * @param owner the role or user's owner role; null when none is recorded, which passes
+     */
+    public boolean mayActAsPrincipalOwner(final String owner) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return true;
+        }
+        if (restricted()) {
+            return false;
+        }
+        return "SYSTEM".equals(sessionContext.getCurrentUser()) || actsAsOwner(owner);
+    }
+
+    /**
      * Whether the session may alter a user: it is the session's own user, or one of the session's roles owns the user
      * or holds MODIFY or OWNERSHIP on it (documented). The SYSTEM user may alter every user, as may anything while
      * security checks are off. A user the session alters itself may change only some of what it has; the caller
@@ -848,6 +873,18 @@ public class SecurityManager {
             }
         }
         return closureOf(activated);
+    }
+
+    /**
+     * The roles enabled in the session, as INFORMATION_SCHEMA.ENABLED_ROLES lists them: every role in use and every
+     * role granted to one of them, however many levels down, and PUBLIC, which is always enabled (documented).
+     *
+     * @return the roles' names
+     */
+    public Set<String> enabledRoles() {
+        final Set<String> roles = getEffectiveRoles();
+        roles.add("PUBLIC");
+        return roles;
     }
 
     /**

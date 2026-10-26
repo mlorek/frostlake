@@ -21,6 +21,9 @@ import dev.frostlake.LiveSnowflake;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -34,7 +37,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * A temporary table, view or stage is its own session's alone (live-verified): another session neither reads, lists nor
  * drops it, while its own session goes on reading it. Two sessions may each hold a temporary table or view of one name,
  * each reading its own, and a temporary table above a permanent one hides it from its own session alone; a dropped
- * schema takes every session's temporary tables with it. INFORMATION_SCHEMA.TABLES lists a temporary table to its own
+ * schema takes every session's temporary tables with it. Two sessions may each hold a temporary stage of one name, its
+ * files their own, and one above a permanent stage hides it from its session alone; a session swaps two of its own
+ * temporary tables. INFORMATION_SCHEMA.TABLES lists a temporary table to its own
  * session only, where INFORMATION_SCHEMA.VIEWS and FILE_FORMATS list every session's. A temporary file format is its
  * session's alone too, and ends with it.
  */
@@ -255,6 +260,99 @@ public class TemporaryObjectsPerSessionTest extends BaseJdbcTest {
         try (Connection later = another(); Statement c = later.createStatement()) {
             assertSteps(c, c, new String[][] {
                 {"A", "SHOW FILE FORMATS LIKE 'TFF2' IN SCHEMA test_db.public", "0 rows"},
+            });
+        }
+    }
+
+    /** Two files to stage, holding 1,a and 2,b, in a directory of their own. */
+    private static Path[] stagedFiles() throws IOException {
+        final Path dir = Files.createTempDirectory("tmp_stage_files_");
+        return new Path[] {Files.writeString(dir.resolve("fa.csv"), "1,a\n"),
+            Files.writeString(dir.resolve("fb.csv"), "2,b\n")};
+    }
+
+    private static void deleteStaged(final Path[] files) throws IOException {
+        for (final Path file : files) {
+            Files.deleteIfExists(file);
+        }
+        Files.deleteIfExists(files[0].getParent());
+    }
+
+    @Test
+    public void twoSessionsEachHoldATemporaryStageOfOneName() throws SQLException, IOException {
+        final Path[] files = stagedFiles();
+        try (Connection first = another(); Connection second = another();
+             Statement a = first.createStatement(); Statement b = second.createStatement()) {
+            final String missing = "REFUSED Stage 'TEST_DB.PUBLIC.TMS' does not exist or not authorized. Your primary"
+                + " role <ROLE> must have at least one privilege granted on STAGE TEST_DB.PUBLIC.TMS.";
+            assertSteps(a, b, new String[][] {
+                {"A", "CREATE TEMPORARY STAGE tms", "OK"},
+                {"B", "CREATE TEMPORARY STAGE tms", "OK"},
+                {"A", "PUT 'file://" + files[0] + "' @tms AUTO_COMPRESS = FALSE", "OK"},
+                {"B", "PUT 'file://" + files[1] + "' @tms AUTO_COMPRESS = FALSE", "OK"},
+                {"A", "SELECT $1 FROM @tms", "1"},
+                {"B", "SELECT $1 FROM @tms", "2"},
+                {"C", "SELECT $1 FROM @tms", missing},
+                {"A", "SHOW STAGES LIKE 'TMS' IN SCHEMA test_db.public", "1 rows"},
+                {"C", "SHOW STAGES LIKE 'TMS' IN SCHEMA test_db.public", "0 rows"},
+                {"A", "DROP STAGE tms", "OK"},
+                {"B", "SELECT $1 FROM @tms", "2"},
+                {"A", "SELECT $1 FROM @tms", missing},
+            });
+        } finally {
+            deleteStaged(files);
+        }
+    }
+
+    @Test
+    public void aTemporaryStageHidesAPermanentOneFromItsOwnSessionAlone() throws SQLException, IOException {
+        final Path[] files = stagedFiles();
+        try (Connection first = another(); Connection second = another();
+             Statement a = first.createStatement(); Statement b = second.createStatement()) {
+            final String counted = "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))";
+            assertSteps(a, b, new String[][] {
+                {"C", "CREATE OR REPLACE STAGE pst2", "OK"},
+                {"C", "PUT 'file://" + files[1] + "' @pst2 AUTO_COMPRESS = FALSE", "OK"},
+                {"A", "CREATE OR REPLACE TEMPORARY STAGE pst2", "OK"},
+                {"A", "LIST @pst2", "OK"},
+                {"A", counted, "0"},
+                {"B", "LIST @pst2", "OK"},
+                {"B", counted, "1"},
+                {"A", "SHOW STAGES LIKE 'PST2' IN SCHEMA test_db.public", "1 rows"},
+                {"A", "DROP STAGE pst2", "OK"},
+                {"A", "LIST @pst2", "OK"},
+                {"A", counted, "1"},
+                {"A", "CREATE TEMPORARY STAGE IF NOT EXISTS pst2", "OK"},
+                {"A", "LIST @pst2", "OK"},
+                {"A", counted, "0"},
+                {"A", "CREATE TEMPORARY STAGE pst2", "REFUSED Object 'PST2' already exists."},
+            });
+        } finally {
+            deleteStaged(files);
+        }
+    }
+
+    @Test
+    public void aSessionSwapsItsOwnTemporaryTables() throws SQLException {
+        try (Connection first = another(); Connection second = another();
+             Statement a = first.createStatement(); Statement b = second.createStatement()) {
+            assertSteps(a, b, new String[][] {
+                {"A", "CREATE TEMPORARY TABLE sa (i INT)", "OK"},
+                {"A", "INSERT INTO sa VALUES (1)", "OK"},
+                {"A", "CREATE TEMPORARY TABLE sb (i INT)", "OK"},
+                {"A", "INSERT INTO sb VALUES (2), (3)", "OK"},
+                {"A", "ALTER TABLE sa SWAP WITH sb", "OK"},
+                {"A", "SELECT COUNT(*) FROM sa", "2"},
+                {"A", "SELECT COUNT(*) FROM sb", "1"},
+                {"B", "SELECT COUNT(*) FROM sa", "REFUSED Object 'SA' does not exist or not authorized. Your primary"
+                    + " role <ROLE> must have at least one privilege granted on TABLE SA."},
+                {"C", "CREATE OR REPLACE TABLE sc (i INT)", "OK"},
+                {"C", "INSERT INTO sc VALUES (7), (8), (9)", "OK"},
+                {"A", "CREATE TEMPORARY TABLE sc (i INT)", "OK"},
+                {"A", "ALTER TABLE sa SWAP WITH sc", "OK"},
+                {"A", "SELECT COUNT(*) FROM sc", "2"},
+                {"A", "SELECT COUNT(*) FROM sa", "0"},
+                {"C", "SELECT COUNT(*) FROM sc", "3"},
             });
         }
     }

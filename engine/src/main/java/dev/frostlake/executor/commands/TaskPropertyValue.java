@@ -107,6 +107,11 @@ final class TaskPropertyValue {
         return new TaskPropertyValue(content, token, true, false, false, false, null, null, null);
     }
 
+    /** No value: what a session variable holding NULL or a Boolean gives a COMMENT (see PropertyVariables). */
+    static TaskPropertyValue none() {
+        return new TaskPropertyValue(null, "NULL", false, false, false, false, null, null, null);
+    }
+
     /** A number, from its text. */
     static TaskPropertyValue number(final String written) {
         return new TaskPropertyValue(written, written, false, true, false, false, null, null, null);

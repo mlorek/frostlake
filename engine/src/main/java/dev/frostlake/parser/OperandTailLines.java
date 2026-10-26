@@ -37,7 +37,7 @@ import org.antlr.v4.runtime.Token;
  * After a value that is no name — a parenthesis, a number, a call — the method's name is the one named, and then its
  * parenthesis: {@code (x)!y()} is {@code 'y'} and {@code '('}; a token that is no method's name is named alone, and a
  * select list read on without the {@code !} and a value written after it: {@code SELECT 1 ! 2 x y} is {@code '2'} and
- * then {@code 'y'}.
+ * then {@code 'y'}; a second {@code !} there ends the report, {@code SELECT 1 ! 2 ! 3} is {@code '2'} alone.
  */
 final class OperandTailLines {
 
@@ -120,7 +120,8 @@ final class OperandTailLines {
         }
         final Token fault = spoken.get(at);
         lines.add(SyntaxErrorListener.sentence(fault));
-        if (fault.getType() != Token.EOF && endsAValue(fault) && standsAsSelectItem(spoken, at - 1)) {
+        if (fault.getType() != Token.EOF && endsAValue(fault) && standsAsSelectItem(spoken, at - 1)
+                && (at + 1 >= spoken.size() || spoken.get(at + 1).getType() != FrostlakeLexer.BANG)) {
             final char[] text = sql.toCharArray();
             for (int i = spoken.get(at - 1).getStartIndex(); i <= fault.getStopIndex() && i < text.length; i++) {
                 if (text[i] != '\n' && text[i] != '\r') {
@@ -136,12 +137,26 @@ final class OperandTailLines {
      * The lines for the token after a method's name that no parenthesis follows: live reads on as if one opened before
      * the token, so the token is named and then the first fault that reading meets — {@code SELECT x!y z FROM t} is
      * {@code 'z'} and the {@code 'FROM'} no argument list takes, {@code SELECT x!y z} the end of the input, and a
-     * function's body {@code x ! y} the end of the input after the ')' that closes the arguments (all live-verified).
+     * function's body {@code x ! y} the end of the input after the ')' that closes the arguments. A value after the
+     * token is that fault, named twice where the method's call is a select item and once in a call's arguments —
+     * {@code SELECT x!y z w} is {@code 'z'}, {@code 'w'} and {@code 'w'}, {@code SELECT ABS(x!y z w)} {@code 'z'} and
+     * {@code 'w'}; and in a call's arguments the ')' after the token closes the method's arguments in that reading,
+     * so the call's own are left open and a FROM after them is the fault, {@code SELECT ABS(x!y z) FROM t} the
+     * {@code 'FROM'} (all live-verified).
      */
     private static List<String> methodArgumentLines(final String sql, final List<Token> spoken, final int at) {
         final Token fault = spoken.get(at);
         final List<String> lines = new ArrayList<String>();
         lines.add(SyntaxErrorListener.sentence(fault));
+        final Token after = spoken.get(at + 1);
+        if ((StarModifierResync.isName(fault) || isLiteral(fault))
+                && (StarModifierResync.isName(after) || isLiteral(after))) {
+            lines.add(SyntaxErrorListener.sentence(after));
+            if (standsAsSelectItem(spoken, at - 2)) {
+                lines.add(SyntaxErrorListener.sentence(after));
+            }
+            return lines;
+        }
         final int start = fault.getStartIndex();
         final boolean spaced = start > 0 && (sql.charAt(start - 1) == ' ' || sql.charAt(start - 1) == '\t');
         final String opened = sql.substring(0, spaced ? start - 1 : start) + '(' + sql.substring(start);
@@ -150,6 +165,18 @@ final class OperandTailLines {
         if (!spaced && next > start) {
             next--;
         }
+        if (insideCallBrackets(spoken, at - 3)) {
+            // This grammar reads a FROM in a call's brackets and faults further on; live refuses the FROM itself.
+            for (int i = at + 1; i < spoken.size() && !endsStatement(spoken.get(i)); i++) {
+                if (spoken.get(i).getType() == FrostlakeLexer.FROM) {
+                    if (next > spoken.get(i).getStartIndex()) {
+                        lines.add(SyntaxErrorListener.sentence(spoken.get(i)));
+                        return lines;
+                    }
+                    break;
+                }
+            }
+        }
         for (int i = at + 1; i < spoken.size() && next > start; i++) {
             if (spoken.get(i).getStartIndex() == next) {
                 lines.add(SyntaxErrorListener.sentence(spoken.get(i)));
@@ -157,6 +184,37 @@ final class OperandTailLines {
             }
         }
         return lines;
+    }
+
+    /** Whether the token at {@code index} stands inside a call's brackets: the innermost one open there is a call's. */
+    private static boolean insideCallBrackets(final List<Token> spoken, final int index) {
+        int depth = 0;
+        for (int i = index; i >= 0; i--) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.RPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.LPAREN) {
+                if (depth == 0) {
+                    return i > 0 && CallTokenGroups.isCallName(spoken.get(i - 1));
+                }
+                depth--;
+            } else if (type == FrostlakeLexer.SEMI) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a token ends the statement: a semicolon or the end of the input. */
+    private static boolean endsStatement(final Token token) {
+        return token.getType() == FrostlakeLexer.SEMI || token.getType() == Token.EOF;
+    }
+
+    /** Whether a token is a number or a text written as a literal. */
+    private static boolean isLiteral(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.STRING_LITERAL;
     }
 
     /** Whether a token ends a value that is no name: a closing bracket or a literal. */

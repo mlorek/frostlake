@@ -45,6 +45,7 @@ import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.ColumnRenames;
 import dev.frostlake.metastore.DataMetricFunctions;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NameTakenException;
@@ -74,7 +75,6 @@ import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.SequenceDefault;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
@@ -101,6 +101,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.IcebergTypes;
@@ -119,8 +120,6 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.math.BigDecimal;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -222,9 +221,13 @@ public class AlterCommandHandler implements CommandHandler {
             if (ctx.DATABASE() != null) {
                 final String dbName = visitor.getText(ctx.identifier());
                 final Database database = catalog.databaseExact(dbName);
-                checkAlter(SecurableObjectType.DATABASE, dbName);
                 SystemDatabase.refuseChange(database.getName());
                 altered = database;
+                if (ctx.databaseAction().RENAME() == null && ctx.databaseAction().SWAP() == null) {
+                    // Every change but a rename or a swap, which ask for OWNERSHIP, asks for MODIFY.
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "DATABASE", new String[] {database.getName()},
+                        null);
+                }
 
                 if (ctx.databaseAction().RENAME() != null) {
                     // Renaming an object needs OWNERSHIP of it, as replacing or dropping it does.
@@ -305,7 +308,6 @@ public class AlterCommandHandler implements CommandHandler {
                 }
                 final Schema schema = catalog.resolveSchema(
                     QualifiedName.of(catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName()), 2)));
-                checkAlter(SecurableObjectType.SCHEMA, schemaName);
                 if ("INFORMATION_SCHEMA".equals(schema.getName())) {
                     // INFORMATION_SCHEMA is read-only: no ALTER changes it - not its name, its comment, its
                     // parameters, its tags or its managed access.
@@ -357,7 +359,12 @@ public class AlterCommandHandler implements CommandHandler {
                 }
                 if (ctx.schemaAction() != null && ctx.schemaAction().MANAGED() != null) {
                     // ENABLE | DISABLE MANAGED ACCESS: only the schema owner grants on its objects.
-                    schema.setManagedAccess(ctx.schemaAction().ENABLE() != null);
+                    final boolean enable = ctx.schemaAction().ENABLE() != null;
+                    if (queryExecutor.getSecurityManager() != null) {
+                        queryExecutor.getSecurityManager().checkManagedAccessSwitch(schema, enable,
+                            FutureGrants.openIn(catalog, schema));
+                    }
+                    schema.setManagedAccess(enable);
                 }
 
                 if (ctx.schemaAction().SWAP() != null) {
@@ -402,7 +409,6 @@ public class AlterCommandHandler implements CommandHandler {
                 branchHandlesIfExists = true;
                 final MaskingPolicy policy;
                 try {
-                    checkAlter(SecurableObjectType.MASKING_POLICY, policyName);
                     policy = existingPolicy(catalog.findMaskingPolicyExact(policyName), "Masking policy", policyName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) {
@@ -411,6 +417,7 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.debug("Masking policy does not exist (IF EXISTS): {}", policyName);
                     return null;
                 }
+                requirePolicyChange("MASKING_POLICY", qualifiedNameParts(ctx.qualifiedName()), action);
                 if (action.RENAME() != null) {
                     requirePolicyRenameTarget(action.qualifiedName(), Privilege.CREATE_MASKING_POLICY);
                     catalog.renameMaskingPolicy(policyName, visitor.getText(action.qualifiedName()));
@@ -516,7 +523,7 @@ public class AlterCommandHandler implements CommandHandler {
                     final Contact contact = catalog.findContact(contactName);
                     if (contact == null) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
-                            catalog.qualifiedObjectName(contactName)));
+                            catalog.qualifiedExactName(contactName)));
                     }
                     // UNSET COMMENT is the form without a comment clause.
                     contact.setComment(ctx.commentClause() == null ? null
@@ -536,7 +543,6 @@ public class AlterCommandHandler implements CommandHandler {
                 branchHandlesIfExists = true;
                 final RowAccessPolicy policy;
                 try {
-                    checkAlter(SecurableObjectType.ROW_ACCESS_POLICY, policyName);
                     policy = existingPolicy(catalog.findRowAccessPolicyExact(policyName), "Row access policy",
                         policyName);
                 } catch (final RuntimeException e) {
@@ -546,6 +552,7 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.debug("Row access policy does not exist (IF EXISTS): {}", policyName);
                     return null;
                 }
+                requirePolicyChange("ROW_ACCESS_POLICY", qualifiedNameParts(ctx.qualifiedName()), action);
                 if (action.RENAME() != null) {
                     requirePolicyRenameTarget(action.qualifiedName(), Privilege.CREATE_ROW_ACCESS_POLICY);
                     catalog.renameRowAccessPolicy(policyName, visitor.getText(action.qualifiedName()));
@@ -575,17 +582,15 @@ public class AlterCommandHandler implements CommandHandler {
                 final String[] newParts =
                     queryExecutor.resolveWholeObjectNameParts(ctx.dynamicTableAction().wholeObjectName());
                 if (ddlHandler.findDynamicTable(renamedParts) != null) {
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
+                    queryExecutor.requireOwnership("DYNAMIC_TABLE", renamedParts, null);
                     ddlHandler.renameDynamicTable(renamedParts, newParts);
                 } else if (viewUnder(renamedParts) != null) {
                     // A view under the name is renamed by this statement too (live-verified).
-                    checkAlter(SecurableObjectType.VIEW, queryExecutor.alterTargetName(ctx));
                     renameViewAsOtherKind(renamedParts, newParts);
                 } else if (alterTargetTableExists(renamedParts)) {
                     // The statement renames whatever table the name finds: a plain one as ALTER TABLE does.
                     final String plainName = queryExecutor.alterTargetName(ctx);
                     final Table plain = catalog.resolveTable(QualifiedName.of(renamedParts));
-                    checkAlter(SecurableObjectType.TABLE, plainName);
                     renameTable(plainName, renamedParts, plain, newParts);
                 } else if (!ifExists) {
                     ddlHandler.resolveDynamicTable(renamedParts);
@@ -603,9 +608,11 @@ public class AlterCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.objectOfOtherType("VIEW", "DYNAMIC_TABLE"));
                 }
                 if (operatesDynamicTable(dynamicAction)) {
-                    checkOperate(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
+                    queryExecutor.requirePrivilege(Privilege.OPERATE, "DYNAMIC_TABLE", alteredParts, null);
+                } else if (dynamicAction.SWAP() != null) {
+                    queryExecutor.requireOwnership("DYNAMIC_TABLE", alteredParts, null);
                 } else {
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, queryExecutor.alterTargetName(ctx));
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "DYNAMIC_TABLE", alteredParts, null);
                 }
                 if (dynamicAction.tagSet() != null) {
                     applyTagSet(ddlHandler.resolveDynamicTable(alteredParts), dynamicAction.tagSet());
@@ -699,6 +706,11 @@ public class AlterCommandHandler implements CommandHandler {
                 if (ctx.ICEBERG() != null) {
                     requireIcebergAction(ctx.tableAction());
                 }
+                if (ctx.tableAction() != null && ctx.tableAction().RECLUSTER() != null
+                        && ctx.tableAction().SUSPEND() == null && ctx.tableAction().RESUME() == null) {
+                    // Manual reclustering is no feature the account runs any more (live-verified).
+                    throw new RuntimeException("Unsupported feature 'RECLUSTER'.");
+                }
                 final String[] tableParts = queryExecutor.alterTargetNameParts(ctx);
                 InformationSchemaGuard.refuseWrite(catalog, tableParts);
                 if (ctx.tableAction() != null && ctx.tableAction().SET() != null
@@ -709,18 +721,22 @@ public class AlterCommandHandler implements CommandHandler {
                         && ctx.tableAction().COLUMN() == null && ctx.tableAction().CONSTRAINT() == null
                         && !alterTargetTableExists(tableParts) && ddlHandler.findDynamicTable(tableParts) != null) {
                     // A dynamic table is renamed by this statement too (live-verified).
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, tableName);
+                    queryExecutor.requireOwnership("DYNAMIC_TABLE", tableParts, null);
                     ddlHandler.renameDynamicTable(tableParts,
                         queryExecutor.resolveWholeObjectNameParts(ctx.tableAction().wholeObjectName()));
                 } else if (ctx.tableAction() != null && !alterTargetTableExists(tableParts)
                         && ddlHandler.findDynamicTable(tableParts) != null) {
                     // The statement takes a dynamic table's comment, clustering and reclustering (live-verified).
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, tableName);
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "DYNAMIC_TABLE", tableParts, null);
                     ddlHandler.alterDynamicTableAsTable(ddlHandler.findDynamicTable(tableParts), ctx.tableAction());
                 } else if (ctx.tableAction() != null && !alterTargetTableExists(tableParts)
                         && ddlHandler.materializedViewExists(tableParts)) {
                     // A materialized view takes the statement's clustering actions and its rename (live-verified).
-                    checkAlter(SecurableObjectType.MATERIALIZED_VIEW, tableName);
+                    if (ctx.tableAction().wholeObjectName() != null) {
+                        queryExecutor.requireOwnership("MATERIALIZED_VIEW", tableParts, null);
+                    } else {
+                        queryExecutor.requirePrivilege(Privilege.MODIFY, "MATERIALIZED_VIEW", tableParts, null);
+                    }
                     ddlHandler.alterMaterializedViewAsTable(tableParts, ctx.tableAction());
                 } else if (ctx.tableAction() != null && !alterTargetTableExists(tableParts)
                         && viewUnder(tableParts) != null && alterViewAsTable(tableParts, tableName, ctx.tableAction(),
@@ -763,7 +779,6 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     final Table table = catalog.resolveTable(QualifiedName.of(tableParts));
                     requireStatementOfTableKind(ctx, table);
-                    checkAlter(SecurableObjectType.TABLE, tableName);
                     if (ctx.tableAction() != null && ctx.tableAction().SWAP() == null
                             && ctx.tableAction().wholeObjectName() == null) {
                         // Every change but a rename or a swap, which ask for OWNERSHIP, asks for MODIFY.
@@ -828,11 +843,17 @@ public class AlterCommandHandler implements CommandHandler {
                             if (holdsRows) {
                                 AddedColumns.refuseNonConstantDefault(colDef, colName, table.getName());
                             }
+                            new DefaultExpressionCalls(queryExecutor).requireAddedColumnReads(colDef, table);
                             final TableColumn newColumn =
                                 ddlHandler.getColumnParser().parseSingleColumnDef(colDef, true,
                                     table.getIcebergMetadata() != null);
                             if (holdsRows) {
                                 AddedColumns.refuseUnfillableNotNull(newColumn, table.getName());
+                            }
+                            if (newColumn.isVirtual()) {
+                                final List<TableColumn> readable = new ArrayList<>(table.columnsView());
+                                readable.addAll(added);
+                                VirtualColumnDefinitions.judgeAdded(readable, newColumn, colDef, queryExecutor);
                             }
                             added.add(newColumn);
                             addedDefs.add(colDef);
@@ -930,9 +951,9 @@ public class AlterCommandHandler implements CommandHandler {
                             final String contactName = visitor.getText(assignment.qualifiedName());
                             if (catalog.findContact(contactName) == null) {
                                 throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
-                                    catalog.qualifiedObjectName(contactName)));
+                                    catalog.qualifiedExactName(contactName)));
                             }
-                            table.setContact(purpose, catalog.qualifiedObjectName(contactName));
+                            table.setContact(purpose, catalog.qualifiedExactName(contactName));
                         }
                         logger.trace("Set contact(s) on table {}", tableName);
                     } else if (ctx.tableAction().CONTACT() != null) {
@@ -1028,11 +1049,12 @@ public class AlterCommandHandler implements CommandHandler {
                         // SET JOIN POLICY p [FORCE] — one per table, guarded by the same 3549 sentence.
                         final String written = visitor.getText(
                             ctx.tableAction().joinPolicyClause().qualifiedName());
+                        // Named exactly, and recorded so (live-verified).
                         if (catalog.findJoinPolicy(written) == null) {
                             throw new RuntimeException(SqlCompilationError.doesNotExist(
-                                "Join policy", catalog.qualifiedObjectName(written)));
+                                "Join policy", catalog.qualifiedExactName(written)));
                         }
-                        final String policyName = catalog.qualifiedObjectName(written);
+                        final String policyName = catalog.qualifiedExactName(written);
                         if (table.hasJoinPolicy()
                                 && !sameMaskingPolicy(table.getJoinPolicyName(), policyName)
                                 && ctx.tableAction().FORCE() == null) {
@@ -1318,6 +1340,7 @@ public class AlterCommandHandler implements CommandHandler {
                             requireTransientRetention(rawKey, table.isTransient(), property.copyOptionValue());
                             requireLegalExtensionTime(rawKey, property.copyOptionValue());
                             requireLegalErrorLogging(rawKey, property.copyOptionValue());
+                            CreatedObjectProperties.requireSwitchValue(rawKey, property.copyOptionValue());
                             if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey)
                                     && property.copyOptionValue() != null
                                     && property.copyOptionValue().getText().matches("[0-9]+")) {
@@ -1391,7 +1414,7 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     final String[] mvParts = queryExecutor.alterTargetNameParts(ctx);
                     if (alterTargetTableExists(mvParts)) {
-                        checkAlter(SecurableObjectType.TABLE, queryExecutor.alterTargetName(ctx));
+                        queryExecutor.requirePrivilege(Privilege.MODIFY, "TABLE", mvParts, null);
                         alterTableAsMaterializedView(catalog.resolveTable(QualifiedName.of(mvParts)), action);
                         return null;
                     }
@@ -1401,7 +1424,6 @@ public class AlterCommandHandler implements CommandHandler {
                     refuseMissingMaterializedView(ctx, action, ifExists);
                     return null;
                 }
-                checkAlter(SecurableObjectType.MATERIALIZED_VIEW, queryExecutor.alterTargetName(ctx));
                 if (ctx.materializedViewAction() != null && ctx.materializedViewAction().RENAME() == null) {
                     queryExecutor.requireOnRelation(Privilege.MODIFY, queryExecutor.alterTargetName(ctx));
                 }
@@ -1450,7 +1472,6 @@ public class AlterCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("View", catalog.requireOwningSchema(
                         QualifiedName.of(viewParts)).qualifiedName(viewParts[viewParts.length - 1])));
                 }
-                checkAlter(SecurableObjectType.VIEW, viewName);
                 if (ctx.viewAction().RENAME() == null) {
                     queryExecutor.requirePrivilege(Privilege.MODIFY, "VIEW", queryExecutor.alterTargetNameParts(ctx),
                         null);
@@ -1487,6 +1508,60 @@ public class AlterCommandHandler implements CommandHandler {
                 } else if (ctx.viewAction().SECURE() != null) {
                     view.setSecure(ctx.viewAction().SET() != null);
                     logger.trace("Set secure on view {}: {}", viewName, view.isSecure());
+                } else if (ctx.viewAction().aggregationPolicyClause() != null) {
+                    // SET AGGREGATION POLICY p [ENTITY KEY (…)] [FORCE] over a view, as over a table (live-verified).
+                    final FrostlakeParser.AggregationPolicyClauseContext clause =
+                        ctx.viewAction().aggregationPolicyClause();
+                    final String written = visitor.getText(clause.qualifiedName());
+                    if (catalog.findAggregationPolicyExact(written) == null) {
+                        throw new RuntimeException(SqlCompilationError.doesNotExist(
+                            "Aggregation policy", catalog.qualifiedExactName(written)));
+                    }
+                    final String policyName = catalog.qualifiedExactName(written);
+                    if (view.hasAggregationPolicy() && !sameMaskingPolicy(view.getAggregationPolicyName(), policyName)
+                            && ctx.viewAction().FORCE() == null) {
+                        throw new RuntimeException("Object " + view.getName().toUpperCase(Locale.ROOT)
+                            + " already has a AGGREGATION_POLICY. Only one AGGREGATION_POLICY is allowed at a time.");
+                    }
+                    final List<String> entityKey = new ArrayList<>();
+                    if (clause.identifierList() != null) {
+                        for (final FrostlakeParser.IdentifierContext id : clause.identifierList().identifier()) {
+                            entityKey.add(visitor.getText(id));
+                        }
+                    }
+                    view.setAggregationPolicyName(policyName);
+                    view.setAggregationEntityKey(entityKey);
+                    logger.trace("Set aggregation policy on view {}", viewName);
+                } else if (ctx.viewAction().UNSET() != null && ctx.viewAction().AGGREGATION() != null) {
+                    // A view the policy is not on is named a TABLE there, as a table is (live-verified).
+                    if (!view.hasAggregationPolicy()) {
+                        throw new RuntimeException("Any policy of kind AGGREGATION_POLICY is not attached to TABLE "
+                            + view.getName().toUpperCase(Locale.ROOT) + ".");
+                    }
+                    view.setAggregationPolicyName(null);
+                    view.setAggregationEntityKey(null);
+                    logger.trace("Unset aggregation policy on view {}", viewName);
+                } else if (ctx.viewAction().joinPolicyClause() != null) {
+                    final String written = visitor.getText(ctx.viewAction().joinPolicyClause().qualifiedName());
+                    if (catalog.findJoinPolicy(written) == null) {
+                        throw new RuntimeException(SqlCompilationError.doesNotExist(
+                            "Join policy", catalog.qualifiedExactName(written)));
+                    }
+                    final String policyName = catalog.qualifiedExactName(written);
+                    if (view.hasJoinPolicy() && !sameMaskingPolicy(view.getJoinPolicyName(), policyName)
+                            && ctx.viewAction().FORCE() == null) {
+                        throw new RuntimeException("Object " + view.getName().toUpperCase(Locale.ROOT)
+                            + " already has a JOIN_POLICY. Only one JOIN_POLICY is allowed at a time.");
+                    }
+                    view.setJoinPolicyName(policyName);
+                    logger.trace("Set join policy on view {}", viewName);
+                } else if (ctx.viewAction().UNSET() != null && ctx.viewAction().JOIN() != null) {
+                    if (!view.hasJoinPolicy()) {
+                        throw new RuntimeException("Any policy of kind JOIN_POLICY is not attached to TABLE "
+                            + view.getName().toUpperCase(Locale.ROOT) + ".");
+                    }
+                    view.setJoinPolicyName(null);
+                    logger.trace("Unset join policy on view {}", viewName);
                 } else if (!ctx.viewAction().optionKey().isEmpty()) {
                     if (unsetsComment(ctx.viewAction().optionKey())) {
                         view.setComment(null);
@@ -1569,14 +1644,13 @@ public class AlterCommandHandler implements CommandHandler {
                 }
 
             } else if (ctx.STREAM() != null) {
-                final String streamQn = visitor.getText(ctx.qualifiedName());
                 final String[] streamParts = qualifiedNameParts(ctx.qualifiedName());
                 final String streamName = streamParts[streamParts.length - 1];
                 final Schema schema;
                 schema = catalog.requireOwningSchema(QualifiedName.of(streamParts));
                 // A quoted name in another case is another stream, which is not there (live-verified).
                 final Stream stream = schema.getStreamExact(streamName);
-                checkAlter(SecurableObjectType.STREAM, streamQn);
+                queryExecutor.requirePrivilege(Privilege.MODIFY, "STREAM", streamParts, null);
 
                 final FrostlakeParser.StreamActionContext streamAction = ctx.streamAction();
                 if (streamAction.tagSet() != null) {
@@ -1592,7 +1666,6 @@ public class AlterCommandHandler implements CommandHandler {
                 }
 
             } else if (ctx.TASK() != null) {
-                final String taskQn = visitor.getText(ctx.qualifiedName());
                 final String[] taskParts = qualifiedNameParts(ctx.qualifiedName());
                 final String taskName = taskParts[taskParts.length - 1];
                 final Schema schema;
@@ -1604,9 +1677,9 @@ public class AlterCommandHandler implements CommandHandler {
                 if (ctx.taskAction().RESUME() != null || ctx.taskAction().SUSPEND() != null) {
                     // OPERATE "Grants the ability to suspend or resume a task" (documented); every other action
                     // is the owner's.
-                    checkOperate(SecurableObjectType.TASK, taskQn);
+                    queryExecutor.requirePrivilege(Privilege.OPERATE, "TASK", taskParts, null);
                 } else {
-                    checkAlter(SecurableObjectType.TASK, taskQn);
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "TASK", taskParts, null);
                 }
 
                 // Canonical scheduler key (DB.SCHEMA.TASK), built identically for RESUME and SUSPEND so the
@@ -1626,9 +1699,9 @@ public class AlterCommandHandler implements CommandHandler {
                         final String contactName = visitor.getText(assignment.qualifiedName());
                         if (catalog.findContact(contactName) == null) {
                             throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
-                                catalog.qualifiedObjectName(contactName)));
+                                catalog.qualifiedExactName(contactName)));
                         }
-                        task.setContact(purpose, catalog.qualifiedObjectName(contactName));
+                        task.setContact(purpose, catalog.qualifiedExactName(contactName));
                     }
                 } else if (ctx.taskAction().CONTACT() != null) {
                     // UNSET CONTACT purpose, … - a purpose nothing was attached for is no error.
@@ -1721,8 +1794,10 @@ public class AlterCommandHandler implements CommandHandler {
                 final String pipeName = visitor.getText(ctx.qualifiedName());
                 final Schema schema = catalog.resolveOwningSchema(pipeName);
                 final Pipe pipe = schema.getPipeExact(QualifiedName.parse(pipeName).last());
-                checkAlter(SecurableObjectType.PIPE, pipeName);
                 final FrostlakeParser.PipeActionContext action = ctx.pipeAction();
+                // Only the owner changes a pipe; OPERATE refreshes it, and pauses or resumes it (documented).
+                queryExecutor.requirePrivilege(operatesPipe(action) ? Privilege.OPERATE : Privilege.MODIFY, "PIPE",
+                    qualifiedNameParts(ctx.qualifiedName()), null);
                 // Every ALTER is DDL on the pipe but a REFRESH, which queues files rather than changing the pipe.
                 if (action.REFRESH() == null) {
                     altered = pipe;
@@ -1806,7 +1881,7 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
                 } else {
                     final Warehouse warehouse = catalog.getWarehouseExact(warehouseName);
-                    checkAlter(SecurableObjectType.WAREHOUSE, warehouseName);
+                    queryExecutor.requireWarehousePrivilege(warehousePrivilege(ctx.warehouseAction()), warehouse);
 
                     if (ctx.warehouseAction().RENAME() != null) {
                         final String newName = visitor.getText(ctx.warehouseAction().identifier());
@@ -1918,6 +1993,8 @@ public class AlterCommandHandler implements CommandHandler {
                         unsetSessionParameter(setting.key());
                     }
                 }
+                // The statements after it in a block or a procedure run under the values it left.
+                queryExecutor.repinSessionSettings();
 
             } else if (ctx.TAG() != null) {
                 final String tagName = visitor.getText(ctx.qualifiedName());
@@ -1930,7 +2007,12 @@ public class AlterCommandHandler implements CommandHandler {
                     return null;
                 }
                 final Tag tag = catalog.getTagExact(tagName);
-                checkAlter(SecurableObjectType.TAG, tagName);
+                if (ctx.tagAction().RENAME() != null) {
+                    queryExecutor.requireOwnership("TAG", qualifiedNameParts(ctx.qualifiedName()), null);
+                } else {
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "TAG", qualifiedNameParts(ctx.qualifiedName()),
+                        null);
+                }
 
                 if (ctx.tagAction().ADD() != null) {
                     // The conflict rule is judged against the values the statement would leave, before they change.
@@ -2063,7 +2145,6 @@ public class AlterCommandHandler implements CommandHandler {
             // The table's own refusal, or the table itself where one of that name is there.
             catalog.resolveTable(QualifiedName.of(parts));
         }
-        checkAlter(SecurableObjectType.MATERIALIZED_VIEW, queryExecutor.alterTargetName(ctx));
         ddlHandler.handleAlterStatement(ctx);
     }
 
@@ -2314,14 +2395,13 @@ public class AlterCommandHandler implements CommandHandler {
     private boolean alterViewAsTable(final String[] viewParts, final String name,
                                      final FrostlakeParser.TableActionContext action, final boolean ifExists) {
         if (action.RENAME() != null && action.COLUMN() == null && action.CONSTRAINT() == null) {
-            checkAlter(SecurableObjectType.VIEW, name);
             renameViewAsOtherKind(viewParts,
                 queryExecutor.resolveWholeObjectNameParts(action.wholeObjectName()));
             return true;
         }
         if (action.PROJECTION() != null && (action.ALTER() != null || action.MODIFY() != null)) {
             // A column's projection policy is the view column's, set as ALTER VIEW sets it.
-            checkAlter(SecurableObjectType.VIEW, name);
+            queryExecutor.requirePrivilege(Privilege.MODIFY, "VIEW", viewParts, null);
             columnProjectionPolicy(viewColumns(viewUnder(viewParts)), action.identifier(0),
                 action.UNSET() != null ? null : action.qualifiedName(), action.FORCE() != null);
             return true;
@@ -2573,7 +2653,7 @@ public class AlterCommandHandler implements CommandHandler {
         for (final Row row : storage.scan()) {
             final Object value = row.getValue(slot);
             if (value instanceof Number
-                    && NumericRangeRefusal.exceeds(new BigDecimal(value.toString()), newPrecision, scale)) {
+                    && NumericRangeRefusal.exceeds(DecimalText.parse(value.toString()), newPrecision, scale)) {
                 throw new RuntimeException(SqlCompilationError.trailing("cannot change column "
                     + colName.toUpperCase(Locale.ROOT)
                     + " from type " + typeText(oldType) + " to " + typeText(newType)
@@ -3109,27 +3189,52 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
-    private void checkAlter(final SecurableObjectType objectType, final String objectName) {
-        if (queryExecutor.getSecurityManager() != null) {
-            queryExecutor.getSecurityManager().checkAlter(objectType, objectName);
+    /**
+     * Refuse an ALTER of a masking or row access policy the session may not make: a rename asks OWNERSHIP, as
+     * renaming any object does, and every other change MODIFY, which the policy's owner holds.
+     *
+     * @param kind   MASKING_POLICY or ROW_ACCESS_POLICY
+     * @param parts  the policy's name, part by part
+     * @param action what the statement does to it
+     */
+    private void requirePolicyChange(final String kind, final String[] parts,
+                                     final FrostlakeParser.PolicyActionContext action) {
+        if (action.RENAME() != null) {
+            queryExecutor.requireOwnership(kind, parts, null);
+        } else {
+            queryExecutor.requirePrivilege(Privilege.MODIFY, kind, parts, null);
         }
     }
 
     /**
-     * Authorize an ALTER that operates a task or a dynamic table rather than changing what it is: OPERATE, or
-     * owning the object, which holds every privilege on it. Neither kind has an ALTER privilege to grant.
+     * Whether an ALTER PIPE operates the pipe rather than changing it: a REFRESH, or a SET of PIPE_EXECUTION_PAUSED
+     * alone.
      */
-    private void checkOperate(final SecurableObjectType objectType, final String objectName) {
-        final SecurityManager security = queryExecutor.getSecurityManager();
-        if (security == null) {
-            return;
+    private boolean operatesPipe(final FrostlakeParser.PipeActionContext action) {
+        if (action.REFRESH() != null) {
+            return true;
         }
-        // A privilege is recorded under the kind's underscored name (DYNAMIC_TABLE), and the owner is looked up by
-        // the kind's words (DYNAMIC TABLE).
-        if (!security.holdsPrivilege(Privilege.OPERATE, objectType.name(), objectName,
-                catalog.getObjectOwnerRole(objectType.getCatalogName(), objectName))) {
-            security.checkPermission(Privilege.OPERATE, objectType, objectName);
+        if (action.SET() == null) {
+            return false;
         }
+        for (final FrostlakeParser.PipeSetOptionContext option : action.pipeSetOption()) {
+            if (!"PIPE_EXECUTION_PAUSED".equals(visitor.getText(option.identifier(0)).toUpperCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The privilege an ALTER WAREHOUSE asks: OPERATE to resume or suspend the warehouse or abort its queries, MODIFY
+     * for its properties and tags (documented), or null for a rename, which asks OWNERSHIP.
+     */
+    private static Privilege warehousePrivilege(final FrostlakeParser.WarehouseActionContext action) {
+        if (action.RENAME() != null) {
+            return null;
+        }
+        return action.RESUME() != null || action.RESUME_IF_SUSPENDED() != null || action.SUSPEND() != null
+            || action.ABORT_ALL_QUERIES() != null ? Privilege.OPERATE : Privilege.MODIFY;
     }
 
     /**
@@ -3231,6 +3336,8 @@ public class AlterCommandHandler implements CommandHandler {
             if (!isThisAccount(named, ifExists)) {
                 return;
             }
+            // The account's tags change as its other properties do, with MODIFY on it.
+            AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.MODIFY);
             if (ctx.tagSet() != null) {
                 applyTagSet(catalog.getAccountTags(), ctx.tagSet());
             } else {
@@ -3885,6 +3992,8 @@ public class AlterCommandHandler implements CommandHandler {
                 + " policies of same kind.please drop the current association in"
                 + " order to attach a new policy.");
         }
+        // A column another policy reads as an argument takes none (MaskedArguments).
+        MaskedArguments.requireProjectable(target, col);
         col.setProjectionPolicyName(policyName);
     }
 
@@ -3936,6 +4045,7 @@ public class AlterCommandHandler implements CommandHandler {
                 final TableColumn argCol = target.hasColumn(argName) ? target.getColumn(argName) : null;
                 if (argCol != null && argCol != col) {
                     MaskedArguments.requireReadable(catalog, argCol);
+                    MaskedArguments.requireUnprojected(argCol);
                 }
                 arguments.add(argName);
             }
@@ -4186,6 +4296,7 @@ public class AlterCommandHandler implements CommandHandler {
                 }
             }
         }
+        VirtualColumnDefinitions.refuseDroppedReads(table, dropping);
         final String fullyQualifiedName = queryExecutor.getFullyQualifiedTableName(tableName);
         final Schema columnOwner = catalog.resolveOwningSchema(tableName);
         for (final String colName : dropping) {
@@ -4332,14 +4443,15 @@ public class AlterCommandHandler implements CommandHandler {
             attachments.add(new DataMetricAttachment(metric.toUpperCase(Locale.ROOT), columns));
             return;
         }
+        // A metric the object does not carry is refused alike by MODIFY and by DROP (live-verified).
         if (modify) {
             final DataMetricAttachment attachment = attachments.find(metric.toUpperCase(Locale.ROOT), columns);
             if (attachment != null) {
                 attachment.setSuspended(suspend);
+                return;
             }
-            return;
         }
-        if (!attachments.drop(metric.toUpperCase(Locale.ROOT), columns)) {
+        if (modify || !attachments.drop(metric.toUpperCase(Locale.ROOT), columns)) {
             throw new RuntimeException(SqlCompilationError.PREFIX + " Data metric function "
                 + DataMetricFunctions.bareName(metric) + " is not attached to " + kind + " "
                 + table.getName().toUpperCase(Locale.ROOT) + ".");
@@ -4528,7 +4640,8 @@ public class AlterCommandHandler implements CommandHandler {
      */
     private void trackViewChanges(final View view, final String viewName) {
         final Schema home = catalog.resolveOwningSchema(viewName);
-        final String untracked = ChangeTrackedQuery.viewRefusal(catalog, home.getDatabaseName(), home.getName(), view);
+        final String untracked = ChangeTrackedQuery.viewRefusal(catalog, queryExecutor.getFunctionRegistry(),
+            home.getDatabaseName(), home.getName(), view);
         if (untracked != null) {
             throw new RuntimeException(untracked);
         }
@@ -4580,7 +4693,7 @@ public class AlterCommandHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Empty SQL statement."));
         }
         if (action.RENAME() != null) {
-            checkAlter(SecurableObjectType.MATERIALIZED_VIEW, QualifiedName.join(viewParts));
+            queryExecutor.requireOwnership("MATERIALIZED_VIEW", viewParts, null);
             final Schema home = ddlHandler.materializedViewHome(viewParts);
             ddlHandler.renameMaterializedView(home, home.getMaterializedView(viewParts[viewParts.length - 1]),
                 qualifiedNameParts(action.qualifiedName()));
@@ -4746,8 +4859,9 @@ public class AlterCommandHandler implements CommandHandler {
      * snapshot) carries only the last part, so those are compared bare.
      */
     private boolean sameMaskingPolicy(final String attached, final String resolved) {
+        // Compared exactly: a policy whose quoted name differs only in case is another policy (live-verified).
         return QualifiedName.parse(attached).parts().length == 3
-            ? attached.equalsIgnoreCase(resolved)
-            : bareName(attached).equals(bareName(resolved));
+            ? attached.equals(resolved)
+            : QualifiedName.parse(attached).last().equals(QualifiedName.parse(resolved).last());
     }
 }

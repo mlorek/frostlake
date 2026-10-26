@@ -22,8 +22,10 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
@@ -1515,13 +1517,18 @@ final class ValueRangeInferencer {
      * by that value — {@code '5'::NUMBER} is [SB1], {@code '127.5'::NUMBER} and
      * {@code 127.5::FLOAT::NUMBER} [SB2], {@code TRY_TO_DECIMAL('x', 10, 2)} a NULL's [SB1] — where the
      * same conversion over a column keeps the declared width. A conversion that fails does not fold:
-     * {@code ''::NUMBER} is [SB16]. Which operands count as constants is {@link #foldsAsConstant}.
+     * {@code ''::NUMBER} is [SB16]. Nor does a BOOLEAN's: {@code TRUE::NUMBER} is [SB16] and
+     * {@code TRUE::NUMBER(5,1)} [SB4] (live-verified). Which operands count as constants is
+     * {@link #foldsAsConstant}.
      */
     private ValueRange foldedConversion(final Expression conversion, final List<Expression> operands) {
         for (final Expression operand : operands) {
             if (!foldsAsConstant(operand) && !isPi(operand)) {
                 return null;
             }
+        }
+        if (!operands.isEmpty() && visitor.inferStaticType(operands.get(0)) instanceof BooleanType) {
+            return null;
         }
         if (exactScale(visitor.inferStaticType(conversion)) == null) {
             return null;
@@ -1554,7 +1561,7 @@ final class ValueRangeInferencer {
             return false;
         }
         try {
-            new BigDecimal(String.valueOf(((LiteralExpression) operands.get(0)).getValue()).trim());
+            DecimalText.parse(String.valueOf(((LiteralExpression) operands.get(0)).getValue()).trim());
             return true;
         } catch (final NumberFormatException noNumber) {
             return false;

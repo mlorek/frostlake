@@ -34,6 +34,7 @@ public final class EqualityCorrelation {
     private final List<String> otherConjuncts;
     private final String aggregateItem;
     private final boolean rowPerKeptRow;
+    private final String memberItem;
 
     /**
      * @param innerKeys      each equality's side over the subquery's relations, as written
@@ -42,16 +43,32 @@ public final class EqualityCorrelation {
      * @param otherConjuncts the WHERE's other conjuncts, as written
      * @param aggregateItem  the select list's one item when it is an aggregate expression, as written, or null
      * @param rowPerKeptRow  whether no select item aggregates, so the subquery answers a row for each row it keeps
+     * @param memberItem     the select list's one item when it is an expression that aggregates nothing, as
+     *                       written, or null: the member an IN over the subquery compares with
      */
     public EqualityCorrelation(final List<String> innerKeys, final List<String> outerKeys, final String from,
                                final List<String> otherConjuncts, final String aggregateItem,
-                               final boolean rowPerKeptRow) {
+                               final boolean rowPerKeptRow, final String memberItem) {
         this.innerKeys = new ArrayList<>(innerKeys);
         this.outerKeys = new ArrayList<>(outerKeys);
         this.from = from;
         this.otherConjuncts = new ArrayList<>(otherConjuncts);
         this.aggregateItem = aggregateItem;
         this.rowPerKeptRow = rowPerKeptRow;
+        this.memberItem = memberItem;
+    }
+
+    /** @return the select list's one item an IN compares with, or null when the select list is anything else */
+    public String getMemberItem() {
+        return memberItem;
+    }
+
+    /**
+     * @return the query of the inner keys and the member of each row the subquery's other conjuncts keep, the keys
+     *         first
+     */
+    public String membersQuery() {
+        return "SELECT " + String.join(", ", innerKeys) + ", " + memberItem + " FROM " + from + filter();
     }
 
     /**

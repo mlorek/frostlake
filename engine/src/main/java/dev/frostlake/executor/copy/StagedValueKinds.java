@@ -17,6 +17,7 @@
 package dev.frostlake.executor.copy;
 
 import dev.frostlake.functions.scalar.AutoTemporalParser;
+import dev.frostlake.types.DecimalText;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -198,7 +199,7 @@ public final class StagedValueKinds {
             return false;
         }
         for (int h = i + 2; h < text.length(); h++) {
-            if (Character.digit(text.charAt(h), 16) < 0) {
+            if (DecimalText.hexDigit(text.charAt(h)) < 0) {
                 return false;
             }
         }

@@ -60,6 +60,26 @@ final class AccountPrivileges {
     }
 
     /**
+     * Refuses a DROP or a replacement of a role or a user the session does not own: {@code Insufficient privileges to
+     * operate on role 'R'. Your primary role X must have OWNERSHIP granted on ROLE R.}, as the ownership refusals of
+     * the other kinds read (documented: dropping either takes its OWNERSHIP).
+     *
+     * @param queryExecutor the executor, for the session's rights
+     * @param kind          ROLE or USER
+     * @param name          the role's or the user's name
+     * @param owner         its owner role, or null when none is recorded
+     */
+    static void requirePrincipalOwnership(final QueryExecutor queryExecutor, final String kind, final String name,
+                                          final String owner) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null || security.mayActAsPrincipalOwner(owner)) {
+            return;
+        }
+        throw new RuntimeException(SqlAccessControlError.ownershipRequired(kind, name,
+            security.getSessionContext().getCurrentRole(), name));
+    }
+
+    /**
      * Refuses an ALTER USER the session may not make: {@code Insufficient privileges to operate on user 'U'. Your
      * primary role R must have MODIFY granted on USER U.} (live-verified). Users may change their own
      * DEFAULT_WAREHOUSE, DEFAULT_NAMESPACE and DEFAULT_ROLE and their session parameters' defaults without it

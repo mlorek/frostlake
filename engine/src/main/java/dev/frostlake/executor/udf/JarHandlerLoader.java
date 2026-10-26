@@ -85,6 +85,26 @@ public final class JarHandlerLoader {
     /** Load {@code className} (trying the Scala {@code object} singleton {@code className$} first) from the IMPORTS jar(s). */
     public static Class<?> load(final List<String> written, final String className,
                                 final Catalog catalog, final S3PathResolver s3Resolver) {
+        return load(written, className, catalog, s3Resolver, true);
+    }
+
+    /**
+     * Load {@code className} from the IMPORTS jar(s) in a loader of its own, sharing nothing with a class loaded
+     * before: its static fields, and those of every class of the jars it reads, start as the jars write them.
+     *
+     * @param written    the IMPORTS entries
+     * @param className  the handler's class
+     * @param catalog    the catalog the stages are named in
+     * @param s3Resolver maps an S3 location to a local path, or null
+     * @return the handler's class
+     */
+    public static Class<?> loadAnew(final List<String> written, final String className,
+                                    final Catalog catalog, final S3PathResolver s3Resolver) {
+        return load(written, className, catalog, s3Resolver, false);
+    }
+
+    private static Class<?> load(final List<String> written, final String className,
+                                 final Catalog catalog, final S3PathResolver s3Resolver, final boolean cached) {
         if (written == null || written.isEmpty()) {
             throw new RuntimeException("No IMPORTS jar specified for handler class " + className);
         }
@@ -130,9 +150,9 @@ public final class JarHandlerLoader {
             final File jar = new File(localPath);
             cacheKey.append('|').append(localPath).append(':').append(jar.length()).append(':').append(jar.lastModified());
         }
-        final Class<?> cached = HANDLER_CACHE.get(cacheKey.toString());
-        if (cached != null) {
-            return cached;
+        final Class<?> loaded = cached ? HANDLER_CACHE.get(cacheKey.toString()) : null;
+        if (loaded != null) {
+            return loaded;
         }
 
         final List<URL> urls = new ArrayList<>();
@@ -147,14 +167,18 @@ public final class JarHandlerLoader {
             urls.toArray(new URL[0]), Thread.currentThread().getContextClassLoader());
         try {
             final Class<?> scalaObject = loader.loadClass(className + "$");   // Scala object singleton, if present
-            HANDLER_CACHE.put(cacheKey.toString(), scalaObject);
+            if (cached) {
+                HANDLER_CACHE.put(cacheKey.toString(), scalaObject);
+            }
             return scalaObject;
         } catch (final UnsupportedClassVersionError newer) {
             throw tooNewForThisRuntime(className, newer);
         } catch (final ClassNotFoundException e) {
             try {
                 final Class<?> plainClass = loader.loadClass(className);      // plain Java/Scala class
-                HANDLER_CACHE.put(cacheKey.toString(), plainClass);
+                if (cached) {
+                    HANDLER_CACHE.put(cacheKey.toString(), plainClass);
+                }
                 return plainClass;
             } catch (final UnsupportedClassVersionError newer) {
                 throw tooNewForThisRuntime(className, newer);
@@ -169,9 +193,9 @@ public final class JarHandlerLoader {
                     final File f = new File(localPath);
                     resolved.append(localPath).append(f.isFile() ? "" : " [MISSING FILE]");
                 }
-                throw new RuntimeException(
+                throw new HandlerClassNotFound(
                     "Handler class '" + className + "' not found in IMPORTS jar(s) " + imports
-                    + " (resolved to: " + resolved + ")", e2);
+                    + " (resolved to: " + resolved + ")", className, e2);
             }
         }
     }

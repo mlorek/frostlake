@@ -16,6 +16,7 @@
 
 package dev.frostlake.formats;
 
+import dev.frostlake.executor.copy.FileFormatOptions;
 import dev.frostlake.executor.copy.StageFileReader;
 import dev.frostlake.executor.copy.StagedFileColumn;
 import org.apache.avro.generic.GenericRecord;
@@ -51,6 +52,41 @@ public class ParquetStageReader implements StageFileReader {
             }
         } catch (final IOException io) {
             throw io;
+        } catch (final RuntimeException parquetError) {
+            throw new RuntimeException("Invalid Parquet in file " + file.getFileName() + ": "
+                + parquetError.getMessage(), parquetError);
+        }
+        return records;
+    }
+
+    /**
+     * A file's records under its format's options. A string that is no UTF-8 is refused in the account's words —
+     * {@code Invalid UTF8 detected while decoding 'caf0xE9'} — unless REPLACE_INVALID_CHARACTERS reads each such byte
+     * as U+FFFD; a query that reads none of the file's positional columns decodes no value, and COUNT(*) answers the
+     * rows (live-verified).
+     *
+     * @param file      the file
+     * @param options   the format's options
+     * @param shownName the file as a refusal names it
+     * @return the records
+     * @throws IOException when the file cannot be read
+     */
+    @Override
+    public List<JsonNode> readRecords(final Path file, final FileFormatOptions options, final String shownName)
+            throws IOException {
+        final boolean replace = options.replacesInvalidCharacters() || options.readsNoPositionalColumn();
+        final List<JsonNode> records = new ArrayList<>();
+        final InputFile inputFile = new LocalInputFile(file);
+        try (final ParquetReader<GenericRecord> reader = AvroParquetReader.<GenericRecord>builder(inputFile).build()) {
+            GenericRecord record = reader.read();
+            while (record != null) {
+                records.add(AvroRecordConverter.toJson(record, replace));
+                record = reader.read();
+            }
+        } catch (final IOException io) {
+            throw io;
+        } catch (final AvroUnreadableText unreadable) {
+            throw new RuntimeException("Invalid UTF8 detected while decoding '" + unreadable.getShown() + "'");
         } catch (final RuntimeException parquetError) {
             throw new RuntimeException("Invalid Parquet in file " + file.getFileName() + ": "
                 + parquetError.getMessage(), parquetError);

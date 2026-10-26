@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.scalar.AutoTemporalParser;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -251,7 +252,7 @@ final class PivotValue {
             return null;
         }
         try {
-            return new BigDecimal(String.valueOf(value).trim());
+            return DecimalText.parse(String.valueOf(value).trim());
         } catch (final NumberFormatException notANumber) {
             return null;
         }

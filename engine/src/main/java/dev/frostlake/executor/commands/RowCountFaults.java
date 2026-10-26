@@ -38,8 +38,9 @@ import org.antlr.v4.runtime.Token;
  *   SELECT a FROM t LIMIT n + 1                 'SELECT' 1, then the ')' closing the frame
  * </pre>
  *
- * Only a count of the body's own query is read here: one inside a query nested in it is left to the frame's other
- * rules.
+ * A query nested in the body with a parameter for its count is refused too, the body's first word first:
+ * {@code SELECT COUNT(*) FROM (SELECT a FROM t LIMIT n)}, and alike after OFFSET and FETCH FIRST, in a scalar
+ * subquery and under IN.
  */
 final class RowCountFaults {
 
@@ -89,6 +90,29 @@ final class RowCountFaults {
                 continue;
             }
             return rendered(refused);
+        }
+        return nestedParameterCount(framed);
+    }
+
+    /** The body's first word, where a query nested in it takes a parameter for its row count; null otherwise. */
+    private static String nestedParameterCount(final List<Token> framed) {
+        int depth = 0;
+        for (int i = 0; i + 1 < framed.size(); i++) {
+            final int type = framed.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth--;
+            }
+            if (depth < 2 || !countsRows(framed, i)) {
+                continue;
+            }
+            final int at = i + (type == FrostlakeLexer.FETCH ? 2 : 1);
+            if (at < framed.size() && framed.get(at).getType() == FrostlakeLexer.IDENTIFIER) {
+                final List<Token> first = new ArrayList<>();
+                first.add(framed.get(1));
+                return rendered(first);
+            }
         }
         return null;
     }

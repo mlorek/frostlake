@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.functions.scalar.context.LastQueryId;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
@@ -237,7 +238,7 @@ final class QueryIndexArgument {
             return (BigDecimal) value;
         }
         if (value instanceof Double && !((Double) value).isNaN() && !((Double) value).isInfinite()) {
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         return null;
     }
@@ -247,7 +248,7 @@ final class QueryIndexArgument {
             return false;
         }
         try {
-            new BigDecimal(text.trim());
+            DecimalText.parse(text.trim());
             return true;
         } catch (final NumberFormatException notANumber) {
             return false;

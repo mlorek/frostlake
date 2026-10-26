@@ -32,6 +32,7 @@ import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
 import dev.frostlake.executor.operators.Operator;
 import dev.frostlake.executor.operators.StageOperator;
+import dev.frostlake.executor.operators.WhereAliasValues;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -71,6 +72,21 @@ final class OrderByExecutor {
      */
     Operator planOrderBy(final Table table, final FrostlakeParser.SelectStatementContext ctx,
                          final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        return planOrderBy(table, ctx, aliasToTable, allTables, null, false);
+    }
+
+    /**
+     * {@link #planOrderBy(Table, FrostlakeParser.SelectStatementContext, Map, List)} ahead of the projection that
+     * shows the select aliases' kept values: a key that names an alias computes the item once for the row and keeps
+     * the value, which the projection then shows, so a sequence's NEXTVAL sorted beside a key that is no output is
+     * drawn once a row and the rows come out in the order of the values shown (live-verified).
+     *
+     * @param aliasValues      the kept values, or null where the items are computed again
+     * @param freshAliasValues whether the sort is the first stage to keep them, which starts each run afresh
+     */
+    Operator planOrderBy(final Table table, final FrostlakeParser.SelectStatementContext ctx,
+                         final Map<String, Table> aliasToTable, final List<Table> allTables,
+                         final WhereAliasValues aliasValues, final boolean freshAliasValues) {
         if (ctx.orderByClause().ALL() != null) {
             // The only FROM-shaped rows ORDER BY ALL reaches are a bare star's, which are the columns it answers.
             return new StageOperator("ORDER BY[ALL]") {
@@ -117,6 +133,15 @@ final class OrderByExecutor {
             nullsFirst.add(ValueComparisons.nullsFirstFlag(item));
         }
 
+        // The alias each key names, where the key is the alias and the projection shows its kept value.
+        final String[] keptAliases = new String[orderColumns.size()];
+        if (aliasValues != null) {
+            int k = 0;
+            for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
+                keptAliases[k] = keptAlias(item, orderColumns.get(k), ctx);
+                k++;
+            }
+        }
         rejectFileSortKeys(orderColumns, keyOrigins, table, aliasToTable, allTables);
         validateOrderKeyScope(ctx, table, aliasToTable, allTables);
         // A key holding a subquery raises what the subquery raises as it is evaluated — its own compilation
@@ -130,6 +155,9 @@ final class OrderByExecutor {
         return new StageOperator("ORDER BY[" + String.join(", ", orderColumns) + "]") {
             @Override
             protected List<Row> apply(final List<Row> rows) {
+                if (freshAliasValues && aliasValues != null) {
+                    aliasValues.clear();
+                }
                 if (rows.size() <= 1) {
                     return rows; // nothing to compare; also avoids resolving keys for a degenerate result
                 }
@@ -159,10 +187,18 @@ final class OrderByExecutor {
                         final SourcePosition displaced = keyOrigins.get(i) == null ? null
                             : ExpressionSource.beginNested(keyOrigins.get(i));
                         try {
+                            final Object value;
+                            if (keptAliases[i] != null && aliasValues.holds(row, keptAliases[i])) {
+                                value = aliasValues.valueOf(row, keptAliases[i]);
+                            } else {
+                                value = resolveOrderValuePlanned(row, orderColumns.get(i), table, aliasToTable,
+                                    allTables, keyKind, keyIndex, keyEvaluator, i, keyHoldsSubquery[i]);
+                                if (keptAliases[i] != null) {
+                                    aliasValues.remember(row, keptAliases[i], value);
+                                }
+                            }
                             // Sorting reads each key, so a cell a relation deferred raises its fault here.
-                            sortKeys[r][i] = CollatedKey.of(DeferredFault.read(resolveOrderValuePlanned(row, orderColumns.get(i),
-                                table, aliasToTable, allTables, keyKind, keyIndex, keyEvaluator, i,
-                                keyHoldsSubquery[i])), keyRules[i]);
+                            sortKeys[r][i] = CollatedKey.of(DeferredFault.read(value), keyRules[i]);
                         } finally {
                             if (keyOrigins.get(i) != null) {
                                 ExpressionSource.end(displaced);
@@ -513,6 +549,51 @@ final class OrderByExecutor {
      * @param ctx the statement
      * @return the clause
      */
+    /**
+     * The upper-cased alias an ORDER BY key reads, where the key is a bare name the select list gives an item, or a
+     * position naming an item that has one, and was resolved to that item's expression; null for any other key.
+     */
+    private static String keptAlias(final FrostlakeParser.OrderItemContext item, final String resolved,
+                                    final FrostlakeParser.SelectStatementContext ctx) {
+        final FrostlakeParser.SelectClauseContext clause = firstClauseOf(ctx);
+        final String written = ParseTreeText.getOriginalText(KeyContexts.of(item));
+        if (clause == null || resolved.equals(written)) {
+            return null;
+        }
+        final List<FrostlakeParser.SelectItemContext> items = clause.selectList().selectItem();
+        final long position = OrdinalLiteral.positionOf(written);
+        if (position != OrdinalLiteral.NOT_AN_ORDINAL) {
+            // A position counts the items one by one only where no star widens one of them.
+            for (final FrostlakeParser.SelectItemContext selectItem : items) {
+                if (!SelectItemAccessors.isExprItem(selectItem)) {
+                    return null;
+                }
+            }
+            final String alias = position < 1 || position > items.size() ? null
+                : SelectItemAccessors.getItemAlias(items.get((int) position - 1));
+            return alias == null ? null : alias.toUpperCase(Locale.ROOT);
+        }
+        ParseTree node = KeyContexts.of(item);
+        while (node.getChildCount() == 1 && !(node instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            node = node.getChild(0);
+        }
+        if (!(node instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return null;
+        }
+        final String[] parts =
+            ParseTreeText.qualifiedNameParts(((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+        if (parts.length != 1) {
+            return null;
+        }
+        for (final FrostlakeParser.SelectItemContext selectItem : items) {
+            final String alias = SelectItemAccessors.getItemAlias(selectItem);
+            if (alias != null && alias.equals(parts[0])) {
+                return alias.toUpperCase(Locale.ROOT);
+            }
+        }
+        return null;
+    }
+
     static FrostlakeParser.SelectClauseContext firstClauseOf(final FrostlakeParser.SelectStatementContext ctx) {
         FrostlakeParser.SelectOperandContext operand = ctx.selectOperand(0);
         while (operand.selectClause() == null) {
@@ -1006,16 +1087,18 @@ final class OrderByExecutor {
 
     /**
      * Refuses one key of a grouped or DISTINCT query's ORDER BY that holds a subquery outside every aggregate. A
-     * ROW tested by IN is named as the ROW the plan compares, not the query: {@code [ROW(ID, ID)]}, a value
-     * naming an output column by that name (live-verified).
+     * ROW tested by IN, or compared with the query - {@code (id, id) = (SELECT id, v FROM g LIMIT 1)} - is named as the
+     * ROW the plan compares, not the query: {@code [ROW(ID, ID)]}, a value naming an output column by that name
+     * (live-verified).
      */
     private void rejectSubqueryInKey(final FrostlakeParser.OrderItemContext item, final Set<String> outputNames,
                                      final Table table, final Map<String, Table> aliasToTable,
                                      final List<Table> allTables) {
         final ParserRuleContext subquery = firstUnaggregatedSubqueryIn(KeyContexts.of(item));
-        if (subquery instanceof FrostlakeParser.TupleInSubqueryExprContext) {
+        final List<FrostlakeParser.ExpressionContext> comparedRow = comparedRowValues(subquery);
+        if (subquery instanceof FrostlakeParser.TupleInSubqueryExprContext || comparedRow != null) {
             final List<String> values = new ArrayList<>();
-            for (final FrostlakeParser.ExpressionContext value
+            for (final FrostlakeParser.ExpressionContext value : comparedRow != null ? comparedRow
                     : ((FrostlakeParser.TupleInSubqueryExprContext) subquery).expressionList().expression()) {
                 final String[] parts = value instanceof FrostlakeParser.QualifiedNameExprContext
                     ? ParseTreeText.qualifiedNameParts(
@@ -1035,6 +1118,17 @@ final class OrderByExecutor {
             throw new RuntimeException(SqlCompilationError.of("[" + (negatedExists(subquery) ? "NOT " : "")
                 + plannedSubquery(subquery, table, aliasToTable, allTables) + "] is not a valid order by expression"));
         }
+    }
+
+    /** The values of the ROW a query is compared with, {@code (id, id) = (SELECT …)}, or null. */
+    private static List<FrostlakeParser.ExpressionContext> comparedRowValues(final ParserRuleContext subquery) {
+        if (subquery != null && subquery.getParent() instanceof FrostlakeParser.RowScalarComparisonExprContext) {
+            return ((FrostlakeParser.RowScalarComparisonExprContext) subquery.getParent()).rowLeft;
+        }
+        if (subquery != null && subquery.getParent() instanceof FrostlakeParser.ScalarRowComparisonExprContext) {
+            return ((FrostlakeParser.ScalarRowComparisonExprContext) subquery.getParent()).rowRight;
+        }
+        return null;
     }
 
     /** Whether a subquery is an EXISTS a NOT is written right before. */

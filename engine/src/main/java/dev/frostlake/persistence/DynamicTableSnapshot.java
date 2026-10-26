@@ -87,4 +87,6 @@ public class DynamicTableSnapshot implements Serializable {
     public List<Long> refreshSequences;
     public List<Long> refreshMillis;
     public List<List<List<Object>>> refreshRows;
+    /** Each kept refresh's row identities, an entry null where not known; null on snapshots that predate them. */
+    public List<List<String>> refreshRowIds;
 }

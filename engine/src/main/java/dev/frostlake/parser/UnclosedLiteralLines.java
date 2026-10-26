@@ -44,6 +44,8 @@ import org.antlr.v4.runtime.Token;
  *   SELECT 1 x y; SELECT 'abc  'y', then the lexer's line: a fault that stands before the lexer's is told first
  *   SELECT 'abc'def'           a quote that is the text's last character is a token no rule reads, refused where
  *                              it stands and alone
+ *   SELECT 1 $$ 2              a dollar quote loses its first dollar sign, and the second is read on: the lexer's
+ *                              line, then '$' at 10
  *   SELECT `a b` FROM t1       a name between backticks takes the printable ASCII characters but the quotes and
  *                              the backtick: the lexer tells the first other one, here near '32' at 9, and drops
  *                              it with the name; b is read on, and the backtick and the blank after it are a
@@ -61,6 +63,7 @@ public final class UnclosedLiteralLines {
     private static final int TO_END = 2;
     private static final int LAST_QUOTE = 3;
     private static final int BACKTICK = 4;
+    private static final int DOLLAR = 5;
 
     private UnclosedLiteralLines() {
     }
@@ -284,6 +287,9 @@ public final class UnclosedLiteralLines {
         final char opens = sql.charAt(at);
         if (opens == '"') {
             return new int[] {TO_END, at};
+        }
+        if (opens == '$' && at + 1 < sql.length() && sql.charAt(at + 1) == '$') {
+            return new int[] {DOLLAR, at};
         }
         if (opens == '`') {
             if (!opensBacktickName(sql, at)) {

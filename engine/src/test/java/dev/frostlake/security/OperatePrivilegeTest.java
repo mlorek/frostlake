@@ -24,7 +24,6 @@ import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
@@ -46,7 +45,8 @@ public class OperatePrivilegeTest extends BaseDatabaseTest {
         openerUser = engine.getSessionContext().getCurrentUser();
         opener = engine.getSessionContext().getCurrentRole();
         engine.execute("CREATE ROLE op_r");
-        engine.execute("CREATE USER op_u");
+        // The user puts no secondary role in use, so a refusal names the primary role alone.
+        engine.execute("CREATE USER op_u DEFAULT_SECONDARY_ROLES = ()");
         engine.execute("GRANT ROLE op_r TO USER op_u");
         engine.execute("GRANT USAGE ON DATABASE test_db TO ROLE op_r");
         engine.execute("GRANT USAGE ON SCHEMA test_db.test_schema TO ROLE op_r");
@@ -93,8 +93,12 @@ public class OperatePrivilegeTest extends BaseDatabaseTest {
             asRole();
             engine.execute("ALTER TASK op_a SUSPEND");
             // A property is the owner's to change, and MONITOR operates nothing.
-            assertTrue(refusal("ALTER TASK op_a SET COMMENT = 'x'").contains("does not have ALTER privilege"));
-            assertTrue(refusal("ALTER TASK op_m RESUME").contains("does not have OPERATE privilege on TASK"));
+            assertEquals("SQL access control error:\nInsufficient privileges to operate on task 'OP_A'. "
+                + "Your primary role OP_R must have MODIFY granted on TASK TEST_DB.TEST_SCHEMA.OP_A.",
+                refusal("ALTER TASK op_a SET COMMENT = 'x'"));
+            assertEquals("SQL access control error:\nInsufficient privileges to operate on task 'OP_M'. "
+                + "Your primary role OP_R must have OPERATE granted on TASK TEST_DB.TEST_SCHEMA.OP_M.",
+                refusal("ALTER TASK op_m RESUME"));
         } finally {
             asOpener();
         }
@@ -121,14 +125,18 @@ public class OperatePrivilegeTest extends BaseDatabaseTest {
             engine.execute("ALTER DYNAMIC TABLE op_dt SUSPEND");
             engine.execute("ALTER DYNAMIC TABLE op_dt RESUME");
             engine.execute("ALTER DYNAMIC TABLE op_dt SET TARGET_LAG = '5 minutes'");
-            assertTrue(refusal("ALTER DYNAMIC TABLE op_dt SET COMMENT = 'x'")
-                .contains("does not have ALTER privilege"));
-            assertTrue(refusal("ALTER DYNAMIC TABLE op_dt RENAME TO op_dt2")
-                .contains("does not have ALTER privilege"));
-            assertTrue(refusal("ALTER DYNAMIC TABLE op_sel REFRESH")
-                .contains("does not have OPERATE privilege on DYNAMIC TABLE"));
-            assertTrue(refusal("ALTER DYNAMIC TABLE op_sel SUSPEND")
-                .contains("does not have OPERATE privilege on DYNAMIC TABLE"));
+            assertEquals("SQL access control error:\nInsufficient privileges to operate on dynamic_table 'OP_DT'. "
+                + "Your primary role OP_R must have MODIFY granted on DYNAMIC TABLE TEST_DB.TEST_SCHEMA.OP_DT.",
+                refusal("ALTER DYNAMIC TABLE op_dt SET COMMENT = 'x'"));
+            assertEquals("SQL access control error:\nInsufficient privileges to operate on dynamic_table 'OP_DT'. "
+                + "Your primary role OP_R must have OWNERSHIP granted on DYNAMIC TABLE TEST_DB.TEST_SCHEMA.OP_DT.",
+                refusal("ALTER DYNAMIC TABLE op_dt RENAME TO op_dt2"));
+            assertEquals("SQL access control error:\nInsufficient privileges to operate on dynamic_table 'OP_SEL'. "
+                + "Your primary role OP_R must have OPERATE granted on DYNAMIC TABLE TEST_DB.TEST_SCHEMA.OP_SEL.",
+                refusal("ALTER DYNAMIC TABLE op_sel REFRESH"));
+            assertEquals("SQL access control error:\nInsufficient privileges to operate on dynamic_table 'OP_SEL'. "
+                + "Your primary role OP_R must have OPERATE granted on DYNAMIC TABLE TEST_DB.TEST_SCHEMA.OP_SEL.",
+                refusal("ALTER DYNAMIC TABLE op_sel SUSPEND"));
         } finally {
             asOpener();
         }

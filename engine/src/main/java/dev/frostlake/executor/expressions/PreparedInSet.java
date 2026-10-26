@@ -18,8 +18,8 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DecimalText;
 
-import java.math.BigDecimal;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -101,7 +101,7 @@ public class PreparedInSet {
     /** Canonical key for numeric equality, or null for values BigDecimal can't parse (NaN/Infinity). */
     private static String numericKey(final Object number) {
         try {
-            return new BigDecimal(number.toString()).stripTrailingZeros().toPlainString();
+            return DecimalText.parse(number.toString()).stripTrailingZeros().toPlainString();
         } catch (final NumberFormatException e) {
             return null;
         }

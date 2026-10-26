@@ -55,10 +55,19 @@ public final class JavaProcedureExecutor {
         try {
             final Class<?> compiledClass;
             if (!procedure.getImports().isEmpty()) {
-                compiledClass = JarHandlerLoader.load(engine != null
-                        ? engine.localImports(procedure.getImports()) : procedure.getImports(), className,
-                    engine != null ? engine.getCatalog() : null,
-                    engine != null ? engine.getS3PathResolver() : null);
+                // Every CALL loads the jar's classes anew, as it loads an inline body's (live-verified for a
+                // function's jar); a class the jar no longer holds is refused as the account's class loader refuses
+                // one, as the procedure's CREATE would refuse it now (live-verified).
+                try {
+                    compiledClass = JarHandlerLoader.loadAnew(engine != null
+                            ? engine.localImports(procedure.getImports()) : procedure.getImports(), className,
+                        engine != null ? engine.getCatalog() : null,
+                        engine != null ? engine.getS3PathResolver() : null);
+                } catch (final HandlerClassNotFound missing) {
+                    throw new RuntimeException(JavaHandlerFailure.missingClass(className,
+                        JavaRuntimeLevel.declared(procedure.getRuntimeVersion()),
+                        " in function " + procedure.getName() + " with handler " + handler), missing);
+                }
             } else {
                 // The body is compiled once - creating the procedure did it - and every CALL loads the classes
                 // anew, so what a class's static fields hold is the CALL's own (live-verified).
@@ -87,8 +96,10 @@ public final class JavaProcedureExecutor {
             args[i + 1] = arguments.get(i);
         }
 
-        // Find matching method: first parameter must be Session
-        final Method target = findMethod(clazz, methodName, args.length);
+        // The one public method of the handler's name taking the Session and the procedure's arguments, as its
+        // CREATE judged it - refused as that CREATE would refuse it when the jar changed since (live-verified).
+        final Method target = JavaHandlerMethods.resolve(clazz, methodName, args.length, procedure.getName(),
+            procedure.getHandler());
 
         // The handler class does not have to be public — Snowflake accepts a package-private one, and a
         // body written as a bare "class H { … }" is the common shape in its own examples. Reflection from
@@ -113,15 +124,5 @@ public final class JavaProcedureExecutor {
         } finally {
             UdfConsoleCapture.exit();
         }
-    }
-
-    private static Method findMethod(final Class<?> clazz, final String methodName, final int argCount) {
-        for (final Method m : clazz.getDeclaredMethods()) {
-            if (m.getName().equals(methodName) && m.getParameterCount() == argCount) {
-                return m;
-            }
-        }
-        throw new RuntimeException("Method " + methodName + " with " + argCount
-            + " parameters not found in class " + clazz.getName());
     }
 }

@@ -25,6 +25,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.TableStorage;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -56,7 +57,9 @@ final class HybridKeyGuard {
 
     /**
      * A hybrid table's foreign keys hold row by row (documented): a row whose key no row of the parent holds, a NULL
-     * key included, is refused, the parent rows this transaction has written counted.
+     * key included, is refused, the parent rows this transaction has written counted. A row of a table whose key
+     * names the table itself is its own parent when it holds the key it names, so a self-referencing table takes its
+     * first row.
      */
     void refuseOrphanRow(final Table table, final String fullyQualifiedName, final Row row) {
         if (!table.isHybrid()) {
@@ -71,10 +74,54 @@ final class HybridKeyGuard {
                 missing = missing || value == null;
                 values.add(value);
             }
-            if (missing || !parentHolds(key, values)) {
+            if (missing || !namesItself(table, key, values, row) && !parentHolds(key, values)) {
                 throw new RuntimeException(HybridKeys.foreignKeyViolated(table, key));
             }
         }
+    }
+
+    /** Whether a row's foreign key names the table it is written to, and the row holds the key it names. */
+    private boolean namesItself(final Table table, final ForeignKeyConstraint key, final List<Object> values,
+                                final Row row) {
+        if (!namesParent(key, table)) {
+            return false;
+        }
+        final List<Object> named = HybridKeys.keyOf(table, key.getReferencedColumns(), row);
+        final List<Object> held = new ArrayList<>();
+        for (final Object value : values) {
+            held.add(ValueComparisons.canonicalGroupKeyValue(value));
+        }
+        return named != null && named.equals(held);
+    }
+
+    /**
+     * Whether a hybrid table of the parent's database other than the parent itself holds a foreign key that names it:
+     * such a parent cannot be truncated as long as the relationship exists (documented).
+     *
+     * @param parent     the table
+     * @param parentName its full name
+     * @return whether another table references it
+     */
+    boolean isReferenced(final Table parent, final String parentName) {
+        final String[] home = QualifiedName.parse(parentName).parts();
+        final Database database = home.length == 3 ? executor.getCatalog().getDatabase(home[0]) : null;
+        if (database == null || !parent.isHybrid()) {
+            return false;
+        }
+        for (final Schema schema : database.getAllSchemas()) {
+            for (final Table child : schema.getTables()) {
+                if (child == parent || !child.isHybrid()) {
+                    continue;
+                }
+                final String childName = QualifiedName.join(home[0], schema.getName(), child.getName());
+                for (final ForeignKeyConstraint key : keysOf(child, childName)) {
+                    if (namesParent(key, parent)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -123,17 +170,11 @@ final class HybridKeyGuard {
     private boolean parentHolds(final ForeignKeyConstraint key, final List<Object> values) {
         final String parentName = key.getReferencedTable();
         final Table parent = executor.getCatalog().resolveTable(parentName);
-        final String parentStorage = executor.getFullyQualifiedTableName(parentName);
         final List<Integer> slots = new ArrayList<>();
         for (final String column : key.getReferencedColumns()) {
             slots.add(parent.getColumnIndex(column));
         }
-        final List<Row> candidates = new ArrayList<>(executor.getStorageEngine().getTableStorage(parentStorage).scan());
-        if (executor.isDeferredApply()) {
-            candidates.addAll(executor.getTransactionManager().getCurrentTransaction().getWriteSet()
-                .pendingInserts(parentStorage));
-        }
-        for (final Row candidate : candidates) {
+        for (final Row candidate : storedRows(parentName)) {
             boolean match = true;
             for (int i = 0; i < slots.size() && match; i++) {
                 final int slot = slots.get(i);
@@ -293,14 +334,16 @@ final class HybridKeyGuard {
         }
     }
 
-    /** A table's stored rows, with the rows this transaction has inserted but not committed. */
+    /**
+     * A table's rows as this transaction sees them: what it has inserted, updated and deleted but not committed is
+     * counted, a pending update's new image in place of the row and a pending delete's row gone.
+     */
     private List<Row> storedRows(final String name) {
         final String storage = executor.getFullyQualifiedTableName(name);
-        final List<Row> rows = new ArrayList<>(executor.getStorageEngine().getTableStorage(storage).scan());
+        final TableStorage rows = executor.getStorageEngine().getTableStorage(storage);
         if (executor.isDeferredApply()) {
-            rows.addAll(executor.getTransactionManager().getCurrentTransaction().getWriteSet()
-                .pendingInserts(storage));
+            return executor.getTransactionManager().getCurrentTransaction().getWriteSet().overlayRows(storage, rows);
         }
-        return rows;
+        return new ArrayList<>(rows.scan());
     }
 }

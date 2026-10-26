@@ -16,6 +16,7 @@
 
 package dev.frostlake.rt.py;
 
+import dev.frostlake.executor.udf.GuestWatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -41,7 +42,6 @@ import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
@@ -51,14 +51,12 @@ import java.util.concurrent.TimeUnit;
  * engine ({@code session.sql}), and while the engine serves that call it may send the worker requests of its own,
  * so {@link #request} answers callbacks until its own reply arrives. Used by one thread only.
  *
- * <p>A request running longer than {@link #EXECUTION_TIMEOUT_SECONDS} kills the worker, as the GraalPy path
- * cancels its context: callers hold the engine's lock, and one wedged handler must not stall every other thread.
- * What the handler prints goes to the worker's stderr and is logged under {@code dev.frostlake.udf.console}.
+ * <p>The statement a top-level request runs for bounds it: once the statement is canceled, times out or its session
+ * is aborted, the worker is killed (see GuestWatch), as the GraalPy path cancels its context, and the failure is the
+ * statement's. What the handler prints goes to the worker's stderr and is logged under
+ * {@code dev.frostlake.udf.console}.
  */
 final class CPythonWorker {
-
-    /** Longest a single top-level request may run before the worker is treated as wedged. */
-    static final long EXECUTION_TIMEOUT_SECONDS = 60;
 
     private static final Logger logger = LoggerFactory.getLogger(CPythonWorker.class);
     private static final Logger console = LoggerFactory.getLogger("dev.frostlake.udf.console");
@@ -90,7 +88,8 @@ final class CPythonWorker {
     private int minor = -1;
     private int depth;
     private long hostSequence;
-    private volatile boolean timedOut;
+    /** Whether the watch on a request's statement killed the worker. */
+    private volatile boolean stopped;
     private boolean broken;
     /** Whether a request ran since the shared state was last put back (see {@link #restore()}). */
     private boolean ran;
@@ -238,6 +237,16 @@ final class CPythonWorker {
         process.destroyForcibly();
     }
 
+    /**
+     * Run {@code task} on the watchdog's thread every {@code seconds}, for as long as the JVM runs.
+     *
+     * @param seconds how long each run waits after the one before
+     * @param task    what runs
+     */
+    static void every(final long seconds, final Runnable task) {
+        WATCHDOG.scheduleWithFixedDelay(task, seconds, seconds, TimeUnit.SECONDS);
+    }
+
     /** Bind a global; an engine object is bound as a handle the worker calls back through. */
     void bind(final String name, final Object value) {
         final ObjectNode message = op("bind");
@@ -270,6 +279,33 @@ final class CPythonWorker {
     void leave(final int frame) {
         final ObjectNode message = op("leave");
         message.put("frame", frame);
+        request(message);
+    }
+
+    /**
+     * Enter the module namespace a call site keeps, or a namespace of its own where it keeps none yet (see
+     * cpython_worker.py).
+     *
+     * @param key the call site's key
+     * @return the answer: the frame's depth, and whether the kept namespace was entered
+     */
+    JsonNode resume(final String key) {
+        final ObjectNode message = op("resume");
+        message.put("key", key);
+        return request(message);
+    }
+
+    /** Keep the namespace the running call holds for its call site's next call. */
+    void keep(final String key) {
+        final ObjectNode message = op("keep");
+        message.put("key", key);
+        request(message);
+    }
+
+    /** Forget the namespace a call site kept. */
+    void forget(final String key) {
+        final ObjectNode message = op("forget");
+        message.put("key", key);
         request(message);
     }
 
@@ -319,13 +355,13 @@ final class CPythonWorker {
         if (!"restore".equals(message.path("op").asString())) {
             ran = true;
         }
-        final ScheduledFuture<?> alarm = depth == 0 ? WATCHDOG.schedule(new Runnable() {
+        final Object watch = depth == 0 ? GuestWatch.begin(new Runnable() {
             @Override
             public void run() {
-                timedOut = true;
+                stopped = true;
                 process.destroyForcibly();
             }
-        }, EXECUTION_TIMEOUT_SECONDS, TimeUnit.SECONDS) : null;
+        }) : null;
         depth++;
         try {
             send(message);
@@ -345,9 +381,7 @@ final class CPythonWorker {
             }
         } finally {
             depth--;
-            if (alarm != null) {
-                alarm.cancel(false);
-            }
+            GuestWatch.end(watch);
         }
     }
 
@@ -383,8 +417,8 @@ final class CPythonWorker {
     }
 
     private String gone(final String what) {
-        if (timedOut) {
-            return "Python execution timed out after " + EXECUTION_TIMEOUT_SECONDS + " seconds";
+        if (stopped) {
+            return "The CPython worker was stopped: the statement it ran for has ended";
         }
         return "The CPython worker " + what + stderrSummary();
     }

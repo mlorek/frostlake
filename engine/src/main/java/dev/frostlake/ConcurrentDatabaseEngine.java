@@ -204,7 +204,11 @@ public class ConcurrentDatabaseEngine {
                     engineLock.readLock().lock();
                     // Judged under the shared lock, which holds the catalog still: a body one of the request's names
                     // stands for may write, and then the request runs alone, before anything of it has run.
-                    if (ReadOnlyBodies.reachWrite(engine.getCatalog(), sql)) {
+                    // So does a read of a stream inside an open transaction, which may wait for another session's
+                    // transaction that holds the stream (see TableLockGate#requireStreamFree).
+                    if (ReadOnlyBodies.reachWrite(engine.getCatalog(), sql, session.getSettings())
+                            || session.isInTransaction()
+                                && ReadOnlyBodies.namesStream(engine.getCatalog(), sql, session.getSettings())) {
                         engineLock.readLock().unlock();
                         engineLock.writeLock().lock();
                         readOnly = false;
@@ -234,6 +238,11 @@ public class ConcurrentDatabaseEngine {
                                 for (int i = 0; i < held; i++) {
                                     engineLock.writeLock().unlock();
                                 }
+                            }
+
+                            @Override
+                            public void pause(final long millis) throws InterruptedException {
+                                Thread.sleep(millis);
                             }
 
                             @Override
@@ -367,6 +376,23 @@ public class ConcurrentDatabaseEngine {
         engine.getSecurityManager().getSessionContext().bindSettings(session.getSettings());
         try {
             engine.bindJsonIndent();
+        } finally {
+            engine.getSecurityManager().getSessionContext().unbindSettings();
+        }
+    }
+
+    /**
+     * The zone a session's TIMEZONE names — its own, its user's or the account's — read from the session's own
+     * settings, which only its statements see.
+     *
+     * @param session the session
+     * @return the zone's name, or null where nothing names one
+     */
+    public String sessionTimezone(final SessionContext session) {
+        engine.getSecurityManager().getSessionContext().bindSettings(session.getSettings());
+        try {
+            final Object zone = engine.getSecurityManager().getSessionContext().getSessionParameter("TIMEZONE");
+            return zone == null ? null : zone.toString();
         } finally {
             engine.getSecurityManager().getSessionContext().unbindSettings();
         }

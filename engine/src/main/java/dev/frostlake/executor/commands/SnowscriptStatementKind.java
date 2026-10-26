@@ -236,7 +236,7 @@ final class SnowscriptStatementKind {
             return "ALTER_TABLE_MANAGE_ROW_ACCESS_POLICY";
         }
         if (action.RECLUSTER() != null) {
-            return "ALTER_AUTO_RECLUSTER";
+            return action.SUSPEND() != null || action.RESUME() != null ? "ALTER_AUTO_RECLUSTER" : "RECLUSTER";
         }
         if (action.CLUSTERING() != null) {
             return "ALTER_TABLE_DROP_CLUSTERING_KEY";

@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.ValueComparisons;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -122,7 +123,7 @@ public final class RangeFrameKeys {
         if ((number instanceof Double || number instanceof Float) && !Double.isFinite(number.doubleValue())) {
             return null;
         }
-        return new BigDecimal(number.toString());
+        return DecimalText.parse(number.toString());
     }
 
     /** A temporal key as a point it compares by: a date at its midnight, a zoned timestamp as its instant. */

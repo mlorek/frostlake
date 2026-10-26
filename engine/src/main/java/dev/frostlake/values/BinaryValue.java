@@ -16,6 +16,8 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.types.DecimalText;
+
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Base64;
@@ -60,8 +62,8 @@ public final class BinaryValue implements Comparable<BinaryValue>, Serializable 
         }
         final byte[] out = new byte[hex.length() / 2];
         for (int i = 0; i < out.length; i++) {
-            final int hi = Character.digit(hex.charAt(2 * i), 16);
-            final int lo = Character.digit(hex.charAt(2 * i + 1), 16);
+            final int hi = DecimalText.hexDigit(hex.charAt(2 * i));
+            final int lo = DecimalText.hexDigit(hex.charAt(2 * i + 1));
             if (hi < 0 || lo < 0) {
                 throw new RuntimeException(
                     "The following string is not a legal hex-encoded value: '" + hex + "'");
@@ -92,8 +94,8 @@ public final class BinaryValue implements Comparable<BinaryValue>, Serializable 
         }
         final byte[] out = new byte[digits.length() / 2];
         for (int i = 0; i < out.length; i++) {
-            final int hi = Character.digit(digits.charAt(2 * i), 16);
-            final int lo = Character.digit(digits.charAt(2 * i + 1), 16);
+            final int hi = DecimalText.hexDigit(digits.charAt(2 * i));
+            final int lo = DecimalText.hexDigit(digits.charAt(2 * i + 1));
             if (hi < 0 || lo < 0) {
                 throw notHex(text);
             }

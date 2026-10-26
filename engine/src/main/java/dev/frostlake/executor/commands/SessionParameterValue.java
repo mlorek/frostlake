@@ -20,6 +20,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -167,7 +168,7 @@ final class SessionParameterValue {
             return new SessionParameterValue(SessionValueKind.BOOLEAN, flag ? "TRUE" : "FALSE", null, null, flag);
         }
         if (held instanceof Number) {
-            final BigDecimal number = new BigDecimal(held.toString());
+            final BigDecimal number = DecimalText.parse(held.toString());
             if (number.scale() <= 0) {
                 return new SessionParameterValue(SessionValueKind.INTEGER, number.toPlainString(),
                     number.toBigInteger(), null, false);

@@ -67,6 +67,9 @@ _GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
 # the namespace held before is put back when the call is through (op "leave"). _FRAMES holds those saved states.
 _BASE = dict(_GLOBALS)
 _FRAMES = []
+# The namespace each call site of a routine keeps for the running statement (op "resume" enters it, "keep" keeps it,
+# "forget" drops it once the statement ends), as PythonRuntime.RUNTIME_SOURCE keeps it on GraalPy.
+_KEPT = {}
 # The runtime's helper modules (op "module"), made once per worker and importable by name.
 _MODULES = {}
 # What routines share between calls, as it stood when the worker started (op "restore" puts it back after each
@@ -515,6 +518,18 @@ def _handle(message):
         _GLOBALS.clear()
         _GLOBALS.update(_BASE)
         return {"re": 1, "frame": len(_FRAMES) - 1}
+    if op == "resume":
+        _FRAMES.append(dict(_GLOBALS))
+        _GLOBALS.clear()
+        kept = _KEPT.get(message["key"])
+        _GLOBALS.update(_BASE if kept is None else kept)
+        return {"re": 1, "frame": len(_FRAMES) - 1, "kept": kept is not None}
+    if op == "keep":
+        _KEPT[message["key"]] = dict(_GLOBALS)
+        return {"re": 1, "ok": True}
+    if op == "forget":
+        _KEPT.pop(message["key"], None)
+        return {"re": 1, "ok": True}
     if op == "leave":
         frame = message["frame"]
         if frame < len(_FRAMES):

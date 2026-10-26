@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -33,7 +34,7 @@ public class Sign extends NumericArgumentFunction {
             final double value = ((Number) args.get(0)).doubleValue();
             return Double.isNaN(value) || value == 0 ? 0.0 : Math.signum(value);
         }
-        final BigDecimal num = new BigDecimal(args.get(0).toString());
+        final BigDecimal num = DecimalText.parse(args.get(0).toString());
         return num.signum();
     }
 

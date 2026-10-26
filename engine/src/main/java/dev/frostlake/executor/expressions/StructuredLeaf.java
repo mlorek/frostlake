@@ -20,6 +20,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StructuredArrayType;
@@ -235,7 +236,7 @@ public final class StructuredLeaf {
                 return Double.valueOf(((Number) number).doubleValue());
             }
             final BigDecimal exact = number instanceof BigDecimal ? (BigDecimal) number
-                : new BigDecimal(number.toString());
+                : DecimalText.parse(number.toString());
             final int scale = ((NumericType) leaf).getScale();
             return scale >= 0 && exact.scale() != scale ? exact.setScale(scale, RoundingMode.HALF_UP) : exact;
         }
@@ -277,7 +278,7 @@ public final class StructuredLeaf {
                 return held;
             }
             if (node != null && (node.isNumber() || node.isTextual())) {
-                return Decfloats.of(node.isNumber() ? node.decimalValue() : new BigDecimal(node.asText().trim()),
+                return Decfloats.of(node.isNumber() ? node.decimalValue() : DecimalText.parse(node.asText().trim()),
                     "TO_DECFLOAT");
             }
             return value;
@@ -287,7 +288,7 @@ public final class StructuredLeaf {
         }
         if (value instanceof String) {
             try {
-                return Decfloats.held(new BigDecimal(((String) value).trim()));
+                return Decfloats.held(DecimalText.parse(((String) value).trim()));
             } catch (final NumberFormatException notNumber) {
                 return value;
             }

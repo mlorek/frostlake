@@ -49,8 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * <p>★ THE CONVERSIONS AND THE CASTS SHARE ONE MATRIX: a pair the plain cast cannot carry is the
  * conversion sentence while the statement compiles — for TO_X the call echoed with its source and its
  * own base name, for CAST the target rendered with its default parameters, for TRY_CAST the source
- * alone — while a castable pair converts (TO_NUMBER(TRUE) is 1, typed NUMBER(2,0) whatever width the
- * call declares) and TRY_CAST keeps its own sentence with the nominal target for those.
+ * alone — while a castable pair converts (TO_NUMBER(TRUE) is 1, typed as the width the call declares)
+ * and TRY_CAST keeps its own sentence with the target for those.
  */
 public class NumericFamilyArgumentRefusalTest extends BaseDatabaseTest {
 
@@ -284,14 +284,13 @@ public class NumericFamilyArgumentRefusalTest extends BaseDatabaseTest {
             refusal("SELECT TO_NUMBER(n, '999') FROM tt"));
         assertEquals("SQL compilation error:\nargument needs to be a string: 'TT.D'",
             refusal("SELECT TO_NUMBER(d, '999') FROM tt"));
-        // The castable pairs convert, and a BOOLEAN converts to the unscaled 1 / 0 typed NUMBER(2,0)
-        // whatever width the call declares.
+        // The castable pairs convert, and a BOOLEAN converts to 1 / 0 typed as the width the call declares.
         assertEquals("1", cell("SELECT TO_NUMBER(TRUE)"));
         assertEquals("0", cell("SELECT TO_NUMBER(FALSE)"));
-        assertEquals("1", cell("SELECT TO_DECIMAL(TRUE, 5, 1)"));
+        assertEquals("1.0", cell("SELECT TO_DECIMAL(TRUE, 5, 1)"));
         assertEquals("1", cell("SELECT TO_NUMERIC(b) FROM tt"));
-        assertEquals("NUMBER(2,0)[SB1]", cell("SELECT SYSTEM$TYPEOF(TO_NUMBER(TRUE))"));
-        assertEquals("NUMBER(2,0)[SB1]", cell("SELECT SYSTEM$TYPEOF(TO_DECIMAL(TRUE, 5, 1))"));
+        assertEquals("NUMBER(38,0)[SB16]", cell("SELECT SYSTEM$TYPEOF(TO_NUMBER(TRUE))"));
+        assertEquals("NUMBER(5,1)[SB4]", cell("SELECT SYSTEM$TYPEOF(TO_DECIMAL(TRUE, 5, 1))"));
         assertEquals("2020-01-01", cell("SELECT TO_DATE(ts)::VARCHAR FROM tt"));
         assertEquals("10:00:00", cell("SELECT TO_TIME(ts)::VARCHAR FROM tt"));
         assertEquals("2020-01-01 00:00:00.000", cell("SELECT TO_TIMESTAMP(d)::VARCHAR FROM tt"));
@@ -310,8 +309,8 @@ public class NumericFamilyArgumentRefusalTest extends BaseDatabaseTest {
         assertEquals(conversion("TRY_CAST(TRUE)", "TO_DOUBLE"), refusal("SELECT TRY_CAST(TRUE AS FLOAT)"));
         assertEquals(conversion("TRY_CAST(TRUE)", "TO_DOUBLE"), refusal("SELECT TRY_CAST(TRUE AS DOUBLE)"));
         assertEquals(conversion("TRY_CAST(TT.B)", "TO_DOUBLE"), refusal("SELECT TRY_CAST(b AS FLOAT) FROM tt"));
-        assertEquals(tryCast("BOOLEAN", "NUMBER(2,0)"), refusal("SELECT TRY_CAST(TRUE AS NUMBER)"));
-        assertEquals(tryCast("BOOLEAN", "NUMBER(2,0)"), refusal("SELECT TRY_CAST(TRUE AS NUMBER(5,1))"));
+        assertEquals(tryCast("BOOLEAN", "NUMBER(38,0)"), refusal("SELECT TRY_CAST(TRUE AS NUMBER)"));
+        assertEquals(tryCast("BOOLEAN", "NUMBER(5,1)"), refusal("SELECT TRY_CAST(TRUE AS NUMBER(5,1))"));
         assertEquals(tryCast("NUMBER(5,2)", "NUMBER(38,0)"), refusal("SELECT TRY_CAST(n AS NUMBER) FROM tt"));
         assertEquals(tryCast("TIME(9)", "TIME(9)"), refusal("SELECT TRY_CAST(t AS TIME) FROM tt"));
         assertEquals(tryCast("DATE", "TIMESTAMP_NTZ(9)"), refusal("SELECT TRY_CAST(d AS TIMESTAMP) FROM tt"));
@@ -363,11 +362,11 @@ public class NumericFamilyArgumentRefusalTest extends BaseDatabaseTest {
         assertEquals(conversion("CAST(TRUE AS TIMESTAMP_LTZ(9))", "TO_TIMESTAMP_LTZ"), refusal("SELECT CAST(TRUE AS TIMESTAMP_LTZ)"));
         assertEquals(conversion("CAST(TRUE AS TIMESTAMP_TZ(3))", "TO_TIMESTAMP_TZ"), refusal("SELECT CAST(TRUE AS TIMESTAMP_TZ(3))"));
         assertEquals(conversion("CAST(TT.F AS TIMESTAMP_NTZ(9))", "TO_TIMESTAMP_NTZ"), refusal("SELECT CAST(f AS TIMESTAMP) FROM tt"));
-        // The castable pairs convert; a BOOLEAN into an exact number is the unscaled 1 typed NUMBER(2,0).
+        // The castable pairs convert; a BOOLEAN into an exact number is 1 in the number the cast spells.
         assertEquals("1", cell("SELECT TRUE::NUMBER"));
-        assertEquals("1", cell("SELECT TRUE::NUMBER(5,1)"));
-        assertEquals("NUMBER(2,0)[SB1]", cell("SELECT SYSTEM$TYPEOF(TRUE::NUMBER(5,1))"));
-        assertEquals("1", cell("SELECT TRUE::NUMBER(5,1)::VARCHAR"));
+        assertEquals("1.0", cell("SELECT TRUE::NUMBER(5,1)"));
+        assertEquals("NUMBER(5,1)[SB4]", cell("SELECT SYSTEM$TYPEOF(TRUE::NUMBER(5,1))"));
+        assertEquals("1.0", cell("SELECT TRUE::NUMBER(5,1)::VARCHAR"));
         assertEquals("2020-01-01", cell("SELECT CAST(d AS VARCHAR) FROM tt"));
     }
 }

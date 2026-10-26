@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -120,7 +121,7 @@ public final class ImpliedTextNumber {
     public static String overScaledRefusal(final String written) {
         final BigDecimal spelled;
         try {
-            spelled = new BigDecimal(written).stripTrailingZeros();
+            spelled = DecimalText.parse(written).stripTrailingZeros();
         } catch (final NumberFormatException notSpelled) {
             return null;
         }

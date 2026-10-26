@@ -35,7 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * A transaction that has written a table another session drops or replaces while it is open commits its changes to
  * the table it wrote (live-verified): an UNDROP brings the dropped table back with the committed UPDATE or INSERT,
- * and a table that replaced it by CREATE OR REPLACE stays as its CREATE left it, empty.
+ * and a table that replaced it by CREATE OR REPLACE stays as its CREATE left it, empty, while the table it replaced
+ * comes back by UNDROP, once its name is free, with the committed change.
  *
  * <p>Live, the two sessions are two connections; embedded, two sessions of one concurrent engine.
  */
@@ -67,7 +68,7 @@ public class DroppedTableTransactionTest extends BaseDatabaseTest {
     public void closeTwoSessions() throws SQLException {
         say("A", "ROLLBACK");
         say("B", "ROLLBACK");
-        for (final String name : new String[] {"dt3", "dt7", "dt6", "dt5"}) {
+        for (final String name : new String[] {"dt3", "dt7", "dt6", "dt5", "dt8", "dt8_new", "dt9", "dt9_new"}) {
             say("A", "DROP TABLE IF EXISTS " + name);
         }
         if (isLiveSnowflake()) {
@@ -160,5 +161,27 @@ public class DroppedTableTransactionTest extends BaseDatabaseTest {
         say("B", "CREATE OR REPLACE TABLE dt5 (id INT, v INT)");
         say("A", "COMMIT");
         assertEquals("", say("B", "SELECT id, v FROM dt5 ORDER BY 1"));
+    }
+
+    @Test
+    public void aReplacedTableComesBackWithTheCommittedChange() {
+        say("A", "CREATE OR REPLACE TABLE dt8 (id INT, v INT)");
+        say("A", "INSERT INTO dt8 VALUES (1, 1)");
+        say("A", "BEGIN");
+        say("A", "INSERT INTO dt8 VALUES (9, 9)");
+        say("B", "CREATE OR REPLACE TABLE dt8 (id INT, v INT)");
+        say("A", "COMMIT");
+        say("B", "ALTER TABLE dt8 RENAME TO dt8_new");
+        say("B", "UNDROP TABLE dt8");
+        assertEquals("1|1 ;; 9|9", say("B", "SELECT id, v FROM dt8 ORDER BY 1"));
+        say("A", "CREATE OR REPLACE TABLE dt9 (id INT, v INT)");
+        say("A", "INSERT INTO dt9 VALUES (1, 1)");
+        say("A", "BEGIN");
+        say("A", "UPDATE dt9 SET v = 100 WHERE id = 1");
+        say("B", "CREATE OR REPLACE TABLE dt9 (id INT, v INT)");
+        say("A", "COMMIT");
+        say("B", "ALTER TABLE dt9 RENAME TO dt9_new");
+        say("B", "UNDROP TABLE dt9");
+        assertEquals("1|100", say("B", "SELECT id, v FROM dt9 ORDER BY 1"));
     }
 }

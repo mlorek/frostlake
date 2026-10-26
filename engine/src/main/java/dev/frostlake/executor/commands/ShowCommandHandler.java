@@ -1216,6 +1216,12 @@ public class ShowCommandHandler implements CommandHandler {
             DescribeProperties.requireValues(ctx);
             throw new RuntimeException(DescribeTagRefusal.SENTENCE);
         }
+        if (ctx.CONTACT() != null) {
+            // Nor any contact: DESCRIBE CONTACT is an unsupported feature whether or not the contact exists, as live
+            // answers it; SHOW CONTACTS is how one is read back (live-verified).
+            DescribeProperties.requireValues(ctx);
+            throw new RuntimeException("Unsupported feature 'CONTACT'.");
+        }
         RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         final boolean stageProperties = DescribeProperties.describesStage(ctx, queryExecutor);
         if (ctx.ACCOUNT() != null) {

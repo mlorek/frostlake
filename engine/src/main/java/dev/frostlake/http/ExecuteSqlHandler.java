@@ -138,7 +138,7 @@ final class ExecuteSqlHandler implements HttpHandler {
                 // request the server could not handle at all is a 5xx.
                 logger.debug("Statement failed in session {}: {}", session.getSessionId(),
                     statementFailure.getMessage());
-                response = SqlResponse.error(session.getSessionId(), messageOf(statementFailure));
+                response = SqlResponse.error(session.getSessionId(), messageOf(statementFailure), statementFailure);
             } finally {
                 StatementCancellation.offer(null);
                 session.setRunning(null);
@@ -153,6 +153,8 @@ final class ExecuteSqlHandler implements HttpHandler {
             response.reportKeepAlive(session);
             // Whether the driver now matches a column label ignoring case.
             response.reportResultColumnCase(session);
+            // The zone the driver reads the session's dates and wall clocks in.
+            response.reportTimezone(engine.sessionTimezone(session));
             // Where the session stands now — a USE, a CREATE SCHEMA or a procedure may have moved it.
             response.reportNamespace(session, engine.currentUser());
             if (response.isSuccess()) {

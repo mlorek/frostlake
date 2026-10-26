@@ -16,6 +16,7 @@
 
 package dev.frostlake.rt.js;
 
+import dev.frostlake.executor.udf.GuestWatch;
 import dev.frostlake.executor.udf.HandlerJson;
 import dev.frostlake.executor.udf.HandlerLanguages;
 import dev.frostlake.executor.udf.JavaScriptIdentifiers;
@@ -549,7 +550,13 @@ final class JavaScriptHandler {
             values[2 + i] = arguments == null || i >= arguments.size() ? null
                 : argumentValue(name, parameters.get(i), arguments.get(i));
         }
-        return ((Invocable) engine).invokeMethod(driver, "call", values);
+        // The statement's end - its cancel, its timeout - ends the handler wherever it runs (see GuestWatch).
+        final Object watch = GuestWatch.begin(GraalJsEngine.canceller(engine));
+        try {
+            return ((Invocable) engine).invokeMethod(driver, "call", values);
+        } finally {
+            GuestWatch.end(watch);
+        }
     }
 
     /**
@@ -680,9 +687,12 @@ final class JavaScriptHandler {
         if (underPython) {
             engine.eval("Error.stackTraceLimit = 0");
         }
+        // The statement's end - its cancel, its timeout - ends the handler wherever it runs (see GuestWatch).
+        final Object watch = GuestWatch.begin(GraalJsEngine.canceller(engine));
         try {
             return ((Invocable) engine).invokeMethod(invoker, "call", values);
         } finally {
+            GuestWatch.end(watch);
             if (underPython) {
                 engine.eval("Error.stackTraceLimit = " + limit);
             }

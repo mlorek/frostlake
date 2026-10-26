@@ -32,6 +32,7 @@ import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.parser.OperandRefusals;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VectorType;
@@ -153,7 +154,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         } else if (argument.DOLLAR_QUOTED_STRING() != null) {
             literal = new LiteralExpression(unquoteDollar(argument.getText()), LiteralType.STRING);
         } else {
-            literal = new LiteralExpression(new BigDecimal(argument.getText()), LiteralType.DECIMAL);
+            literal = new LiteralExpression(DecimalText.parse(argument.getText()), LiteralType.DECIMAL);
         }
         literal.setPosition(at);
         return literal;
@@ -180,7 +181,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 // Integer literal wider than a Java long — Snowflake NUMBER(38,0) allows up to 38 digits,
                 // so represent it exactly as a BigDecimal (e.g. 20+ digit synthetic row IDs) rather than
                 // overflowing with "For input string".
-                return new LiteralExpression(new BigDecimal(intText), LiteralType.DECIMAL);
+                return new LiteralExpression(DecimalText.parse(intText), LiteralType.DECIMAL);
             }
         }
         if (lit.FLOAT_LITERAL() != null) {
@@ -464,9 +465,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitUnaryExpr(final FrostlakeParser.UnaryExprContext ctx) {
         // Two signs in a row are no expression on a real account: `- -n`, `+-n` and `-+1` are refused
         // as an invalid function named by the OUTER sign, spaced or not, before the operand is read -
-        // so `+-+n` names '+'. A parenthesised inner sign, `-(-n)`, and a sign after a binary operator,
-        // `1 - -n`, are ordinary (live-verified).
-        if (ctx.expression() instanceof FrostlakeParser.UnaryExprContext) {
+        // so `+-+n` names '+'. A tilde is such a sign too: `-~1` names '-' and `~-1` and `~~1` name '~'. A
+        // parenthesised inner sign, `-(-n)`, and a sign after a binary operator, `1 - -n`, are ordinary
+        // (live-verified).
+        if (ctx.expression() instanceof FrostlakeParser.UnaryExprContext
+                || ctx.expression() instanceof FrostlakeParser.TildeExprContext) {
             throw new RuntimeException(SqlCompilationError.of("invalid function '" + ctx.op.getText() + "'"));
         }
         final Expression operand = visit(ctx.expression());
@@ -621,6 +624,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     /** {@code ~a}: a call of a function named {@code "~"}, which resolves to nothing (live-verified). */
     @Override
     public Expression visitTildeExpr(final FrostlakeParser.TildeExprContext ctx) {
+        // A sign straight after the tilde makes it an invalid function, as two signs in a row are (see
+        // visitUnaryExpr).
+        if (ctx.expression() instanceof FrostlakeParser.UnaryExprContext
+                || ctx.expression() instanceof FrostlakeParser.TildeExprContext) {
+            throw new RuntimeException(SqlCompilationError.of("invalid function '~'"));
+        }
         return signCall(ctx.TILDE().getSymbol(), ctx.expression());
     }
 
@@ -2022,7 +2031,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     /** Where a named argument's value starts: the token after its arrow. */
     private static SourcePosition namedArgumentPlace(final FrostlakeParser.NamedArgumentContext na) {
         final ParserRuleContext value = na.expression() != null ? na.expression()
-            : na.selectStatement() != null ? na.selectStatement() : na.argumentRow();
+            : na.selectStatement() != null ? na.selectStatement()
+            : na.booleanExpr() != null ? na.booleanExpr() : na.argumentRow();
         return keywordPosition(value != null ? value.getStart() : na.getStart());
     }
 
@@ -2036,6 +2046,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 elements.add(visit(element));
             }
             return new ArgumentRowExpression(elements);
+        }
+        if (na.booleanExpr() != null) {
+            return visit(na.booleanExpr());
         }
         if (na.expression() == null) {
             return positionedSubquery(na.selectStatement());

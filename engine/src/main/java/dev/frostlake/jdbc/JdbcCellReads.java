@@ -16,6 +16,7 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.Decfloats;
 
 import java.math.BigDecimal;
@@ -180,7 +181,7 @@ final class JdbcCellReads {
     private static BigDecimal decfloatWhole(final Object cell, final String wire, final String target)
             throws SQLException {
         final BigDecimal held = cell instanceof Number ? Decfloats.of((Number) cell, "TO_DECFLOAT")
-            : Decfloats.held(new BigDecimal(wire.trim()));
+            : Decfloats.held(DecimalText.parse(wire.trim()));
         final boolean whole = held.signum() == 0 || held.stripTrailingZeros().scale() <= 0;
         final BigDecimal limit = BigDecimal.valueOf("int".equals(target) ? Integer.MAX_VALUE : Long.MAX_VALUE);
         final BigDecimal floor = BigDecimal.valueOf("int".equals(target) ? Integer.MIN_VALUE : Long.MIN_VALUE);
@@ -265,8 +266,8 @@ final class JdbcCellReads {
             return (BigDecimal) cell;
         }
         try {
-            return cell instanceof Double || cell instanceof Float ? new BigDecimal(cell.toString())
-                : new BigDecimal(wire);
+            return cell instanceof Double || cell instanceof Float ? DecimalText.parse(cell.toString())
+                : DecimalText.parse(wire);
         } catch (final NumberFormatException notADecimal) {
             throw JdbcMarshaling.unconvertible(type, "big decimal", wire);
         }

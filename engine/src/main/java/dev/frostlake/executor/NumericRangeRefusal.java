@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -167,7 +169,7 @@ public final class NumericRangeRefusal {
      * @return its text
      */
     public static String variantDoubleText(final double value) {
-        final BigDecimal shortest = new BigDecimal(Double.toString(value)).stripTrailingZeros();
+        final BigDecimal shortest = DecimalText.parse(Double.toString(value)).stripTrailingZeros();
         final int exponent = shortest.precision() - shortest.scale() - 1;
         if (exponent >= -4 && exponent < 16) {
             return shortest.toPlainString();

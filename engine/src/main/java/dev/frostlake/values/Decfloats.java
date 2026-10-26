@@ -16,6 +16,8 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
@@ -102,7 +104,7 @@ public final class Decfloats {
             }
             return held(new BigDecimal(approximate));
         }
-        return held(new BigDecimal(value.toString()));
+        return held(DecimalText.parse(value.toString()));
     }
 
     /** The significant digits a FLOAT written into a DECFLOAT column keeps. */
@@ -143,7 +145,7 @@ public final class Decfloats {
      */
     public static boolean holds(final String text) {
         try {
-            held(new BigDecimal(text.trim()));
+            held(DecimalText.parse(text.trim()));
             return true;
         } catch (final DecfloatRangeException outOfRange) {
             return false;

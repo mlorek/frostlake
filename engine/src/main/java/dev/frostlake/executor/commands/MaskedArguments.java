@@ -79,6 +79,35 @@ final class MaskedArguments {
         }
     }
 
+    /**
+     * Refuses a projection policy on a column the table's row access policy or another column's conditional masking
+     * policy reads as an argument; the column a masking policy masks takes one (live-verified). The sentence carries
+     * no compilation-error prefix.
+     *
+     * @param table  the table
+     * @param column the column the projection policy is set on
+     */
+    static void requireProjectable(final Table table, final TableColumn column) {
+        if (readByRowAccessPolicy(table, column) || readByConditionalPolicy(table, column)) {
+            throw new RuntimeException("Cannot apply projection policy on '" + spelled(column)
+                + "' because it is used as an argument by one or more policies.");
+        }
+    }
+
+    /**
+     * Refuses reading a column a projection policy guards as another policy's argument: a row access policy's, or a
+     * conditional masking policy's further USING column (live-verified). The sentence carries no compilation-error
+     * prefix, where the masked column's does.
+     *
+     * @param column the column read as an argument
+     */
+    static void requireUnprojected(final TableColumn column) {
+        if (column.hasProjectionPolicy()) {
+            throw new RuntimeException("Column '" + spelled(column)
+                + "' cannot be used as policy argument because it has a projection policy attached.");
+        }
+    }
+
     /** The refusal of masking a column another policy reads as an argument. */
     static RuntimeException cannotBeMasked(final TableColumn column) {
         return new RuntimeException(SqlCompilationError.PREFIX + " Column '" + spelled(column)

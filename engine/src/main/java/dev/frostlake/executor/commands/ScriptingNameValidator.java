@@ -1471,7 +1471,7 @@ final class ScriptingNameValidator {
      * An untyped declaration whose initialiser gives it no type is refused while the block compiles —
      * " variable 'A' cannot have its type inferred from initializer", at the LET or at a DECLARE item's
      * name, ahead of anything later in the body. A bare name that resolves to nothing (a context word
-     * written without its parentheses is one), a bare NULL, a ROW, a
+     * written without its parentheses is one), a bare NULL, a ROW, a query of more than one item, a
      * cursor record's field and an initialiser that reads a bind (see {@link #readsABindUntyped}) are such
      * initialisers; an unknown name inside a larger expression is the ordinary invalid identifier instead,
      * and a bind no variable declares is refused ahead of all of them (live-verified).
@@ -1497,6 +1497,39 @@ final class ScriptingNameValidator {
         if (compiler != null && initialiser != null) {
             compileFromlessSubqueries(initialiser, compiler);
         }
+        // A query of several items is judged once its names resolve: (SELECT missing, 2) names MISSING first.
+        if (name != null && initialiser != null && selectsSeveralItems(initialiser)) {
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                " variable '" + canonical(text(name)) + "' cannot have its type inferred from initializer"));
+        }
+    }
+
+    /**
+     * Whether an initialiser is a query whose select list holds more than one item, {@code LET q := (SELECT 1, 2
+     * x)}: no one type is inferred from it (live-verified).
+     */
+    private static boolean selectsSeveralItems(final FrostlakeParser.BooleanExprContext initialiser) {
+        if (!(initialiser instanceof FrostlakeParser.ValueExprContext) || !(((FrostlakeParser.ValueExprContext)
+                initialiser).expression() instanceof FrostlakeParser.ScalarSubqueryExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.SelectListContext list = firstSelectList(((FrostlakeParser.ScalarSubqueryExprContext)
+            ((FrostlakeParser.ValueExprContext) initialiser).expression()).selectStatement());
+        return list != null && list.selectItem().size() > 1;
+    }
+
+    /** The first select list under a node, in the order written: a query's own, before any its clauses hold. */
+    private static FrostlakeParser.SelectListContext firstSelectList(final ParseTree node) {
+        if (node == null || node instanceof FrostlakeParser.SelectListContext) {
+            return (FrostlakeParser.SelectListContext) node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.SelectListContext found = firstSelectList(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**

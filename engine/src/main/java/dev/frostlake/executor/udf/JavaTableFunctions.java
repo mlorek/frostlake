@@ -51,6 +51,12 @@ public final class JavaTableFunctions {
 
     private static final JavaFunctionCompiler COMPILER = new JavaFunctionCompiler();
 
+    /** Names the state that holds a statement's own load of a table function's class an IMPORTS jar holds. */
+    private static final String JAR_TABLE_HANDLER_CLASS = "jar-table-handler-class";
+
+    /** Names the state that holds a statement's own load of a table function's class its inline body holds. */
+    private static final String INLINE_TABLE_HANDLER_CLASS = "inline-table-handler-class";
+
     /** Static helpers only — never instantiated. */
     private JavaTableFunctions() {
     }
@@ -130,10 +136,8 @@ public final class JavaTableFunctions {
         final String where = where(function);
         final String className = function.getHandler();
         try {
-            return function.getImports().isEmpty()
-                ? COMPILER.load(function.getBody(), className, null,
-                    JavaRuntimeLevel.of(function.getRuntimeVersion()), where)
-                : JarHandlerLoader.load(function.getImports(), className, catalog, s3Resolver);
+            return function.getImports().isEmpty() ? inlineClass(function, className, where)
+                : importedClass(function, className, catalog, s3Resolver);
         } catch (final RuntimeException unreadable) {
             if (String.valueOf(unreadable.getMessage()).startsWith("No class bytes generated for")) {
                 throw new RuntimeException(JavaHandlerFailure.missingClass(className,
@@ -141,6 +145,45 @@ public final class JavaTableFunctions {
             }
             throw unreadable;
         }
+    }
+
+    /**
+     * The class an inline body holds for a table function's handler, kept as a jar's is (see {@link #importedClass}):
+     * what its static fields hold carries from one partition of the call to the next, over the rows a LATERAL call is
+     * made for, and to no other call (live-verified: a counter it keeps reads 1, 2 and 3 over three rows).
+     */
+    private static Class<?> inlineClass(final Function function, final String className, final String where) {
+        final AutoCloseable kept = StatementHandlerStates.state(function, INLINE_TABLE_HANDLER_CLASS,
+            new HandlerStateFactory() {
+                @Override
+                public AutoCloseable create() {
+                    return new JavaHandlerClass(COMPILER.load(function.getBody(), className, null,
+                        JavaRuntimeLevel.of(function.getRuntimeVersion()), where));
+                }
+            });
+        return kept != null ? ((JavaHandlerClass) kept).handled()
+            : COMPILER.load(function.getBody(), className, null, JavaRuntimeLevel.of(function.getRuntimeVersion()),
+                where);
+    }
+
+    /**
+     * The class an IMPORTS jar holds for a table function's handler: loaded anew for the statement that is running
+     * and the place that calls the function, so what its static fields hold carries from one partition of the call
+     * to the next - over the rows a LATERAL call is made for - and to nothing else: not to another call of the
+     * function in the statement, nor to a later statement (live-verified). Outside a statement, a class of its own.
+     */
+    private static Class<?> importedClass(final Function function, final String className, final Catalog catalog,
+                                          final S3PathResolver s3Resolver) {
+        final AutoCloseable kept = StatementHandlerStates.state(function, JAR_TABLE_HANDLER_CLASS,
+            new HandlerStateFactory() {
+                @Override
+                public AutoCloseable create() {
+                    return new JavaHandlerClass(JarHandlerLoader.loadAnew(function.getImports(), className, catalog,
+                        s3Resolver));
+                }
+            });
+        return kept != null ? ((JavaHandlerClass) kept).handled()
+            : JarHandlerLoader.loadAnew(function.getImports(), className, catalog, s3Resolver);
     }
 
     /** The handler's members, or the refusal of a class that cannot be a table function's. */
@@ -152,18 +195,34 @@ public final class JavaTableFunctions {
             throw new RuntimeException("Failed to find a public method named \"getOutputClass\" with 0 arguments\n"
                 + "The getOutputClass() method is required for Java UDTFs" + where);
         }
+        // The output class is asked of the handler's class, never of an instance of it (live-verified).
+        if (!Modifier.isStatic(outputClass.getModifiers())) {
+            throw new RuntimeException(JavaHandlerFailure.missingMethod("getOutputClass",
+                "The getOutputClass() method must be static and return a java.lang.Class", where));
+        }
         final Method process = publicMethod(handled, "process", arity);
         if (process == null) {
             throw new RuntimeException("Failed to find a public method named \"process\" with " + arity
                 + " arguments" + where);
         }
+        // Overloads of process that take as many arguments as the function leave the call undecided (live-verified).
+        if (definitions(handled, "process", arity) > 1) {
+            throw new RuntimeException("Cannot determine which implementation of handler \"process\" to invoke since"
+                + " there are multiple definitions with " + arity + " arguments" + where);
+        }
         if (process.getReturnType() != java.util.stream.Stream.class) {
             throw new RuntimeException("The return type of the \"process\" method is \""
                 + process.getReturnType().getName() + "\" but must be java.util.stream.Stream" + where);
         }
-        final Class<?> output = (Class<?>) invoke(handled, outputClass,
-            Modifier.isStatic(outputClass.getModifiers()) ? null : JavaHandlerInstances.create(handled, where),
-            where);
+        // An endPartition the class has is an instance's, public, and answers a Stream (live-verified).
+        final Method endPartition = endPartitionOf(handled);
+        if (endPartition != null && (!Modifier.isPublic(endPartition.getModifiers())
+                || Modifier.isStatic(endPartition.getModifiers())
+                || endPartition.getReturnType() != java.util.stream.Stream.class)) {
+            throw new RuntimeException("Optional endPartition() method must be public, non-static, and return a"
+                + " java.util.stream.Stream" + where);
+        }
+        final Class<?> output = (Class<?>) invoke(handled, outputClass, null, where);
         final List<Parameter> declared = function.getReturnColumns();
         final Field[] columns = new Field[declared.size()];
         final StringBuilder missing = new StringBuilder();
@@ -179,7 +238,32 @@ public final class JavaTableFunctions {
                 + "\" is missing fields with the following names: " + missing
                 + ". Make sure the member fields are public" + where);
         }
-        return new JavaTableHandler(handled, process, publicMethod(handled, "endPartition", 0), columns);
+        return new JavaTableHandler(handled, process, endPartition, columns);
+    }
+
+    /** The class's endPartition taking no arguments, public or not, or null when it has none. */
+    private static Method endPartitionOf(final Class<?> handled) {
+        final Method inherited = publicMethod(handled, "endPartition", 0);
+        if (inherited != null) {
+            return inherited;
+        }
+        for (final Method method : handled.getDeclaredMethods()) {
+            if ("endPartition".equals(method.getName()) && method.getParameterCount() == 0) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    /** How many public methods of a name take a number of arguments. */
+    private static int definitions(final Class<?> handled, final String name, final int arity) {
+        int definitions = 0;
+        for (final Method method : handled.getMethods()) {
+            if (method.getName().equals(name) && method.getParameterCount() == arity) {
+                definitions++;
+            }
+        }
+        return definitions;
     }
 
     static Method publicMethod(final Class<?> handled, final String name, final int arity) {

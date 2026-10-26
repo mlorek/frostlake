@@ -18,12 +18,11 @@ package dev.frostlake.rt.py;
 
 import dev.frostlake.metastore.model.Parameter;
 
-/** GraalPy embedded in the JVM, through {@link PythonRuntime}: the runtime frostlake has always used. */
+/**
+ * GraalPy embedded in the JVM, through {@link PythonRuntime}: the runtime frostlake has always used. Its contexts are
+ * the JVM's, one per thread, so one backend serves every engine that chooses it.
+ */
 final class GraalPyBackend implements PythonBackend {
-
-    GraalPyBackend(final String venv) {
-        PythonRuntime.configureVenv(venv);
-    }
 
     @Override
     public String description() {
@@ -79,6 +78,26 @@ final class GraalPyBackend implements PythonBackend {
     @Override
     public void leaveModule(final Object frame) {
         PythonRuntime.leaveModule((PythonModuleFrame) frame);
+    }
+
+    @Override
+    public Object resumeModule(final String key) {
+        return PythonRuntime.resumeModule(key);
+    }
+
+    @Override
+    public boolean resumed(final Object frame) {
+        return ((PythonModuleFrame) frame).isResumed();
+    }
+
+    @Override
+    public void keepModule(final String key) {
+        PythonRuntime.keepModule(key);
+    }
+
+    @Override
+    public void forgetModule(final String key) {
+        PythonRuntime.forgetModule(key);
     }
 
     @Override

@@ -16,6 +16,8 @@
 
 package dev.frostlake.http;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -85,7 +87,7 @@ public final class WireRowsDeserializer extends ValueDeserializer<List<List<Obje
 
     /** The exact digits of a fraction token, except a signed zero, which only a double can carry. */
     private static Object fraction(final String text) {
-        final BigDecimal exact = new BigDecimal(text);
+        final BigDecimal exact = DecimalText.parse(text);
         if (exact.signum() == 0 && text.startsWith("-")) {
             return Double.valueOf(-0.0);
         }

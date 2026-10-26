@@ -93,6 +93,10 @@ final class NestedCallArgumentLines {
                 final Token before = spoken.get(i - 1);
                 if (before.getType() == FrostlakeLexer.LPAREN && i == fault - 2 && !open.isEmpty()
                         && open.get(open.size() - 1).intValue() == i - 1 && isLiteral(spoken.get(i + 1))) {
+                    if (CastFaultPlace.isCast(spoken, i - 2)) {
+                        // A CAST's bracketed operand is a construct of its own (BracketedLiteralLines).
+                        return null;
+                    }
                     bracketed = true;
                     continue;
                 }
