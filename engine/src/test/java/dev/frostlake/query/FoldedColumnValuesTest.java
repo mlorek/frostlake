@@ -325,4 +325,31 @@ public class FoldedColumnValuesTest extends MeasuredCellsTestSupport {
                 "USE SCHEMA test_schema");
         }
     }
+
+    /**
+     * A VALUES member the list's type cannot hold is refused as its conversion to the type, in its own digits, and
+     * an INSERT names the column it feeds; a set operation's branch is refused in the range sentence instead.
+     */
+    @Test
+    public void aMemberPastTheListsTypeIsRefusedAsItsConversion() {
+        engine.execute("CREATE OR REPLACE TABLE rw (x DECFLOAT, y DECFLOAT)");
+        engine.execute("CREATE OR REPLACE TABLE rn (x NUMBER(38,37))");
+        assertCells(new String[][] {
+            {"INSERT INTO rw VALUES (0.3333333333333333333333333333333333333, 1.5), (11, 13)",
+                "REFUSED DML operation to table RW failed on column X with error: Numeric value '11' is out of range"},
+            {"SELECT COUNT(*) FROM rw", "0"},
+            {"SELECT * FROM (VALUES (0.3333333333333333333333333333333333333), (11)) t(v)",
+                "REFUSED Numeric value '11' is out of range"},
+            {"SELECT SYSTEM$TYPEOF(v) FROM (VALUES (0.3333333333333333333333333333333333333), (11)) t(v)",
+                "NUMBER(38,37)[SB16] ;; NUMBER(38,37)[SB16]"},
+            {"INSERT INTO rw VALUES (0.3333333333333333333333333333333333333, 1), (2, 3), (11, 13), (17, 0.1)",
+                "REFUSED DML operation to table RW failed on column X with error: Numeric value '11' is out of range"},
+            {"SELECT COUNT(*) FROM rw", "0"},
+            {"SELECT 0.3333333333333333333333333333333333333 UNION ALL SELECT 11",
+                "REFUSED Number out of representable range: type FIXED[SB16](38,37){not null}, value 11"},
+            {"INSERT INTO rn VALUES (0.3333333333333333333333333333333333333), (11)",
+                "REFUSED DML operation to table RN failed on column X with error: Numeric value '11' is out of range"},
+            {"SELECT COUNT(*) FROM rn", "0"},
+        });
+    }
 }

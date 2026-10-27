@@ -22,8 +22,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY lists a row for each refresh of a dynamic table, the latest
- * first: what started it (CREATION, MANUAL), what it did (INCREMENTAL, FULL, NO_DATA), the rows it changed, the
- * dynamic table it depended on and the inputs it read; a creation refreshes the dynamic tables it reads first, and
+ * first: what started it (CREATION, MANUAL), what it did (INCREMENTAL, FULL, NO_DATA), the rows and micro-partitions
+ * it changed, the dynamic table it depended on and the inputs whose data changed for it, each with its partitions added
+ * and removed since the refresh before; a creation refreshes the dynamic tables it reads first, and
  * a refresh records one for each table of the chain it refreshes. A refresh stays listed under the name its table
  * held when it ran, past the table's replacement, DROP, UNDROP and RENAME, and the rows come by table, the last
  * name first, a RESULT_LIMIT keeping the first of them; so a read that must see the whole run asks for every row
@@ -49,6 +50,17 @@ public class DynamicTableRefreshHistoryTest extends MeasuredCellsTestSupport {
             + "INPUTS_WITH_CHANGED_DATA, REINIT_REASON, SECONDARY_ROLE_NAMES FROM "
             + "TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => 'TEST_DB.TEST_SCHEMA.D747', "
             + "RESULT_LIMIT => 10000)) WHERE REFRESH_START_TIME >= $t747 ORDER BY REFRESH_START_TIME, NAME");
+        // Each input whose data changed, with its micro-partitions since the refresh before: a table is one
+        // partition while it holds rows, which the INSERT rewrites, and a refresh adds one for what it writes.
+        assertAnswer("D747A|CREATION|INCREMENTAL|[{\"kind\":\"TABLE\",\"name\":\"TEST_DB.TEST_SCHEMA.DS747\","
+                + "\"statistics\":{\"numAddedPartitions\":1,\"numRegisteredRows\":1,"
+                + "\"numRemovedPartitions\":0,\"numUnregisteredRows\":0}}] ;; D747A|CREATION|NO_DATA|null ;; "
+                + "D747B|CREATION|INCREMENTAL|[{\"kind\":\"DYNAMIC_TABLE\","
+                + "\"name\":\"TEST_DB.TEST_SCHEMA.D747A\",\"statistics\":{\"numAddedPartitions\":1,"
+                + "\"numRegisteredRows\":1,\"numRemovedPartitions\":0,\"numUnregisteredRows\":0}}]",
+            "SELECT NAME, REFRESH_TRIGGER, REFRESH_ACTION, INPUTS_WITH_CHANGED_DATA FROM "
+                + "TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => 'TEST_DB.TEST_SCHEMA.D747', "
+                + "RESULT_LIMIT => 10000)) WHERE REFRESH_START_TIME >= $t747 ORDER BY REFRESH_START_TIME, NAME");
         assertAnswer("D747A|true|true|true|true|false|true|null|true ;; D747A|true|true|true|true|false|null|null|"
                 + "true ;; D747B|true|true|true|true|false|true|null|true",
             "SELECT NAME, QUERY_ID IS NOT NULL, DATA_TIMESTAMP IS NOT NULL, GRAPH_HISTORY_VALID_FROM IS NOT NULL, "
@@ -65,6 +77,22 @@ public class DynamicTableRefreshHistoryTest extends MeasuredCellsTestSupport {
             + "INPUTS_WITH_CHANGED_DATA, REINIT_REASON, SECONDARY_ROLE_NAMES FROM "
             + "TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => 'TEST_DB.TEST_SCHEMA.D747', "
             + "RESULT_LIMIT => 10000)) WHERE REFRESH_START_TIME >= $t747 ORDER BY REFRESH_START_TIME, NAME");
+        assertAnswer("D747A|CREATION|INCREMENTAL|[{\"kind\":\"TABLE\",\"name\":\"TEST_DB.TEST_SCHEMA.DS747\","
+                + "\"statistics\":{\"numAddedPartitions\":1,\"numRegisteredRows\":1,"
+                + "\"numRemovedPartitions\":0,\"numUnregisteredRows\":0}}] ;; D747A|CREATION|NO_DATA|null ;; "
+                + "D747B|CREATION|INCREMENTAL|[{\"kind\":\"DYNAMIC_TABLE\","
+                + "\"name\":\"TEST_DB.TEST_SCHEMA.D747A\",\"statistics\":{\"numAddedPartitions\":1,"
+                + "\"numRegisteredRows\":1,\"numRemovedPartitions\":0,\"numUnregisteredRows\":0}}] ;; "
+                + "D747A|MANUAL|INCREMENTAL|[{\"kind\":\"TABLE\",\"name\":\"TEST_DB.TEST_SCHEMA.DS747\","
+                + "\"statistics\":{\"numAddedPartitions\":1,\"numRegisteredRows\":2,"
+                + "\"numRemovedPartitions\":1,\"numUnregisteredRows\":1}}] ;; "
+                + "D747B|MANUAL|INCREMENTAL|[{\"kind\":\"DYNAMIC_TABLE\","
+                + "\"name\":\"TEST_DB.TEST_SCHEMA.D747A\",\"statistics\":{\"numAddedPartitions\":1,"
+                + "\"numRegisteredRows\":1,\"numRemovedPartitions\":0,\"numUnregisteredRows\":0}}] ;; "
+                + "D747A|MANUAL|NO_DATA|null",
+            "SELECT NAME, REFRESH_TRIGGER, REFRESH_ACTION, INPUTS_WITH_CHANGED_DATA FROM "
+                + "TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => 'TEST_DB.TEST_SCHEMA.D747', "
+                + "RESULT_LIMIT => 10000)) WHERE REFRESH_START_TIME >= $t747 ORDER BY REFRESH_START_TIME, NAME");
         assertAnswer("D747A|true|true|true|true|false|true|null|true ;; D747A|true|true|true|true|false|null|null|"
                 + "true ;; D747B|true|true|true|true|false|true|null|true ;; D747A|true|true|true|true|false|true|"
                 + "null|true ;; D747B|true|true|true|true|false|true|null|true ;; D747A|true|true|true|true|false|"
@@ -185,15 +213,38 @@ public class DynamicTableRefreshHistoryTest extends MeasuredCellsTestSupport {
         assertAnswer("1", "DELETE FROM es747 WHERE a = 1");
         assertAnswer("{\"insertedRows\":1,\"copiedRows\":0,\"deletedRows\":1}",
             "ALTER DYNAMIC TABLE e747f REFRESH ->> SELECT \"statistics\" FROM $1");
-        answer("ALTER DYNAMIC TABLE e747a REFRESH ->> SELECT \"statistics\" FROM $1");
-        answer("SELECT NAME, REFRESH_TRIGGER, REFRESH_ACTION, STATE, STATE_CODE, STATE_MESSAGE, TARGET_LAG_SEC, "
-            + "STATISTICS:numInsertedRows, STATISTICS:numDeletedRows, STATISTICS:numCopiedRows, "
-            + "STATISTICS:numAddedPartitions, STATISTICS:numRemovedPartitions, STATISTICS:queuedTimeMs, "
-            + "LAST_COMPLETED_DEPENDENCY:qualified_name, ARRAY_SIZE(INPUTS_WITH_CHANGED_DATA), "
-            + "INPUTS_WITH_CHANGED_DATA[0]:kind, INPUTS_WITH_CHANGED_DATA[0]:name, WAREHOUSE IS NULL, "
-            + "COMPLETION_TARGET IS NULL, QUERY_ID IS NULL FROM "
-            + "TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => 'TEST_DB.TEST_SCHEMA.E747', "
-            + "RESULT_LIMIT => 10000)) WHERE REFRESH_START_TIME >= $t747 ORDER BY REFRESH_START_TIME, NAME");
+        // The refresh deletes the one row of the partition the creation wrote, so it copies none and adds no
+        // partition (live-verified).
+        assertAnswer("{\"insertedRows\":0,\"copiedRows\":0,\"deletedRows\":1}",
+            "ALTER DYNAMIC TABLE e747a REFRESH ->> SELECT \"statistics\" FROM $1");
+        assertAnswer("E747A|CREATION|INCREMENTAL|SUCCEEDED|SUCCESS|null|3600|1|0|0|1|0|0|null|1|TABLE|"
+                + "TEST_DB.TEST_SCHEMA.ES747|false|false|false ;; E747A|CREATION|NO_DATA|SUCCEEDED|SUCCESS|null|"
+                + "3600|0|0|0|0|0|0|null|null|null|null|true|false|false ;; E747B|CREATION|INCREMENTAL|SUCCEEDED|"
+                + "SUCCESS|null|3600|1|0|0|1|0|0|TEST_DB.TEST_SCHEMA.E747A|1|DYNAMIC_TABLE|"
+                + "TEST_DB.TEST_SCHEMA.E747A|false|false|false ;; E747A|CREATION|NO_DATA|SUCCEEDED|SUCCESS|null|"
+                + "3600|0|0|0|0|0|0|null|null|null|null|true|false|false ;; E747C|CREATION|INCREMENTAL|SUCCEEDED|"
+                + "SUCCESS|null|null|1|0|0|1|0|0|TEST_DB.TEST_SCHEMA.E747A|1|DYNAMIC_TABLE|"
+                + "TEST_DB.TEST_SCHEMA.E747A|false|true|false ;; E747E|CREATION|INCREMENTAL|SUCCEEDED|SUCCESS|null|"
+                + "3600|0|0|0|0|0|0|null|0|null|null|false|false|false ;; E747F|CREATION|FULL|SUCCEEDED|SUCCESS|"
+                + "null|3600|1|0|0|1|0|0|null|1|TABLE|TEST_DB.TEST_SCHEMA.ES747|false|false|false ;; E747A|MANUAL|"
+                + "INCREMENTAL|SUCCEEDED|SUCCESS|null|3600|1|0|0|1|0|0|null|1|TABLE|TEST_DB.TEST_SCHEMA.ES747|"
+                + "false|false|false ;; E747B|MANUAL|INCREMENTAL|SUCCEEDED|SUCCESS|null|3600|1|0|0|1|0|0|"
+                + "TEST_DB.TEST_SCHEMA.E747A|1|DYNAMIC_TABLE|TEST_DB.TEST_SCHEMA.E747A|false|false|false ;; E747A|"
+                + "MANUAL|NO_DATA|SUCCEEDED|SUCCESS|null|3600|0|0|0|0|0|0|null|null|null|null|true|false|false ;; "
+                + "E747C|MANUAL|INCREMENTAL|SUCCEEDED|SUCCESS|null|null|1|0|0|1|0|0|TEST_DB.TEST_SCHEMA.E747A|1|"
+                + "DYNAMIC_TABLE|TEST_DB.TEST_SCHEMA.E747A|false|true|false ;; E747E|MANUAL|NO_DATA|SUCCEEDED|"
+                + "SUCCESS|null|3600|0|0|0|0|0|0|null|null|null|null|true|false|false ;; E747F|MANUAL|FULL|"
+                + "SUCCEEDED|SUCCESS|null|3600|1|1|0|1|1|0|null|1|TABLE|TEST_DB.TEST_SCHEMA.ES747|false|false|"
+                + "false ;; E747A|MANUAL|INCREMENTAL|SUCCEEDED|SUCCESS|null|3600|0|1|0|0|1|0|null|1|TABLE|"
+                + "TEST_DB.TEST_SCHEMA.ES747|false|false|false",
+            "SELECT NAME, REFRESH_TRIGGER, REFRESH_ACTION, STATE, STATE_CODE, STATE_MESSAGE, TARGET_LAG_SEC, "
+                + "STATISTICS:numInsertedRows, STATISTICS:numDeletedRows, STATISTICS:numCopiedRows, "
+                + "STATISTICS:numAddedPartitions, STATISTICS:numRemovedPartitions, STATISTICS:queuedTimeMs, "
+                + "LAST_COMPLETED_DEPENDENCY:qualified_name, ARRAY_SIZE(INPUTS_WITH_CHANGED_DATA), "
+                + "INPUTS_WITH_CHANGED_DATA[0]:kind, INPUTS_WITH_CHANGED_DATA[0]:name, WAREHOUSE IS NULL, "
+                + "COMPLETION_TARGET IS NULL, QUERY_ID IS NULL FROM "
+                + "TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => 'TEST_DB.TEST_SCHEMA.E747', "
+                + "RESULT_LIMIT => 10000)) WHERE REFRESH_START_TIME >= $t747 ORDER BY REFRESH_START_TIME, NAME");
         assertAnswer("6",
             "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME => 'E747A', "
                 + "RESULT_LIMIT => 10000)) WHERE REFRESH_START_TIME >= $t747");

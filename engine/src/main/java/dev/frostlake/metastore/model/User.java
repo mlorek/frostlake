@@ -244,6 +244,15 @@ public class User implements Taggable {
         grants.purgeGrants(objectType, objectName, ownershipOnly);
     }
 
+    /**
+     * Takes back the privileges but OWNERSHIP, and the database roles, a dropped role granted this user.
+     *
+     * @param grantor the dropped role's canonical name
+     */
+    public void revokeGrantedBy(final String grantor) {
+        grants.revokeGrantedBy(grantor);
+    }
+
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
         grants.grantColumnPrivilege(objectType, objectName, columnName, privilege);
     }

@@ -403,6 +403,15 @@ public class Role implements Taggable {
         grants.purgeGrants(objectType, objectName, ownershipOnly);
     }
 
+    /**
+     * Takes back the privileges but OWNERSHIP, and the database roles, a dropped role granted this one.
+     *
+     * @param grantor the dropped role's canonical name
+     */
+    public void revokeGrantedBy(final String grantor) {
+        grants.revokeGrantedBy(grantor);
+    }
+
     public void rename(final String newName) {
         // Match the constructor, which upper-cases the name; a verbatim rename would
         // otherwise leave getName() inconsistent with every freshly-created role.

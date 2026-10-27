@@ -21,6 +21,7 @@ import dev.frostlake.ConcurrentDatabaseEngine;
 import dev.frostlake.LiveSnowflake;
 import dev.frostlake.http.SessionContext;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -181,5 +182,25 @@ public class StreamLockWaitTest extends BaseDatabaseTest {
         assertEquals("1", say("B", "INSERT INTO sink4 SELECT id FROM s4"));
         // The offset the other session committed is where the transaction's read starts too.
         assertEquals("", say("A", "SELECT id FROM s4"));
+    }
+
+    @Test
+    public void aBlocksReadOfAHeldStreamWaitsAsAQueryDoes() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "where a block places the refusal of its statement is unmeasured");
+        say("A", "BEGIN");
+        assertEquals("1", say("A", "SELECT id FROM s4"));
+        say("B", "ALTER SESSION SET LOCK_TIMEOUT = 1");
+        say("B", "BEGIN");
+        final String resultSet = say("B", "BEGIN LET rs RESULTSET := (SELECT COUNT(*) AS n FROM s4); "
+            + "RETURN TABLE(rs); END");
+        assertTrue(resultSet.contains("has locked stream 'S4' in transaction <TXN>"), resultSet);
+        final String cursor = say("B", "DECLARE c CURSOR FOR SELECT id FROM s4; n INT DEFAULT 0; BEGIN "
+            + "FOR r IN c DO n := n + 1; END FOR; RETURN n; END");
+        assertTrue(cursor.contains("has locked stream 'S4' in transaction <TXN>"), cursor);
+        say("B", "ROLLBACK");
+        say("A", "COMMIT");
+        // Once the holder is through, the block reads the stream.
+        say("B", "BEGIN");
+        assertEquals("1", say("B", "BEGIN LET rs RESULTSET := (SELECT COUNT(*) AS n FROM s4); RETURN TABLE(rs); END"));
     }
 }

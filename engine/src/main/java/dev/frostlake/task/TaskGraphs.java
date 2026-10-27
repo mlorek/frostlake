@@ -22,6 +22,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -39,20 +40,21 @@ public final class TaskGraphs {
     /** Static helpers only. */
     /**
      * The fire a task's schedule names after one it is scheduled for, as NEXT_SCHEDULED_TIME tells it for a
-     * scheduled run: an interval later (live-verified), or the CRON expression's next instant.
+     * scheduled run: an interval later in elapsed time, across a change of the clock's offset too (live-verified),
+     * or the CRON expression's next instant.
      *
      * @param task      the task
-     * @param scheduled the fire the run is scheduled for
+     * @param scheduled the instant the run is scheduled for
      * @return the next fire, or null for a task without a schedule
      */
-    public static LocalDateTime fireAfter(final Task task, final LocalDateTime scheduled) {
+    public static Instant fireAfter(final Task task, final Instant scheduled) {
         if (task.getSchedule() == null || scheduled == null) {
             return null;
         }
         if (task.getScheduleType() == ScheduleType.CRON) {
             final ZonedDateTime next = CronSchedule.parse(task.getSchedule())
                 .nextFireAfter(scheduled.atZone(ZoneId.systemDefault()));
-            return next == null ? null : next.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
+            return next == null ? null : next.toInstant();
         }
         final long seconds = IntervalSchedule.seconds(task.getSchedule());
         return scheduled.plusSeconds(seconds > 0L ? seconds : 3600L);
@@ -148,6 +150,11 @@ public final class TaskGraphs {
             }
         }
         return null;
+    }
+
+    /** The RUN_ID of a graph run scheduled at that instant: its epoch milliseconds, or null. */
+    public static Long runId(final Instant scheduled) {
+        return scheduled == null ? null : Long.valueOf(scheduled.toEpochMilli());
     }
 
     /** The RUN_ID of a graph run scheduled at that time: its epoch milliseconds, or null. */

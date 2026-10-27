@@ -249,6 +249,20 @@ class HttpClient {
         }
     }
 
+    /**
+     * Cancel the statement a statement object of this connection has in flight, from any thread (see
+     * {@link #cancelRunning()}); nothing when none is.
+     *
+     * @throws SQLException when the server cannot be reached
+     */
+    public void cancelInFlight() throws SQLException {
+        synchronized (cancelLock) {
+            if (runningOwner != null) {
+                cancelRunning();
+            }
+        }
+    }
+
     /** A refused statement's exception: its message, with the SQLSTATE and vendor code when the answer carries them. */
     private static SQLException refusal(final SqlResponse response) {
         if (response.getSqlState() == null) {

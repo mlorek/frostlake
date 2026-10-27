@@ -16,8 +16,10 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.BlockExpressionTypes;
 import dev.frostlake.executor.ScriptedErrorPlace;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DataType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -26,6 +28,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Where the compilation error inside an uncaught EXPRESSION_ERROR stands, as the account reports it. A
@@ -35,7 +38,9 @@ import java.util.List;
  * DECLARE default) and seven for any other expression (a RETURN, an IF or WHILE condition, a CASE operand)
  * — and only on the expression's first line: {@code LET a NUMBER := (SELECT missing FROM …)} reports
  * position 23 and {@code RETURN 1 + (SELECT missing …)} position 19, while a name on the expression's
- * second line keeps its own column (all live-verified).
+ * second line keeps its own column. A name of the expression ahead of the place on its line is written out
+ * as a bind, as in any expression that holds a subquery (see {@link BlockExpressionTypes}): {@code RETURN x +
+ * (SELECT missing …)} over a NUMBER reports position 36 (all live-verified).
  */
 final class ExpressionErrorPlace {
 
@@ -55,9 +60,11 @@ final class ExpressionErrorPlace {
      * @param line    the expression's line in the block
      * @param column  the expression's column
      * @param message the error the expression's subquery raised
+     * @param types   the types of the names in scope, keyed as the resolver folds them
      * @return the message as the account words it
      */
-    static String placed(final ParseTree block, final int line, final int column, final String message) {
+    static String placed(final ParseTree block, final int line, final int column, final String message,
+                         final Map<String, DataType> types) {
         if (ScriptedErrorPlace.placeOf(message) == null) {
             return message;
         }
@@ -69,8 +76,10 @@ final class ExpressionErrorPlace {
         }
         final String inBlock = ScriptedErrorPlace.inEnclosingText(message,
             query.getStart().getLine(), query.getStart().getCharPositionInLine());
-        return ScriptedErrorPlace.inFragment(inBlock, line, column,
-            assignsAValue(expression) ? ASSIGNED_VALUE_LEAD : EXPRESSION_LEAD);
+        final int[] at = ScriptedErrorPlace.placeOf(inBlock);
+        return ScriptedErrorPlace.furtherAlong(ScriptedErrorPlace.inFragment(inBlock, line, column,
+                assignsAValue(expression) ? ASSIGNED_VALUE_LEAD : EXPRESSION_LEAD),
+            at == null ? 0 : BlockExpressionTypes.boundNamesShift(expression, at[0], at[1], types));
     }
 
     /**

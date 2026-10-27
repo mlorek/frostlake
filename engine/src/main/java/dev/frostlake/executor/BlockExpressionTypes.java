@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.executor.expressions.UnknownUnitWord;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
@@ -38,6 +39,7 @@ import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -51,17 +53,17 @@ import java.util.regex.Pattern;
  * TO_DATE('2024-01-01') = TRUE} {@code Can not convert parameter 'TRUE' of type [BOOLEAN] into expected type
  * [DATE]} — where Frostlake used to answer or fail in its own words (all live-verified).
  *
- * <p>The account compiles the expression with every variable written out as its value's type, so a variable
- * standing before the refused operator on its line moves the place: a name {@code x} reads {@code (x)::TYPE},
- * a FOR counter {@code (:i)::TYPE} and a bind {@code :x} reads {@code ?::TYPE}, spelled as a refusal spells the
- * declared type, and a text takes no cast at all ({@code (x)}, {@code ?}); inside an expression that holds a
- * subquery a name reads {@code (:x)::TYPE}, and so does every name of a stored procedure's body and of a block
- * whose outermost DECLARE section declares a cursor or a RESULTSET with a query. A text variable's type is its
- * value's width, as a bound value's is. The place counts from the expression's own start, after a lead-in on its
- * first line: seven columns when the expression holds a subquery or a call of a user-defined function (the
- * account compiles it as a query), and eight more for a value given to a variable — a LET, an assignment, a
- * DECLARE default, the bound a range FOR's counter starts from (the upper one of a REVERSE loop); a later line
- * keeps its own columns (all live-verified).
+ * <p>The account compiles the expression with every variable written out as its value's type, so a variable standing
+ * before the refused operator on its line moves the place: a name {@code x} reads {@code (x)::TYPE}, a FOR counter
+ * {@code (:i)::TYPE} and a bind {@code :x} reads {@code ?::TYPE}, spelled as a refusal spells the declared type, and a
+ * text takes no cast at all ({@code (x)}, {@code ?}); inside an expression that holds a subquery a name reads {@code
+ * (:x)::TYPE}, and so does every name of a stored procedure's body and of a block whose outermost DECLARE section
+ * declares a cursor or a RESULTSET with a query; an IF's condition places a call given the wrong number of arguments so
+ * too, where its argument types keep {@code (x)::TYPE}. A text variable's type is its value's width, as a bound value's
+ * is. The place counts from the expression's own start, after a lead-in on its first line: seven columns when the
+ * expression holds a subquery or a call of a user-defined function (the account compiles it as a query), and eight more
+ * for a value given to a variable — a LET, an assignment, a DECLARE default, the bound a range FOR's counter starts
+ * from (the upper one of a REVERSE loop); a later line keeps its own columns (all live-verified).
  *
  * <p>A call given more or fewer arguments than it takes is judged with the types and placed the same way:
  * {@code RETURN 1 + ABS(1, 2)} is {@code too many arguments for function [ABS(1, 2)] expected 1, got 2} at
@@ -99,6 +101,9 @@ public final class BlockExpressionTypes {
 
     /** What a call given fewer arguments than it takes is refused with, before its echo. */
     private static final String NOT_ENOUGH = "not enough arguments for function [";
+
+    /** What a unit outside its function's vocabulary is refused with, after the unit. */
+    private static final String UNKNOWN_UNIT = "] is not a valid date/time component for function ";
 
     private BlockExpressionTypes() {
     }
@@ -144,7 +149,12 @@ public final class BlockExpressionTypes {
                     echoed = rendered;
                 }
             }
-            throw new BlockExpressionTypeError(placedInExpression(echoed, expression, types, counters, namesBound,
+            // An IF's or an ELSEIF's condition places a miscounted call with each name written out as a bind, and its
+            // argument types with the name as it stands: IF (x + ABS(1, 2) > 0) over a NUMBER is refused at 21, IF (x
+            // + TRUE = 1) at 18 (live-verified).
+            final boolean bound = namesBound || (TOO_MANY.equals(echo) || NOT_ENOUGH.equals(echo))
+                && expression.getParent() instanceof FrostlakeParser.IfStatementContext;
+            throw new BlockExpressionTypeError(placedInExpression(echoed, expression, types, counters, bound,
                 compilesAsAQuery(expression, queryExecutor == null ? null
                     : DeclarationTypes.scriptTyper(types, queryExecutor))));
         }
@@ -287,7 +297,10 @@ public final class BlockExpressionTypes {
     }
 
     /**
-     * Judge an expression while the block compiles, refusing it bare, placed in the block.
+     * Judge an expression while the block compiles, refusing it bare, placed in the block. A unit written as a text
+     * outside its function's vocabulary is refused then too: {@code IF (FALSE) THEN LET x := DATEADD('nosuchpart', 1,
+     * CURRENT_DATE()); END IF;} is {@code ['nosuchpart'] is not a valid date/time component for function DATEADD.}
+     * (live-verified).
      *
      * @param expression    the expression as parsed in the block
      * @param types         the types of the names in scope, keyed as the resolver folds them
@@ -299,7 +312,7 @@ public final class BlockExpressionTypes {
         // LET a := ABS(ALL 1) + TRUE is the bare 'all' sentence (live-verified).
         final String shape = callShapeRefusal(sqlOf(expression), types, queryExecutor);
         final String refusal = shape != null ? shape
-            : argumentTypeRefusal(expression, sqlOf(expression), types, queryExecutor);
+            : argumentTypeRefusal(expression, sqlOf(expression), types, queryExecutor, true);
         if (refusal == null) {
             return;
         }
@@ -336,6 +349,17 @@ public final class BlockExpressionTypes {
     /** SQL's refusal of the expression's argument types, placed in the block, or null when SQL takes them. */
     private static String argumentTypeRefusal(final ParserRuleContext expression, final Expression sql,
                                               final Map<String, DataType> types, final QueryExecutor queryExecutor) {
+        return argumentTypeRefusal(expression, sql, types, queryExecutor, false);
+    }
+
+    /**
+     * SQL's refusal of the expression's argument types, placed in the block, or null when SQL takes them; as the block
+     * compiles, the refusal of a unit written as a text outside its function's vocabulary too (see {@link
+     * #judgeCompiled}). A bare word in the unit's place is left to the expression's own judging.
+     */
+    private static String argumentTypeRefusal(final ParserRuleContext expression, final Expression sql,
+                                              final Map<String, DataType> types, final QueryExecutor queryExecutor,
+                                              final boolean compiled) {
         if (expression == null || queryExecutor == null || sql == null) {
             return null;
         }
@@ -353,7 +377,9 @@ public final class BlockExpressionTypes {
             return SqlCompilationError.isCompilationError(message)
                 && (message.contains("Invalid argument types for function '")
                     || message.contains(CONVERSION_ECHO) || message.contains(TOO_MANY)
-                    || message.contains(NOT_ENOUGH)) ? message : null;
+                    || message.contains(NOT_ENOUGH)
+                    || compiled && !(refused instanceof UnknownUnitWord) && message.contains(UNKNOWN_UNIT))
+                ? message : null;
         } finally {
             ExpressionSource.end(displaced);
         }
@@ -376,6 +402,22 @@ public final class BlockExpressionTypes {
                 + (assignsAValue(expression) ? ASSIGNED_VALUE_LEAD : 0);
         }
         return placed(refusal, place, line - start.getLine() + 1, moved);
+    }
+
+    /**
+     * The columns the names of an expression that holds a subquery add to a place on their line, each written out as a
+     * bind: {@code RETURN x + (SELECT ABS(1, 2))} over a NUMBER is refused seventeen columns on, {@code x} read as
+     * {@code (:x)::NUMBER(38,0)} (live-verified). A name inside the subquery adds none.
+     *
+     * @param expression the expression as parsed in the block
+     * @param line       the place's line in the block
+     * @param column     the place's column
+     * @param types      the types of the names in scope, keyed as the resolver folds them
+     * @return the columns
+     */
+    public static int boundNamesShift(final ParserRuleContext expression, final int line, final int column,
+                                      final Map<String, DataType> types) {
+        return writtenOutShift(expression, line, column, types, Collections.emptySet(), true);
     }
 
     private static String placed(final String refusal, final Matcher place, final int line, final int column) {

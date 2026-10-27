@@ -550,6 +550,14 @@ public final class SetOperations {
                 // altering a single rendered digit.
                 final BigDecimal scaled =
                     DecimalText.parse(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
+                if (numeric.getPrecision() > 0
+                        && NumericRangeRefusal.exceeds(scaled, numeric.getPrecision(), numeric.getScale())) {
+                    // A branch's number the unified type cannot hold is refused at its row, as a cast to the type
+                    // is: 11 beside 0.333… of 37 places (live-verified).
+                    throw new RuntimeException(NumericRangeRefusal.typed(SignedStorageWidth.tagOf(scaled,
+                        numeric.getScale()), numeric.getPrecision(), numeric.getScale(), false,
+                        DecimalText.parse(value.toString())));
+                }
                 if (numeric.getScale() == 0 && !(value instanceof BigDecimal)
                         && scaled.compareTo(DecimalText.parse(value.toString())) == 0) {
                     return value;

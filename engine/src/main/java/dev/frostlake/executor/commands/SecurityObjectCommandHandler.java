@@ -331,6 +331,11 @@ public final class SecurityObjectCommandHandler {
         }
         apply(created, properties);
         store.add(created);
+        if (existing == null) {
+            // A new object takes the name: the privileges a dropped one of that name left recorded are not its own
+            // (see GrantNames#created); an object it replaces keeps them.
+            GrantNames.created(catalog, kind.name(), schema != null ? schema.qualifiedName(name) : name);
+        }
         return created(kind, name);
     }
 
@@ -657,6 +662,12 @@ public final class SecurityObjectCommandHandler {
             final int[] shown = LeadingCommentOffset.rebase(at.getLine(), at.getCharPositionInLine());
             throw new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
                 + shown[1] + " unexpected 'NULL'."));
+        }
+        if (!v.securityListNumber().isEmpty() && spec.getType() != SecurityPropertyType.SESSION_SCOPE) {
+            // A number among a list's items is no value of the parameter: ALLOWLIST = (1) is refused as
+            // invalid value [1] (live-verified).
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
+                v.securityListNumber(0).getText(), key));
         }
         final TerminalNode text = v.STRING_LITERAL().isEmpty() || v.LPAREN() != null ? null : v.STRING_LITERAL(0);
         final String word = v.identifier() != null ? v.identifier().getText().toUpperCase(Locale.ROOT)

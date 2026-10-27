@@ -42,6 +42,7 @@ import dev.frostlake.executor.commands.SecurityObjectCommandHandler;
 import dev.frostlake.executor.commands.ShowCommandHandler;
 import dev.frostlake.executor.commands.TagValues;
 import dev.frostlake.executor.expressions.CaretOperator;
+import dev.frostlake.executor.expressions.DoubledSigns;
 import dev.frostlake.executor.expressions.InformationSchemaCalls;
 import dev.frostlake.executor.expressions.IntervalLiteralSyntax;
 import dev.frostlake.executor.expressions.NamedCallRewrite;
@@ -256,6 +257,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final String enclosingKind = NoCurrentDatabaseRefusal.enter(StatementKindText.of(ctx));
         try {
             CaretOperator.rejectInStatement(ctx);
+            DoubledSigns.rejectInStatement(ctx);
             FromClauseProcedureJobs.require(ctx, procedureDepth > 0);
             ReadOnlyRequest.require(ctx);
             if (catalog != null && catalog.getCurrentDatabase() == null) {
@@ -1362,6 +1364,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             folded = evaluateSqlExpression(ctx);
         } catch (final RuntimeException failed) {
             throw SessionAssignmentSource.foldFailure(failed, ctx);
+        }
+        // A function the account's folder does not take is refused once the source compiles, and so is one a SQL
+        // function the source calls reaches.
+        if (SessionAssignmentSource.callsUnfoldedFunction(ctx)
+                || SessionAssignmentSource.reachesUnfoldedThroughSqlFunction(ctx, queryExecutor)
+                || UnfoldedVariantWalk.holdsUnfolded(DeclarationTypes.sqlExpression(ctx), queryExecutor)) {
+            throw new RuntimeException(SessionAssignmentSource.NON_CONSTANT);
         }
         return SessionAssignmentSource.assignable(folded, ctx, queryExecutor);
     }

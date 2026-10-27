@@ -26,6 +26,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StageDirectoryRefresh;
 import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
@@ -118,7 +119,12 @@ final class AlterStageHandler {
                 : catalog.resolveOwningSchema(newName);
             DDLCommandHandler.refuseTakenName(true, target.hasStageExact(newParts[newParts.length - 1]), newParts);
             queryExecutor.requireCreatePrivilege(Privilege.CREATE_STAGE, target);
+            final Schema source = catalog.resolveOwningSchema(stageName);
+            final String oldOwner = QualifiedName.key(source.getDatabaseName(), source.getName(), stage.getName());
             catalog.renameStage(stageName, newName);
+            // The stage's files go with it, as a table's go with a renamed table.
+            queryExecutor.followRenamedStage(stage, oldOwner,
+                QualifiedName.key(target.getDatabaseName(), target.getName(), stage.getName()));
             logger.trace("Renamed stage {} to {}", stageName, newName);
         } else {
             // Judged whole before anything is applied, so a refused property leaves the others unset.

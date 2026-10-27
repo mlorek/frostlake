@@ -1153,7 +1153,8 @@ public class GetDdl extends BuiltInFunction {
     /**
      * {@code create or replace [secure ]materialized view M(\n\tX COMMENT 'c'\n)[ COMMENT='…'\n] as SELECT …;}
      * — the column list as a view's, from the declared names or the columns the definition resolved to, each with
-     * the comment it declares (live-verified).
+     * the comment it declares (live-verified), and with the policies and tags its column list set, as a view's
+     * column carries them.
      */
     String materializedViewDdl(final MaterializedView view, final Schema schema, final DdlNames names) {
         final String name = names.object(schema, view.getName());
@@ -1177,6 +1178,8 @@ public class GetDdl extends BuiltInFunction {
         sb.append("materialized view ").append(name).append("(");
         for (int i = 0; i < columns.size(); i++) {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i)))
+              .append(columnPolicies(view.getResolvedColumns(), columns.get(i)))
+              .append(columnTags(view.getResolvedColumns(), columns.get(i), schema))
               .append(columnComment(view.getResolvedColumns(), columns.get(i)));
         }
         sb.append("\n)").append(commentClause(view.getComment()));

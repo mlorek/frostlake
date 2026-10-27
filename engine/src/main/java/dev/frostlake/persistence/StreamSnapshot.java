@@ -44,6 +44,9 @@ public class StreamSnapshot implements Serializable {
     public boolean lostInClone;
     // Whether the stream was re-bound to tables that replaced the ones it read. False on older snapshots.
     public boolean rebound;
+    // The tables a re-bind that kept the stream's changes lists it as reading, each as its database, schema and
+    // table (StreamSources#shownTablePlaces). Null when there was no such re-bind, and on older snapshots.
+    public List<List<String>> shownTables;
     public String comment;
     public String owner;
     public List<StreamRecordSnapshot> records = new ArrayList<>();

@@ -111,6 +111,10 @@ final class OrdinalLiteral {
         try {
             return literalValue(ExpressionEvaluator.parse(text), false);
         } catch (final RuntimeException unreadable) {
+            if (String.valueOf(unreadable.getMessage()).contains("invalid function '")) {
+                // Two signs in a row are no number at all (see DoubledSigns).
+                throw unreadable;
+            }
             // A number too wide for its type is still written in the slot, and no such value can be a
             // position, so the slot is out of range whichever way it leans. The literal earns its own
             // refusal where it is read, which is where the statement names the place it was written.

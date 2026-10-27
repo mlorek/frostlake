@@ -18,6 +18,7 @@ package dev.frostlake.security;
 
 import dev.frostlake.query.MeasuredCellsTestSupport;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -177,5 +178,38 @@ public class ViewColumnListPoliciesTest extends MeasuredCellsTestSupport {
         assertAnswer("Materialized view MV752 successfully created.",
             "CREATE OR REPLACE MATERIALIZED VIEW mv752 (id, secret WITH TAG (tg752 = 'x')) AS SELECT id, secret FROM "
                 + "tv752");
+    }
+
+    /**
+     * A materialized view's column clauses are reported as a view's are: GET_DDL prints them,
+     * TAG_REFERENCES_ALL_COLUMNS lists its column's tag, and a policy one of its columns carries is not dropped or
+     * replaced while it does.
+     */
+    @Test
+    public void aMaterializedViewsColumnClausesAreReported() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "how a materialized view reports its column clauses was not measured");
+        engine.execute("CREATE OR REPLACE TABLE tw752 (id INT, secret VARCHAR, region VARCHAR)");
+        engine.execute("CREATE OR REPLACE MASKING POLICY mw752 AS (v VARCHAR) RETURNS VARCHAR -> '***'");
+        engine.execute("CREATE OR REPLACE PROJECTION POLICY pw752 AS () RETURNS PROJECTION_CONSTRAINT -> "
+            + "PROJECTION_CONSTRAINT(ALLOW => TRUE)");
+        engine.execute("CREATE OR REPLACE TAG gw752");
+        engine.execute("CREATE OR REPLACE MATERIALIZED VIEW mw752v (id WITH TAG (gw752 = 'x'), secret WITH MASKING "
+            + "POLICY mw752 COMMENT 'd', region WITH PROJECTION POLICY pw752) AS SELECT id, secret, region FROM tw752");
+        assertCells(new String[][] {
+            {"SELECT GET_DDL('VIEW', 'mw752v')", "create or replace materialized view MW752V( | \tID WITH TAG "
+                + "(TEST_DB.TEST_SCHEMA.GW752='x'), | \tSECRET WITH MASKING POLICY TEST_DB.TEST_SCHEMA.MW752 COMMENT "
+                + "'d', | \tREGION WITH PROJECTION POLICY TEST_DB.TEST_SCHEMA.PW752 | ) as SELECT id, secret, region "
+                + "FROM tw752;"},
+            {"SELECT TAG_NAME, TAG_VALUE, LEVEL, COLUMN_NAME FROM "
+                + "TABLE(INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS('mw752v', 'table'))", "GW752|x|COLUMN|ID"},
+            {"DROP MASKING POLICY mw752", "REFUSED SQL compilation error: Policy MW752 cannot be dropped/replaced as "
+                + "it is associated with one or more entities."},
+            {"CREATE OR REPLACE PROJECTION POLICY pw752 AS () RETURNS PROJECTION_CONSTRAINT -> "
+                + "PROJECTION_CONSTRAINT(ALLOW => FALSE)", "REFUSED SQL compilation error: Policy PW752 cannot be "
+                + "dropped/replaced as it is associated with one or more entities."},
+            {"DROP MATERIALIZED VIEW mw752v", "MW752V successfully dropped."},
+            {"DROP MASKING POLICY mw752", "MW752 successfully dropped."},
+        });
     }
 }

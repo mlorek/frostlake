@@ -19,6 +19,7 @@ package dev.frostlake.metastore.model;
 import dev.frostlake.executor.StatementClock;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -305,6 +306,36 @@ final class GrantLedger {
 
     Instant getDatabaseRoleGrantTime(final String qualifiedName) {
         return databaseRoleGrantTimes.get(qualifiedName);
+    }
+
+    // ── a grantor's drop ──
+
+    /**
+     * Takes back what one role granted, as that role's drop does (documented): the privileges recorded in its name
+     * but OWNERSHIP, which stays with its holder, and the database roles it granted.
+     *
+     * @param grantor the role's canonical name, as grants record it
+     */
+    void revokeGrantedBy(final String grantor) {
+        for (final Map.Entry<String, Set<Privilege>> held : new ArrayList<>(objectPrivileges.entrySet())) {
+            for (final Privilege privilege : new ArrayList<>(held.getValue())) {
+                final String recorded = held.getKey() + ":" + privilege.name();
+                if (privilege != Privilege.OWNERSHIP && grantor.equals(privilegeGrantors.get(recorded))) {
+                    grantOptions.remove(recorded);
+                    privilegeGrantTimes.remove(recorded);
+                    privilegeGrantors.remove(recorded);
+                    held.getValue().remove(privilege);
+                }
+            }
+            if (held.getValue().isEmpty()) {
+                objectPrivileges.remove(held.getKey());
+            }
+        }
+        for (final Map.Entry<String, String> granted : new ArrayList<>(databaseRoleGrantors.entrySet())) {
+            if (grantor.equals(granted.getValue())) {
+                revokeDatabaseRole(granted.getKey());
+            }
+        }
     }
 
     /**

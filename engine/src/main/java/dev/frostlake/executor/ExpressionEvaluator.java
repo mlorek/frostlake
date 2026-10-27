@@ -868,6 +868,21 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * Whether a select item of a FROM-less select projects a number or boolean literal — see
+     * TableColumn#isLiteralConstant. Never throws.
+     *
+     * @param expression a select item
+     * @return true for such an item
+     */
+    public boolean projectsLiteralConstant(final Expression expression) {
+        try {
+            return preparedVisitor().projectsLiteralConstant(expression);
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
      * The NUMBER {@code expression} spells when it is a bare string literal, or a column carrying one out
      * of a derived relation — what a projected column hands on so a conditional over it folds as live
      * folds the literal (see TableColumn#getSpelledNumber); null for anything else. Never throws.

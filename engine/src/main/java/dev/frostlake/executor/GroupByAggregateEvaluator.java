@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.GroupedElementReads;
 import dev.frostlake.executor.expressions.GroupingKeys;
 import dev.frostlake.executor.expressions.GroupingSetScope;
 import dev.frostlake.executor.expressions.IntervalCasts;
@@ -115,6 +116,10 @@ final class GroupByAggregateEvaluator {
     private final Map<FrostlakeParser.SelectClauseContext, Set<String>> keyPrints =
         Collections.synchronizedMap(new WeakHashMap<FrostlakeParser.SelectClauseContext, Set<String>>());
 
+    /** Whether each grouped expression reads the rows as they are (see {@link #readsRowsAsTheyAre}), as written. */
+    private final Map<ParserRuleContext, Boolean> rowReadings =
+        Collections.synchronizedMap(new WeakHashMap<ParserRuleContext, Boolean>());
+
     GroupByAggregateEvaluator(final QueryExecutor executor) {
         this.executor = executor;
     }
@@ -142,13 +147,49 @@ final class GroupByAggregateEvaluator {
         if (select == null) {
             return false;
         }
+        final String printed = printedKey(ParseTreeText.getOriginalText(expression));
+        return printed != null && keysOf(select).contains(printed);
+    }
+
+    /**
+     * Whether an expression of a grouped query reads the rows as they are (see StoredRead): it is a key, or it holds
+     * one and converts an element only inside keys, which are computed over each row before the rows are grouped
+     * (see {@link GroupedElementReads}).
+     *
+     * @param expression a select item's expression or an ORDER BY key, as written
+     * @return whether it reads the rows as they are
+     */
+    private boolean readsRowsAsTheyAre(final ParserRuleContext expression) {
+        if (isGroupingKey(expression)) {
+            return true;
+        }
+        final FrostlakeParser.SelectClauseContext select = expression == null ? null : groupedSelect(expression);
+        if (select == null) {
+            return false;
+        }
+        final Boolean known = rowReadings.get(expression);
+        if (known != null) {
+            return known;
+        }
+        boolean reads;
+        try {
+            reads = GroupedElementReads.convertsOnlyInsideKeys(
+                ExpressionEvaluator.parse(ParseTreeText.getOriginalText(expression)), keysOf(select));
+        } catch (final RuntimeException notAnExpression) {
+            reads = false;
+        }
+        rowReadings.put(expression, reads);
+        return reads;
+    }
+
+    /** The canonical prints of the keys a grouped select groups by, worked out once a select. */
+    private Set<String> keysOf(final FrostlakeParser.SelectClauseContext select) {
         Set<String> keys = keyPrints.get(select);
         if (keys == null) {
             keys = groupingKeyPrints(select);
             keyPrints.put(select, keys);
         }
-        final String printed = printedKey(ParseTreeText.getOriginalText(expression));
-        return printed != null && keys.contains(printed);
+        return keys;
     }
 
     /**
@@ -1672,7 +1713,7 @@ final class GroupByAggregateEvaluator {
             }
         }
         final ExpressionEvaluator ev = new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-        ev.setOverGroupedRows(!isGroupingKey(SelectItemAccessors.getItemExpression(item)));
+        ev.setOverGroupedRows(!readsRowsAsTheyAre(SelectItemAccessors.getItemExpression(item)));
         // JOIN-aware resolution for qualified refs (s.col, o.col) in the item: without the multi-table
         // context, a representative row of a LEFT-JOIN group (null-padded on the miss side) resolves its
         // columns positionally against the wrong layout and the whole item silently evaluates to NULL.
@@ -2477,7 +2518,7 @@ final class GroupByAggregateEvaluator {
                 || joinedPositional)) {
             final ExpressionEvaluator ev = new ExpressionEvaluator(
                 table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-            ev.setOverGroupedRows(!isGroupingKey(expr));
+            ev.setOverGroupedRows(!readsRowsAsTheyAre(expr));
             if (aliasToTable != null && allTables != null && allTables.size() > 1) {
                 ev.setMultiTableContext(aliasToTable, allTables);
             }

@@ -27,7 +27,7 @@ public class StdDevPopAccumulator
 
     private boolean decfloat;
 
-    private final WelfordMoments moments = new WelfordMoments();
+    private final ExactMoments moments = new ExactMoments();
     private final SquaredSumMoments floatMoments = new SquaredSumMoments();
     private int maxScale;
     private boolean approximate;
@@ -59,7 +59,7 @@ public class StdDevPopAccumulator
         }
         if (v == null) return;
         final double number = NumericAggregateInput.asDouble(v);
-        moments.add(number);
+        moments.add(v);
         floatMoments.add(number);
         maxScale = Math.max(maxScale, AggregateNumerics.scaleOfInput(v));
         approximate = approximate || AggregateNumerics.isApproximateInput(v);
@@ -71,10 +71,12 @@ public class StdDevPopAccumulator
             return decfloatMoments.heldDeviation(false);
         }
         if (moments.count() == 0) return null;
-        // A FLOAT input is read through the account's sums, an exact one through the running mean.
-        final double variance = approximate ? floatMoments.populationVariance() : moments.populationVariance();
-        // The ROOT OF THE ROUNDED variance, as in StdDevAccumulator.
-        return AggregateNumerics.rootOfDeclaredVariance(variance, maxScale, approximate);
+        // A FLOAT input is read through the account's sums, an exact one exactly.
+        // The ROOT OF THE ROUNDED variance, not of the raw one — see rootOfDeclaredVariance.
+        if (approximate || !moments.isExact()) {
+            return AggregateNumerics.rootOfDeclaredVariance(floatMoments.populationVariance(), maxScale, approximate);
+        }
+        return AggregateNumerics.rootOfExactVariance(moments, false, maxScale);
     }
 
     @Override

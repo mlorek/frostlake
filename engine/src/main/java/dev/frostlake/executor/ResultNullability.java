@@ -31,6 +31,7 @@ import dev.frostlake.executor.expressions.LikeAnyAllExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.ObjectAccessExpression;
+import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.executor.expressions.WhenClause;
@@ -105,6 +106,9 @@ final class ResultNullability {
     private final Table table;
     private final Map<String, Table> aliasToTable;
     private final RolledKeys rolled;
+    // The executor that parses a scalar subquery item, set where the judge tells what a result's metadata tells (see
+    // reporting); null for a judge of the values themselves.
+    private final QueryExecutor reporter;
 
     /**
      * @param table        the relation the select list reads
@@ -120,9 +124,47 @@ final class ResultNullability {
      * @param rolled       the keys the select's grouping sets leave out of a set
      */
     ResultNullability(final Table table, final Map<String, Table> aliasToTable, final RolledKeys rolled) {
+        this(table, aliasToTable, rolled, null);
+    }
+
+    private ResultNullability(final Table table, final Map<String, Table> aliasToTable, final RolledKeys rolled,
+                              final QueryExecutor reporter) {
         this.table = table;
         this.aliasToTable = aliasToTable;
         this.rolled = rolled;
+        this.reporter = reporter;
+    }
+
+    /**
+     * A judge of what a result's metadata tells of a select item, which a JavaScript procedure's result set reads as
+     * {@code isColumnNullable}: as {@link #of} judges the values, but a column of a VALUES clause is nullable only
+     * where a row holds NULL in it, and an item that is a scalar subquery is judged as the subquery's own item is
+     * (see {@link ScalarSubqueryNullability}): {@code (SELECT 1)} is not nullable (live-verified). A derived
+     * relation's column made of such an item keeps the judgement of its values, as a refusal spells it.
+     *
+     * @param table        the relation the select list reads
+     * @param aliasToTable the relations a qualified name reaches, by name, or null
+     * @param rolled       the keys the select's grouping sets leave out of a set
+     * @param executor     the executor that parses a subquery
+     * @return the judge
+     */
+    static ResultNullability reporting(final Table table, final Map<String, Table> aliasToTable,
+                                       final RolledKeys rolled, final QueryExecutor executor) {
+        return new ResultNullability(table, aliasToTable, rolled, executor);
+    }
+
+    /**
+     * Whether a select item is told nullable, as {@link #reporting} has it.
+     *
+     * @param item the select item
+     * @return whether it is
+     */
+    boolean reported(final Expression item) {
+        if (reporter != null && item instanceof SubqueryExpression && !((SubqueryExpression) item).isExistence()
+                && !((SubqueryExpression) item).isLateral()) {
+            return ScalarSubqueryNullability.of(reporter, (SubqueryExpression) item);
+        }
+        return of(item);
     }
 
     /**
@@ -233,7 +275,7 @@ final class ResultNullability {
     private boolean column(final ColumnReferenceExpression reference) {
         final String name = reference.getColumnName();
         if (reference.isQualified() && aliasToTable != null) {
-            final Table relation = relationNamed(reference.getTableName());
+            final Table relation = relationNamed(aliasToTable, reference.getTableName());
             if (relation != null && relation.hasColumn(name)) {
                 final JoinedRelations joined = table == null ? null : table.getJoinedRelations();
                 return nullable(relation.getColumns().get(relation.getColumnIndex(name)))
@@ -247,14 +289,37 @@ final class ResultNullability {
 
     /**
      * A column's own NOT NULL, or a derived relation's column's judgement of its item: a column of
-     * (SELECT 1 AS c1) cannot answer NULL (live-verified).
+     * (SELECT 1 AS c1) cannot answer NULL (live-verified). Told as metadata, a VALUES clause's column is nullable
+     * only where a row holds NULL in it.
      */
-    private static boolean nullable(final TableColumn column) {
+    private boolean nullable(final TableColumn column) {
+        if (reporter != null && column.getHeldNull() != null) {
+            return column.getHeldNull().booleanValue();
+        }
         return column.getValuesNullable() != null ? column.getValuesNullable().booleanValue() : column.isNullable();
     }
 
+    /**
+     * The column a qualified reference names in the relation its qualifier reaches: {@code o.k} of
+     * {@code jsn j JOIN t o} is t's {@code k}, whatever column of that name another relation of the join has.
+     *
+     * @param reference    the reference
+     * @param aliasToTable the relations a qualified name reaches, by name, or null
+     * @return the column, or null for an unqualified reference or a qualifier no relation answers to
+     */
+    static TableColumn qualifiedColumn(final ColumnReferenceExpression reference,
+                                       final Map<String, Table> aliasToTable) {
+        if (!reference.isQualified() || aliasToTable == null) {
+            return null;
+        }
+        final Table relation = relationNamed(aliasToTable, reference.getTableName());
+        final String name = reference.getColumnName();
+        return relation != null && relation.hasColumn(name) ? relation.getColumns().get(relation.getColumnIndex(name))
+            : null;
+    }
+
     /** The relation a qualifier names, exactly or else by case alone. */
-    private Table relationNamed(final String qualifier) {
+    static Table relationNamed(final Map<String, Table> aliasToTable, final String qualifier) {
         final Table exact = aliasToTable.get(qualifier);
         if (exact != null || qualifier == null) {
             return exact;

@@ -620,7 +620,8 @@ public class BeginEndBlockHandler implements CommandHandler {
                 final String inner = "EXPRESSION_ERROR".equals(proceduralExecutor().getFailureKind())
                         && !(uncaught instanceof BlockExpressionTypeError) && !BodyPlacedError.isIn(uncaught)
                     ? ExpressionErrorPlace.placed(ctx, proceduralExecutor().getFailureLine(),
-                        proceduralExecutor().getFailurePosition(), uncaught.getMessage())
+                        proceduralExecutor().getFailurePosition(), uncaught.getMessage(),
+                        proceduralExecutor().typesForJudging())
                     : uncaught.getMessage();
                 final int[] failed = placedPastOpeningComments(ctx, proceduralExecutor().getFailureLine(),
                     proceduralExecutor().getFailurePosition());

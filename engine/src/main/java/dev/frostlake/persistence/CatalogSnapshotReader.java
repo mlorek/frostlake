@@ -22,6 +22,7 @@ import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.LoadRecord;
 import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ChangeType;
@@ -33,6 +34,7 @@ import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.DynamicTableRefresh;
+import dev.frostlake.metastore.model.DynamicTableRefreshRecord;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
@@ -165,6 +167,14 @@ final class CatalogSnapshotReader {
             }
         }
         catalog.getLoadHistory().restore(loads);
+        // And the dynamic tables' refreshes, for DYNAMIC_TABLE_REFRESH_HISTORY.
+        final List<DynamicTableRefreshRecord> refreshes = new ArrayList<>();
+        if (snapshot.dynamicTableRefreshes != null) {
+            for (final DynamicTableRefreshRecordSnapshot refresh : snapshot.dynamicTableRefreshes) {
+                refreshes.add(refresh.toRecord());
+            }
+        }
+        catalog.getDynamicTableRefreshHistory().restore(refreshes);
         // And the statements a time-travel point may name by query ID, which a former engine ran.
         if (snapshot.queryPoints != null && catalog.getQueryHistory() != null) {
             for (final QueryPointSnapshot point : snapshot.queryPoints) {
@@ -346,6 +356,8 @@ final class CatalogSnapshotReader {
         }
 
         rebindSequenceDefaults(catalog);
+        // The tables each view stream re-bound while keeping its changes is listed as reading, every one restored now.
+        restoreShownTables(snapshot, catalog);
 
         // Privileges an older snapshot recorded under a partial name are recorded in full when it names one object.
         GrantNames.qualifyLegacy(catalog);
@@ -397,6 +409,38 @@ final class CatalogSnapshotReader {
      * snapshotted as — to the sequence it names, once every database is back (see {@link SequenceDefault}). A
      * default naming no sequence stays the expression it was.
      */
+    /**
+     * Lists each restored view stream on the tables its snapshot saved it as reading (see
+     * StreamSources#restoreShownOn).
+     */
+    private static void restoreShownTables(final CatalogSnapshot snapshot, final Catalog catalog) {
+        for (final DatabaseSnapshot dbSnapshot : snapshot.databases) {
+            final Database db = catalog.findDatabase(dbSnapshot.name);
+            if (db == null || dbSnapshot.schemas == null) {
+                continue;
+            }
+            for (final SchemaSnapshot schemaSnapshot : dbSnapshot.schemas) {
+                if (schemaSnapshot.streams == null) {
+                    continue;
+                }
+                for (final StreamSnapshot streamSnapshot : schemaSnapshot.streams) {
+                    if (streamSnapshot.shownTables == null) {
+                        continue;
+                    }
+                    final Stream stream;
+                    try {
+                        stream = db.schemaExact(schemaSnapshot.name).getStream(streamSnapshot.name);
+                    } catch (final RuntimeException gone) {
+                        continue;
+                    }
+                    if (stream != null) {
+                        StreamSources.restoreShownOn(catalog, stream, streamSnapshot.shownTables);
+                    }
+                }
+            }
+        }
+    }
+
     private static void rebindSequenceDefaults(final Catalog catalog) {
         for (final Database database : catalog.getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
@@ -1045,6 +1089,13 @@ final class CatalogSnapshotReader {
                             dtSnapshot.firstRefreshedSequence != null ? dtSnapshot.firstRefreshedSequence : 0L,
                             dtSnapshot.firstRefreshedMillis != null ? dtSnapshot.firstRefreshedMillis : 0L,
                             dtSnapshot.refreshImage);
+                        dt.setImagePartitions(dtSnapshot.refreshImagePartitions);
+                    }
+                    if (dtSnapshot.inputPartitions != null) {
+                        for (final Map.Entry<String, HashMap<Long, Long>> input
+                                : dtSnapshot.inputPartitions.entrySet()) {
+                            dt.setInputPartitions(input.getKey(), input.getValue());
+                        }
                     }
                     if (dtSnapshot.refreshSequences != null) {
                         final List<DynamicTableRefresh> kept = new ArrayList<>();

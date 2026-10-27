@@ -3828,7 +3828,7 @@ final class WindowFunctionEvaluator {
         if (values == null) {
             return NOT_SUMMARIZED;
         }
-        // An exact argument is read through its running mean instead (see WelfordMoments), frame by frame.
+        // An exact argument is read exactly instead (see ExactMoments), frame by frame.
         final boolean declaredApproximate = isApproximateColumn(argExpr, table);
         final Double[] terms = new Double[values.length];
         try {

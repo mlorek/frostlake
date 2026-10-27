@@ -48,7 +48,17 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  *   TABLE(SPLIT_TO_TABLE((SELECT 'a') || 'b', 5))           '||', then the '5'
  * </pre>
  *
- * A call in a query written in brackets is refused too, its lines worked out the same way.
+ * A call in the FROM of a query written in brackets as a value is refused at that query's SELECT: the account takes
+ * the bracket for a value once the query in it fails, and reads on from there in the context the bracket stands in.
+ *
+ * <pre>
+ *   SELECT (SELECT COUNT(*) FROM TABLE(…))                  'SELECT', then the '(' after COUNT: the first name of
+ *                                                           the select list is read as the item's alias
+ *   WHERE n IN (SELECT COUNT(*) FROM TABLE(…))              'SELECT', then the FROM after the first ')': the list
+ *                                                           runs to the first closing bracket
+ * </pre>
+ *
+ * A call in any other query written in brackets is refused too, its lines worked out as for the statement's own.
  */
 public final class TableFunctionSubqueryArgument {
 
@@ -72,6 +82,7 @@ public final class TableFunctionSubqueryArgument {
             return;
         }
         ParserRuleContext firstSubquery = null;
+        ParserRuleContext firstReference = null;
         Token firstClose = null;
         Token firstTableClose = null;
         final Deque<ParseTree> pending = new ArrayDeque<>();
@@ -104,13 +115,83 @@ public final class TableFunctionSubqueryArgument {
             if (subquery != null && (firstSubquery == null
                     || subquery.getStop().getTokenIndex() < firstSubquery.getStop().getTokenIndex())) {
                 firstSubquery = subquery;
+                firstReference = reference;
                 firstClose = close;
                 firstTableClose = call == source.expression() ? childToken(source, FrostlakeLexer.RPAREN) : null;
             }
         }
         if (firstSubquery != null) {
+            final List<String> enclosed = enclosedLines(tokens, firstReference);
+            if (enclosed != null) {
+                throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", enclosed)), enclosed, sql);
+            }
             refuse(tokens, firstSubquery, firstClose, firstTableClose, sql);
         }
+    }
+
+    /**
+     * The lines of a call in the FROM of a query written in brackets as a value: a select item's whole value or the
+     * list of an IN. Null for a call in any other query.
+     */
+    private static List<String> enclosedLines(final TokenStream tokens, final ParserRuleContext reference) {
+        ParseTree node = reference.getParent();
+        while (node != null && !(node instanceof FrostlakeParser.SelectStatementContext)) {
+            node = node.getParent();
+        }
+        if (node == null || ((FrostlakeParser.SelectStatementContext) node).getStart().getType()
+                != FrostlakeLexer.SELECT) {
+            return null;
+        }
+        final Token first = ((FrostlakeParser.SelectStatementContext) node).getStart();
+        final ParseTree bracket = node.getParent();
+        final int second;
+        if (bracket instanceof FrostlakeParser.ScalarSubqueryExprContext
+                && isWholeItem((ParserRuleContext) bracket)) {
+            second = afterName(tokens, first.getTokenIndex());
+        } else if (bracket instanceof FrostlakeParser.InSubqueryExprContext) {
+            second = afterClose(tokens, first.getTokenIndex());
+        } else {
+            return null;
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(first));
+        if (second >= 0) {
+            lines.add(SyntaxErrorListener.sentence(tokens.get(second)));
+        }
+        return lines;
+    }
+
+    /** Whether a bracket is the whole value of a select item. */
+    private static boolean isWholeItem(final ParserRuleContext bracket) {
+        ParseTree node = bracket.getParent();
+        while (node instanceof ParserRuleContext && !(node instanceof FrostlakeParser.ExprItemContext)) {
+            final ParserRuleContext rule = (ParserRuleContext) node;
+            if (rule.getStart() != bracket.getStart() || rule.getStop() != bracket.getStop()) {
+                return false;
+            }
+            node = node.getParent();
+        }
+        return node instanceof FrostlakeParser.ExprItemContext;
+    }
+
+    /** The token after the name that follows the token {@code first}, or -1 where no name follows it. */
+    private static int afterName(final TokenStream tokens, final int first) {
+        final int name = next(tokens, first);
+        return name >= 0 && NAME_START.contains(tokens.get(name).getType()) ? next(tokens, name) : -1;
+    }
+
+    /** The token after the first closing bracket past the token {@code first}, or -1 where a comma comes first. */
+    private static int afterClose(final TokenStream tokens, final int first) {
+        for (int i = next(tokens, first); i >= 0; i = next(tokens, i)) {
+            final int type = tokens.get(i).getType();
+            if (type == FrostlakeLexer.COMMA) {
+                return -1;
+            }
+            if (type == FrostlakeLexer.RPAREN) {
+                return next(tokens, i);
+            }
+        }
+        return -1;
     }
 
     /** Whether a TABLE or a LATERAL has a query in brackets after it somewhere: the walk is due only then. */

@@ -18,6 +18,7 @@ package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -131,5 +132,28 @@ public class SystemStreamHasDataTest extends BaseDatabaseTest {
                 engine.executeQuery("SELECT SYSTEM$THIS_IS_NOT_A_REAL_FUNCTION()");
             }
         });
+    }
+
+    /**
+     * An APPEND_ONLY stream on a table answers TRUE once the table took a DELETE the stream does not list, and FALSE
+     * again once a DML reads it: the function diffs the table's versions since the offset (documented). Engine only:
+     * the account answered so for a view stream; a table's was not measured.
+     */
+    @Test
+    public void anAppendOnlyStreamHasDataAfterAChangeItDoesNotList() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "measured for a view stream only");
+        engine.execute("INSERT INTO events VALUES (1, 'click')");
+        engine.execute("CREATE STREAM events_ao ON TABLE events APPEND_ONLY = TRUE");
+        assertEquals(Boolean.FALSE, scalar("SELECT SYSTEM$STREAM_HAS_DATA('events_ao')"));
+        engine.execute("DELETE FROM events");
+        assertEquals(0L, ((Number) scalar("SELECT COUNT(*) FROM events_ao")).longValue());
+        assertEquals(Boolean.TRUE, scalar("SELECT SYSTEM$STREAM_HAS_DATA('events_ao')"));
+        engine.execute("CREATE TABLE events_sink (id INTEGER)");
+        engine.execute("INSERT INTO events_sink SELECT id FROM events_ao");
+        assertEquals(Boolean.FALSE, scalar("SELECT SYSTEM$STREAM_HAS_DATA('events_ao')"));
+    }
+
+    private Object scalar(final String sql) {
+        return engine.executeQuery(sql).getRows().get(0).getValue(0);
     }
 }

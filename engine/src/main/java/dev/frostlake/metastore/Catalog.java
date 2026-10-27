@@ -32,6 +32,7 @@ import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.ObjectParameters;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
@@ -58,6 +59,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -155,6 +157,12 @@ public class Catalog {
     // Dropped-object retention for UNDROP (Time Travel restore): "KIND:fqName" → every dropped version of that name,
     // oldest first. UNDROP restores the newest, and the next UNDROP of the name the one dropped before it.
     private final Map<String, List<DroppedObject>> droppedObjects = new ConcurrentHashMap<>();
+    /**
+     * The latest table version of each name purged with a retention of 0, kept only to be listed (see
+     * {@link #listedOnlyVersions}); guarded by the dropped versions' lock.
+     */
+    private final Map<String, DroppedObject> listedOnly = new HashMap<>();
+
     /** Told of every dropped version {@link #purgeExpiredDropped} forgets for good; null for none. */
     private volatile DroppedVersionPurge droppedVersionPurge;
 
@@ -449,6 +457,16 @@ public class Catalog {
                         }
                     } else if (view.hasResolvedColumns()) {
                         // A view's own column masked by the policy holds it too (live-verified).
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getMaskingPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                for (final MaterializedView view : schema.getMaterializedViews()) {
+                    if (masking && view.hasResolvedColumns()) {
+                        // A materialized view's own column masked by the policy holds it, as a view's does.
                         for (final TableColumn column : view.getResolvedColumns()) {
                             if (holds(column.getMaskingPolicyName(), schema, home, policyName)) {
                                 return true;
@@ -1242,6 +1260,11 @@ public class Catalog {
             ? sessionContext.getCreatingRole() : "SYSADMIN";
     }
 
+    /** The session's primary role, or null where no session is bound. */
+    public String currentPrimaryRole() {
+        return sessionContext != null ? sessionContext.getCurrentRole() : null;
+    }
+
     /**
      * The owner role of a schema-level object, for ownership-based authorization. Returns null when
      * the type is not one that carries an owner here, or the object cannot be resolved.
@@ -1419,6 +1442,7 @@ public class Catalog {
         synchronized (droppedObjects) {
             // The versions whose retention ran out go first, so a long run of drops holds no rows nothing can restore.
             purgeExpiredDropped();
+            listedOnly.remove(key);
             List<DroppedObject> versions = droppedObjects.get(key);
             if (versions == null) {
                 versions = new ArrayList<>();
@@ -1466,6 +1490,19 @@ public class Catalog {
     }
 
     /**
+     * The table versions purged with a retention of 0 that SHOW TABLES HISTORY still lists, by "TABLE:fqName": the
+     * latest of each name until the name is dropped again, which UNDROP no longer finds (live-verified).
+     *
+     * @return a copy of the listings
+     */
+    public Map<String, DroppedObject> listedOnlyVersions() {
+        synchronized (droppedObjects) {
+            purgeExpiredDropped();
+            return new TreeMap<>(listedOnly);
+        }
+    }
+
+    /**
      * Who is told when a dropped version is forgotten for good: the engine, which deletes the stage files the version
      * set aside.
      *
@@ -1489,8 +1526,14 @@ public class Catalog {
             for (final DroppedObject version : entry.getValue()) {
                 if (!version.isPurgedAt(now)) {
                     kept.add(version);
-                } else if (purge != null) {
-                    purge.purged(entry.getKey(), version);
+                } else {
+                    // A table kept for no day is still listed, its data gone, until its name is dropped again.
+                    if (version.getRetentionDays() <= 0 && version.getObject() instanceof Table) {
+                        listedOnly.put(entry.getKey(), version.listedOnly());
+                    }
+                    if (purge != null) {
+                        purge.purged(entry.getKey(), version);
+                    }
                 }
             }
             if (kept.size() != entry.getValue().size()) {
@@ -2062,6 +2105,15 @@ public class Catalog {
                         }
                     }
                 }
+                for (final MaterializedView view : schema.getMaterializedViews()) {
+                    if (view.hasResolvedColumns()) {
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getProjectionPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
         }
         return false;
@@ -2318,6 +2370,32 @@ public class Catalog {
         roles.remove(name);
         // What the role owned is the dropping role's from now on (see RoleOwnership).
         RoleOwnership.handOver(this, heldAs, currentRoleForOwner());
+        // Every grant that names the role goes with it (DROP ROLE, documented): the role granted to roles and users,
+        // and what it granted as the grantor - roles, database roles and privileges, on the objects it owned too.
+        for (final Role holder : roles.values()) {
+            for (final String granted : holder.getGrantedRoles()) {
+                if (granted.equals(heldAs) || heldAs.equals(holder.getRoleGrantor(granted))) {
+                    holder.revokeRole(granted);
+                }
+            }
+            holder.revokeGrantedBy(heldAs);
+        }
+        for (final Database database : getAllDatabases()) {
+            for (final DatabaseRole holder : database.getDatabaseRoles()) {
+                holder.revokeGrantedBy(heldAs);
+            }
+        }
+        for (final User user : users.values()) {
+            for (final String granted : user.getGrantedRoles()) {
+                if (granted.equals(heldAs) || heldAs.equals(user.getRoleGrantor(granted))) {
+                    user.revokeRole(granted);
+                }
+            }
+            user.revokeGrantedBy(heldAs);
+        }
+        if (sessionContext != null) {
+            sessionContext.removeActiveRole(heldAs);
+        }
     }
 
     /**

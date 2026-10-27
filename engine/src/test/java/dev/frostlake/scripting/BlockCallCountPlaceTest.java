@@ -351,8 +351,23 @@ public class BlockCallCountPlaceTest extends MeasuredCellsTestSupport {
             "REFUSED Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 23 : SQL compilation "
                 + "error: error line 1 at position 28 | too many arguments for function [ABS(1, 2)] expected 1, got 2",
             "BEGIN LET x := 1; x := x + ABS(1, 2); RETURN x; END;");
-        answer(
+        assertAnswer(
+            "REFUSED Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 22 : SQL compilation "
+                + "error: error line 1 at position 21 | too many arguments for function [ABS(1, 2)] expected 1, got 2",
             "BEGIN LET x := 1; IF (x + ABS(1, 2) > 0) THEN RETURN 1; END IF; END;");
+        assertAnswer(
+            "REFUSED Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 25 : SQL compilation "
+                + "error: error line 1 at position 36 | too many arguments for function [ABS(1, 2)] expected 1, got 2",
+            "BEGIN LET x := 1; RETURN x + (SELECT ABS(1, 2)); END;");
+        assertAnswer(
+            "REFUSED Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 25 : SQL compilation "
+                + "error: error line 1 at position 36 | invalid identifier 'NOSUCHCOL'",
+            "BEGIN LET x := 1; RETURN x + (SELECT nosuchcol FROM t1); END;");
+        assertAnswer(
+            "REFUSED Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 44 : SQL compilation "
+                + "error: error line 1 at position 0 | too many arguments for function [ABS(TO_NUMBER(null), 2)] "
+                + "expected 1, got 2",
+            "DECLARE n NUMBER DEFAULT NULL; BEGIN RETURN ABS(n, 2); END;");
         assertAnswer(
             "REFUSED Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 32 : SQL compilation "
                 + "error: error line 1 at position 20 | too many arguments for function [ABS(1, 2)] expected 1, got 2",

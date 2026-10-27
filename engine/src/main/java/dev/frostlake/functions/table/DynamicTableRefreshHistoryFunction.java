@@ -20,7 +20,9 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.DynamicTableRefreshHistory;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.DynamicTableRefreshInput;
 import dev.frostlake.metastore.model.DynamicTableRefreshRecord;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -29,6 +31,7 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.values.VariantValue;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -47,17 +50,22 @@ import java.util.Map;
  * INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY: a row for each refresh of each dynamic table of the account, by
  * table, the last name first, and each table's latest refresh first, as the account lists them (live-verified): the
  * table's names, SUCCEEDED, when the refresh ran and the data it read, the target lag in seconds, the dynamic table it
- * read last, the rows it changed, what it did (INCREMENTAL, FULL or NO_DATA) and what started it (CREATION, MANUAL or
- * SCHEDULED), the warehouse it ran on and the inputs it read. Each refresh is listed under the names its table held
- * when it ran, whatever became of the table since (see the catalog's DynamicTableRefreshHistory). NAME names one table
- * as a statement names it, NAME_PREFIX the tables whose qualified name starts so in any case, RESULT_LIMIT caps the
- * rows (100, or that many up to 10000), ERROR_ONLY keeps the failed refreshes, and DATA_TIMESTAMP_START and
- * DATA_TIMESTAMP_END bound the data timestamps.
+ * read last, the rows and micro-partitions it changed, what it did (INCREMENTAL, FULL or NO_DATA) and what started it
+ * (CREATION, MANUAL or SCHEDULED), the warehouse it ran on and the inputs whose data changed for it, each with its
+ * partitions added and removed. Each refresh is listed under the names its table held when it ran, whatever became of
+ * the table since (see the catalog's DynamicTableRefreshHistory). NAME names one table as a statement names it,
+ * NAME_PREFIX the tables whose qualified name starts so in any case, RESULT_LIMIT caps the rows (100, or that many up
+ * to 10000), ERROR_ONLY keeps the failed refreshes, and DATA_TIMESTAMP_START and DATA_TIMESTAMP_END bound the data
+ * timestamps: the end is now when it is not given, the start a day before the end, and no refresh whose data timestamp
+ * is more than seven days old is listed (documented).
  */
 public class DynamicTableRefreshHistoryFunction extends TableFunction {
 
     /** How a data timestamp is written inside an OBJECT cell: in the session's zone, to the millisecond. */
     private static final DateTimeFormatter DATA_TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS xx");
+
+    /** How far before its end a range starts when DATA_TIMESTAMP_START is not given. */
+    private static final Duration DEFAULT_RANGE = Duration.ofDays(1);
 
     private final Catalog catalog;
 
@@ -87,8 +95,12 @@ public class DynamicTableRefreshHistoryFunction extends TableFunction {
         final int written = limitWritten instanceof Number && ((Number) limitWritten).doubleValue() < 1 ? 0
             : TaskGraphRuns.limit(limitWritten, 100);
         final int limit = written == 0 ? 100 : written;
-        final Instant from = instant(namedArgs.get("DATA_TIMESTAMP_START"));
-        final Instant to = instant(namedArgs.get("DATA_TIMESTAMP_END"));
+        final Instant now = Instant.now();
+        final Instant givenTo = instant(namedArgs.get("DATA_TIMESTAMP_END"));
+        final Instant to = givenTo == null ? now : givenTo;
+        final Instant givenFrom = instant(namedArgs.get("DATA_TIMESTAMP_START"));
+        final Instant from = givenFrom == null ? to.minus(DEFAULT_RANGE) : givenFrom;
+        final Instant kept = now.minus(DynamicTableRefreshHistory.KEPT_FOR);
         final String named = name == null ? null : qualified(name);
         final List<DynamicTableRefreshRecord> found = new ArrayList<>();
         if (!Boolean.TRUE.equals(namedArgs.get("ERROR_ONLY"))) {
@@ -100,8 +112,8 @@ public class DynamicTableRefreshHistoryFunction extends TableFunction {
                         : prefix != null && !qualified.toUpperCase(Locale.ROOT).startsWith(prefix)) {
                     continue;
                 }
-                if ((from == null || !record.getStart().isBefore(from))
-                        && (to == null || !record.getStart().isAfter(to))) {
+                if (!record.getStart().isBefore(from) && !record.getStart().isAfter(to)
+                        && !record.getStart().isBefore(kept)) {
                     found.add(record);
                 }
             }
@@ -165,17 +177,25 @@ public class DynamicTableRefreshHistoryFunction extends TableFunction {
     private static VariantValue statistics(final DynamicTableRefreshRecord record, final long[] changed) {
         final long executed = Math.max(0L, record.getEnd().toEpochMilli() - record.getStart().toEpochMilli());
         return VariantValue.of("{\"compilationTimeMs\":0,\"executionTimeMs\":" + executed
-            + ",\"numAddedPartitions\":" + (changed[0] + changed[1] > 0 ? 1 : 0) + ",\"numCopiedRows\":" + changed[1]
+            + ",\"numAddedPartitions\":" + changed[3] + ",\"numCopiedRows\":" + changed[1]
             + ",\"numDeletedRows\":" + changed[2] + ",\"numInsertedRows\":" + changed[0]
-            + ",\"numRemovedPartitions\":" + (changed[2] > 0 ? 1 : 0) + ",\"queuedTimeMs\":0}");
+            + ",\"numRemovedPartitions\":" + changed[4] + ",\"queuedTimeMs\":0}");
     }
 
-    /** The tables and dynamic tables the refresh read, each by its kind and name. */
+    /**
+     * The tables and dynamic tables the refresh read whose data changed for it, each by its kind and name, with the
+     * micro-partitions added since the refresh before and the rows they hold, and the ones removed and the rows they
+     * held.
+     */
     private static VariantValue inputs(final DynamicTableRefreshRecord record) {
         final StringBuilder json = new StringBuilder("[");
-        for (final String[] input : record.getInputs()) {
-            json.append(json.length() > 1 ? "," : "").append("{\"kind\":").append(json(input[0]))
-                .append(",\"name\":").append(json(input[1])).append('}');
+        for (final DynamicTableRefreshInput input : record.getInputs()) {
+            json.append(json.length() > 1 ? "," : "").append("{\"kind\":").append(json(input.getKind()))
+                .append(",\"name\":").append(json(input.getName()))
+                .append(",\"statistics\":{\"numAddedPartitions\":").append(input.getAddedPartitions())
+                .append(",\"numRegisteredRows\":").append(input.getRegisteredRows())
+                .append(",\"numRemovedPartitions\":").append(input.getRemovedPartitions())
+                .append(",\"numUnregisteredRows\":").append(input.getUnregisteredRows()).append("}}");
         }
         return VariantValue.of(json.append(']').toString());
     }

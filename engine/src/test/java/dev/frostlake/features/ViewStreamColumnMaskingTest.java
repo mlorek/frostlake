@@ -18,11 +18,13 @@ package dev.frostlake.features;
 
 import dev.frostlake.query.MeasuredCellsTestSupport;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
  * A view's own column masking, from its column list or from ALTER VIEW, applies to a stream on the view and to
- * CHANGES over it as it applies where the view is read (all live-verified).
+ * CHANGES over it as it applies where the view is read; the view read AT a stream on it reads it as of the stream's
+ * offset, where nothing was written yet (all live-verified).
  */
 public class ViewStreamColumnMaskingTest extends MeasuredCellsTestSupport {
 
@@ -66,5 +68,26 @@ public class ViewStreamColumnMaskingTest extends MeasuredCellsTestSupport {
         assertAnswer("1|***",
             "SELECT id, secret FROM ve751 CHANGES(INFORMATION => APPEND_ONLY) AT(TIMESTAMP => TO_TIMESTAMP_LTZ($e1, "
                 + "3)) ORDER BY 1");
+        assertAnswer("", "SELECT id, secret FROM vf751 AT(STREAM => 'sf751') ORDER BY 1");
+    }
+
+    @Test
+    public void aViewReadAtAStreamFollowsTheOffset() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "a read after the stream is consumed was not measured");
+        engine.execute("CREATE OR REPLACE TABLE tg751 (id INT) CHANGE_TRACKING = TRUE");
+        engine.execute("CREATE OR REPLACE VIEW vg751 CHANGE_TRACKING = TRUE AS SELECT id FROM tg751");
+        engine.execute("CREATE OR REPLACE STREAM sg751 ON VIEW vg751");
+        engine.execute("CREATE OR REPLACE TABLE ug751 (id INT)");
+        engine.execute("INSERT INTO tg751 VALUES (1)");
+        assertCells(new String[][] {
+            {"SELECT id FROM vg751 AT(STREAM => 'sg751') ORDER BY 1", ""},
+            {"INSERT INTO ug751 SELECT id FROM sg751", "1"},
+            {"INSERT INTO tg751 VALUES (2)", "1"},
+            {"SELECT id FROM vg751 BEFORE(STREAM => 'sg751') ORDER BY 1", "1"},
+            {"SELECT id FROM vg751 ORDER BY 1", "1 ;; 2"},
+            {"SELECT id FROM vg751 AT(STREAM => 'nosuch751') ORDER BY 1", "REFUSED Stream 'nosuch751' not found."},
+            {"SELECT id FROM tg751 AT(STREAM => 'sg751')",
+                "REFUSED SQL compilation error: | Unsupported feature 'Time travel AT (STREAM => ...)'."},
+        });
     }
 }

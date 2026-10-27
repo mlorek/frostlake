@@ -508,6 +508,7 @@ public final class CopyCommandExecutor {
         final Set<String> seenCopyOptions = new HashSet<>();
         Boolean enforceLength = null;
         Boolean truncateColumns = null;
+        Boolean returnFailedOnly = null;
         long sizeLimit = -1L;
 
         rejectCredentialsOnInternalStage(ctx);
@@ -610,8 +611,9 @@ public final class CopyCommandExecutor {
                     enforceLength = requireBareBoolean(optionName, clause.copyOptionValue());
                 } else if ("TRUNCATECOLUMNS".equals(optionName)) {
                     truncateColumns = requireBareBoolean(optionName, clause.copyOptionValue());
-                } else if ("RETURN_FAILED_ONLY".equals(optionName)
-                        || "LOAD_UNCERTAIN_FILES".equals(optionName)) {
+                } else if ("RETURN_FAILED_ONLY".equals(optionName)) {
+                    returnFailedOnly = requireBareBoolean(optionName, clause.copyOptionValue());
+                } else if ("LOAD_UNCERTAIN_FILES".equals(optionName)) {
                     requireBareBoolean(optionName, clause.copyOptionValue());
                 }
             }
@@ -649,6 +651,9 @@ public final class CopyCommandExecutor {
         }
         if (!seenCopyOptions.contains("MATCH_BY_COLUMN_NAME") && stageOptions.get("MATCH_BY_COLUMN_NAME") != null) {
             matchByColumnName = stageOptions.get("MATCH_BY_COLUMN_NAME");
+        }
+        if (returnFailedOnly == null && stageOptions.get("RETURN_FAILED_ONLY") != null) {
+            returnFailedOnly = Boolean.valueOf(stageOptions.get("RETURN_FAILED_ONLY"));
         }
         if (enforceLength == null && truncateColumns == null) {
             // The inverse pair is the stage's own only where the statement writes neither of them.
@@ -1093,6 +1098,23 @@ public final class CopyCommandExecutor {
             resultRows.add(new Row(Arrays.asList(missing, "LOAD_FAILED", 0, 0,
                 onError.errorLimit(0), 1, remoteFileMissingDetail(fromLocationDisplay, missing),
                 null, null, null)));
+        }
+
+        // RETURN_FAILED_ONLY = TRUE answers only the files that failed to load (documented): a file LOADED whole is
+        // left out, and a load in which none failed answers no file at all.
+        if (validationMode == null && Boolean.TRUE.equals(returnFailedOnly) && !resultRows.isEmpty()) {
+            final List<Row> failed = new ArrayList<>();
+            for (final Row row : resultRows) {
+                if (!"LOADED".equals(row.getValue(1))) {
+                    failed.add(row);
+                }
+            }
+            if (failed.isEmpty()) {
+                logger.info("COPY INTO table completed: no file failed");
+                return new ResultSet(resultColumns, failed);
+            }
+            resultRows.clear();
+            resultRows.addAll(failed);
         }
 
         // No per-file row means no file was processed — answer with the one-column summary rather than an

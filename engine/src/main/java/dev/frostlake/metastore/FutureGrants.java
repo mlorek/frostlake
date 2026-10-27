@@ -146,6 +146,23 @@ public final class FutureGrants {
      * @return whether a future grant in the schema is open
      */
     public static boolean openIn(final Catalog catalog, final Schema schema) {
+        return openIn(catalog, schema, null);
+    }
+
+    /**
+     * Whether any role or database role holds a future OWNERSHIP grant on objects of the schema: one that must be
+     * revoked before a managed access schema's ownership passes to a different role (documented).
+     *
+     * @param catalog the catalog holding the roles
+     * @param schema  the schema
+     * @return whether a future OWNERSHIP grant in the schema is open
+     */
+    public static boolean ownershipOpenIn(final Catalog catalog, final Schema schema) {
+        return openIn(catalog, schema, Privilege.OWNERSHIP);
+    }
+
+    /** Whether a future grant in the schema is open, of the one privilege where one is named. */
+    private static boolean openIn(final Catalog catalog, final Schema schema, final Privilege privilege) {
         final String scopeName = QualifiedName.join(schema.getDatabaseName(), schema.getName());
         final List<Role> candidates = new ArrayList<>(catalog.getAllRoles());
         for (final Database database : catalog.getAllDatabases()) {
@@ -153,7 +170,8 @@ public final class FutureGrants {
         }
         for (final Role role : candidates) {
             for (final FutureGrant grant : role.getFutureGrants()) {
-                if ("SCHEMA".equals(grant.getScopeKind()) && scopeName.equalsIgnoreCase(grant.getScopeName())) {
+                if ("SCHEMA".equals(grant.getScopeKind()) && scopeName.equalsIgnoreCase(grant.getScopeName())
+                        && (privilege == null || privilege.name().equals(grant.getPrivilege()))) {
                     return true;
                 }
             }

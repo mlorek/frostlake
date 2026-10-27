@@ -184,18 +184,22 @@ public final class AccessControlListings {
                     role.getPrivilegeGrantor(objectType, objectName, privilege))));
             }
         }
-        if (!(role instanceof DatabaseRole)) {
-            addOwnershipRows(rows, role.getName(), granteeKind);
-        }
+        addOwnershipRows(rows, role instanceof DatabaseRole ? ((DatabaseRole) role).getQualifiedName()
+            : role.getName(), granteeKind, granteeName);
         return new ResultSet(grantsToColumns(), sortedGrants(rows));
     }
 
     /**
      * The OWNERSHIP a role holds on what it owns, beside the privileges granted to it: one row per object whose owner
      * the role is, from when the object was created, with the grant option, granted by the role itself (live-verified
-     * for a table and a function). An OWNERSHIP already listed as a granted privilege is not listed twice.
+     * for a table and a function). An OWNERSHIP already listed as a granted privilege is not listed twice. A database
+     * role owns under its qualified name and is listed bare, as every listing names a database role as grantee.
+     *
+     * @param owner the name the objects record as their owner
+     * @param shown the grantee as the listing names it
      */
-    private void addOwnershipRows(final List<Row> rows, final String owner, final String granteeKind) {
+    private void addOwnershipRows(final List<Row> rows, final String owner, final String granteeKind,
+                                  final String shown) {
         final Set<String> listed = new HashSet<>();
         for (final Row row : rows) {
             if (Privilege.OWNERSHIP.displayName().equals(row.getValue(1))) {
@@ -203,95 +207,98 @@ public final class AccessControlListings {
             }
         }
         for (final Database database : catalog.getAllDatabases()) {
-            owned(rows, listed, owner, granteeKind, "DATABASE", database.getName(), database.getOwner(),
+            owned(rows, listed, owner, granteeKind, shown, "DATABASE", database.getName(), database.getOwner(),
                 database.getCreatedTime());
             for (final Schema schema : database.getAllSchemas()) {
-                owned(rows, listed, owner, granteeKind, "SCHEMA", QualifiedName.join(database.getName(),
+                owned(rows, listed, owner, granteeKind, shown, "SCHEMA", QualifiedName.join(database.getName(),
                     schema.getName()), schema.getOwner(), schema.getCreatedTime());
                 for (final Table table : schema.getTables()) {
-                    ownedMember(rows, listed, owner, granteeKind, "TABLE", schema, table.getName(), table.getOwner(),
-                        table.getCreatedTime());
+                    ownedMember(rows, listed, owner, granteeKind, shown,
+                        "TABLE", schema, table.getName(), table.getOwner(), table.getCreatedTime());
                 }
                 for (final View view : schema.getViews()) {
-                    ownedMember(rows, listed, owner, granteeKind, "VIEW", schema, view.getName(), view.getOwner(),
-                        view.getCreatedTime());
+                    ownedMember(rows, listed, owner, granteeKind, shown,
+                        "VIEW", schema, view.getName(), view.getOwner(), view.getCreatedTime());
                 }
                 for (final MaterializedView view : schema.getMaterializedViews()) {
-                    ownedMember(rows, listed, owner, granteeKind, "MATERIALIZED_VIEW", schema, view.getName(),
+                    ownedMember(rows, listed, owner, granteeKind, shown, "MATERIALIZED_VIEW", schema, view.getName(),
                         view.getOwner(), view.getCreatedTime());
                 }
                 for (final DynamicTable table : schema.getDynamicTables()) {
-                    ownedMember(rows, listed, owner, granteeKind, "DYNAMIC_TABLE", schema, table.getName(),
+                    ownedMember(rows, listed, owner, granteeKind, shown, "DYNAMIC_TABLE", schema, table.getName(),
                         table.getOwner(), table.getCreatedTime());
                 }
                 for (final Sequence sequence : schema.getSequences()) {
-                    ownedMember(rows, listed, owner, granteeKind, "SEQUENCE", schema, sequence.getName(),
+                    ownedMember(rows, listed, owner, granteeKind, shown, "SEQUENCE", schema, sequence.getName(),
                         sequence.getOwner(), sequence.getCreatedTime());
                 }
                 for (final Stage stage : schema.getStages()) {
-                    ownedMember(rows, listed, owner, granteeKind, "STAGE", schema, stage.getName(), stage.getOwner(),
-                        stage.getCreatedTime());
+                    ownedMember(rows, listed, owner, granteeKind, shown,
+                        "STAGE", schema, stage.getName(), stage.getOwner(), stage.getCreatedTime());
                 }
                 for (final FileFormat format : schema.getFileFormats()) {
-                    ownedMember(rows, listed, owner, granteeKind, "FILE_FORMAT", schema, format.getName(),
+                    ownedMember(rows, listed, owner, granteeKind, shown, "FILE_FORMAT", schema, format.getName(),
                         format.getOwner(), format.getCreatedTime());
                 }
                 for (final Pipe pipe : schema.getPipes()) {
-                    ownedMember(rows, listed, owner, granteeKind, "PIPE", schema, pipe.getName(), pipe.getOwner(),
-                        pipe.getCreatedTime());
+                    ownedMember(rows, listed, owner, granteeKind, shown,
+                        "PIPE", schema, pipe.getName(), pipe.getOwner(), pipe.getCreatedTime());
                 }
                 for (final Stream stream : schema.getStreams()) {
                     if (owner.equals(stream.getOwner())) {
-                        add(rows, listed, granteeKind, owner, "STREAM",
+                        add(rows, listed, granteeKind, shown, "STREAM",
                             GrantNames.spelled("STREAM", schema.qualifiedName(stream.getName())),
                             ShowResultHelpers.createdOn(stream.getCreatedAt()));
                     }
                 }
                 for (final Task task : schema.getTasks()) {
                     if (owner.equals(task.getOwner())) {
-                        add(rows, listed, granteeKind, owner, "TASK",
+                        add(rows, listed, granteeKind, shown, "TASK",
                             GrantNames.spelled("TASK", schema.qualifiedName(task.getName())),
                             ShowResultHelpers.createdOn(task.getCreatedAt()));
                     }
                 }
                 for (final Function function : schema.getFunctions()) {
-                    ownedRoutine(rows, listed, owner, granteeKind, QueryExecutor.functionGrant(schema, function));
+                    ownedRoutine(rows, listed, owner, granteeKind, shown,
+                        QueryExecutor.functionGrant(schema, function));
                 }
                 for (final Procedure procedure : schema.getProcedures()) {
-                    ownedRoutine(rows, listed, owner, granteeKind, QueryExecutor.procedureGrant(schema, procedure));
+                    ownedRoutine(rows, listed, owner, granteeKind, shown,
+                        QueryExecutor.procedureGrant(schema, procedure));
                 }
             }
         }
     }
 
     private void owned(final List<Row> rows, final Set<String> listed, final String owner, final String granteeKind,
-                       final String kind, final String name, final String objectOwner, final Instant created) {
+                       final String shown, final String kind, final String name, final String objectOwner,
+                       final Instant created) {
         if (owner.equals(objectOwner)) {
-            add(rows, listed, granteeKind, owner, kind, GrantNames.spelled(kind, name),
+            add(rows, listed, granteeKind, shown, kind, GrantNames.spelled(kind, name),
                 ShowResultHelpers.createdOn(created));
         }
     }
 
     private void ownedMember(final List<Row> rows, final Set<String> listed, final String owner,
-                             final String granteeKind, final String kind, final Schema schema, final String name,
-                             final String objectOwner, final Instant created) {
-        owned(rows, listed, owner, granteeKind, kind, schema.qualifiedName(name), objectOwner, created);
+                             final String granteeKind, final String shown, final String kind, final Schema schema,
+                             final String name, final String objectOwner, final Instant created) {
+        owned(rows, listed, owner, granteeKind, shown, kind, schema.qualifiedName(name), objectOwner, created);
     }
 
     /** A routine overload, named with its argument types as its grants name it. */
     private void ownedRoutine(final List<Row> rows, final Set<String> listed, final String owner,
-                              final String granteeKind, final GrantedObject routine) {
+                              final String granteeKind, final String shown, final GrantedObject routine) {
         if (owner.equals(routine.getOwner())) {
-            add(rows, listed, granteeKind, owner, routine.getKind(), routine.getName(),
+            add(rows, listed, granteeKind, shown, routine.getKind(), routine.getName(),
                 ShowResultHelpers.createdOn(routine.getCreatedTime()));
         }
     }
 
     private static void add(final List<Row> rows, final Set<String> listed, final String granteeKind,
-                            final String owner, final String kind, final String name, final Object created) {
+                            final String shown, final String kind, final String name, final Object created) {
         if (listed.add(kind + "|" + name)) {
             rows.add(new Row(Arrays.<Object>asList(created, Privilege.OWNERSHIP.displayName(), kind, name,
-                granteeKind, owner, "true", owner)));
+                granteeKind, shown, "true", shown)));
         }
     }
 
@@ -324,15 +331,26 @@ public final class AccessControlListings {
      * @param qualified the role's qualified name, {@code DB.ROLE}
      */
     public boolean databaseRoleExists(final String qualified) {
+        return databaseRoleNamed(qualified) != null;
+    }
+
+    /**
+     * The database role a qualified name names, as an owner records it, or null for a name that is no database
+     * role's: one with no database before it, or of a database or role that is not there.
+     *
+     * @param qualified the name, {@code DB.ROLE}
+     * @return the role, or null
+     */
+    public DatabaseRole databaseRoleNamed(final String qualified) {
         final int dot = qualified.lastIndexOf('.');
         if (dot < 0) {
-            return false;
+            return null;
         }
         try {
             final Database database = catalog.getDatabase(qualified.substring(0, dot));
-            return database != null && database.getDatabaseRole(qualified.substring(dot + 1)) != null;
+            return database == null ? null : database.getDatabaseRole(qualified.substring(dot + 1));
         } catch (final RuntimeException dropped) {
-            return false;
+            return null;
         }
     }
 

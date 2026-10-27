@@ -1176,19 +1176,19 @@ public class GrantRevokeHandler implements CommandHandler {
         if ("SELECT".equals(privilege) && "MASKING_POLICY".equals(objectType)) {
             throw new RuntimeException("SQL compilation error:\nInvalid object type 'POLICY' for privilege 'SELECT'.");
         }
-        // A network policy, a network rule, a password policy and a secret each take a closed set, and name the
+        // A network policy, a network rule, a policy, a contact and a secret each take a closed set, and name the
         // kind in the refusal as their grants record it — a password policy, like a masking policy, as POLICY.
         final List<String> securityObjectPrivileges = securityObjectPrivileges(objectType);
         if (securityObjectPrivileges != null && !securityObjectPrivileges.contains(privilege)) {
             throw new RuntimeException("SQL compilation error:\nInvalid object type '"
-                + ("PASSWORD_POLICY".equals(objectType) ? "POLICY" : objectType) + "' for privilege '"
-                + privilege.replace('_', ' ') + "'.");
+                + (objectType.endsWith("_POLICY") && !"NETWORK_POLICY".equals(objectType) ? "POLICY" : objectType)
+                + "' for privilege '" + privilege.replace('_', ' ') + "'.");
         }
     }
 
     /**
-     * The privileges a network policy, a network rule, a password policy, a secret, an external volume or an
-     * integration takes; null for another kind.
+     * The privileges a network policy, a network rule, a password, aggregation, authentication, join, packages or
+     * projection policy, a contact, a secret, an external volume or an integration takes; null for another kind.
      */
     private static List<String> securityObjectPrivileges(final String objectType) {
         switch (objectType) {
@@ -1198,7 +1198,14 @@ public class GrantRevokeHandler implements CommandHandler {
             case "INTEGRATION":
                 return List.of("USAGE");
             case "PASSWORD_POLICY":
+            case "AGGREGATION_POLICY":
+            case "AUTHENTICATION_POLICY":
+            case "JOIN_POLICY":
+            case "PACKAGES_POLICY":
+            case "PROJECTION_POLICY":
                 return List.of("APPLY");
+            case "CONTACT":
+                return List.of("APPLY", "MODIFY");
             case "SECRET":
                 return List.of("READ", "USAGE");
             default:
@@ -1274,6 +1281,12 @@ public class GrantRevokeHandler implements CommandHandler {
             case "NETWORK_POLICY":
             case "NETWORK_RULE":
             case "PASSWORD_POLICY":
+            case "AGGREGATION_POLICY":
+            case "AUTHENTICATION_POLICY":
+            case "JOIN_POLICY":
+            case "PACKAGES_POLICY":
+            case "PROJECTION_POLICY":
+            case "CONTACT":
             case "SECRET":
             case "EXTERNAL_VOLUME":
             case "INTEGRATION":

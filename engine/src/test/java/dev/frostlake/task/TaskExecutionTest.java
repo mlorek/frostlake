@@ -23,8 +23,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Locale;
@@ -196,8 +195,8 @@ public class TaskExecutionTest extends BaseDatabaseTest {
         engine.execute("ALTER TASK ct RESUME");
         final ZonedDateTime midnight = ZonedDateTime.now(ZoneOffset.UTC).toLocalDate().plusDays(1)
             .atStartOfDay(ZoneOffset.UTC);
-        final LocalDateTime next = taskModel("ct").getNextRunTime();
-        assertEquals(midnight.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime(), next,
+        final Instant next = taskModel("ct").getNextRunTime();
+        assertEquals(midnight.toInstant(), next,
             "a daily cron arms for the next midnight UTC, got " + next);
         engine.execute("ALTER TASK ct SUSPEND");
     }

@@ -76,8 +76,7 @@ public class Generator extends TableFunction {
         final Long rowCount = capped(counted, timeLimit, rowCap);
         if (rowCount != null && timeLimit == null && rowCount.longValue() > MAX_ROWS) {
             // The rows are held in memory: a count past what a list holds is refused here rather than cut down.
-            throw new RuntimeException("GENERATOR cannot produce " + rowCount + " rows here: at most " + MAX_ROWS
-                + " without a TIMELIMIT");
+            throw pastList(rowCount.longValue());
         }
 
         // Snowflake's GENERATOR produces ZERO columns (live-verified: SELECT * over it fails with
@@ -116,6 +115,31 @@ public class Generator extends TableFunction {
             }
         }
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * The rows a call asks for past what a list holds, where a ROWCOUNT bounds them and no TIMELIMIT does.
+     *
+     * @param namedArgs the call's arguments
+     * @return the rows, or null where the call asks for no more than a list holds or a TIMELIMIT bounds it
+     */
+    public Long rowsPastList(final Map<String, Object> namedArgs) {
+        validateArgs(namedArgs);
+        final Long counted = boundOf(namedArgs.get("ROWCOUNT"));
+        final Long written = boundOf(namedArgs.get("TIMELIMIT"));
+        final boolean timed = written != null && written.longValue() != 0;
+        return counted != null && !timed && counted.longValue() > MAX_ROWS ? counted : null;
+    }
+
+    /**
+     * The refusal of a call whose rows, past what a list holds, the statement would hold.
+     *
+     * @param rows the rows the call asks for
+     * @return the refusal
+     */
+    public static RuntimeException pastList(final long rows) {
+        return new RuntimeException("GENERATOR cannot produce " + rows + " rows here: at most " + MAX_ROWS
+            + " without a TIMELIMIT");
     }
 
     /** A ROWCOUNT no larger than the rows read, and a count of them where only a TIMELIMIT bounds the call. */

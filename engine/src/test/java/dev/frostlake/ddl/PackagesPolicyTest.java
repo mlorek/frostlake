@@ -64,6 +64,8 @@ public class PackagesPolicyTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid property 'NOPE' for 'PACKAGES_POLICY'"},
             {"CREATE OR REPLACE PACKAGES POLICY pk2 LANGUAGE PYTHON COMMENT = 1",
                 "REFUSED SQL compilation error: | invalid value [1] for parameter 'COMMENT'"},
+            {"CREATE OR REPLACE PACKAGES POLICY pk2 LANGUAGE PYTHON ALLOWLIST = (1)",
+                "REFUSED SQL compilation error: | invalid value [1] for parameter 'ALLOWLIST'"},
             {"CREATE OR REPLACE PACKAGES POLICY pk2 LANGUAGE PYTHON BLOCKLIST = ('a') BLOCKLIST = ('b')",
                 "REFUSED SQL compilation error: | duplicate property 'BLOCKLIST';"},
             {"CREATE PACKAGES POLICY pk1 LANGUAGE PYTHON",

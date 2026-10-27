@@ -212,7 +212,7 @@ public class UndropMatchesExactNamesTest {
         engine.execute("CREATE TABLE \"s3\".t (a INT) DATA_RETENTION_TIME_IN_DAYS = 0");
         engine.execute("DROP TABLE \"s3\".t");
         assertEquals("Table T did not exist or was purged.", refusal(engine, "UNDROP TABLE \"s3\".t"));
-        assertEquals(List.of(), column(engine, "SHOW TABLES HISTORY IN SCHEMA u.\"s3\"", "name"));
+        assertEquals(List.of("T"), column(engine, "SHOW TABLES HISTORY IN SCHEMA u.\"s3\"", "name"));
     }
 
     private static void deleteRecursively(final File file) {

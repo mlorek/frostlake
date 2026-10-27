@@ -35,6 +35,10 @@ import java.util.List;
         if (before == Token.INVALID_TYPE || before == SEMI) {
             statementOpener = type;
         }
+        if ((type == MINUS || type == PLUS || type == TILDE)
+                && (before == MINUS || before == PLUS || before == TILDE)) {
+            signPairRead = true;
+        }
         if (type == TABLE && token instanceof WritableToken && opensTableQuery(before, beforeThat)) {
             ((WritableToken) token).setType(FrostlakeParser.TABLE_QUERY);
         } else if (type == KW_IDENTIFIER && token instanceof WritableToken) {
@@ -163,12 +167,26 @@ import java.util.List;
         return caretRead;
     }
 
+    /** Whether a sign has been handed out straight after a sign (see DoubledSigns). */
+    private boolean signPairRead;
+
+    /**
+     * Whether a sign or a tilde has been handed out straight after one, so that a statement of a text that holds no
+     * such pair is not searched for two signs in a row.
+     *
+     * @return whether the text read so far holds such a pair
+     */
+    public boolean hasReadSignPair() {
+        return signPairRead;
+    }
+
     @Override
     public void reset() {
         previousType = Token.INVALID_TYPE;
         earlierType = Token.INVALID_TYPE;
         statementOpener = Token.INVALID_TYPE;
         caretRead = false;
+        signPairRead = false;
         tokensAhead.clear();
         patternSymbols.clear();
         rowPatternClauses.clear();
@@ -1704,12 +1722,18 @@ securityPropertyValue
     // A fraction is read, and refused by a whole number's property as no value of that parameter (live-verified).
     | MINUS? FLOAT_LITERAL
     | identifier
-    // A list's item may be a session variable too, bound or refused as a scalar one is (see PropertyVariables).
-    | LPAREN ((STRING_LITERAL | SESSION_VAR_REF) (COMMA (STRING_LITERAL | SESSION_VAR_REF))*)? RPAREN
+    // A list's item may be a session variable too, bound or refused as a scalar one is (see PropertyVariables), and a
+    // number, refused as no value of the parameter (live-verified).
+    | LPAREN ((STRING_LITERAL | SESSION_VAR_REF | securityListNumber)
+        (COMMA (STRING_LITERAL | SESSION_VAR_REF | securityListNumber))*)? RPAREN
     // NULL takes a session policy's agent scope away; any other property refuses it where it stands.
     | NULL
     // A session variable, bound where a property takes one and refused anywhere else (see PropertyVariables).
     | SESSION_VAR_REF
+    ;
+
+securityListNumber
+    : MINUS? (INTEGER_LITERAL | FLOAT_LITERAL)
     ;
 
 // SET takes its properties separated by blanks or commas alike.
@@ -2801,6 +2825,13 @@ securableKind
     | SECRET
     | EXTERNAL VOLUME
     | ALERT
+    // A policy of these kinds takes APPLY, and a contact APPLY and MODIFY (documented).
+    | AGGREGATION POLICY
+    | AUTHENTICATION POLICY
+    | JOIN POLICY
+    | PACKAGES POLICY
+    | PROJECTION POLICY
+    | CONTACT
     ;
 
 // What SHOW GRANTS ON names: a kind and its object, or a bare name, which live reads as a table or a view. A kind word
@@ -5490,6 +5521,9 @@ className
     // FLOAT, DOUBLE, FLOAT4 and FLOAT8 are names anywhere else and keywords of the account's where a class name
     // stands.
     | (FLOAT | DOUBLE | FLOAT4 | FLOAT8) {refuseKeywordClassName($ctx);}
+    // AGGREGATE is a keyword there too: DROP AGGREGATE FUNCTION f(NUMBER) is 'AGGREGATE' then 'FUNCTION'
+    // (live-verified).
+    | AGGREGATE {refuseKeywordClassName($ctx);}
     | classNameKeyword
     | QUOTED_IDENTIFIER
     | nameStartPart (DOT DOT namePart | DOT namePart) (DOT namePart)*

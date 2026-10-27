@@ -67,6 +67,13 @@ public class DynamicTable extends SqlObject {
     private long refreshedRows;
     /** The rows of the last refresh this engine ran, each as its values; null when it has run none. */
     private List<List<Object>> refreshImage;
+    /** The micro-partition each row of the refresh image lies in, in step with it; null where none was kept. */
+    private List<Long> imagePartitions;
+    /**
+     * Each input's micro-partitions as the last refresh read them, by the input's qualified name: each partition's
+     * number and the rows it holds (see {@link #getInputPartitions}).
+     */
+    private final Map<String, Map<Long, Long>> inputPartitions = new LinkedHashMap<>();
     /** The refreshes this engine ran, oldest first, for a read or a stream at a past point (see {@link #refreshAt}). */
     private final List<DynamicTableRefresh> refreshes = new ArrayList<>();
     private boolean transientTable;
@@ -277,6 +284,69 @@ public class DynamicTable extends SqlObject {
 
     /** Keeps the rows a refresh read, for the next refresh to tell what changed. */
     public void setRefreshImage(final List<List<Object>> image) { this.refreshImage = image; }
+
+    /**
+     * The micro-partition each row of the refresh image lies in, in step with the image: a refresh adds one
+     * partition for the rows it writes, and a partition it deletes from goes, the rows it kept copied into the new
+     * one (live-verified).
+     *
+     * @return the partitions, or null where none were kept
+     */
+    public List<Long> getImagePartitions() { return imagePartitions; }
+
+    /** Keeps the micro-partition of each row of the refresh image, in step with it. */
+    public void setImagePartitions(final List<Long> partitions) { this.imagePartitions = partitions; }
+
+    /**
+     * The table's micro-partitions now, each by its number with the rows it holds, oldest first: what a dynamic table
+     * that reads this one compares with what it read last. A refresh image kept with no partitions is one partition.
+     *
+     * @return the partitions
+     */
+    public Map<Long, Long> partitions() {
+        final Map<Long, Long> held = new LinkedHashMap<>();
+        if (refreshImage == null || refreshImage.isEmpty()) {
+            return held;
+        }
+        if (imagePartitions == null || imagePartitions.size() != refreshImage.size()) {
+            imagePartitions = new ArrayList<>();
+            final Long whole = Long.valueOf(SnapshotSequence.mark());
+            for (int i = 0; i < refreshImage.size(); i++) {
+                imagePartitions.add(whole);
+            }
+        }
+        for (final Long partition : imagePartitions) {
+            final Long rows = held.get(partition);
+            held.put(partition, rows == null ? 1L : rows + 1L);
+        }
+        return held;
+    }
+
+    /**
+     * An input's micro-partitions as the last refresh read them: each by its number with the rows it held. A table
+     * is one partition while it holds rows, numbered by its last write; a dynamic table its refreshes' partitions.
+     *
+     * @param input the input's qualified name
+     * @return the partitions, empty when the table read none of it
+     */
+    public synchronized Map<Long, Long> getInputPartitions(final String input) {
+        final Map<Long, Long> read = inputPartitions.get(input);
+        return read == null ? new LinkedHashMap<Long, Long>() : new LinkedHashMap<>(read);
+    }
+
+    /** Keeps an input's micro-partitions as a refresh read them. */
+    public synchronized void setInputPartitions(final String input, final Map<Long, Long> partitions) {
+        inputPartitions.put(input, new LinkedHashMap<>(partitions));
+    }
+
+    /** Every input's micro-partitions as the last refresh read them, as a snapshot of the engine's state saves them. */
+    public synchronized Map<String, Map<Long, Long>> getAllInputPartitions() {
+        final Map<String, Map<Long, Long>> copy = new LinkedHashMap<>();
+        for (final Map.Entry<String, Map<Long, Long>> input : inputPartitions.entrySet()) {
+            copy.put(input.getKey(), new LinkedHashMap<>(input.getValue()));
+        }
+        return copy;
+    }
 
     /**
      * Keeps a refresh for time travel. Only the latest {@link #KEPT_REFRESHES} are kept: a point before the oldest

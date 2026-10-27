@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -28,7 +29,8 @@ import org.junit.jupiter.api.function.Executable;
  * GRANT OWNERSHIP … TO DATABASE ROLE moves the object to the database role (live-verified): the role that owned it
  * acts as its owner no more, so ACCOUNTADMIN is refused a DROP and a RENAME of it, and a session acts as the owner
  * once the database role is granted to its role — a RENAME then asks for CREATE TABLE on the schema, which a grant
- * to the database role answers.
+ * to the database role answers. SHOW GRANTS names the owning database role as its other grants name it, by its kind
+ * and bare, and lists what it owns among its grants.
  */
 public class DatabaseRoleOwnershipTest extends BaseDatabaseTest {
 
@@ -74,5 +76,39 @@ public class DatabaseRoleOwnershipTest extends BaseDatabaseTest {
         engine.execute("GRANT CREATE TABLE ON SCHEMA test_db.crw_s TO DATABASE ROLE test_db.crw_dr");
         engine.execute("ALTER TABLE test_db.crw_s.seed RENAME TO test_db.crw_s.seed_r");
         engine.execute("DROP TABLE test_db.crw_s.seed_r");
+    }
+
+    /** The rows a statement answers, as "a|b ;; c|d". */
+    private String rows(final String sql) {
+        final StringBuilder text = new StringBuilder();
+        for (final Row row : engine.executeQuery(sql).getRows()) {
+            final StringBuilder cells = new StringBuilder();
+            for (final Object value : row.getValues()) {
+                cells.append(cells.length() > 0 ? "|" : "").append(value);
+            }
+            text.append(text.length() > 0 ? " ;; " : "").append(cells);
+        }
+        return text.toString();
+    }
+
+    @Test
+    public void anOwningDatabaseRoleIsNamedAsItsOtherGrantsNameIt() {
+        engine.execute("CREATE TABLE test_db.test_schema.crw_held (a INT)");
+        engine.execute("CREATE TABLE test_db.test_schema.crw_read (a INT)");
+        engine.execute("GRANT SELECT ON TABLE test_db.test_schema.crw_read TO DATABASE ROLE test_db.crw_dr");
+        engine.execute("GRANT OWNERSHIP ON TABLE test_db.test_schema.crw_held TO DATABASE ROLE test_db.crw_dr");
+        // The owner's row names the database role as its granted privileges do: by its kind, bare.
+        assertEquals("OWNERSHIP|DATABASE_ROLE|CRW_DR|true|CRW_DR", rows("SHOW GRANTS ON TABLE "
+            + "test_db.test_schema.crw_held ->> SELECT \"privilege\", \"granted_to\", \"grantee_name\", "
+            + "\"grant_option\", \"granted_by\" FROM $1"));
+        assertEquals("SELECT|DATABASE_ROLE|CRW_DR", rows("SHOW GRANTS ON TABLE test_db.test_schema.crw_read ->> "
+            + "SELECT \"privilege\", \"granted_to\", \"grantee_name\" FROM $1 WHERE \"privilege\" = 'SELECT'"));
+        // What it owns is listed among its grants, as a role's is.
+        assertEquals("OWNERSHIP|TEST_DB.TEST_SCHEMA.CRW_HELD|CRW_DR|true|CRW_DR ;; "
+            + "SELECT|TEST_DB.TEST_SCHEMA.CRW_READ|CRW_DR|false|ACCOUNTADMIN", rows("SHOW GRANTS TO DATABASE ROLE "
+            + "test_db.crw_dr ->> SELECT \"privilege\", \"name\", \"grantee_name\", \"grant_option\", "
+            + "\"granted_by\" FROM $1 WHERE \"granted_on\" = 'TABLE' ORDER BY 2"));
+        assertEquals("0", rows("SHOW GRANTS TO ROLE ACCOUNTADMIN ->> SELECT COUNT(*) FROM $1 WHERE \"name\" = "
+            + "'TEST_DB.TEST_SCHEMA.CRW_HELD'"));
     }
 }

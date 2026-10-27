@@ -240,6 +240,9 @@ public class InferredDeclarationCallsTest extends MeasuredCellsTestSupport {
             {"BEGIN LET x := 1; IF (FALSE) THEN LET y := x + ABS(1, 2); END IF; RETURN 1; END;",
                 "REFUSED SQL compilation error: error line 1 at position 47 | too many arguments for function [ABS(1,"
                 + " 2)] expected 1, got 2"},
+            {"BEGIN IF (FALSE) THEN LET x := DATEADD('nosuchpart', 1, CURRENT_DATE()); END IF; RETURN 1; END;",
+                "REFUSED SQL compilation error: ['nosuchpart'] is not a valid date/time component for function "
+                + "DATEADD."},
         });
     }
 }

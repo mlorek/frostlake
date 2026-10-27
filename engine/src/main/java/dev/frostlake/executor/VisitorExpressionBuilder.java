@@ -467,9 +467,9 @@ public class VisitorExpressionBuilder {
                 if (dbN == null || scN == null) return false;
                 final Stream stream = cat.getDatabase(dbN).getSchema(scN).getStream(streamName);
                 if (stream == null) return false;
-                // Pending changes live as the stream's unconsumed NET records (consolidated deltas),
-                // not in any table storage — the old storage probe always answered false.
-                return !stream.getUnconsumedNetRecords().isEmpty();
+                // Pending changes live as the stream's records and its tables' versions past its offset
+                // (Stream#hasData), not in any table storage.
+                return stream.hasData();
             } catch (final Exception e) {
                 return false;
             }

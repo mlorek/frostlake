@@ -28,8 +28,9 @@ import org.junit.jupiter.api.function.Executable;
 /**
  * A user's function the role may not use is refused as the statement compiles, whether or not a row reaches the
  * call: over no rows, in a CASE or IFF branch no row takes, as an unread item of a derived table or a CTE, in a WHERE
- * no row passes, and in an UPDATE's SET over no rows, each in the sentence the call itself is refused with. Engine
- * only: GRANT OWNERSHIP and USE ROLE are not run on the live account.
+ * no row passes, in an UPDATE's SET and a MERGE's ON, SET and VALUES over no rows, in a subquery no row reaches, and
+ * in the ORDER BY, GROUP BY, HAVING and QUALIFY keys and a table function's arguments, each in the sentence the call
+ * itself is refused with. Engine only: GRANT OWNERSHIP and USE ROLE are not run on the live account.
  */
 public class UnreachedFunctionUsageTest extends BaseDatabaseTest {
 
@@ -91,8 +92,30 @@ public class UnreachedFunctionUsageTest extends BaseDatabaseTest {
     }
 
     @Test
+    public void aCallInAMergeOrASubqueryNoRowReachesIsRefused() {
+        assertEquals(REFUSAL, refusal("MERGE INTO t726 USING e726 s ON secret726(s.a) = t726.a "
+            + "WHEN MATCHED THEN UPDATE SET a = 1"));
+        assertEquals(REFUSAL, refusal("MERGE INTO t726 USING e726 s ON s.a = t726.a "
+            + "WHEN MATCHED THEN UPDATE SET a = secret726(s.a)"));
+        assertEquals(REFUSAL, refusal("MERGE INTO t726 USING e726 s ON s.a = t726.a "
+            + "WHEN NOT MATCHED THEN INSERT (a) VALUES (secret726(s.a))"));
+        assertEquals(REFUSAL, refusal("SELECT COUNT(*) FROM e726 WHERE a IN (SELECT secret726(a) FROM e726)"));
+        assertEquals(REFUSAL, refusal("SELECT (SELECT MAX(secret726(a)) FROM e726)"));
+        assertEquals(REFUSAL, refusal("SELECT a FROM t726 WHERE EXISTS (SELECT secret726(a) FROM e726)"));
+        assertEquals(REFUSAL, refusal("SELECT a FROM e726 ORDER BY secret726(a)"));
+        assertEquals(REFUSAL, refusal("SELECT COUNT(*) FROM e726 GROUP BY secret726(a)"));
+        assertEquals(REFUSAL, refusal("SELECT a FROM e726 GROUP BY a HAVING MAX(secret726(a)) > 0"));
+        assertEquals(REFUSAL, refusal("SELECT a FROM e726 QUALIFY secret726(a) > 0"));
+        assertEquals(REFUSAL,
+            refusal("SELECT * FROM e726, TABLE(FLATTEN(INPUT => ARRAY_CONSTRUCT(secret726(e726.a))))"));
+    }
+
+    @Test
     public void aRoleThatMayUseTheFunctionCallsIt() {
         engine.execute("GRANT USAGE ON FUNCTION secret726(INT) TO ROLE ACCOUNTADMIN");
+        engine.execute("MERGE INTO t726 USING e726 s ON s.a = t726.a WHEN MATCHED THEN UPDATE SET a = secret726(s.a)");
+        assertEquals(0L, ((Number) engine.executeQuery("SELECT COUNT(*) FROM e726 WHERE a IN "
+            + "(SELECT secret726(a) FROM e726)").getRows().get(0).getValue(0)).longValue());
         assertTrue(engine.executeQuery("SELECT secret726(a) FROM e726").getRows().isEmpty());
         assertEquals(2L, ((Number) engine.executeQuery("SELECT secret726(a) FROM t726").getRows().get(0).getValue(0))
             .longValue());

@@ -52,6 +52,8 @@ public final class PythonInterpreter {
     private static volatile PythonBackend[] chosen = new PythonBackend[0];
     /** The backend the engine built last chose, for a call no engine's statement makes. */
     private static volatile PythonBackend latest;
+    /** The venv each GraalPy engine names (see PythonRuntime#validVenv), by the engine's configuration. */
+    private static final Map<EngineConfig, String> VENVS = new WeakHashMap<>();
 
     private PythonInterpreter() {
     }
@@ -68,9 +70,11 @@ public final class PythonInterpreter {
         if ("cpython".equals(runtime)) {
             settings = runtime + '|' + executable;
         } else if (runtime.isEmpty() || GRAALPY.equals(runtime)) {
-            // GraalPy runs in the JVM, one context per thread whichever engine calls it: a context starts with the
-            // packages of the venv the engine built last names.
+            // GraalPy runs in the JVM, one context per thread whichever engine calls it: the first context built
+            // settles the venv every later one imports from, and an engine naming another is refused at its first
+            // Python call (see PythonRuntime#requireVenv).
             PythonRuntime.configureVenv(config.getPythonVenv());
+            VENVS.put(config, PythonRuntime.validVenv(config.getPythonVenv()));
             settings = GRAALPY;
         } else {
             throw new IllegalArgumentException(PROP_RUNTIME + " must be graalpy or cpython, not '" + runtime + "'");
@@ -89,6 +93,11 @@ public final class PythonInterpreter {
             chosen = BACKENDS.values().toArray(new PythonBackend[0]);
         }
         return backend;
+    }
+
+    /** The venv a GraalPy engine names, or null for none (see {@link #VENVS}). */
+    private static synchronized String venvOf(final EngineConfig config) {
+        return VENVS.get(config);
     }
 
     /** The backend {@link #configure} chose for an engine's configuration, or null when it chose none. */
@@ -113,6 +122,9 @@ public final class PythonInterpreter {
         if (running != null) {
             final PythonBackend own = backendOf(running);
             if (own != null) {
+                if (own instanceof GraalPyBackend) {
+                    PythonRuntime.requireVenv(venvOf(running));
+                }
                 return own;
             }
         }

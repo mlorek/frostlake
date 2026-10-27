@@ -219,6 +219,14 @@ final class UnreadColumnPruning {
         return true;
     }
 
+    /**
+     * Whether a token is one a condition of literals alone is written with: a literal, a comparison, an operator of
+     * NOT, AND, OR, IS, + and -, and a bracket.
+     */
+    static boolean isConstantToken(final int type) {
+        return CONSTANT_TOKENS.contains(type) || type == FrostlakeParser.AND;
+    }
+
     private static void conjuncts(final FrostlakeParser.BooleanExprContext expr,
                                   final List<ParserRuleContext> constants) {
         if (expr instanceof FrostlakeParser.AndExprContext) {

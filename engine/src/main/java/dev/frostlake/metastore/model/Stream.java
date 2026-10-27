@@ -670,6 +670,18 @@ public class Stream implements Named, Taggable {
         return records.size() - (int) currentOffset;
     }
 
+    /**
+     * Whether SYSTEM$STREAM_HAS_DATA answers TRUE: the stream lists changes, or a table it reads took a version past
+     * its offset, a change the stream does not list among them - a DELETE under an APPEND_ONLY stream, a row a view
+     * does not show. The function diffs the tables' versions, not the stream's rows (documented; live-verified for an
+     * APPEND_ONLY view stream after a DELETE), so it may answer TRUE where a read lists nothing.
+     *
+     * @return whether the stream has data
+     */
+    public boolean hasData() {
+        return getUnconsumedCount() > 0 || !getPendingVersions().isEmpty();
+    }
+
     /** The initial rows pending before the first consumption, or null when none are. */
     public List<StreamRecord> getInitialRecords() {
         return initialRecords;

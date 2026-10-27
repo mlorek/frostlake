@@ -98,8 +98,9 @@ final class JavaScriptColumns {
             case "scale":
                 return Integer.valueOf(scale(type, sql));
             case "nullable":
-                // What the projection worked out from its expression, where it did (live-verified).
-                return column.getDerivedNullable() != null ? column.getDerivedNullable()
+                // What the projection worked out from its expression, where it did, as the metadata tells it
+                // (live-verified).
+                return column.getReportedNullable() != null ? column.getReportedNullable()
                     : Boolean.valueOf(column.isNullabilityKnown() && column.isNullable());
             case "description":
                 return "{\"sqlType\":\"\",\"scale\":" + scale(type, sql) + ",\"precision\":"

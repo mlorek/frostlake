@@ -172,12 +172,18 @@ public class ShowTablesHistoryTest {
     }
 
     @Test
-    public void aTableKeptForNoTimeIsNotListed() {
+    public void aTableKeptForNoTimeIsStillListed() {
+        // Listed though UNDROP finds it purged, as a version replaced while kept for no day is (live-verified).
         engine.execute("CREATE TABLE gone (a INT) DATA_RETENTION_TIME_IN_DAYS = 0");
         engine.execute("DROP TABLE gone");
         engine.execute("CREATE TABLE kept (a INT) DATA_RETENTION_TIME_IN_DAYS = 3");
         engine.execute("DROP TABLE kept");
-        assertEquals(List.of("KEPT:dropped"), listed("SHOW TABLES HISTORY"));
+        assertEquals(List.of("GONE:dropped", "KEPT:dropped"), listed("SHOW TABLES HISTORY"));
+        assertEquals(List.of("0"), column("SHOW TABLES HISTORY LIKE 'GONE'", "retention_time"));
         assertEquals(List.of("3"), column("SHOW TABLES HISTORY LIKE 'KEPT'", "retention_time"));
+        // The name dropped again for no day: its newest version, listed after the older one.
+        engine.execute("CREATE TABLE kept (a INT) DATA_RETENTION_TIME_IN_DAYS = 0");
+        engine.execute("DROP TABLE kept");
+        assertEquals(List.of("3", "0"), column("SHOW TABLES HISTORY LIKE 'KEPT'", "retention_time"));
     }
 }

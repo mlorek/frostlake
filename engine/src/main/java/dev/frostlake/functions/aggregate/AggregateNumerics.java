@@ -1035,6 +1035,34 @@ public final class AggregateNumerics {
         return Double.valueOf(Math.sqrt(((Number) atScale).doubleValue()));
     }
 
+    /**
+     * A variance of exact inputs, computed exactly and presented at the scale its column declares (see
+     * {@link #varianceAtDeclaredScale}).
+     *
+     * @param moments       the inputs' moments
+     * @param sample        whether it is the sample's variance rather than the population's
+     * @param maxInputScale the largest scale among the inputs
+     * @return the variance
+     */
+    public static BigDecimal exactVarianceAtDeclaredScale(final ExactMoments moments, final boolean sample,
+                                                          final int maxInputScale) {
+        return moments.variance(sample, varianceScale(maxInputScale));
+    }
+
+    /**
+     * The STDDEV family's value over exact inputs: the root of the variance computed exactly and rounded to its
+     * declared scale (see {@link #rootOfDeclaredVariance}).
+     *
+     * @param moments       the inputs' moments
+     * @param sample        whether it is the sample's deviation rather than the population's
+     * @param maxInputScale the largest scale among the inputs
+     * @return the deviation
+     */
+    public static Double rootOfExactVariance(final ExactMoments moments, final boolean sample,
+                                             final int maxInputScale) {
+        return Double.valueOf(Math.sqrt(exactVarianceAtDeclaredScale(moments, sample, maxInputScale).doubleValue()));
+    }
+
     /** The scale an accumulated input contributes: a decimal's own, zero for an integral value. */
     public static int scaleOfInput(final Object value) {
         return value instanceof BigDecimal ? ((BigDecimal) value).scale() : 0;

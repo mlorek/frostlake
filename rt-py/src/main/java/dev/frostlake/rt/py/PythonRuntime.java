@@ -28,6 +28,7 @@ import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
+import java.io.File;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -99,6 +100,12 @@ public final class PythonRuntime {
      * environment they were built with.
      */
     private static volatile String venvDirectory;
+
+    /**
+     * Whether a context has been built: the venv the first one is built with is the venv of every later one, as each
+     * thread keeps its context whichever engine calls it (see {@link #requireVenv}). Guarded by the class.
+     */
+    private static boolean venvSettled;
 
     /**
      * The JVM default time zone before any Python ran. GraalPy's {@code import pandas} (via its time
@@ -436,7 +443,11 @@ public final class PythonRuntime {
             // Hand Python the host's zone explicitly: without TZ, GraalPy's tzset falls back to GMT
             // and (see HOST_TIME_ZONE) mutates the JVM default when pandas imports.
             .environment("TZ", HOST_TIME_ZONE.getID());
-        final String venv = venvDirectory;
+        final String venv;
+        synchronized (PythonRuntime.class) {
+            venvSettled = true;
+            venv = venvDirectory;
+        }
         if (venv != null) {
             // Pointing the interpreter's executable into the venv is how GraalPy activates one when
             // embedded: site.py finds pyvenv.cfg next to the executable and adds the venv's
@@ -504,15 +515,47 @@ public final class PythonRuntime {
      * blank, or non-existent directory leaves the runtime on the standard library alone — a missing venv
      * must not break every Python handler that never imports third-party packages.
      */
-    public static void configureVenv(final String venvDir) {
+    public static synchronized void configureVenv(final String venvDir) {
+        final String valid = validVenv(venvDir);
+        if (valid != null && !venvSettled) {
+            venvDirectory = valid;
+        }
+    }
+
+    /**
+     * The venv a {@code python.venv} setting names, trimmed, or null where it names none GraalPy can activate: blank,
+     * or no directory holding a {@code pyvenv.cfg}.
+     *
+     * @param venvDir the setting, or null
+     * @return the venv, or null
+     */
+    static String validVenv(final String venvDir) {
         if (venvDir == null || venvDir.trim().isEmpty()) {
-            return;
+            return null;
         }
         final String trimmed = venvDir.trim();
-        if (!new java.io.File(trimmed, "pyvenv.cfg").isFile()) {
+        return new File(trimmed, "pyvenv.cfg").isFile() ? trimmed : null;
+    }
+
+    /**
+     * Refuse a Python call of an engine whose {@code python.venv} names a venv other than the one this JVM's GraalPy
+     * contexts import from: each thread keeps one context whichever engine calls it, so a JVM's GraalPy runs one
+     * venv. Until the first context is built, the calling engine's venv is the one it will be built with.
+     *
+     * @param requested the venv the calling engine names (see {@link #validVenv}), or null for none
+     */
+    static synchronized void requireVenv(final String requested) {
+        if (!venvSettled) {
+            if (requested != null) {
+                venvDirectory = requested;
+            }
             return;
         }
-        venvDirectory = trimmed;
+        if (requested != null && !requested.equals(venvDirectory)) {
+            throw new IllegalStateException("python.venv '" + requested + "' cannot be used: GraalPy runs one venv a "
+                + "JVM, and its interpreters here " + (venvDirectory == null ? "were started without one"
+                    : "import from '" + venvDirectory + "'"));
+        }
     }
 
     /** This thread's Python context, created on first use; every execution on it passes here (see {@link #RAN}). */

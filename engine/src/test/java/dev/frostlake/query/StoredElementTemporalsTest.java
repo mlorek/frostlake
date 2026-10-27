@@ -299,4 +299,19 @@ public class StoredElementTemporalsTest extends MeasuredCellsTestSupport {
         assertAnswer("1970-01-02", "SELECT a[0]::DATE FROM va GROUP BY a[0]::DATE, i");
         assertAnswer("1970-01-02 ;; null", "SELECT a[0]::DATE FROM va GROUP BY ROLLUP (a[0]::DATE)");
     }
+
+    /**
+     * An item that holds the key a cast of the element is, an IFF the plan folds to the column, and a correlated
+     * subquery's reference to the outer row all read the stored element.
+     */
+    @Test
+    public void aKeyInsideAnItemAFoldedConditionalAndAnOuterReferenceReadTheStoredElement() {
+        assertAnswer("Statement executed successfully.", "ALTER SESSION SET TIMEZONE = 'America/Los_Angeles'");
+        assertAnswer("Table VA successfully created.", "CREATE OR REPLACE TABLE va (i INT, a ARRAY, o OBJECT)");
+        assertAnswer("1", "INSERT INTO va SELECT 0, ARRAY_CONSTRUCT(1), OBJECT_CONSTRUCT('n', 1)");
+        assertAnswer("19700102", "SELECT TO_VARCHAR(a[0]::DATE, 'YYYYMMDD') FROM va GROUP BY a[0]::DATE");
+        assertAnswer("19700102",
+            "SELECT TO_VARCHAR(a[0]::DATE, 'YYYYMMDD') FROM (SELECT IFF(TRUE, a, NULL) AS a FROM va)");
+        assertAnswer("19700102", "SELECT (SELECT TO_VARCHAR(va.a[0]::DATE, 'YYYYMMDD')) FROM va");
+    }
 }

@@ -156,10 +156,14 @@ public final class PythonTableFunctionExecutor {
         final List<List<Row>> writtenPerRow = new ArrayList<>();
         final List<Row> atEnd = new ArrayList<>();
 
+        // The call's module reads every partition, its body run for the first alone (see PythonModuleState).
+        final String key = PythonModuleState.keptFor(function);
         Object frame = null;
         try {
-            frame = PythonInterpreter.enterModule();
-            PythonFailureReport.runSource(dedent(function.getBody()), handlerClassName);
+            frame = key != null ? PythonInterpreter.resumeModule(key) : PythonInterpreter.enterModule();
+            if (!PythonInterpreter.resumed(frame)) {
+                PythonFailureReport.runSource(dedent(function.getBody()), handlerClassName);
+            }
 
             // Instantiate the handler class; a dotted one is a module's attribute, imported as CREATE resolved it.
             if (PythonHandlerCheck.isDotted(handlerClassName)) {
@@ -191,6 +195,9 @@ public final class PythonTableFunctionExecutor {
                 PythonFailureReport.run("__end_result = __handler_instance.end_partition()"
                     + READ_THROUGH.replace("@", "__end_result"));
                 atEnd.addAll(rowsOf("__end_result", function, outputColumns, declared));
+            }
+            if (key != null) {
+                PythonInterpreter.keepModule(key);
             }
 
         } catch (final PythonReturnRefusal refused) {

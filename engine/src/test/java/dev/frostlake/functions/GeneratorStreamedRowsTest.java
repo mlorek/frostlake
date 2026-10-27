@@ -23,7 +23,9 @@ import org.junit.jupiter.api.Test;
 /**
  * A GENERATOR read alone under a LIMIT or a FETCH generates no more rows than it is read for, its OFFSET's
  * included: a ROWCOUNT past what a list holds answers its first rows, SEQ4 numbers the rows kept, and a TIMELIMIT
- * ends with them (all live-verified).
+ * ends with them. Past what a list holds, a WHERE reading each row is tested until the LIMIT is met, constant
+ * aggregates count the rows, and a WHERE over a derived table's literal columns is decided before any row (all
+ * live-verified).
  */
 public class GeneratorStreamedRowsTest extends MeasuredCellsTestSupport {
 
@@ -42,5 +44,16 @@ public class GeneratorStreamedRowsTest extends MeasuredCellsTestSupport {
             "SELECT UNIFORM(1, 1, RANDOM()) AS u FROM TABLE(GENERATOR(ROWCOUNT => 3000000000)) LIMIT 2");
         assertAnswer("0 ;; 1",
             "SELECT SEQ4() AS s FROM TABLE(GENERATOR(ROWCOUNT => 3000000000)) FETCH FIRST 2 ROWS ONLY");
+    }
+
+    @Test
+    public void filteredCountedAndFoldedRows() {
+        assertAnswer("4", "SELECT COUNT(*) FROM (SELECT 1 AS x FROM TABLE(GENERATOR(ROWCOUNT => 3000000000)) "
+            + "WHERE UNIFORM(1, 2, RANDOM()) = 1 LIMIT 4)");
+        assertAnswer("1 ;; 1",
+            "SELECT x FROM (SELECT 1 AS x FROM TABLE(GENERATOR(ROWCOUNT => 3000000000))) WHERE x = 1 LIMIT 2");
+        assertAnswer("3000000000", "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 3000000000))");
+        assertAnswer("3000000000", "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 3000000000)) WHERE TRUE");
+        assertAnswer("3000000000|1", "SELECT COUNT(*), MAX(1) FROM TABLE(GENERATOR(ROWCOUNT => 3000000000))");
     }
 }

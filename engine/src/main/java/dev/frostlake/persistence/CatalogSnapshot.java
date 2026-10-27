@@ -68,4 +68,6 @@ public class CatalogSnapshot implements Serializable {
     public List<LoadRecordSnapshot> loadHistory;
     /** The statements a time-travel point may name by query ID, oldest first; null on an older snapshot. */
     public List<QueryPointSnapshot> queryPoints;
+    /** The refreshes DYNAMIC_TABLE_REFRESH_HISTORY lists, oldest first; null on an older snapshot. */
+    public List<DynamicTableRefreshRecordSnapshot> dynamicTableRefreshes;
 }

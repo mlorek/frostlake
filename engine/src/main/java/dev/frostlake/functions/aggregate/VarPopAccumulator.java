@@ -27,7 +27,7 @@ public class VarPopAccumulator
 
     private boolean decfloat;
 
-    private final WelfordMoments moments = new WelfordMoments();
+    private final ExactMoments moments = new ExactMoments();
     private final SquaredSumMoments floatMoments = new SquaredSumMoments();
     private int maxScale;
     private boolean approximate;
@@ -63,7 +63,7 @@ public class VarPopAccumulator
         maxScale = Math.max(maxScale, AggregateNumerics.scaleOfInput(v));
         approximate = approximate || AggregateNumerics.isApproximateInput(v);
         final double number = NumericAggregateInput.asDouble(v);
-        moments.add(number);
+        moments.add(v);
         floatMoments.add(number);
     }
 
@@ -73,9 +73,11 @@ public class VarPopAccumulator
             return decfloatMoments.heldVariance(false);
         }
         if (moments.count() == 0) return null;
-        // A FLOAT input is read through the account's sums, an exact one through the running mean.
-        final double variance = approximate ? floatMoments.populationVariance() : moments.populationVariance();
-        return AggregateNumerics.varianceAtDeclaredScale(variance, maxScale, approximate);
+        // A FLOAT input is read through the account's sums, an exact one exactly.
+        if (approximate || !moments.isExact()) {
+            return AggregateNumerics.varianceAtDeclaredScale(floatMoments.populationVariance(), maxScale, approximate);
+        }
+        return AggregateNumerics.exactVarianceAtDeclaredScale(moments, false, maxScale);
     }
 
     @Override

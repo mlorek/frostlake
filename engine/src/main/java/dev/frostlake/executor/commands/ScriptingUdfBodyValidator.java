@@ -19,9 +19,9 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RoutineOverloads;
-import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.CaretOperator;
+import dev.frostlake.executor.expressions.DoubledSigns;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.SnowflakeBuiltinNames;
@@ -107,24 +107,8 @@ final class ScriptingUdfBodyValidator {
         // What no expression may write is refused before any statement or call is judged: a caret between two
         // values, and a sign written straight after a sign (live-verified).
         CaretOperator.rejectIn(block);
-        rejectDoubledSigns(block);
+        DoubledSigns.rejectIn(block);
         walk(block, null);
-    }
-
-    /**
-     * Two signs in a row are no expression: {@code - -a} is refused as an invalid function named by the outer
-     * sign, in a RETURN's value and in a call's argument alike, as a query's is (live-verified).
-     */
-    private static void rejectDoubledSigns(final ParseTree node) {
-        if (node instanceof FrostlakeParser.UnaryExprContext) {
-            final FrostlakeParser.UnaryExprContext signed = (FrostlakeParser.UnaryExprContext) node;
-            if (signed.expression() instanceof FrostlakeParser.UnaryExprContext) {
-                throw new RuntimeException(SqlCompilationError.of("invalid function '" + signed.op.getText() + "'"));
-            }
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            rejectDoubledSigns(node.getChild(i));
-        }
     }
 
     /**

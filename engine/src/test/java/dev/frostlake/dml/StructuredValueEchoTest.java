@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
  * A semi-structured value written to a structured column, refused by the types before a row is read, and a
  * VALUES item refused with the expression the statement compiled: [..] as ARRAY_CONSTRUCT, {..} as
  * OBJECT_CONSTRUCT, :: as a CAST to the type in full, an element appended to a structured ARRAY converted to its
- * type (all live-verified).
+ * type, TO_VARIANT as the cast to VARIANT it is with a number converted to FLOAT folded (all live-verified).
  */
 public class StructuredValueEchoTest extends MeasuredCellsTestSupport {
 
@@ -85,5 +85,15 @@ public class StructuredValueEchoTest extends MeasuredCellsTestSupport {
         assertAnswer("REFUSED SQL compilation error: | Invalid expression [CAST(1 AS VARIANT)] in VALUES clause",
             "INSERT INTO t2079 (arr) VALUES (1::VARIANT)");
         assertAnswer("1", "SELECT COUNT(*) FROM t2079");
+    }
+
+    @Test
+    public void aConversionToVariantIsEchoedAsItsCast() {
+        engine.execute("CREATE OR REPLACE TABLE vw (n NUMBER(38,20), m NUMBER(10,2), k NUMBER(5,0))");
+        assertAnswer("1",
+            "INSERT INTO vw SELECT TO_VARIANT(0.1::FLOAT), TO_VARIANT(2.675::FLOAT), TO_VARIANT(2.5::FLOAT)");
+        assertAnswer("REFUSED SQL compilation error: | Invalid expression [CAST(0.1 AS VARIANT)] in VALUES clause",
+            "INSERT INTO vw VALUES (TO_VARIANT(0.1::FLOAT), TO_VARIANT(1.005::FLOAT), TO_VARIANT(-2.5::FLOAT))");
+        assertAnswer("1", "SELECT COUNT(*) FROM vw");
     }
 }

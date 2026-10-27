@@ -653,7 +653,7 @@ final class ShowRelationalExecutor {
                     // The versions come newest first, so within one millisecond the older one keeps the earlier place.
                     byName.put(versionKey(scName, table.getName(), table.getCreatedTime(), version.getDroppedOn(),
                             dropped.size() - 1 - i),
-                        tableRow(table, dbName, scName, version.getRows() == null ? 0L : version.getRows().size(),
+                        tableRow(table, dbName, scName, version.rowCount(),
                         String.valueOf(version.getRetentionDays()), true, version.getDroppedOn()));
                 }
             }
@@ -725,11 +725,18 @@ final class ShowRelationalExecutor {
      */
     private List<DroppedObject> droppedTablesOf(final String dbName, final String scName) {
         final String prefix = "TABLE:" + QualifiedName.key(dbName, scName, "");
+        // A version purged with a retention of 0 is listed too, the newest of its name: dropping the name again
+        // forgets it (see Catalog#listedOnlyVersions). Read first, as reading the versions purges again.
+        final Map<String, DroppedObject> listedOnly = catalog.listedOnlyVersions();
         final List<DroppedObject> out = new ArrayList<>();
         for (final Map.Entry<String, List<DroppedObject>> entry : catalog.droppedVersions().entrySet()) {
             final String key = entry.getKey();
-            if (!key.startsWith(prefix) || QualifiedName.parse(key.substring("TABLE:".length())).size() != 3) {
+            if (!isSchemaTableKey(key, prefix)) {
                 continue;
+            }
+            final DroppedObject listed = listedOnly.remove(key);
+            if (listed != null) {
+                out.add(listed);
             }
             for (int i = entry.getValue().size() - 1; i >= 0; i--) {
                 if (entry.getValue().get(i).getObject() instanceof Table) {
@@ -737,7 +744,17 @@ final class ShowRelationalExecutor {
                 }
             }
         }
+        for (final Map.Entry<String, DroppedObject> entry : listedOnly.entrySet()) {
+            if (isSchemaTableKey(entry.getKey(), prefix)) {
+                out.add(entry.getValue());
+            }
+        }
         return out;
+    }
+
+    /** Whether a dropped-table key names a table of the schema a prefix keys, not one of a schema it nests. */
+    private static boolean isSchemaTableKey(final String key, final String prefix) {
+        return key.startsWith(prefix) && QualifiedName.parse(key.substring("TABLE:".length())).size() == 3;
     }
 
     /**

@@ -259,6 +259,61 @@ public final class StreamSources {
     }
 
     /**
+     * Where each table a re-bind that kept a view stream's changes lists it as reading is held, as a snapshot saves
+     * it: the database, the schema and the table, each as the catalog holds it; null when there was no such re-bind,
+     * or when one of them is gone.
+     *
+     * @param catalog the catalog
+     * @param stream  the stream
+     * @return the places, or null
+     */
+    public static List<List<String>> shownTablePlaces(final Catalog catalog, final Stream stream) {
+        if (stream.getShownTables() == null) {
+            return null;
+        }
+        final List<List<String>> places = new ArrayList<>();
+        for (final Table table : stream.getShownTables()) {
+            final Schema holder = holderOf(catalog, table);
+            if (holder == null) {
+                return null;
+            }
+            final List<String> place = new ArrayList<>();
+            place.add(holder.getDatabaseName());
+            place.add(holder.getName());
+            place.add(table.getName());
+            places.add(place);
+        }
+        return places;
+    }
+
+    /**
+     * Lists a restored view stream as reading the tables a snapshot saved it as reading (see
+     * {@link #shownTablePlaces}), each found where it was held; a place that holds no table leaves the stream listed
+     * as it is.
+     *
+     * @param catalog the catalog, restored
+     * @param stream  the stream
+     * @param places  the places, as the snapshot saved them
+     */
+    public static void restoreShownOn(final Catalog catalog, final Stream stream, final List<List<String>> places) {
+        final List<Table> tables = new ArrayList<>();
+        for (final List<String> place : places) {
+            final Database database = catalog.findDatabase(place.get(0));
+            final Schema schema;
+            try {
+                schema = database == null ? null : database.schemaExact(place.get(1));
+            } catch (final RuntimeException gone) {
+                return;
+            }
+            if (schema == null || !schema.hasTable(place.get(2))) {
+                return;
+            }
+            tables.add(schema.getTable(place.get(2)));
+        }
+        stream.showOn(tables);
+    }
+
+    /**
      * The first table a re-bound view stream reads whose change tracking began after the point the stream reads from,
      * while no change to it has come since: the range the stream reads holds a time the table tracked nothing, so the
      * read is refused, as it is on the account until the table changes (live-verified).
@@ -300,17 +355,50 @@ public final class StreamSources {
         }
         final Schema viewHome = viewHomeOf(catalog, homeOf(catalog, stream), stream);
         for (int i = 0; i < bound.size() && i < stream.getBaseTableNames().size(); i++) {
-            final String recorded = stream.getBaseTableNames().get(i);
-            final Schema schema = schemaNamed(catalog, viewHome, recorded);
-            final String name = QualifiedName.parse(recorded).last();
-            final Table seen = schema != null && schema.hasTable(name) ? schema.getTable(name) : null;
-            final boolean hidden = seen != null && seen != bound.get(i) && seen.isTemporary()
-                && (schema.heldTable(name) == bound.get(i) || schema.shadowedTable(name) == bound.get(i));
-            if (hidden && !seen.isChangeTracking()) {
-                return completed(viewHome, recorded);
+            final Table hiding = hidingOf(catalog, viewHome, stream.getBaseTableNames().get(i), bound.get(i));
+            if (hiding != null && !hiding.isChangeTracking()) {
+                return completed(viewHome, stream.getBaseTableNames().get(i));
             }
         }
         return null;
+    }
+
+    /**
+     * Whether a table a view stream's view reads in the session is a temporary table that hides one of the stream's
+     * tables and tracks changes: the stream then lists the temporary table's changes since its offset, not the hidden
+     * table's (live-verified).
+     *
+     * @param catalog the catalog
+     * @param stream  the stream
+     * @param read    the table the view reads under one of its names
+     * @return whether it is such a table
+     */
+    public static boolean readsTrackedShadow(final Catalog catalog, final Stream stream, final Table read) {
+        if (read == null || !read.isTemporary() || !read.isChangeTracking()) {
+            return false;
+        }
+        final List<Table> bound = baseTablesOf(catalog, stream);
+        if (bound == null) {
+            return false;
+        }
+        final Schema viewHome = viewHomeOf(catalog, homeOf(catalog, stream), stream);
+        for (int i = 0; i < bound.size() && i < stream.getBaseTableNames().size(); i++) {
+            if (hidingOf(catalog, viewHome, stream.getBaseTableNames().get(i), bound.get(i)) == read) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The temporary table that hides one of a stream's tables from the session under its recorded name, or null. */
+    private static Table hidingOf(final Catalog catalog, final Schema viewHome, final String recorded,
+                                  final Table bound) {
+        final Schema schema = schemaNamed(catalog, viewHome, recorded);
+        final String name = QualifiedName.parse(recorded).last();
+        final Table seen = schema != null && schema.hasTable(name) ? schema.getTable(name) : null;
+        final boolean hidden = seen != null && seen != bound && seen.isTemporary()
+            && (schema.heldTable(name) == bound || schema.shadowedTable(name) == bound);
+        return hidden ? seen : null;
     }
 
     /**

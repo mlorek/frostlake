@@ -16,7 +16,11 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
@@ -29,8 +33,11 @@ import dev.frostlake.values.VariantValue;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * What a session variable's {@code SET} accepts as its source. The account folds the source to a constant while
@@ -49,6 +56,22 @@ final class SessionAssignmentSource {
 
     /** The account's refusal, full stop included. */
     static final String NON_CONSTANT = "Unsupported feature 'assignment from non-constant source expression'.";
+
+    /**
+     * The functions the account's folder does not take: a source calling one anywhere outside the queries it holds
+     * is refused as non-constant once it compiles, whatever its value (live-verified). The line is each function's
+     * own: UPPER, ABS, LEFT, TO_DATE, DATEADD and LAST_DAY fold, REPLACE, ROUND, REVERSE, DATEDIFF and the *_FROM_PARTS
+     * family do not. The semi-structured constructors are among them, so a value read out of one is refused too.
+     */
+    private static final Set<String> UNFOLDED = new HashSet<>(Arrays.asList(
+        "TIME_FROM_PARTS", "TIMEFROMPARTS", "DATE_FROM_PARTS", "DATEFROMPARTS", "TIMESTAMP_FROM_PARTS",
+        "TIMESTAMPFROMPARTS", "TIMESTAMP_NTZ_FROM_PARTS", "TIMESTAMPNTZFROMPARTS", "TIMESTAMP_LTZ_FROM_PARTS",
+        "TIMESTAMPLTZFROMPARTS", "TIMESTAMP_TZ_FROM_PARTS", "TIMESTAMPTZFROMPARTS", "DATEDIFF", "TIMEDIFF",
+        "TIMESTAMPDIFF", "MONTHNAME", "DAYNAME", "REPEAT", "HASH", "RANDOM", "UUID_STRING", "SQUARE", "BITAND",
+        "ROUND", "DECODE", "STRTOK", "REGEXP_REPLACE", "SHA2", "SHA2_HEX", "MD5", "MD5_HEX", "BASE64_ENCODE",
+        "LENGTH", "LEN", "CHR", "CHAR", "LPAD", "RPAD", "REPLACE", "SQRT", "POWER", "POW", "HEX_ENCODE", "CONTAINS",
+        "ASCII", "UNIFORM", "NORMAL", "REVERSE", "TRANSLATE", "EDITDISTANCE", "SOUNDEX", "CHARINDEX",
+        "ARRAY_CONSTRUCT", "OBJECT_CONSTRUCT", "PARSE_JSON", "SYSTEM$TYPEOF"));
 
     private SessionAssignmentSource() {
     }
@@ -103,6 +126,118 @@ final class SessionAssignmentSource {
                 || failure instanceof IndexOutOfBoundsException || failure instanceof IllegalStateException
                 || failure instanceof UnsupportedOperationException)
             && message != null && !message.startsWith("Unsupported") && !message.contains(" is not available: add ");
+    }
+
+    /**
+     * Whether a source calls a function the account's folder does not take, outside the queries it holds: see
+     * {@link #UNFOLDED}.
+     *
+     * @param node the source as parsed
+     * @return true where the source is no constant
+     */
+    static boolean callsUnfoldedFunction(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        final FrostlakeParser.FunctionNameContext name = calledName(node);
+        if (name != null && UNFOLDED.contains(name.getText().toUpperCase(Locale.ROOT))) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (callsUnfoldedFunction(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the source reaches a function the folder does not take through a user's SQL function it calls: such a
+     * function's body - and the body of one that body calls in turn - is folded with the source, so a body that
+     * calls one is refused as the source would be (live-verified for a SQL function over CHR, while one whose body is
+     * '1' folds). A built-in of the name answers first, a body that is a query is not folded, and of a name's
+     * overloads only those taking the call's count of arguments are read.
+     *
+     * @param node     the source
+     * @param executor the executor that finds the functions
+     * @return whether such a function is reached
+     */
+    static boolean reachesUnfoldedThroughSqlFunction(final ParseTree node, final QueryExecutor executor) {
+        return reachesUnfolded(node, executor, new HashSet<Function>());
+    }
+
+    private static boolean reachesUnfolded(final ParseTree node, final QueryExecutor executor,
+                                           final Set<Function> read) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        final FrostlakeParser.FunctionNameContext name = calledName(node);
+        if (name != null && !isBuiltIn(executor, name)) {
+            final int arity = argumentCount(node);
+            for (final Function function : executor.functionOverloads(name)) {
+                if (function.getUdfLanguage() != UdfLanguage.SQL || function.isTableFunction()
+                        || arity >= 0 && function.getParameters().size() != arity || !read.add(function)) {
+                    continue;
+                }
+                final ParseTree body = bodyTree(function);
+                if (body != null && (callsUnfoldedFunction(body) || reachesUnfolded(body, executor, read))) {
+                    return true;
+                }
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (reachesUnfolded(node.getChild(i), executor, read)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a call's name is a built-in's, which answers ahead of a user's function of the name. */
+    private static boolean isBuiltIn(final QueryExecutor executor, final FrostlakeParser.FunctionNameContext name) {
+        final String upper = name.getText().toUpperCase(Locale.ROOT);
+        return executor.getFunctionRegistry().getFunction(upper) != null
+            || executor.getFunctionRegistry().hasAggregateFunction(upper);
+    }
+
+    /** How many positional arguments a plain call passes, or -1 for a call of any other shape. */
+    private static int argumentCount(final ParseTree node) {
+        if (!(node instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return -1;
+        }
+        final FrostlakeParser.FunctionArgListContext arguments =
+            ((FrostlakeParser.FunctionCallExprContext) node).functionArgList();
+        return arguments == null ? 0 : arguments.functionArg().size();
+    }
+
+    /** A SQL function's body as an expression's tree, or null for a body that is a query or no expression. */
+    private static ParseTree bodyTree(final Function function) {
+        final String body = SqlUdfBodyFrame.executableBody(function.getBody());
+        if (body == null) {
+            return null;
+        }
+        try {
+            return AntlrExpressionParser.parseTree(body.trim());
+        } catch (final RuntimeException noExpression) {
+            return null;
+        }
+    }
+
+    /** The name of a call, or null where the node is no call by a name. */
+    private static FrostlakeParser.FunctionNameContext calledName(final ParseTree node) {
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ((FrostlakeParser.FunctionCallExprContext) node).functionName();
+        }
+        if (node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallNamedArgsExprContext) node).functionName();
+        }
+        if (node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).functionName();
+        }
+        if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
+            return ((FrostlakeParser.FunctionCallStarExprContext) node).functionName();
+        }
+        return null;
     }
 
     /** Whether a SYSTEM$ function is called anywhere in the source. */

@@ -357,7 +357,7 @@ public class TaskScheduler {
         );
 
         scheduledTasks.put(qualifiedTaskName, future);
-        task.setNextRunTime(LocalDateTime.now().plusSeconds(delaySeconds));
+        task.setNextRunTime(Instant.now().plusSeconds(delaySeconds));
 
         logger.info("Scheduled task: {} with interval: {} seconds", qualifiedTaskName, delaySeconds);
     }
@@ -414,7 +414,7 @@ public class TaskScheduler {
                 }
             }, Math.max(0L, Duration.between(now, next).toMillis()), TimeUnit.MILLISECONDS);
             scheduledTasks.put(qualifiedTaskName, future);
-            task.setNextRunTime(next.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime());
+            task.setNextRunTime(next.toInstant());
         }
         logger.info("Scheduled task: {} for {} ({})", qualifiedTaskName, next, task.getSchedule());
     }
@@ -747,6 +747,10 @@ public class TaskScheduler {
                 // pins a later instant than this reading.
                 StatementClock.advance();
                 final LocalDateTime startTime = stamp(StatementClock.observed());
+                // Until it ends the run is listed EXECUTING, while it waits for a held table too (live-verified).
+                final TaskExecution running = new TaskExecution(scheduledTime, startTime, null,
+                    TaskExecutionState.EXECUTING, null, 0, trigger, graphAttempt).ranAs(null, null, SCHEDULED_BY.get());
+                task.beginRun(running);
                 try {
                     final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
@@ -757,7 +761,7 @@ public class TaskScheduler {
                     // stamps its next fire when it re-arms)
                     if (task.getSchedule() != null && task.getScheduleType() != ScheduleType.CRON) {
                         final long delaySeconds = parseSchedule(task.getSchedule(), task.getScheduleType());
-                        task.setNextRunTime(LocalDateTime.now().plusSeconds(delaySeconds));
+                        task.setNextRunTime(Instant.now().plusSeconds(delaySeconds));
                     }
 
                     logger.info("Task {} completed successfully. Rows affected: {}", qualifiedTaskName, rowsAffected);
@@ -781,6 +785,8 @@ public class TaskScheduler {
                             qualifiedTaskName, task.getFailureCount());
                         suspendTask(qualifiedTaskName, task);
                     }
+                } finally {
+                    task.endRun(running);
                 }
             }
         } finally {

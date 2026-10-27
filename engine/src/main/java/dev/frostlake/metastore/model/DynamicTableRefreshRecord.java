@@ -23,8 +23,9 @@ import java.util.List;
 /**
  * One refresh of a dynamic table, as INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY tells it: the table as it was
  * named and set then, what started the refresh, what it did — INCREMENTAL, FULL, or NO_DATA when nothing it reads had
- * changed — when it ran, the rows it inserted, copied and deleted, the warehouse it ran on (none for NO_DATA), the
- * inputs it read and the dynamic table it depended on. It outlives the table, so it keeps what it tells of the table.
+ * changed — when it ran, the rows it inserted, copied and deleted and the micro-partitions it added and removed, the
+ * warehouse it ran on (none for NO_DATA), the inputs whose data changed for it and the dynamic table it depended on.
+ * It outlives the table, so it keeps what it tells of the table.
  */
 public final class DynamicTableRefreshRecord {
 
@@ -40,7 +41,7 @@ public final class DynamicTableRefreshRecord {
     private final Instant end;
     private final long[] changed;
     private final String warehouse;
-    private final List<String[]> inputs;
+    private final List<DynamicTableRefreshInput> inputs;
     private final String dependency;
     private final Instant dependencyTimestamp;
 
@@ -57,9 +58,9 @@ public final class DynamicTableRefreshRecord {
      * @param queryId             the id of the query that refreshed the table
      * @param start               when it started, the data timestamp of what it read
      * @param end                 when it ended
-     * @param changed             the rows inserted, copied and deleted
+     * @param changed             the rows inserted, copied and deleted, then the micro-partitions added and removed
      * @param warehouse           the warehouse it ran on, or null
-     * @param inputs              each input's kind and qualified name
+     * @param inputs              the inputs whose data changed for it
      * @param dependency          the qualified name of the dynamic table it read last, or null
      * @param dependencyTimestamp that table's data timestamp, or null
      */
@@ -67,8 +68,8 @@ public final class DynamicTableRefreshRecord {
                                      final String targetLag, final Instant graphValidFrom,
                                      final RefreshTrigger trigger, final String action, final String queryId,
                                      final Instant start, final Instant end, final long[] changed,
-                                     final String warehouse, final List<String[]> inputs, final String dependency,
-                                     final Instant dependencyTimestamp) {
+                                     final String warehouse, final List<DynamicTableRefreshInput> inputs,
+                                     final String dependency, final Instant dependencyTimestamp) {
         this.database = database;
         this.schema = schema;
         this.table = table;
@@ -129,7 +130,7 @@ public final class DynamicTableRefreshRecord {
         return end;
     }
 
-    /** The rows the refresh inserted, copied and deleted, in that order. */
+    /** The rows the refresh inserted, copied and deleted, then the micro-partitions it added and removed. */
     public long[] getChanged() {
         return changed.clone();
     }
@@ -138,8 +139,8 @@ public final class DynamicTableRefreshRecord {
         return warehouse;
     }
 
-    /** Each input's kind (TABLE, DYNAMIC_TABLE) and qualified name. */
-    public List<String[]> getInputs() {
+    /** The inputs whose data changed for the refresh, each with its kind, name and micro-partitions. */
+    public List<DynamicTableRefreshInput> getInputs() {
         return new ArrayList<>(inputs);
     }
 

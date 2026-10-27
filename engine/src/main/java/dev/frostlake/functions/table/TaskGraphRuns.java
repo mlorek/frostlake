@@ -34,6 +34,8 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -159,7 +161,7 @@ public final class TaskGraphRuns {
      */
     static List<Row> current(final Catalog catalog, final String rootTaskName, final int limit) {
         final List<Row> rows = new ArrayList<>();
-        final LocalDateTime horizon = LocalDateTime.now().plusDays(LOOK_AHEAD_DAYS);
+        final Instant horizon = Instant.now().plus(Duration.ofDays(LOOK_AHEAD_DAYS));
         for (final Database database : catalog.getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Task root : schema.getTasks()) {

@@ -23,7 +23,8 @@ import org.junit.jupiter.api.Test;
 /**
  * An OVERLAY written in the PLACING form under brackets of a select item names the PLACING, then what the
  * brackets around the call decide: a cast's the PLACING's value and the FROM's, a call's the FROM's value or a
- * bracket's ')', a plain parenthesis the value or the FROM's, a FOR tail its own value (all live-verified).
+ * bracket's ')', a plain parenthesis the value or the FROM's, a FOR tail its own value. In a block's statement the
+ * block names more after those: its END, or in a RESULTSET's query the cast's AS and its ')' (all live-verified).
  */
 public class OverlayPlacingStacksTest extends MeasuredCellsTestSupport {
 
@@ -106,5 +107,15 @@ public class OverlayPlacingStacksTest extends MeasuredCellsTestSupport {
                 + "syntax error line 1 at position 30 unexpected ''x''. | syntax error line 1 at position 39 "
                 + "unexpected '2'.",
             "SELECT CAST(OVERLAY(b PLACING 'x' FROM 2) AS INT) + 1 FROM tb750");
+        assertAnswer("REFUSED SQL compilation error: | syntax error line 1 at position 29 unexpected 'PLACING'. | "
+                + "syntax error line 1 at position 46 unexpected '2'. | syntax error line 1 at position 62 unexpected "
+                + "'END'.",
+            "BEGIN SELECT UPPER(OVERLAY(b PLACING 'x' FROM 2)) FROM tb750; END");
+        assertAnswer("REFUSED SQL compilation error: | syntax error line 1 at position 48 unexpected 'PLACING'. | "
+                + "syntax error line 1 at position 56 unexpected ''x''. | syntax error line 1 at position 65 "
+                + "unexpected '2'. | syntax error line 1 at position 68 unexpected 'AS'. | syntax error line 1 at "
+                + "position 74 unexpected ')'.",
+            "BEGIN LET r RESULTSET := (SELECT CAST(OVERLAY(b PLACING 'x' FROM 2) AS INT) FROM tb750); RETURN TABLE(r); "
+                + "END");
     }
 }

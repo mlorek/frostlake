@@ -21,8 +21,10 @@ import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.Taggable;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -51,8 +53,11 @@ public class Task implements Named, Taggable {
     private LocalDateTime createdAt;
     private TaskState state;
     private LocalDateTime lastRunTime;
-    private LocalDateTime nextRunTime;
+    /** The instant the next fire is due at, kept on the instant line so a schedule counts elapsed time. */
+    private Instant nextRunTime;
     private final List<TaskExecution> executionHistory;
+    /** The runs going on now, which TASK_HISTORY lists EXECUTING until they end. */
+    private final List<TaskExecution> runningRuns = Collections.synchronizedList(new ArrayList<TaskExecution>());
     private int successCount;
     private int failureCount;
     private String comment;
@@ -249,12 +254,37 @@ public class Task implements Named, Taggable {
         this.lastRunTime = lastRunTime;
     }
 
-    public LocalDateTime getNextRunTime() {
+    public Instant getNextRunTime() {
         return nextRunTime;
     }
 
-    public void setNextRunTime(final LocalDateTime nextRunTime) {
+    public void setNextRunTime(final Instant nextRunTime) {
         this.nextRunTime = nextRunTime;
+    }
+
+    /**
+     * A run of the task starts: it is listed EXECUTING until {@link #endRun} is told of it.
+     *
+     * @param run the run, EXECUTING
+     */
+    public void beginRun(final TaskExecution run) {
+        runningRuns.add(run);
+    }
+
+    /**
+     * A run {@link #beginRun} was told of has ended.
+     *
+     * @param run the run
+     */
+    public void endRun(final TaskExecution run) {
+        runningRuns.remove(run);
+    }
+
+    /** The runs going on now, as they stand. */
+    public List<TaskExecution> getRunningRuns() {
+        synchronized (runningRuns) {
+            return new ArrayList<>(runningRuns);
+        }
     }
 
     public List<TaskExecution> getExecutionHistory() {

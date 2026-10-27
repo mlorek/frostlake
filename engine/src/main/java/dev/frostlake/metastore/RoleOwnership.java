@@ -17,6 +17,7 @@
 package dev.frostlake.metastore;
 
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
@@ -31,9 +32,9 @@ import java.util.List;
 /**
  * What becomes of the objects a role owns when the role's name stops naming it. A dropped role hands every object
  * it owned to the role that dropped it — its tables, views, sequences, stages, routines and schemas read
- * {@code ACCOUNTADMIN} as their owner straight after an ACCOUNTADMIN's {@code DROP ROLE} (live-verified) — and a
- * renamed role goes on owning them under its new name. Without that an owner's name would name no role, and
- * nobody, or anybody, could act as the owner.
+ * {@code ACCOUNTADMIN} as their owner straight after an ACCOUNTADMIN's {@code DROP ROLE} (live-verified), and its
+ * database roles go the same way (documented) — and a renamed role goes on owning them under its new name. Without
+ * that an owner's name would name no role, and nobody, or anybody, could act as the owner.
  */
 public final class RoleOwnership {
 
@@ -50,6 +51,11 @@ public final class RoleOwnership {
     public static void handOver(final Catalog catalog, final String from, final String to) {
         for (final Database database : catalog.getAllDatabases()) {
             reown(database, from, to);
+            for (final DatabaseRole role : database.getDatabaseRoles()) {
+                if (owns(from, role.getOwner())) {
+                    role.setOwner(to);
+                }
+            }
             for (final Schema schema : database.getAllSchemas()) {
                 reown(schema, from, to);
                 reownAll(schema.getTables(), from, to);

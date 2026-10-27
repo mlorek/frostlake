@@ -94,10 +94,10 @@ public class TagReferencesAllColumnsFunction extends TableFunction {
         final Schema schema = references.tableSchema(name, objectName);
         final Taggable table = references.requireTableLike(schema, name[2], written, objectName);
         final List<Row> rows = new ArrayList<Row>();
-        for (final Taggable column : columnsOf(table)) {
-            references.addLineage(rows, new Taggable[] {column instanceof TableColumn ? column : null, table, schema,
-                catalog.getDatabase(name[0])}, new String[] {"COLUMN", "TABLE", "SCHEMA", "DATABASE"}, name[0],
-                name[1], name[2], "COLUMN", nameOf(column));
+        for (final TableColumn column : columnsOf(table)) {
+            references.addLineage(rows, new Taggable[] {column, table, schema, catalog.getDatabase(name[0])},
+                new String[] {"COLUMN", "TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "COLUMN",
+                column.getName());
         }
         // The rows of one tag stay together; the sort is stable, so its columns keep their order.
         Collections.sort(rows, new Comparator<Row>() {
@@ -114,32 +114,20 @@ public class TagReferencesAllColumnsFunction extends TableFunction {
     }
 
     /**
-     * The object's columns: a table's own, a view's as its query resolved them, which carry the tags ALTER VIEW sets
-     * on them, and a materialized view's, which carry none and stand here by their names alone.
+     * The object's columns: a table's own, and a view's or a materialized view's as its query resolved them, which
+     * carry the tags its column list or ALTER VIEW sets on them.
      */
-    private static List<Taggable> columnsOf(final Taggable object) {
-        final List<Taggable> columns = new ArrayList<Taggable>();
+    private static List<TableColumn> columnsOf(final Taggable object) {
+        final List<TableColumn> columns = new ArrayList<TableColumn>();
         if (object instanceof Table) {
             columns.addAll(((Table) object).getColumns());
-            return columns;
-        }
-        if (object instanceof View) {
+        } else if (object instanceof View) {
             if (((View) object).hasResolvedColumns()) {
                 columns.addAll(((View) object).getResolvedColumns());
             }
-            return columns;
-        }
-        final List<TableColumn> resolved = object instanceof MaterializedView
-            ? ((MaterializedView) object).getResolvedColumns() : null;
-        if (resolved != null) {
-            for (final TableColumn column : resolved) {
-                columns.add(new NamedColumn(column.getName()));
-            }
+        } else if (object instanceof MaterializedView && ((MaterializedView) object).hasResolvedColumns()) {
+            columns.addAll(((MaterializedView) object).getResolvedColumns());
         }
         return columns;
-    }
-
-    private static String nameOf(final Taggable column) {
-        return column instanceof TableColumn ? ((TableColumn) column).getName() : ((NamedColumn) column).getName();
     }
 }

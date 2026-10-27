@@ -93,6 +93,9 @@ public class TableColumn implements Taggable {
     // A DERIVED relation's column projecting a double live's compiler folds, which TO_VARIANT wraps keeping
     // its FLOAT origin (see isFoldedDouble); false for every other column.
     private boolean foldedDouble;
+    // A DERIVED relation's column projecting a number or boolean literal a FROM-less select writes, which a wrap
+    // into a VARIANT converts unchecked (see isLiteralConstant); false for every other column.
+    private boolean literalConstant;
     // Whether the column holds nothing but an untyped NULL (see isUntypedNull); false for every other column.
     private boolean untypedNull;
     // Whether a DERIVED relation's column projects the word NULL cast to a text type (see isNullText); false for
@@ -103,6 +106,9 @@ public class TableColumn implements Taggable {
     // Whether a DERIVED relation's column's values can be NULL, as its projection judged its item (see
     // getValuesNullable); null for a column no projection judged.
     private Boolean valuesNullable;
+    // Whether a row of the VALUES clause the column belongs to holds NULL in it (see getHeldNull); null for every
+    // other column.
+    private Boolean heldNull;
 
     // Whether a DERIVED relation's column holds its collation because a COLLATE named it (see
     // isCollationExplicit); false for every other column, a catalog column's among them.
@@ -381,12 +387,42 @@ public class TableColumn implements Taggable {
         this.valuesNullable = valuesNullable;
     }
 
+    /**
+     * Whether a row of the VALUES clause this column belongs to holds NULL in it: what a result's metadata tells of
+     * a column read from the clause, nullable only then (live-verified).
+     *
+     * @return whether a row holds NULL, or null for a column of no VALUES clause
+     */
+    public Boolean getHeldNull() {
+        return heldNull;
+    }
+
+    public void setHeldNull(final Boolean heldNull) {
+        this.heldNull = heldNull;
+    }
+
     public boolean isFoldedDouble() {
         return foldedDouble;
     }
 
     public void setFoldedDouble(final boolean foldedDouble) {
         this.foldedDouble = foldedDouble;
+    }
+
+    /**
+     * Whether this DERIVED relation's column projects a number or boolean literal a FROM-less select writes:
+     * live folds the literal through the relation, so a wrap of the column into a VARIANT converts to a sized
+     * VARCHAR unchecked as the wrap of the literal does - {@code SELECT 'x' v UNION ALL SELECT TO_VARIANT(z) FROM
+     * (SELECT 12 z)} answers {@code 12} (live-verified). A catalog column never is one.
+     *
+     * @return true for such a column
+     */
+    public boolean isLiteralConstant() {
+        return literalConstant;
+    }
+
+    public void setLiteralConstant(final boolean literalConstant) {
+        this.literalConstant = literalConstant;
     }
 
     /**
@@ -464,6 +500,7 @@ public class TableColumn implements Taggable {
         copy.untypedNull = untypedNull;
         copy.nullText = nullText;
         copy.valuesNullable = valuesNullable;
+        copy.heldNull = heldNull;
         copy.formatType = formatType;
         copy.virtualExpression = virtualExpression;
         copy.virtualText = virtualText;
@@ -501,6 +538,7 @@ public class TableColumn implements Taggable {
         copy.untypedNull = untypedNull;
         copy.nullText = nullText;
         copy.valuesNullable = valuesNullable;
+        copy.heldNull = heldNull;
         return copy;
     }
 

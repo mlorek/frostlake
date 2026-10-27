@@ -919,6 +919,14 @@ public class DropCommandHandler implements CommandHandler {
                 }
             } else if (ctx.ROLE() != null) {
                 final String roleName = dropNameText(ctx);
+                // The session's own primary role stays, IF EXISTS or not, and is refused before anyone's right to
+                // drop it is weighed (DROP ROLE); a system role is refused as one, whoever acts with it.
+                if (catalog.roleExistsExact(roleName)
+                        && !catalog.isSystemRole(catalog.getRoleExact(roleName).getName())
+                        && catalog.getRoleExact(roleName).getName().equals(catalog.currentPrimaryRole())) {
+                    throw new RuntimeException("SQL execution error: Cannot drop role "
+                        + catalog.getRoleExact(roleName).getName() + " as it is the current primary role.");
+                }
 
                 try {
                     if (catalog.roleExistsExact(roleName)) {

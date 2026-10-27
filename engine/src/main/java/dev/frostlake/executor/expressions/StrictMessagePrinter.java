@@ -2482,7 +2482,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 ? name + "(*)(" + columns + ")"
                 : name + "(" + (expr.isDistinct() ? "DISTINCT " : "") + columns + ")";
         }
-        if (planShaped()) {
+        if (planShaped() && !(expr instanceof BoundValueCall)) {
+            // A block variable's bound value is echoed as written, ABS(TO_NUMBER(null), 2) for a NUMBER holding NULL,
+            // where the statement's own TO_NUMBER(NULL) is the plan's SYSTEM$NULL_TO_FIXED(null) (live-verified).
             final String planned = plannedCall(expr, name);
             if (planned != null) {
                 return planned;

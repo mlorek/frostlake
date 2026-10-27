@@ -27,7 +27,7 @@ public class VarianceAccumulator
 
     private boolean decfloat;
 
-    private final WelfordMoments moments = new WelfordMoments();
+    private final ExactMoments moments = new ExactMoments();
     private final SquaredSumMoments floatMoments = new SquaredSumMoments();
     private int maxScale;
     private boolean approximate;
@@ -63,7 +63,7 @@ public class VarianceAccumulator
             maxScale = Math.max(maxScale, AggregateNumerics.scaleOfInput(value));
             approximate = approximate || AggregateNumerics.isApproximateInput(value);
             final double number = NumericAggregateInput.asDouble(value);
-            moments.add(number);
+            moments.add(value);
             floatMoments.add(number);
         }
     }
@@ -76,9 +76,11 @@ public class VarianceAccumulator
         // VARIANCE and VAR_SAMP are SAMPLE statistics (live: VARIANCE aliases VAR_SAMP):
         // denominator n-1, NULL under two rows. VarPop carries the population form.
         if (moments.count() < 2) return null;
-        // A FLOAT input is read through the account's sums, an exact one through the running mean.
-        final double variance = approximate ? floatMoments.sampleVariance() : moments.sampleVariance();
-        return AggregateNumerics.varianceAtDeclaredScale(variance, maxScale, approximate);
+        // A FLOAT input is read through the account's sums, an exact one exactly.
+        if (approximate || !moments.isExact()) {
+            return AggregateNumerics.varianceAtDeclaredScale(floatMoments.sampleVariance(), maxScale, approximate);
+        }
+        return AggregateNumerics.exactVarianceAtDeclaredScale(moments, true, maxScale);
     }
 
     @Override

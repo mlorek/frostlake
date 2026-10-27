@@ -18,6 +18,7 @@ package dev.frostlake.dml;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,7 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * A COPY INTO a table takes the copy options the stage it reads keeps - a named stage's COPY_OPTIONS, a table stage's
  * STAGE_COPY_OPTIONS - for every option it does not write itself, and the options it writes win (the CREATE STAGE and
- * COPY INTO pages). COPY is not run on the account by this suite, so this is the engine's own check.
+ * COPY INTO pages). RETURN_FAILED_ONLY = TRUE answers only the files that failed to load. COPY is not run on the
+ * account by this suite, so this is the engine's own check.
  */
 public class CopyUsesStageCopyOptionsTest {
 
@@ -131,5 +133,33 @@ public class CopyUsesStageCopyOptionsTest {
         engine.execute("PUT 'file://" + bad + "' @%t2 AUTO_COMPRESS = FALSE");
         assertEquals("bad.csv|PARTIALLY_LOADED", copy("COPY INTO t2"));
         assertEquals(2L, count("SELECT COUNT(*) FROM t2"));
+    }
+
+    @Test
+    public void returnFailedOnlyListsOnlyTheFilesThatFailed() {
+        engine.execute("CREATE STAGE rf FILE_FORMAT = (TYPE = CSV)");
+        engine.execute("PUT 'file://" + bad + "' @rf AUTO_COMPRESS = FALSE");
+        engine.execute("PUT 'file://" + ok + "' @rf AUTO_COMPRESS = FALSE");
+        engine.execute("CREATE TABLE t (id INT, v STRING)");
+        assertEquals("rf/bad.csv|PARTIALLY_LOADED", copy("COPY INTO t FROM @rf ON_ERROR = CONTINUE "
+            + "RETURN_FAILED_ONLY = TRUE ->> SELECT \"file\", \"status\" FROM $1 ORDER BY 1"));
+        assertEquals(4L, count("SELECT COUNT(*) FROM t"));
+    }
+
+    @Test
+    public void aStagesReturnFailedOnlyIsTheDefaultAndALoadWithNoFailureAnswersNoFile() {
+        engine.execute("CREATE STAGE rs COPY_OPTIONS = (RETURN_FAILED_ONLY = TRUE) FILE_FORMAT = (TYPE = CSV)");
+        engine.execute("PUT 'file://" + ok + "' @rs AUTO_COMPRESS = FALSE");
+        engine.execute("CREATE TABLE t (id INT, v STRING)");
+        final ResultSet none = engine.executeQuery("COPY INTO t FROM @rs");
+        assertEquals(0, none.getRows().size());
+        assertEquals("file", none.getColumns().get(0).getName());
+        assertEquals(2L, count("SELECT COUNT(*) FROM t"));
+        engine.execute("PUT 'file://" + bad + "' @rs AUTO_COMPRESS = FALSE");
+        assertEquals("rs/bad.csv|PARTIALLY_LOADED", copy("COPY INTO t FROM @rs ON_ERROR = CONTINUE FORCE = TRUE "
+            + "->> SELECT \"file\", \"status\" FROM $1 ORDER BY 1"));
+        // The statement's own FALSE lists every file again.
+        assertEquals("rs/bad.csv|PARTIALLY_LOADED ;; rs/ok.csv|LOADED", copy("COPY INTO t FROM @rs ON_ERROR = CONTINUE "
+            + "FORCE = TRUE RETURN_FAILED_ONLY = FALSE ->> SELECT \"file\", \"status\" FROM $1 ORDER BY 1"));
     }
 }

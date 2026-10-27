@@ -22,6 +22,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.PolicyObjectTagCalls;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -181,6 +182,16 @@ public class CreateSecurityHandler implements CommandHandler {
     }
 
     /**
+     * A policy or a contact created under a name no object of its kind holds starts with none of the privileges a
+     * dropped one of that name left recorded (see {@link GrantNames#created}); one that replaces another keeps them.
+     */
+    private void takeName(final boolean freshName, final String kind, final Schema schema, final String name) {
+        if (freshName) {
+            GrantNames.created(catalog, kind, schema.qualifiedName(name));
+        }
+    }
+
+    /**
      * The refusal of a policy created over a name its schema holds, which names the policy as the statement
      * wrote it: {@code Object '"p"' already exists.} (live-verified).
      *
@@ -298,6 +309,7 @@ public class CreateSecurityHandler implements CommandHandler {
             // IF NOT EXISTS finds the policy there only once the statement has compiled, and OR REPLACE drops the
             // policy it replaces only then: a statement refused leaves it as it was (live-verified).
             requirePolicyKind(schema, policyName, "MASKING_POLICY", parts, orReplace);
+            final boolean freshName = schema.getMaskingPolicyExact(policyName) == null;
             if (orReplace) {
                 if (schema.getMaskingPolicyExact(policyName) != null) {
                     schema.dropMaskingPolicy(policyName);
@@ -315,6 +327,7 @@ public class CreateSecurityHandler implements CommandHandler {
             policy.setExemptOtherPolicies(properties.exempt());
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addMaskingPolicy(policy);
+            takeName(freshName, "MASKING_POLICY", schema, policyName);
             logger.trace("Created masking policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -455,6 +468,7 @@ public class CreateSecurityHandler implements CommandHandler {
             // one it replaces: a statement refused leaves it as it was (live-verified).
             compileRowAccessBody(ctx, policyName, params, body, schema);
             requirePolicyKind(schema, policyName, "ROW_ACCESS_POLICY", parts, orReplace);
+            final boolean freshName = schema.getRowAccessPolicyExact(policyName) == null;
             if (orReplace) {
                 // A policy attached to a table or a view is replaced no more than it is dropped (live-verified).
                 if (catalog.isPolicyInUse(schema, policyName, false)) {
@@ -474,6 +488,7 @@ public class CreateSecurityHandler implements CommandHandler {
             policy.setExemptOtherPolicies(properties.exempt());
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addRowAccessPolicy(policy);
+            takeName(freshName, "ROW_ACCESS_POLICY", schema, policyName);
             logger.trace("Created row access policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -505,6 +520,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "JOIN_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_JOIN_POLICY);
+            final boolean freshName = !schema.hasJoinPolicy(policyName);
             if (orReplace) {
                 if (catalog.isJoinPolicyInUse(schema, policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -525,6 +541,7 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addJoinPolicy(policy);
+            takeName(freshName, "JOIN_POLICY", schema, policyName);
             logger.trace("Created join policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -558,6 +575,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "AGGREGATION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_AGGREGATION_POLICY);
+            final boolean freshName = schema.getAggregationPolicyExact(policyName) == null;
             if (orReplace) {
                 if (catalog.isAggregationPolicyInUse(schema, policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -583,6 +601,7 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addAggregationPolicy(policy);
+            takeName(freshName, "AGGREGATION_POLICY", schema, policyName);
             logger.trace("Created aggregation policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -617,6 +636,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "PROJECTION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_PROJECTION_POLICY);
+            final boolean freshName = schema.getProjectionPolicyExact(policyName) == null;
             if (orReplace) {
                 if (catalog.isProjectionPolicyInUse(schema, policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -641,6 +661,7 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addProjectionPolicy(policy);
+            takeName(freshName, "PROJECTION_POLICY", schema, policyName);
             logger.trace("Created projection policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -661,6 +682,7 @@ public class CreateSecurityHandler implements CommandHandler {
             // (live-verified).
             final String contactName = parts[parts.length - 1];
             ddl.checkCreatePrivilege(Privilege.CREATE_CONTACT, schema);
+            final boolean freshName = !schema.hasContact(contactName);
             if (!orReplace && schema.hasContact(contactName)) {
                 throw policyNameTaken(parts);
             }
@@ -677,6 +699,7 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             contact.setOwner(catalog.currentRoleForOwner());
             schema.addContact(contact);
+            takeName(freshName, "CONTACT", schema, contactName);
             logger.trace("Created contact: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;

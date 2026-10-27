@@ -41,6 +41,7 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.UuidType;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.List;
 
 /**
@@ -221,7 +222,24 @@ final class ValuesColumnFold {
         if (folded instanceof StringType && value instanceof Boolean) {
             return ((Boolean) value).booleanValue() ? "TRUE" : "FALSE";
         }
+        final BigDecimal exact = cellType instanceof NumericType && !NumericType.isApproximate(cellType)
+            && folded instanceof NumericType && !NumericType.isApproximate(folded) ? exactOf(value) : null;
+        if (exact != null && NumericRangeRefusal.exceeds(exact, ((NumericType) folded).getPrecision(),
+                ((NumericType) folded).getScale())) {
+            // A member the list's type cannot hold is refused as that conversion is, in its own digits: (11) after
+            // 0.333… of 37 places is Numeric value '11' is out of range (live-verified).
+            throw new RuntimeException(NumericRangeRefusal.unconvertibleText(exact.toPlainString()));
+        }
         return ValueCaster.castValue(value, ColumnTypeFamilies.spell(folded));
+    }
+
+    /** An exact number's value, or null for any other value. */
+    private static BigDecimal exactOf(final Object value) {
+        if (value instanceof BigDecimal) {
+            return (BigDecimal) value;
+        }
+        return value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte
+            || value instanceof BigInteger ? new BigDecimal(value.toString()) : null;
     }
 
     /** Whether a value of the row's own type differs from the folded type's representation. */

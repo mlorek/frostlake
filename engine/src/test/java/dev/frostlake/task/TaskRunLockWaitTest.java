@@ -35,9 +35,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A task's run that meets a table another session's open transaction holds waits for it as a session's statement
- * does: SHOW LOCKS lists its statement as WAITING, and once the holder commits the run updates the committed row and
- * succeeds. A run whose task sets a LOCK_TIMEOUT it passes first fails with the lock refusal, ERROR_CODE 000627, and
- * while one run waits another runs and fails beside it (all live-verified).
+ * does: SHOW LOCKS lists its statement as WAITING, TASK_HISTORY lists the run EXECUTING with no error meanwhile, and
+ * once the holder commits the run updates the committed row and succeeds. A run whose task sets a LOCK_TIMEOUT it
+ * passes first fails with the lock refusal, ERROR_CODE 000627, and while one run waits another runs and fails beside
+ * it (all live-verified).
  *
  * <p>Live, the sessions are connections and EXECUTE TASK returns as the run is scheduled; embedded, they are
  * sessions of one concurrent engine, whose EXECUTE TASK returns as the run ends, so each runs on a thread of its
@@ -195,6 +196,9 @@ public class TaskRunLockWaitTest extends BaseDatabaseTest {
         say("A", "UPDATE tlw SET v = 400 WHERE id = 2");
         final Thread waiting = inBackground("D", "EXECUTE TASK tlw_wait");
         assertTrue(waitingListed(), "the run never waited for the table");
+        assertEquals("EXECUTING|null|null", say("C", "SELECT state, error_code, error_message FROM "
+            + "TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE name = 'TLW_WAIT' AND database_name = 'TEST_DB' "
+            + "ORDER BY scheduled_time DESC LIMIT 1"));
         final Thread giving = inBackground("E", "EXECUTE TASK tlw_short");
         assertEquals("FAILED|000627|" + LOCKED + "limited to 1 seconds.", endedRun("TLW_SHORT"));
         giving.join(TimeUnit.MINUTES.toMillis(1));

@@ -16,8 +16,6 @@
 
 package dev.frostlake.rt.py;
 
-import dev.frostlake.executor.udf.HandlerStateFactory;
-import dev.frostlake.executor.udf.StatementHandlerStates;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
@@ -51,9 +49,6 @@ public final class PythonExecutor {
      */
     private static final String FUNCTION_ARGUMENT = "__fl_argument";
 
-    /** What a call site's kept module is told apart by among the states the site keeps (see PythonModuleState). */
-    private static final String MODULE_STATE = "python-module";
-
     public static Object executePythonFunction(final Function function, final List<Object> arguments) {
         if (function.getUdfLanguage() != UdfLanguage.PYTHON) {
             throw new RuntimeException("Function is not a Python function");
@@ -67,13 +62,7 @@ public final class PythonExecutor {
 
         // The module this call site keeps for the running statement, its body run on the site's first call alone (see
         // PythonModuleState); a call outside any statement has a module of its own.
-        final AutoCloseable kept = StatementHandlerStates.state(function, MODULE_STATE, new HandlerStateFactory() {
-            @Override
-            public AutoCloseable create() {
-                return new PythonModuleState(PythonInterpreter.running());
-            }
-        });
-        final String key = kept instanceof PythonModuleState ? ((PythonModuleState) kept).key() : null;
+        final String key = PythonModuleState.keptFor(function);
         Object frame = null;
         try {
             frame = key != null ? PythonInterpreter.resumeModule(key) : PythonInterpreter.enterModule();
@@ -167,11 +156,15 @@ public final class PythonExecutor {
     static Object executePythonAggregate(final Function function, final List<List<Object>> rows) {
         final List<Parameter> parameters = function.getParameters();
         final String handlerName = function.getHandler();
+        // The call's module reads every group, its body run for the first alone (see PythonModuleState).
+        final String key = PythonModuleState.keptFor(function);
         Object frame = null;
         try {
-            frame = PythonInterpreter.enterModule();
+            frame = key != null ? PythonInterpreter.resumeModule(key) : PythonInterpreter.enterModule();
             PythonProcedureExecutor.installSnowparkShim();
-            PythonFailureReport.runSource(dedent(function.getBody()), handlerName);
+            if (!PythonInterpreter.resumed(frame)) {
+                PythonFailureReport.runSource(dedent(function.getBody()), handlerName);
+            }
             if (PythonHandlerCheck.isDotted(handlerName)) {
                 PythonInterpreter.bind("__fl_handler_name", handlerName);
                 PythonFailureReport.run(PythonHandlerCheck.RESOLVE_DOTTED + "__fl_aggregate = __fl_handler()");
@@ -190,7 +183,11 @@ public final class PythonExecutor {
                 PythonFailureReport.run(accumulate);
             }
             PythonFailureReport.run("__result = __fl_aggregate.finish()");
-            return answered(function);
+            final Object answer = answered(function);
+            if (key != null) {
+                PythonInterpreter.keepModule(key);
+            }
+            return answer;
         } catch (final PythonReturnRefusal refused) {
             throw refused;
         } catch (final Exception e) {

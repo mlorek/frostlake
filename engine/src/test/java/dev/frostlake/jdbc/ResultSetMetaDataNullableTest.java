@@ -17,6 +17,7 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
+import dev.frostlake.LiveSnowflake;
 
 import org.junit.jupiter.api.Test;
 
@@ -25,6 +26,7 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * ResultSetMetaData.isNullable does NOT follow the rule the catalog surfaces follow, which is the
@@ -83,5 +85,19 @@ public class ResultSetMetaDataNullableTest extends BaseJdbcTest {
     @Test
     public void aLiteralReadsNoNulls() throws SQLException {
         assertEquals("NoNulls|NoNulls", nullabilityOf("SELECT 1 AS one, 'a' AS ltr FROM jn_t"));
+    }
+
+    /**
+     * A join's qualified column reports its own relation's declaration, whichever relation of the join holds a
+     * column of the same name first.
+     */
+    @Test
+    public void aJoinsQualifiedColumnReportsItsOwnRelation() throws SQLException {
+        assumeFalse(LiveSnowflake.enabled(), "the account's answer for a join's qualified columns is not measured");
+        statement.execute("CREATE TABLE jn_u (k NUMBER, w VARCHAR(4) NOT NULL)");
+        assertEquals("Nullable|NoNulls",
+            nullabilityOf("SELECT t.w AS tw, u.w AS uw FROM jn_t t JOIN jn_u u ON t.k = u.k"));
+        assertEquals("NoNulls|Nullable",
+            nullabilityOf("SELECT u.w AS uw, t.w AS tw FROM jn_t t JOIN jn_u u ON t.k = u.k"));
     }
 }

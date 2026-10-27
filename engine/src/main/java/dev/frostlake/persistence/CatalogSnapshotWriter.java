@@ -30,6 +30,7 @@ import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.DynamicTableRefresh;
+import dev.frostlake.metastore.model.DynamicTableRefreshRecord;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
@@ -209,6 +210,11 @@ final class CatalogSnapshotWriter {
         snapshot.loadHistory = new ArrayList<>();
         for (final LoadRecord load : catalog.getLoadHistory().records()) {
             snapshot.loadHistory.add(LoadRecordSnapshot.of(load));
+        }
+        // And the dynamic tables' refreshes, which DYNAMIC_TABLE_REFRESH_HISTORY lists after the restore as before it.
+        snapshot.dynamicTableRefreshes = new ArrayList<>();
+        for (final DynamicTableRefreshRecord refresh : catalog.getDynamicTableRefreshHistory().records()) {
+            snapshot.dynamicTableRefreshes.add(DynamicTableRefreshRecordSnapshot.of(refresh));
         }
         // And the statements a time-travel point may name by query ID, at the places the histories saved here keep.
         snapshot.queryPoints = new ArrayList<>();
@@ -483,6 +489,7 @@ final class CatalogSnapshotWriter {
                 || StreamSources.missingBaseOf(catalog, stream) != null);
             streamSnapshot.lostInClone = stream.isLostInClone();
             streamSnapshot.rebound = stream.isRebound();
+            streamSnapshot.shownTables = catalog == null ? null : StreamSources.shownTablePlaces(catalog, stream);
             streamSnapshot.comment = stream.getComment();
             streamSnapshot.owner = stream.getOwner();
             streamSnapshot.createdAt = stream.getCreatedAt();
@@ -781,6 +788,13 @@ final class CatalogSnapshotWriter {
                 for (final List<Object> row : dt.getRefreshImage()) {
                     dtSnapshot.refreshImage.add(new ArrayList<>(row));
                 }
+            }
+            // Where those rows lie and what each input held, so a refresh after the restore counts as one before it.
+            dtSnapshot.refreshImagePartitions = dt.getImagePartitions() == null ? null
+                : new ArrayList<>(dt.getImagePartitions());
+            dtSnapshot.inputPartitions = new HashMap<>();
+            for (final Map.Entry<String, Map<Long, Long>> input : dt.getAllInputPartitions().entrySet()) {
+                dtSnapshot.inputPartitions.put(input.getKey(), new HashMap<>(input.getValue()));
             }
             // The refreshes it keeps for time travel, so a read at a point before a restart still reaches them.
             dtSnapshot.refreshSequences = new ArrayList<>();

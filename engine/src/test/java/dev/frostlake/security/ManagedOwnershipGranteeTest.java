@@ -29,7 +29,8 @@ import org.junit.jupiter.api.Test;
  * and a future grant of OWNERSHIP there applies only to one, while a database's future OWNERSHIP grant does not reach
  * the schema's new objects (all documented on the GRANT page): a grant naming the object, one ON ALL objects in the
  * schema or its database, and one ON FUTURE objects in the schema each refuse any other grantee, whichever role
- * grants it. The live account allows no CREATE ROLE, CREATE USER or GRANT, so the rule is held by the embedded engine.
+ * grants it. The schema itself passes to a different role only once every future OWNERSHIP grant in it is revoked.
+ * The live account allows no CREATE ROLE, CREATE USER or GRANT, so the rule is held by the embedded engine.
  */
 public class ManagedOwnershipGranteeTest {
 
@@ -132,7 +133,8 @@ public class ManagedOwnershipGranteeTest {
         engine.execute("GRANT DATABASE ROLE mog.dr TO ROLE so");
         assertEquals("Statement executed successfully.",
             as("uso", "so", "GRANT OWNERSHIP ON TABLE mog.ms.t1 TO DATABASE ROLE mog.dr"));
-        assertEquals("MOG.DR", ownerOf("TABLE mog.ms.t1"));
+        // The owning database role is named bare, as every listing names a database role as grantee.
+        assertEquals("DR", ownerOf("TABLE mog.ms.t1"));
     }
 
     @Test
@@ -170,6 +172,27 @@ public class ManagedOwnershipGranteeTest {
         assertEquals("OWNERSHIP, OO | SELECT, DBO", rows("SHOW GRANTS ON TABLE mog.ms.t3 ->> SELECT \"privilege\", "
             + "\"grantee_name\" FROM $1 ORDER BY 1"));
         assertEquals("DBO", ownerOf("TABLE mog.public.t4"));
+    }
+
+    @Test
+    public void aManagedSchemaMovesOnlyOnceItsFutureOwnershipIsRevoked() {
+        final String held = "Cannot transfer the ownership of managed access schema 'MOG.MS': the future grants of "
+            + "OWNERSHIP in it must be revoked first";
+        engine.execute("GRANT OWNERSHIP ON FUTURE TABLES IN SCHEMA mog.ms TO ROLE oo");
+        engine.execute("GRANT SELECT ON FUTURE TABLES IN SCHEMA mog.ms TO ROLE oo");
+        assertEquals(held, rows("GRANT OWNERSHIP ON SCHEMA mog.ms TO ROLE x"));
+        assertEquals("SO", ownerOf("SCHEMA mog.ms"));
+        // A grant to the role that owns it already moves nothing.
+        assertEquals("Statement executed successfully.", rows("GRANT OWNERSHIP ON SCHEMA mog.ms TO ROLE so"));
+        // Every schema an ON ALL reaches is asked before any of them moves.
+        engine.execute("CREATE SCHEMA mog.free");
+        assertEquals(held, rows("GRANT OWNERSHIP ON ALL SCHEMAS IN DATABASE mog TO ROLE x"));
+        assertEquals("SYSADMIN", ownerOf("SCHEMA mog.free"));
+        // A future grant of another privilege does not hold the move.
+        engine.execute("REVOKE OWNERSHIP ON FUTURE TABLES IN SCHEMA mog.ms FROM ROLE oo");
+        assertEquals("Statement executed successfully.",
+            rows("GRANT OWNERSHIP ON SCHEMA mog.ms TO ROLE x COPY CURRENT GRANTS"));
+        assertEquals("X", ownerOf("SCHEMA mog.ms"));
     }
 
     @Test

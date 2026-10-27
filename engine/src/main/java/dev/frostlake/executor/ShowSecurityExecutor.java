@@ -356,12 +356,16 @@ final class ShowSecurityExecutor {
             }
         }
         if (!ownershipGranted && granted != null && granted.getOwner() != null && !granted.getOwner().isEmpty()) {
+            // A database role owns under its qualified name and is named bare as the grantee, as its other rows
+            // name it.
+            final DatabaseRole ownerRole = new AccessControlListings(catalog).databaseRoleNamed(granted.getOwner());
+            final String owner = ownerRole != null ? ownerRole.getName() : granted.getOwner();
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(granted.getCreatedTime()),
                 Privilege.OWNERSHIP.toString(),
                 grantedOn, reportedName,
-                "ROLE", granted.getOwner(),
-                "true", granted.getOwner(),
+                ownerRole != null ? AccessControlListings.DATABASE_ROLE : "ROLE", owner,
+                "true", owner,
                 ShowResultHelpers.OWNER_ROLE_TYPE
             )));
         }

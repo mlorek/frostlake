@@ -24,6 +24,7 @@ import dev.frostlake.executor.EqualityCorrelation;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.OuterNameConstancy;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.ProjectionLineage;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RelationBody;
@@ -915,6 +916,10 @@ final class SubqueryEvaluator {
             return null;
         } catch (final UnsupportedSubqueryException judgedPerRow) {
             return null;
+        } catch (final PrivilegeRefusal refused) {
+            // A user's function the role may not use is refused as the statement compiles, whether or not a row
+            // reaches the subquery: raised once the statement around it has been judged.
+            return refused;
         } catch (final RuntimeException refused) {
             if (!SqlCompilationError.isCompilationError(refused.getMessage())) {
                 return null;

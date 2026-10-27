@@ -600,9 +600,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // The changes it holds of tables replaced under their names are out of its reach (live-verified).
             return false;
         }
-        // A stream "has data" when it has unconsumed change records — NOT when a same-named table has
-        // rows (streams aren't stored as tables). Mirrors Snowflake SYSTEM$STREAM_HAS_DATA.
-        return stream.getUnconsumedCount() > 0;
+        // A stream "has data" when it lists changes or its tables took a version past its offset (Stream#hasData),
+        // NOT when a same-named table has rows (streams aren't stored as tables).
+        return stream.hasData();
     }
 
     @Override
@@ -6563,8 +6563,42 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return true;
         }
         final DataType type = typeInferencer.infer(wrapped);
-        return (type instanceof NumericType || type instanceof BooleanType) && isLiteralConstant(wrapped)
-            && !gainsScale(wrapped);
+        return (type instanceof NumericType || type instanceof BooleanType)
+            && (isLiteralConstant(wrapped) || readsLiteralConstant(wrapped)) && !gainsScale(wrapped);
+    }
+
+    /**
+     * Whether an expression reads a derived relation's column a FROM-less select's number or boolean literal made
+     * (see TableColumn#isLiteralConstant), on a side no outer join extends with NULLs: live folds the literal
+     * through the relation as it folds a wrap written in place.
+     */
+    private boolean readsLiteralConstant(final Expression expression) {
+        if (!(expression instanceof ColumnReferenceExpression)) {
+            return false;
+        }
+        final ColumnReferenceExpression reference = (ColumnReferenceExpression) expression;
+        final TableColumn resolved = resolveDeclaredColumn(reference);
+        if (resolved == null || !resolved.isLiteralConstant()) {
+            return false;
+        }
+        final Table joined = joinedRelation();
+        final Table owner = resolveDeclaredOwner(reference);
+        return joined == null || owner == null || !joined.getJoinedRelations().isNullExtended(owner);
+    }
+
+    /**
+     * Whether a select item of a FROM-less select is a number or boolean literal, which a derived relation built from
+     * the result hands on as one (see TableColumn#isLiteralConstant).
+     *
+     * @param expr a select item
+     * @return true for such an item
+     */
+    public boolean projectsLiteralConstant(final Expression expr) {
+        if (!(table instanceof FromlessDual) || !isLiteralConstant(expr) || gainsScale(expr)) {
+            return false;
+        }
+        final DataType type = typeInferencer.infer(expr);
+        return type instanceof NumericType || type instanceof BooleanType;
     }
 
     /**
@@ -16167,8 +16201,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     /**
      * How an expression reads a stored table's column (see StoredRead): a reference to a catalog table's column reads
-     * it whole, as does one to a derived relation's column that carries it; an element or a path of either reads an
-     * element. Anything else, and anything past a grouping, reads none.
+     * it whole, as does one to a derived relation's column that carries it, and an IFF whose condition is a constant
+     * reads as the branch it takes (the plan folds it away: {@code IFF(TRUE, a, NULL)} hands a's column on); an
+     * element or a path of any of them reads an element. Anything else, and anything past a grouping, reads none.
      *
      * @param expr the expression
      * @return how it reads one
@@ -16177,21 +16212,40 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (expr instanceof ColumnReferenceExpression) {
             return overGroupedRows ? StoredRead.NONE : storedReadOfColumn((ColumnReferenceExpression) expr);
         }
+        final Expression taken = takenBranch(expr);
+        if (taken != expr) {
+            return storedReadOf(taken);
+        }
         final Expression base = VariantRowElements.elementBase(expr);
         return base != null && storedReadOf(base) != StoredRead.NONE ? StoredRead.ELEMENT : StoredRead.NONE;
     }
 
-    /** {@link #storedReadOf} of a column reference: its relation's own, a catalog table's column read whole. */
+    /**
+     * {@link #storedReadOf} of a column reference: its relation's own, a catalog table's column read whole; a
+     * correlated subquery's reference to the query around it reads as the scope that holds the column reads it, so
+     * {@code (SELECT TO_VARCHAR(va.a[0]::DATE, 'YYYYMMDD')) FROM va} converts the outer row's stored element
+     * (live-verified).
+     */
     private StoredRead storedReadOfColumn(final ColumnReferenceExpression ref) {
         final Table owner = ref.getColumnName() == null ? null : columnOwner(ref);
         if (owner == null) {
-            return StoredRead.NONE;
+            return ref.getColumnName() == null || lateralContext == null ? StoredRead.NONE : outerStoredRead(ref);
         }
         if (isBaseCatalogTable(owner)) {
             return StoredRead.COLUMN;
         }
         final TableColumn column = owner.getColumn(ref.getColumnName());
         return column == null ? StoredRead.NONE : column.getStoredRead();
+    }
+
+    /** How the innermost scope around this one that holds a column reads it, or none where no scope holds it. */
+    private StoredRead outerStoredRead(final ColumnReferenceExpression ref) {
+        for (final ExpressionEvaluatorVisitor outer : SubqueryCompilation.enclosingScopes(this)) {
+            if (outer.columnOwner(ref) != null) {
+                return outer.storedReadOf(ref);
+            }
+        }
+        return StoredRead.NONE;
     }
 
     /** The relation a column reference reads, or null where it reads none of this scope's. */

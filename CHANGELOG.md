@@ -14,6 +14,29 @@ Changes since 0.3.0 accumulate here as they land.
 
 ### Now refused (SQL that earlier versions accepted)
 
+- **SET refuses more sources the account's folder does not take**: one calling a SQL function whose body calls such a
+  function (`SET x = f(65)` over `f AS 'CHR(x)'`), a conversion to VARIANT of anything but a literal
+  (`NULL::VARIANT::VARIANT`, `TO_VARIANT(NULL::VARCHAR)`, `TO_VARIANT(TO_VARIANT(NULL))`) and an IS NULL over a
+  VARIANT (`NULL::VARIANT IS NULL`), each `Unsupported feature 'assignment from non-constant source expression'.`,
+  where they were assigned.
+- **A user's function the role may not use is refused as a MERGE or a subquery compiles**, in a MERGE's ON, SET and
+  VALUES and in a subquery no row reaches, whether or not a row reaches the call, where it was refused only once a row
+  did.
+- **A set operation's number that the unified type cannot hold is refused at its row**, as a cast to that type is:
+  `SELECT 0.3333333333333333333333333333333333333 UNION ALL SELECT 11` is `Number out of representable range: type
+  FIXED[SB16](38,37){not null}, value 11`, where 11 was answered past the type's digits.
+- **A managed access schema's ownership does not pass to a different role while a future OWNERSHIP grant in it is
+  open** (documented), for GRANT OWNERSHIP ON SCHEMA and ON ALL SCHEMAS IN DATABASE, every schema asked before any
+  moves, where the schema moved with the grant open.
+- **A masking or projection policy a materialized view's column carries is not dropped or replaced while it does**, as
+  for a table's or a view's column, where DROP and CREATE OR REPLACE went through.
+- **An untyped LET or DECLARE value that gives a date/time function an unknown unit as text is refused as the block
+  compiles**, on a branch that never runs too: `IF (FALSE) THEN LET x := DATEADD('nosuchpart', 1, CURRENT_DATE()); END
+  IF;` is `['nosuchpart'] is not a valid date/time component for function DATEADD.`, where the block ran.
+- **SET refuses a source the account's folder cannot fold**: a source calling DATE_FROM_PARTS, TIME_FROM_PARTS,
+  DATEDIFF, MONTHNAME, ROUND, LENGTH, REPLACE, HASH, RANDOM or another function the folder does not take, outside a
+  scalar subquery, is refused with `Unsupported feature 'assignment from non-constant source expression'.` Before, the
+  variable was set.
 - **A virtual column named as a target**: `INSERT INTO t (a, b) …`, `UPDATE t SET b = …` and a MERGE's INSERT list or
   SET are "Virtual column 'B' is invalid target.".
 - **A virtual column's definition the account refuses**: a NOT NULL or a CHECK on the column; an expression whose type
@@ -422,6 +445,12 @@ Changes since 0.3.0 accumulate here as they land.
 
 ### Added
 
+- **DYNAMIC_TABLE_REFRESH_HISTORY's `INPUTS_WITH_CHANGED_DATA` lists the inputs whose data changed since the refresh
+  before, each with its `statistics`**: the micro-partitions added and removed and the rows they hold, a table being
+  one partition while it holds rows.
+- **The dynamic table refresh history survives a restart of a persistent engine**, with where each dynamic table's
+  rows lie; the function reads the past day when no `DATA_TIMESTAMP` bound is given and lists no refresh older than
+  seven days, as documented.
 - **`r := (SELECT … ->> …)` assigns a flow chain's last answer to a RESULTSET**, as LET and DECLARE … DEFAULT do.
   Before, the assignment was a syntax error at the second SELECT.
 - **Streams on views that join NATURAL or join a FROM-clause subquery**: CREATE STREAM on such a view is taken and
@@ -538,6 +567,103 @@ Changes since 0.3.0 accumulate here as they land.
 
 ### Fixed
 
+- **DROP ROLE takes back what the role granted**: the privileges it granted, those on the objects it owned included,
+  and the database roles it granted are revoked with it, and a database role it owned passes to the dropping role with
+  its other objects, where they stayed granted by, and owned by, a role that no longer existed.
+- **A view stream read beside the session's change-tracked temporary table** that hides one of the view's tables lists
+  the temporary table's changes since the stream's offset, as the view reads that table in the session, where it
+  listed the hidden table's.
+- **Over the HTTP driver, `Connection.close()` cancels a statement another thread runs on the connection**: the
+  statement ends with `SQL execution canceled` and keeps none of what it had yet to do, and the close returns at once,
+  where it waited for the statement to end and kept what it did.
+- **SHOW GRANTS names a database role that owns an object as its other grants name it**: SHOW GRANTS ON the object
+  lists the owner as `DATABASE_ROLE` and its bare name, where it read `ROLE` and the qualified name, and SHOW GRANTS
+  TO DATABASE ROLE lists the OWNERSHIP of what the role owns, which it left out.
+- **COPY INTO <table> with RETURN_FAILED_ONLY = TRUE answers only the files that failed to load**, the statement's
+  option over the one the stage keeps, where it listed every file; a load in which no file failed answers no row.
+- **A Python table function's or aggregate's module serves every partition and every group its call reaches**, as a
+  scalar function's call serves every row, where its body ran again for each; each call in a statement keeps a module
+  of its own.
+- **A VALUES row whose number the list's type cannot hold is refused in the conversion's words**: `VALUES
+  (0.3333333333333333333333333333333333333), (11)` is refused as `Numeric value '11' is out of range`, in a query and
+  in an INSERT, where the range sentence named the list's type.
+- **A VALUES item that converts to VARIANT is echoed as the cast it is**: `INSERT INTO t VALUES
+  (TO_VARIANT(0.1::FLOAT))` is refused as `Invalid expression [CAST(0.1 AS VARIANT)] in VALUES clause`, the number
+  converted to FLOAT folded, where the call was echoed as written.
+- **GRANT and REVOKE take a join, aggregation, projection, authentication or packages policy and a contact**, by the
+  exact name written: APPLY on a policy, APPLY and MODIFY on a contact, with SHOW GRANTS ON and GRANT OWNERSHIP, where
+  each kind was a syntax error. Another privilege is refused for the kind, as `Invalid object type 'POLICY' for
+  privilege 'SELECT'.`
+- **SHOW GRANTS TO no longer lists the privileges of a dropped policy or contact**, and a policy or contact created
+  under a dropped one's name does not take them, where they stayed listed and passed to the new object; one that
+  replaces another keeps them.
+- **A view read `AT(STREAM => '<name>')` answers the view as the stream's offset leaves it**, where it was refused as
+  an unsupported feature; a table read so is still refused.
+- **A materialized view's column policies and tags are reported**: GET_DDL prints them, and TAG_REFERENCES_ALL_COLUMNS
+  lists its columns' tags.
+- **An OVERLAY in the PLACING form inside a block's statement names the lines a top-level statement names, then the
+  block's END, or the cast's AS and its bracket in a RESULTSET's query**, as the account words it, where the PLACING
+  alone was named.
+- **A result column's nullability in its metadata follows its rows and its item**: a VALUES column is nullable only
+  where one of its rows holds NULL, a scalar subquery item by what it selects (`(SELECT 1)` is not), and JDBC's
+  `isNullable` of a join's qualified column reads that relation's own column, where every VALUES column and every
+  scalar subquery were nullable and a qualified column could read the other relation's.
+- **`ALLOWLIST = (1)` in a packages policy is refused as `invalid value [1] for parameter 'ALLOWLIST'`**, as the
+  account words it, where it was a syntax error at the number.
+- **A block expression's refusal is placed and echoed as the account does it**: a variable ahead of a subquery is
+  written out as a bind (`RETURN x + (SELECT ABS(1, 2))` is refused at position 36), a miscounted call in an IF
+  condition counts the variables so too (`IF (x + ABS(1, 2) > 0)` at 21), and a NUMBER variable holding NULL is echoed
+  as `TO_NUMBER(null)` rather than as a statement's own `SYSTEM$NULL_TO_FIXED(null)`.
+- **A dynamic table's refresh copies only the rows left in the micro-partitions it deletes from**: a refresh that
+  deletes every row an earlier refresh wrote copies none and adds no partition, where it copied every row the table
+  kept; DYNAMIC_TABLE_REFRESH_HISTORY's `STATISTICS` counts the partitions added and removed so.
+- **`DROP AGGREGATE FUNCTION f(NUMBER)` is refused at `AGGREGATE` and then at `FUNCTION`**, as the account words it,
+  where it was refused at `FUNCTION` and at the name.
+- **A Python procedure whose handler takes fewer arguments than the call passes is handed the first ones**: `def
+  run(s)` answers for a procedure of one argument, where the call raised a TypeError.
+- **Two signs in a row are refused before any name is looked up**: a sort or grouping key such as `ORDER BY - -1` or
+  `GROUP BY ++1` is refused as `invalid function '-'` (the outer sign), over a missing table too, where it was refused
+  as an out-of-range position.
+- **A set operation's VARIANT arm that wraps a FROM-less derived select's literal is folded**: `SELECT 'x' v UNION ALL
+  SELECT TO_VARIANT(z) FROM (SELECT 12 z)` answers `12 ;; x`, as the wrap written in place does, where it was held to
+  the text column's length.
+- **An engine whose python.venv names another venv than the one the JVM's GraalPy interpreters already import from is
+  refused at its first Python call**, in words that say why, instead of importing the other venv's packages.
+- **SYSTEM$STREAM_HAS_DATA answers from the versions the stream's tables took since its offset**, not from the rows a
+  read would list: an APPEND_ONLY stream answers TRUE after a DELETE or an UPDATE it does not list, as the function's
+  documented version diff does.
+- **A join-view stream read inside a transaction lists the changes committed by the transaction's start**: the
+  transaction's own writes and later commits wait for a read after COMMIT, where the read listed the transaction's own
+  UPDATE as a lone DELETE.
+- **A view stream re-bound while it kept its changes is listed on its new tables after a restore or a clone**, where
+  it was listed stale over inaccessible tables until it was read again.
+- **A stored element converts inside a grouping key, a folded IFF and a correlated subquery**: `TO_VARCHAR(a[0]::DATE,
+  'YYYYMMDD') ... GROUP BY a[0]::DATE`, a derived `IFF(TRUE, a, NULL) AS a` and `(SELECT TO_VARCHAR(va.a[0]::DATE,
+  'YYYYMMDD')) FROM va` read the stored element as a plain select does, where each was refused with `Failed to cast
+  variant value 1 to DATE`.
+- **DROP ROLE revokes the role from every role and user it was granted to**, and the roles it granted as their
+  grantor: SHOW GRANTS and CURRENT_AVAILABLE_ROLES no longer name it. **Dropping the session's own primary role is
+  refused** (`Cannot drop role R as it is the current primary role.`), IF EXISTS or not.
+- **The variance family over exact NUMBERs is exact**: VARIANCE, VAR_POP and the STDDEVs over NUMBER arguments are
+  computed from exact sums and presented at their declared scale, over a group and on every window frame. Over
+  NUMBER(12,2) values near 10^8, a moving frame's VARIANCE reads 0.0000500000 where it read 0.0000499999.
+- **SHOW TABLES HISTORY lists a table replaced or dropped with a retention of 0 days**, as dropped and with its row
+  count, while UNDROP refuses it as purged. Before, the version left the listing at once.
+- **A renamed internal stage keeps its files**, a temporary stage's included, and **a session's temporary table keeps
+  its table stage to itself**: another session's temporary table of the same name lists none of its files.
+- **A task's interval schedule counts elapsed time**: on a night the host's clock falls back, a 60-minute task's
+  NEXT_SCHEDULED_TIME reads 3600 seconds after its SCHEDULED_TIME, as on the account. Before, it read 7200 seconds in
+  the repeated hour.
+- **TASK_HISTORY lists a run EXECUTING until it ends**, a run waiting for another session's held table among them.
+  Before, a run was listed only once it had ended.
+- **A table function's bracketed-query argument inside a query written in brackets is refused at that query's
+  SELECT**, as the account refuses it: `SELECT (SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => (SELECT …) + 1)))`
+  names the inner SELECT and then the `(` after COUNT, and under an IN the FROM after the first `)`. Before, the lines
+  named the `+`, as for a call in the statement's own FROM.
+- **GENERATOR rows past 2147483647 answer more queries**: constant aggregates over the rows alone count them (`SELECT
+  COUNT(*), MAX(1) FROM TABLE(GENERATOR(ROWCOUNT => 3000000000))` is 3000000000 and 1), a WHERE reading each row is
+  tested until the select's own LIMIT is met, and a WHERE over a derived table's literal columns is decided before any
+  row is read. Before, each was refused as more rows than the engine holds.
 - **EXPLAIN plans a procedure called by its SYSTEM$REFERENCE token as the account does**: `EXPLAIN SELECT
   IDENTIFIER($tok)(4)` prints the procedure over its parameters' names, `PR_ARG(X)`, over an empty ValuesClause, and a
   table procedure's call is planned too. Before, the call was printed as written over a Generator, and a table

@@ -106,6 +106,25 @@ public class TableFunctionSubqueryArgumentTest extends MeasuredCellsTestSupport 
             "SELECT COUNT(*) FROM TABLE(SPLIT_TO_TABLE((SELECT 'a,b') || ',c' || ',d', ','))");
     }
 
+    /**
+     * A call in the FROM of a query in brackets that a select item or an IN list reads is refused at that query's
+     * SELECT: the account reads the bracket as a value once the query in it fails.
+     */
+    @Test
+    public void aCallInAQueryInBracketsIsRefusedAtItsSelect() {
+        engine.execute("CREATE OR REPLACE TABLE g1 (n INT)");
+        engine.execute("INSERT INTO g1 VALUES (1)");
+        engine.execute("CREATE OR REPLACE TABLE g2 (n INT)");
+        engine.execute("INSERT INTO g2 VALUES (2), (3)");
+        assertAnswer("REFUSED SQL compilation error: | syntax error line 1 at position 8 unexpected 'SELECT'. | syntax "
+                + "error line 1 at position 20 unexpected '('.",
+            "SELECT (SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => (SELECT MAX(n) FROM g2) + 1)))");
+        assertAnswer("REFUSED SQL compilation error: | syntax error line 1 at position 29 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 45 unexpected 'FROM'.",
+            "SELECT * FROM g1 WHERE n IN (SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => (SELECT MAX(n) FROM g2) "
+                + "+ 1)))");
+    }
+
     @Test
     public void recoveryLines() {
         engine.execute("CREATE OR REPLACE TABLE g1 (n INT)");

@@ -66,6 +66,22 @@ public final class PythonProcedureExecutor {
         }
     }
 
+    /**
+     * The Python that calls a procedure's handler with the session and the arguments, in order, and keeps what it
+     * answers in {@code __result}. A handler taking fewer positional parameters than that, and no {@code *args}, is
+     * handed the first ones only: {@code def run(s)} answers for a procedure of one argument (live-verified).
+     */
+    private static String handlerCall(final String handler, final List<Parameter> parameters) {
+        final StringBuilder handed = new StringBuilder("__fl_handed = (session,");
+        for (final Parameter parameter : parameters) {
+            handed.append(' ').append(parameter.getName()).append(',');
+        }
+        return handed.append(")\n__fl_takes = getattr(").append(handler).append(", '__code__', None)\n")
+            .append("if __fl_takes is not None and not __fl_takes.co_flags & 4 and __fl_takes.co_argcount < ")
+            .append("len(__fl_handed): __fl_handed = __fl_handed[:__fl_takes.co_argcount]\n")
+            .append("__result = ").append(handler).append("(*__fl_handed)").toString();
+    }
+
     public static Object executePythonProcedure(final Procedure procedure, final List<Object> arguments, final DatabaseEngine engine) {
         if (procedure.getUdfLanguage() != UdfLanguage.PYTHON) {
             throw new RuntimeException("Procedure is not a Python procedure");
@@ -106,19 +122,9 @@ public final class PythonProcedureExecutor {
             final String handlerName = procedure.getHandler();
 
             if (handlerName != null && !handlerName.isEmpty()) {
-                pythonCode = body + "\n__result = " + handlerName + "(session";
-                for (int i = 0; i < parameters.size(); i++) {
-                    pythonCode += ", ";
-                    pythonCode += parameters.get(i).getName();
-                }
-                pythonCode += ")";
+                pythonCode = body + "\n" + handlerCall(handlerName, parameters);
             } else if (body.contains("def ") && body.contains("return")) {
-                pythonCode = body + "\n__result = " + extractFunctionName(body) + "(session";
-                for (int i = 0; i < parameters.size(); i++) {
-                    pythonCode += ", ";
-                    pythonCode += parameters.get(i).getName();
-                }
-                pythonCode += ")";
+                pythonCode = body + "\n" + handlerCall(extractFunctionName(body), parameters);
             } else {
                 pythonCode = "def __temp_func():\n";
                 for (final String line : body.split("\n")) {

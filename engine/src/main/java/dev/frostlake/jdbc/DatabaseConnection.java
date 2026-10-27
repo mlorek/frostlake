@@ -191,6 +191,13 @@ public class DatabaseConnection implements Connection, ResultColumnCase, Session
     public void close() throws SQLException {
         if (!closed) {
             closed = true;
+            // A connection releases its resources at once (java.sql.Connection#close): what a statement of it runs on
+            // another thread is canceled first, so the release does not wait for it and its effects are not kept.
+            try {
+                httpClient.cancelInFlight();
+            } catch (final SQLException unreachable) {
+                // The release below is bounded too, and the server's idle sweep reclaims what it leaves.
+            }
             httpClient.releaseSession();
             logger.debug("Closed connection (session: {})", httpClient.getSessionId());
         }

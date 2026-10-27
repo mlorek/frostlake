@@ -98,6 +98,9 @@ public class VariantArmUnderTextTest extends MeasuredCellsTestSupport {
             "SELECT v FROM (SELECT 'x' v UNION ALL SELECT PARSE_JSON('12345')) ORDER BY 1");
         assertAnswer("REFUSED String 'true' is too long and would be truncated",
             "SELECT v FROM (SELECT 'x' v UNION ALL SELECT PARSE_JSON('true')) ORDER BY 1");
+        // A FROM-less derived select's literal is folded through the relation, as a wrap written in place is.
+        assertAnswer("12 ;; x",
+            "SELECT v FROM (SELECT 'x' v UNION ALL SELECT TO_VARIANT(z) FROM (SELECT 12 z)) ORDER BY 1");
         assertAnswer("Table TV728 successfully created.", "CREATE OR REPLACE TABLE tv728 (v VARIANT)");
         assertAnswer("1", "INSERT INTO tv728 SELECT TO_VARIANT(12345)");
         assertAnswer("1", "INSERT INTO tv728 SELECT PARSE_JSON('true')");

@@ -29,8 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * A session's own temporary table that takes the name of a stream's table neither drops nor replaces that table: the
  * session reads the stream's changes, consumes them and asks SYSTEM$STREAM_HAS_DATA of the stream as any other session
  * does. A view stream read in that session is refused while the temporary table tracks no changes, as the view reads
- * the temporary table there (live-verified); a table stream is read as it is anywhere, where the account fails the
- * read with an internal error.
+ * the temporary table there, and lists the temporary table's changes since its offset once it tracks them
+ * (live-verified); a table stream is read as it is anywhere, where the account fails the read with an internal error.
  */
 public class StreamSessionTemporaryShadowTest {
 
@@ -97,5 +97,24 @@ public class StreamSessionTemporaryShadowTest {
         assertEquals("true", say("SELECT SYSTEM$STREAM_HAS_DATA('svt')"));
         say("DROP TABLE tv");
         assertEquals("2|INSERT", say("SELECT id, METADATA$ACTION FROM svt"));
+    }
+
+    @Test
+    public void aViewStreamReadsTheChangesOfTheSessionsTrackedTemporaryTable() {
+        say("CREATE TABLE tw (id INT)");
+        say("CREATE VIEW vtw AS SELECT id FROM tw");
+        say("CREATE STREAM svw ON VIEW vtw");
+        say("INSERT INTO tw VALUES (1)");
+        say("CREATE TABLE tw2 (id INT)");
+        say("CREATE TEMPORARY TABLE tw (id INT)");
+        say("ALTER TABLE tw SET CHANGE_TRACKING = TRUE");
+        say("INSERT INTO tw VALUES (2)");
+        assertEquals("2|INSERT", say("SELECT id, METADATA$ACTION FROM svw ORDER BY 1"));
+        assertEquals("true", say("SELECT SYSTEM$STREAM_HAS_DATA('svw')"));
+        assertEquals("1", say("INSERT INTO tw2 SELECT id FROM svw"));
+        say("DROP TABLE tw");
+        // The consuming read moved the offset past the permanent table's change too.
+        assertEquals("", say("SELECT id, METADATA$ACTION FROM svw ORDER BY 1"));
+        assertEquals("2", say("SELECT id FROM tw2 ORDER BY 1"));
     }
 }

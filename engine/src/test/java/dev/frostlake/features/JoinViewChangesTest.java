@@ -155,7 +155,9 @@ public class JoinViewChangesTest extends MeasuredCellsTestSupport {
      * APPEND_ONLY) from its offset does and as one on a table or a single-table view does: "Append-only streams track
      * row inserts only. Update, delete, and truncate operations are not captured" (documented). It reported a
      * standard stream's update pairs and deletes. Held by the engine, read inside a transaction that wrote the tables
-     * as well as outside one.
+     * as well as outside one; inside it the standard stream lists the changes committed by its start, the
+     * transaction's own writes listed once it commits. SYSTEM$STREAM_HAS_DATA answers TRUE after the DELETE it does
+     * not list: the function diffs the tables' versions, not the stream's rows.
      */
     @Test
     public void anAppendOnlyStreamOnAJoinViewReportsTheInsertsAlone() {
@@ -170,6 +172,7 @@ public class JoinViewChangesTest extends MeasuredCellsTestSupport {
         assertCells(new String[][] {
             {"DELETE FROM jb WHERE id = 2", "1"},
             {"SELECT id, x, METADATA$ACTION FROM jao", ""},
+            {"SELECT SYSTEM$STREAM_HAS_DATA('jao')", "true"},
             {"SELECT id, METADATA$ACTION FROM jst", "2|DELETE"},
             {"UPDATE ja SET x = 'a1u' WHERE id = 1", "1|0"},
             {"INSERT INTO jb VALUES (3, 'b3')", "1"},
@@ -182,10 +185,14 @@ public class JoinViewChangesTest extends MeasuredCellsTestSupport {
             {"INSERT INTO jb VALUES (4, 'b4')", "1"},
             {"INSERT INTO ja VALUES (4, 'a4')", "1"},
             {"SELECT id, x, METADATA$ACTION, METADATA$ISUPDATE FROM jao ORDER BY 1", "3|a3|INSERT|false"},
+            {"SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM jst ORDER BY 1, 2",
+                "1|DELETE|true ;; 1|INSERT|true ;; 2|DELETE|false ;; 3|INSERT|false"},
             {"COMMIT", "Statement executed successfully."},
             {"INSERT INTO jsink SELECT id, x FROM jao", "2"},
             {"SELECT id, x FROM jsink ORDER BY 1", "3|a3 ;; 4|a4"},
             {"SELECT COUNT(*) FROM jao", "0"},
+            {"SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM jst ORDER BY 1, 2",
+                "1|DELETE|true ;; 1|INSERT|true ;; 2|DELETE|false ;; 3|INSERT|false ;; 4|INSERT|false"},
         });
     }
 }
