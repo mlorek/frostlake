@@ -1229,6 +1229,26 @@ import java.util.List;
         }
     }
 
+    /**
+     * Refuses the plain word a GRANT of privileges writes in the parentheses after a table named by the word
+     * IDENTIFIER alone: the account reads that word as the table's own name and the parentheses as a list of types, so
+     * GRANT SELECT ON TABLE IDENTIFIER(t) TO ROLE r is refused at the t and nothing after it is reported (see
+     * GrantTypeListLines for a word with parameters there; live-verified).
+     */
+    private void refuseTableTypeWord(final GrantStatementContext grant) {
+        final GrantedObjectNameContext name = grant.grantedObjectName();
+        final ObjectTypeContext kind = grant.objectType();
+        final IdentifierListContext types = grant.identifierList();
+        if (name == null || name.KW_IDENTIFIER_OPEN() == null || kind == null || kind.getStart() != kind.getStop()
+                || kind.getStart().getType() != TABLE || types == null || types.identifier().size() != 1) {
+            return;
+        }
+        final Token word = types.identifier(0).getStart();
+        if (word.getType() == IDENTIFIER && word == types.identifier(0).getStop()) {
+            notifyErrorListeners(word, "unexpected '" + word.getText() + "'", new RefusedWordFault(this, grant, true));
+        }
+    }
+
     private void refuseSignatureWord(final ParserRuleContext item, final Token word, final boolean isItem) {
         final int wordType = word.getType();
         if (isItem && (wordType == ARRAY || wordType == OBJECT || wordType == MAP || wordType == VECTOR
@@ -2576,7 +2596,7 @@ grantStatement
     // privilege other than OWNERSHIP, in live's own sentence. A share and an application role are grantees too,
     // and ROLE written alone names a role called ROLE (live-verified).
     // GRANT privs ON type name [(col1, col2)] TO USER/ROLE target_name
-    | GRANT privilegeList ON objectType? grantedObjectName (LPAREN identifierList? RPAREN)?
+    | GRANT privilegeList ON objectType? grantedObjectName (LPAREN identifierList? RPAREN {refuseTableTypeWord($ctx);})?
         TO ((USER | ROLE)? principalName | databaseRoleGrantee | SHARE principalName | APPLICATION ROLE referencedName
             | ROLE) currentGrants? withGrantOption? SEMI?
     | GRANT OWNERSHIP ON objectType grantedObjectName TO (USER | ROLE)? principalName currentGrants? SEMI?  // GRANT OWNERSHIP ON type name TO USER/ROLE target_name

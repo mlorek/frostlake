@@ -137,4 +137,90 @@ public class AutocommitOffScopedTransactionTest extends MeasuredCellsTestSupport
                 "Statement executed successfully."},
         });
     }
+
+    /**
+     * A request of several statements runs in the session's transaction: its writes wait for a COMMIT or go with a
+     * ROLLBACK, a COMMIT or ROLLBACK inside it ends the transaction there, a statement that fails leaves the earlier
+     * writes to the session's ROLLBACK, and a DDL inside it commits what is open before it.
+     */
+    @Test
+    public void aRequestOfSeveralStatementsWritesInTheSessionsTransaction() {
+        engine.execute("CREATE OR REPLACE TABLE ms854 (a INT)");
+        final String rows = "SELECT COUNT(*), LISTAGG(a, ',') WITHIN GROUP (ORDER BY a) FROM ms854";
+        assertCells(new String[][] {
+            {"ALTER SESSION SET AUTOCOMMIT = FALSE",
+                "Statement executed successfully."},
+            {"INSERT INTO ms854 VALUES (1); INSERT INTO ms854 VALUES (2)",
+                "1"},
+            {"SELECT CURRENT_TRANSACTION() IS NOT NULL",
+                "true"},
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "0|"},
+            {"INSERT INTO ms854 VALUES (3); COMMIT",
+                "1"},
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "1|3"},
+            {"INSERT INTO ms854 VALUES (4); SELECT 1/0",
+                "REFUSED JavaScript execution error: Uncaught Execution of multiple statements failed on statement "
+                + "\"SELECT 1/0\" (at line 1, position 30). | Division by zero in SYSTEM$MULTISTMT at '    throw "
+                + "`Execution of multiple statements failed on statement {0} (at line {1}, position {2}).`"
+                + ".replace('{1}', LINES[i])' position 4 | stackstrace:  | SYSTEM$MULTISTMT line: 10"},
+            {"SELECT CURRENT_TRANSACTION() IS NOT NULL",
+                "true"},
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "1|3"},
+        });
+        // A request that starts with a BEGIN or a DDL first answers a driver with an update count and the engine's
+        // own API with a status text, so only what it leaves behind is compared.
+        engine.execute("BEGIN; INSERT INTO ms854 VALUES (5)");
+        assertCells(new String[][] {
+            {"SELECT CURRENT_TRANSACTION() IS NOT NULL",
+                "true"},
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "1|3"},
+            {"INSERT INTO ms854 VALUES (6); ROLLBACK; INSERT INTO ms854 VALUES (7)",
+                "1"},
+            {"COMMIT",
+                "Statement executed successfully."},
+            {rows,
+                "2|3,7"},
+            {"SELECT 1; INSERT INTO ms854 VALUES (8)",
+                "1"},
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "2|3,7"},
+        });
+        engine.execute("CREATE OR REPLACE TABLE ms854b (a INT); INSERT INTO ms854 VALUES (9)");
+        assertCells(new String[][] {
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "2|3,7"},
+            {"INSERT INTO ms854 VALUES (10); CREATE OR REPLACE TABLE ms854c (a INT)",
+                "1"},
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "3|3,7,10"},
+            {"INSERT INTO ms854 VALUES (11); BEGIN; INSERT INTO ms854 VALUES (12)",
+                "1"},
+            {"ROLLBACK",
+                "Statement executed successfully."},
+            {rows,
+                "3|3,7,10"},
+            {"COMMIT",
+                "Statement executed successfully."},
+            {"ALTER SESSION SET AUTOCOMMIT = TRUE",
+                "Statement executed successfully."},
+        });
+    }
 }

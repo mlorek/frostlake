@@ -2340,6 +2340,12 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (unbalancedBlock != null) {
             return Collections.singletonList(unbalancedBlock);
         }
+        // ★ A CURSOR DECLARED OVER A SHOW: the word after SHOW, then every third plain word — see CursorShowLines.
+        final List<String> cursorShow = sql == null || !statementParse || offendingIndexes.isEmpty() ? null
+            : CursorShowLines.lines(defaultChannelTokens(), offendingIndexes);
+        if (cursorShow != null) {
+            return cursorShow;
+        }
         final List<String> routineBody = sql == null || !statementParse || firstOnly || offendingIndexes.isEmpty()
             ? null : RoutineBlockBodyLines.lines(sql, defaultChannelTokens(), offendingIndexes.get(0).intValue());
         if (routineBody != null) {
@@ -2509,6 +2515,11 @@ public class SyntaxErrorListener extends BaseErrorListener {
             ? null : AlterEventLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
         if (alterEvent != null) {
             return alterEvent;
+        }
+        final List<String> grantTypes = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
+            ? null : GrantTypeListLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
+        if (grantTypes != null) {
+            return grantTypes;
         }
         final List<String> eventClone = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
             ? null : EventTableCloneLines.lines(spokenTokens, offendingIndexes.get(0).intValue());

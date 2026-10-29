@@ -639,6 +639,15 @@ Changes since 0.3.0 accumulate here as they land.
 
 ### Fixed
 
+- **A cursor declared over a SHOW reads on as the account does** (live-verified):
+  `DECLARE c CURSOR FOR SHOW TABLES IN a b c d e f; BEGIN RETURN 1; END;` is refused at `TABLES`, `c` and `f`, and
+  `... FOR SHOW x y z w; ...` at `x` and `z`: the word after SHOW, then every third name in an unbroken run of names
+  counted from it, where a reserved word such as IN, a number, a string or a dot breaks the run. Frostlake gave the
+  first line alone.
+- **A GRANT on a table named by the word IDENTIFIER alone reads the parentheses after it as a list of types, as the
+  account does** (live-verified): `GRANT SELECT ON TABLE IDENTIFIER(t) TO ROLE r` is refused at the `t`,
+  `IDENTIFIER(UPPER('t'))` at the `'t'` and `IDENTIFIER(CONCAT('a', 'b'))` at the `'a'` and at the `'b'`, where
+  Frostlake looked for a table called IDENTIFIER or refused the parentheses.
 - **A statement in a FROM item's parentheses after a list's comma, in an EXISTS and in a query used as a value answers
   on the account's lines** (live-verified): `SELECT 1 FROM t, (CALL p())` is refused at `CALL`, `(CALL p(1, 2))` then at
   the `2`, an UPDATE at its SET and an INSERT at what follows its first comma, where Frostlake read CALL as a table and
