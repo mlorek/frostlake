@@ -342,11 +342,14 @@ final class JavaScriptHandler {
         }
         final String arguments = passed.length() > 0 ? passed.substring(2) : "";
         final String global = "'" + name.replace("\\", "\\\\").replace("'", "\\'") + "'";
+        // The handler is a function written where only the global names are, handed to the invoker that holds the
+        // helpers: a body reads none of the invoker's names, parse or handler (live-verified).
         final StringBuilder source = new StringBuilder()
-            .append("(function () { var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
-            .append("var handler = function ").append(named ? name : "").append('(').append(declared).append(") {\n")
+            .append("(function (handler, invoker) { return invoker(handler); })(\n")
+            .append("function ").append(named ? name : "").append('(').append(declared).append(") {\n")
             .append(body)
-            .append("\n};\n")
+            .append("\n},\n")
+            .append("function (handler) { var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
             .append("return (function () {\n")
             .append(semiStructured || procedure ? ARRIVE : "")
             .append(binary ? BYTES : "")
@@ -379,7 +382,7 @@ final class JavaScriptHandler {
             source.append("} finally { if (had) { globalThis[").append(global).append("] = saved; } else { delete globalThis[")
                 .append(global).append("]; } }\n");
         }
-        return source.append("};\n})();\n})()").toString();
+        return source.append("};\n})();\n})").toString();
     }
 
     /**
@@ -397,6 +400,7 @@ final class JavaScriptHandler {
      * object, or a member it calls that is no function, is answered as {@link #NO_MEMBER}; one with no
      * {@code processRow} at all as null.
      *
+     * @param name       the function's name as the catalog holds it
      * @param parameters the function's parameters
      * @param columns    the function's declared columns
      * @param body       the handler body as written
@@ -404,8 +408,8 @@ final class JavaScriptHandler {
      *                   else {@link #NOT_CONSTANT}; null for none
      * @return the script
      */
-    static String tableSource(final List<Parameter> parameters, final List<Parameter> columns, final String body,
-                              final List<Object> constants) {
+    static String tableSource(final String name, final List<Parameter> parameters, final List<Parameter> columns,
+                              final String body, final List<Object> constants) {
         final StringBuilder passed = new StringBuilder();
         final StringBuilder converted = new StringBuilder();
         final StringBuilder row = new StringBuilder();
@@ -457,11 +461,19 @@ final class JavaScriptHandler {
                 .replace("@DOUBLE@", HandlerJson.DOUBLE_IN_SOURCE)
                 .replace("@INSTANT@", HandlerJson.INSTANT_IN_SOURCE)
                 .replace("@BYTES@", "'" + HandlerJson.BINARY_IN_SOURCE + "' + ") : "");
+        // The handler object is an expression read where only the global names are, handed to the driver that holds
+        // the helpers; while the driver runs, the function's name is a function of its own, as the account's
+        // function JNT() {} (live-verified).
+        final String own = JavaScriptIdentifiers.isDeclarable(name) ? name : null;
+        final String global = own == null ? null : "'" + own + "'";
         return new StringBuilder()
-            .append("(function () { var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
-            .append("var udtfObject =\n")
+            .append("(function (udtfObject, driver) { return driver(udtfObject); })(\n")
+            .append('\n')
             .append('(').append(body).append(")\n")
-            .append(";\nreturn (function () {\n")
+            .append(",\nfunction (udtfObject) { ")
+            .append("var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
+            .append(own == null ? "" : "var own = function " + own + "() {};\n")
+            .append("return (function () {\n")
             .append(semiStructured ? ARRIVE : "")
             .append(binary ? BYTES : "")
             .append(helpers)
@@ -479,6 +491,8 @@ final class JavaScriptHandler {
             .append("var argumentInfo = {").append(info).append("};\n")
             .append("var took = function () { var out = toJson(written); written = []; return out; };\n")
             .append("return function (operation").append(passed).append(") {\n")
+            .append(own == null ? "" : "var had = Object.prototype.hasOwnProperty.call(globalThis, " + global
+                + "), saved = globalThis[" + global + "];\nglobalThis[" + global + "] = own;\ntry {\n")
             .append("if (operation === 0) {\n")
             .append("if (udtfObject === null || typeof udtfObject !== 'object' && typeof udtfObject !== 'function') ")
             .append("{ return '").append(NO_MEMBER).append("'; }\n")
@@ -499,7 +513,9 @@ final class JavaScriptHandler {
             .append(converted)
             .append("udtfObject.processRow({").append(row).append("}, rowWriter, context);\n")
             .append("return took();\n")
-            .append("};\n})();\n})()").toString();
+            .append(own == null ? "" : "} finally { if (had) { globalThis[" + global + "] = saved; } else { delete "
+                + "globalThis[" + global + "]; } }\n")
+            .append("};\n})();\n})").toString();
     }
 
     /**

@@ -103,11 +103,45 @@ public final class JarHandlerLoader {
         return load(written, className, catalog, s3Resolver, false);
     }
 
-    private static Class<?> load(final List<String> written, final String className,
-                                 final Catalog catalog, final S3PathResolver s3Resolver, final boolean cached) {
-        if (written == null || written.isEmpty()) {
-            throw new RuntimeException("No IMPORTS jar specified for handler class " + className);
+    /**
+     * The files an IMPORTS list reads on this machine, in the order a class path takes them: each import as it
+     * resolves, then the other jars of a stage directory an import lies in, which are the routine's dependency set.
+     *
+     * @param written    the IMPORTS entries
+     * @param catalog    the catalog the stages are named in
+     * @param s3Resolver maps an S3 location to a local path, or null
+     * @return the files, each once
+     */
+    public static List<File> localJars(final List<String> written, final Catalog catalog,
+                                       final S3PathResolver s3Resolver) {
+        final List<File> jars = new ArrayList<>();
+        for (final String localPath : localPaths(written, catalog, s3Resolver)) {
+            jars.add(new File(localPath));
         }
+        return jars;
+    }
+
+    /**
+     * A loader of the classes jars hold, ahead of its parent's.
+     *
+     * @param jars   the jars
+     * @param parent the loader every other class comes from
+     * @return the loader
+     */
+    public static ClassLoader jarLoader(final List<File> jars, final ClassLoader parent) {
+        final List<URL> urls = new ArrayList<>();
+        for (final File jar : jars) {
+            try {
+                urls.add(jar.toURI().toURL());
+            } catch (final MalformedURLException e) {
+                throw new RuntimeException("Invalid IMPORTS path: " + jar.getPath(), e);
+            }
+        }
+        return new ChildFirstUdfClassLoader(urls.toArray(new URL[0]), parent);
+    }
+
+    private static List<String> localPaths(final List<String> written, final Catalog catalog,
+                                           final S3PathResolver s3Resolver) {
         // A file an internal named stage keeps is read from the engine's own directory behind the stage.
         final ImportLocalizer localizer = LOCALIZER.get();
         final List<String> imports = localizer != null ? localizer.localImports(written) : written;
@@ -145,6 +179,17 @@ public final class JarHandlerLoader {
                 }
             }
         }
+        return localPaths;
+    }
+
+    private static Class<?> load(final List<String> written, final String className,
+                                 final Catalog catalog, final S3PathResolver s3Resolver, final boolean cached) {
+        if (written == null || written.isEmpty()) {
+            throw new RuntimeException("No IMPORTS jar specified for handler class " + className);
+        }
+        final ImportLocalizer localizer = LOCALIZER.get();
+        final List<String> imports = localizer != null ? localizer.localImports(written) : written;
+        final List<String> localPaths = localPaths(written, catalog, s3Resolver);
         final StringBuilder cacheKey = new StringBuilder(className);
         for (final String localPath : localPaths) {
             final File jar = new File(localPath);

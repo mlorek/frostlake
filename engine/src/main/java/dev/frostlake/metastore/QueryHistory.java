@@ -69,6 +69,8 @@ public class QueryHistory {
     private int queuedTimeMs;
     /** The number of the session that ran the statement — QUERY_HISTORY's SESSION_ID — or null. */
     private Long sessionId;
+    /** The session's QUERY_TAG as the statement began, empty when none was set. */
+    private volatile String queryTag = "";
     /** Whether the statement was an ALTER DYNAMIC TABLE … REFRESH; see {@link #markDynamicTableRefresh}. */
     private boolean dynamicTableRefresh;
 
@@ -159,6 +161,16 @@ public class QueryHistory {
     /** Record the session that ran the statement. */
     public void setSessionId(final Long sessionId) {
         this.sessionId = sessionId;
+    }
+
+    /** The session's QUERY_TAG as the statement began, empty when none was set (live-verified). */
+    public String getQueryTag() {
+        return queryTag;
+    }
+
+    /** Record the session's QUERY_TAG as the statement began; null records none. */
+    public void setQueryTag(final String queryTag) {
+        this.queryTag = queryTag == null ? "" : queryTag;
     }
 
     /**

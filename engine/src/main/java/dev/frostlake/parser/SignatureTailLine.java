@@ -179,6 +179,8 @@ public final class SignatureTailLine {
                     if (semicolon >= 0) {
                         lines.addAll(SignatureRecovery.namedPastItsEnd(spoken, semicolon));
                     }
+                } else if (reading.ownStatement().getStart().getType() == FrostlakeLexer.CREATE) {
+                    lines.addAll(laterStatementLines(sql, reading));
                 }
                 // A block is refused for its first faulty statement.
                 throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
@@ -226,6 +228,35 @@ public final class SignatureTailLine {
             return;
         }
         throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", ordered)), ordered, sql);
+    }
+
+    /**
+     * The lines of a block's statements after a CREATE whose words run on: the CREATE is given up at its semicolon and
+     * the statements after it read on as the block's own, their faults reported after its (live-verified: {@code BEGIN
+     * CREATE TABLE t (x INT) y z; SELECT 1 x y; END} is the z, the y and the END; with {@code SELECT 1 x} in its place,
+     * the z alone). A CREATE the block's END follows reads on to nothing.
+     */
+    private static List<String> laterStatementLines(final String sql, final SignatureRecovery reading) {
+        int semicolon = -1;
+        Token next = null;
+        for (final Token token : BlockReadOn.spoken(sql)) {
+            if (semicolon < 0 && token.getType() == FrostlakeLexer.SEMI
+                    && token.getStartIndex() >= reading.last().getStartIndex()) {
+                semicolon = token.getStopIndex();
+            } else if (semicolon >= 0 && next == null) {
+                next = token;
+            }
+        }
+        if (semicolon < 0 || next == null || next.getType() == FrostlakeLexer.END) {
+            return new ArrayList<>();
+        }
+        final char[] text = sql.toCharArray();
+        for (int i = reading.ownStatement().getStart().getStartIndex(); i <= semicolon && i < text.length; i++) {
+            if (text[i] != '\n') {
+                text[i] = ' ';
+            }
+        }
+        return SyntaxErrorListener.linesReportedFor(new String(text), true);
     }
 
     /**

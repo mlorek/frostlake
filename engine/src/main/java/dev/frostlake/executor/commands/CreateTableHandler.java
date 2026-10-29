@@ -189,6 +189,15 @@ public class CreateTableHandler implements CommandHandler {
             // A name another kind of relation holds is refused before anything is asked of the session, with OR
             // REPLACE and IF NOT EXISTS alike (live-verified).
             schema.rejectNameHeldByOtherKind(tableName, RelationKind.TABLE, isTemporary);
+            // An Iceberg table and any other table are kinds of their own: neither replaces the other, and an IF NOT
+            // EXISTS takes neither for the other (live-verified).
+            final Table sameName = isTemporary ? null : schema.tableExact(tableName);
+            if (sameName != null && !sameName.isEventTable()
+                    && (sameName.getIcebergMetadata() != null) != (ctx.ICEBERG() != null)) {
+                throw new RuntimeException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(sameName.getName()) + "' already exists as "
+                    + (sameName.getIcebergMetadata() != null ? "ICEBERG_TABLE" : "TABLE")));
+            }
             // Replacing a table needs OWNERSHIP of it, asked ahead of the privilege to create one; a temporary
             // table takes a permanent one's name without replacing it.
             if (orReplace && !isTemporary) {

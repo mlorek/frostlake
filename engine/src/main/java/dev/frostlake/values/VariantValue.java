@@ -16,6 +16,7 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.functions.scalar.JsonKeywords;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
@@ -56,6 +57,13 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
      */
     private Object[] decfloatPlaces;
 
+    /**
+     * The types of the members the text does not keep, as {@link VariantMemberTypes} gives them: written by
+     * serialization alone, like the DECFLOATs' places. Null where every member's type is its text's, and in a value
+     * written before they were kept.
+     */
+    private VariantMemberTypes memberTypes;
+
     private VariantValue(final String text) {
         this.text = text;
     }
@@ -86,28 +94,53 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
     }
 
     /**
-     * Writes the text and, where the tree holds a DECFLOAT, the places they sit, so a checkpoint, a snapshot and a
-     * clone keep the members' type that a WAL replay, re-running the statements, keeps by itself.
+     * Writes the text and, where the tree holds a DECFLOAT, the places they sit, and the types of the members its
+     * text does not keep (a double, a FLOAT, a DATE, a TIME, a timestamp, a BINARY, a VECTOR, a UUID), so a
+     * checkpoint, a snapshot and a clone keep the members' type that a WAL replay, re-running the statements,
+     * keeps by itself.
      */
     private void writeObject(final ObjectOutputStream out) throws IOException {
         final List<Object[]> places = node == null ? null : DecfloatTextNode.placesIn(node);
         final ObjectOutputStream.PutField fields = out.putFields();
         fields.put("text", text());
         fields.put("decfloatPlaces", places == null || places.isEmpty() ? null : places.toArray());
+        fields.put("memberTypes", node == null ? null : VariantMemberTypes.of(node));
         out.writeFields();
     }
 
-    /** Reads the text, the tree re-read at once with its DECFLOATs put back where any were written. */
+    /** Reads the text, the tree re-read at once with its DECFLOATs and its members' types put back where written. */
     private void readObject(final ObjectInputStream in) throws IOException, ClassNotFoundException {
         in.defaultReadObject();
+        if (decfloatPlaces == null && memberTypes == null) {
+            return;
+        }
+        JsonNode tree = read(text);
         if (decfloatPlaces != null) {
             final List<Object[]> places = new ArrayList<>();
             for (final Object place : decfloatPlaces) {
                 places.add((Object[]) place);
             }
-            node = DecfloatTextNode.restoredIn(VariantUndefined.readTree(MAPPER, text), places);
+            tree = DecfloatTextNode.restoredIn(tree, places);
             decfloatPlaces = null;
         }
+        if (memberTypes != null) {
+            tree = memberTypes.restoredIn(tree);
+            memberTypes = null;
+        }
+        node = tree;
+    }
+
+    /**
+     * The tree a canonical text spells, its bare words read as what they stand for: an array's {@code undefined},
+     * and a double's {@code NaN}, {@code Infinity} and {@code -Infinity} (see {@link VariantText}).
+     */
+    private static JsonNode read(final String text) {
+        if (text.indexOf("NaN") < 0 && text.indexOf("Infinity") < 0) {
+            return VariantUndefined.readTree(MAPPER, text);
+        }
+        final String normalized = JsonKeywords.normalize(text);
+        final JsonNode tree = VariantUndefined.readTree(MAPPER, normalized);
+        return JsonKeywords.mayHoldPlaceholder(normalized) ? JsonKeywords.restore(tree) : tree;
     }
 
     /** The canonical JSON text. */
@@ -123,7 +156,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         if (node == null) {
             // The canonical text of an array holding a SQL NULL element carries Snowflake's bare
             // `undefined` token ([1,undefined,2]), which no JSON parser accepts on its own.
-            node = VariantUndefined.readTree(MAPPER, text);
+            node = read(text);
         }
         return node;
     }

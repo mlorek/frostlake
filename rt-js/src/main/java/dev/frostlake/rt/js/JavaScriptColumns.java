@@ -24,6 +24,8 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.GeographyType;
+import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
@@ -31,7 +33,13 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.Decfloats;
+import dev.frostlake.values.GeoValue;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.DoubleNode;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -41,6 +49,7 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.Iterator;
 import java.util.Locale;
 
 /**
@@ -164,6 +173,10 @@ final class JavaScriptColumns {
         if (type instanceof BinaryType) {
             return BINARY;
         }
+        if (type instanceof GeographyType || type instanceof GeometryType) {
+            // Its GeoJSON object, as the default GEOGRAPHY_OUTPUT_FORMAT and GEOMETRY_OUTPUT_FORMAT give it.
+            return OBJECT;
+        }
         return type == null ? TEXT : type.getName().toUpperCase(Locale.ROOT);
     }
 
@@ -266,6 +279,10 @@ final class JavaScriptColumns {
         if (value instanceof VariantValue) {
             return ((VariantValue) value).text();
         }
+        if (value instanceof GeoValue) {
+            final GeoValue geo = (GeoValue) value;
+            return geo.isGeography() ? geo.geoJson() : VariantJsonText.render(doubles(geo.node()));
+        }
         if (value instanceof BinaryValue) {
             final byte[] bytes = ((BinaryValue) value).bytes();
             final StringBuilder json = new StringBuilder("{");
@@ -285,6 +302,30 @@ final class JavaScriptColumns {
                 : Double.toString(number);
         }
         return String.valueOf(value);
+    }
+
+    /** A GeoJSON tree with each of its numbers a DOUBLE, as a GEOMETRY's text spells them. */
+    private static JsonNode doubles(final JsonNode node) {
+        if (node.isNumber()) {
+            return new DoubleNode(node.doubleValue());
+        }
+        if (node.isArray()) {
+            final ArrayNode copy = ((ArrayNode) node).arrayNode();
+            for (final JsonNode element : node) {
+                copy.add(doubles(element));
+            }
+            return copy;
+        }
+        if (node.isObject()) {
+            final ObjectNode copy = ((ObjectNode) node).objectNode();
+            final Iterator<String> names = node.propertyNames().iterator();
+            while (names.hasNext()) {
+                final String name = names.next();
+                copy.set(name, doubles(node.get(name)));
+            }
+            return copy;
+        }
+        return node;
     }
 
     private static String clock(final LocalTime time, final int digits) {

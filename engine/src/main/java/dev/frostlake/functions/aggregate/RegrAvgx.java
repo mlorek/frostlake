@@ -16,55 +16,22 @@
 
 package dev.frostlake.functions.aggregate;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.util.List;
-
-/** REGR_AVGX(y, x) — average of the independent variable x over non-null (y, x) pairs (y dependent, x independent). See {@link RegrAccumulator}. */
-public class RegrAvgx extends AggregateFunction {
-    public RegrAvgx() { super("REGR_AVGX", NumericType.DOUBLE); }
-
-    @Override
-    public Accumulator createAccumulator() { return new RegrAccumulator(RegrKind.AVGX); }
-
-    @Override
-    public Object evaluate(final List<Object> args) { return null; }
-
-    @Override
-    public int getMinArgCount() { return 2; }
-    @Override
-    public int getMaxArgCount() { return 2; }
-
-    /**
-     * Only the X — the SECOND argument — is converted to a DOUBLE under live's null guard, so only it
-     * is refused outside the numbers, the strings and VARIANT; the Y is merely null-checked and takes
-     * a BOOLEAN or a DATE (live-verified). See {@link SemiStructuredRejection#DOUBLE_CONVERSION_PARAMETER}.
-     */
-    @Override
-    public SemiStructuredRejection semiStructuredRejection(final int position) {
-        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+/**
+ * REGR_AVGX(y, x) — average of the independent variable x over non-null (y, x) pairs (y dependent, x independent). See
+ * {@link RegrAccumulator}. Only the X — the SECOND argument — is converted to a DOUBLE under live's null guard, so only
+ * it is refused outside the numbers, the strings and VARIANT, a VECTOR as a BOOLEAN is; the Y is merely null-checked
+ * and takes a BOOLEAN or a DATE (live-verified). See {@link SemiStructuredRejection#DOUBLE_CONVERSION_PARAMETER}.
+ */
+public class RegrAvgx extends StatisticalAggregate {
+    public RegrAvgx() {
+        super("REGR_AVGX", NumericType.DOUBLE, 2, SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER, 1);
     }
 
     @Override
-    public SemiStructuredRejection binaryRejection(final int position) {
-        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
-    }
-
-    @Override
-    public SemiStructuredRejection booleanRejection(final int position) {
-        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
-    }
-
-    @Override
-    public SemiStructuredRejection temporalRejection(final int position) {
-        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
-    }
-
-    /** A VECTOR is refused as a BOOLEAN is, in the DOUBLE conversion's words (live-verified). */
-    @Override
-    public SemiStructuredRejection vectorRejection(final int position) {
-        return booleanRejection(position);
+    public Accumulator createAccumulator() {
+        return new RegrAccumulator(RegrKind.AVGX);
     }
 }

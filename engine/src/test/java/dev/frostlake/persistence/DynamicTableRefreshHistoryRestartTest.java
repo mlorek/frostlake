@@ -34,7 +34,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * A dynamic table's refresh history goes with a snapshot of the engine's state, and so does where each of its rows
  * lies: after a checkpoint and a restart DYNAMIC_TABLE_REFRESH_HISTORY lists the refreshes the former engine ran, and
- * a refresh that deletes the rows one partition held copies none of the others, as it would have before.
+ * a refresh that deletes the rows one partition held copies none of the others, as it would have before. A table's
+ * partitions go with it too, so a table that did not change is no changed input of the first refresh after the
+ * restart.
  */
 public class DynamicTableRefreshHistoryRestartTest {
 
@@ -126,6 +128,35 @@ public class DynamicTableRefreshHistoryRestartTest {
             assertEquals("0, 1", answer(recovered, "SELECT STATISTICS:numAddedPartitions, "
                 + "STATISTICS:numRemovedPartitions FROM TABLE(d.INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY("
                 + "NAME_PREFIX => 'D.PUBLIC.DT')) ORDER BY REFRESH_START_TIME DESC LIMIT 1"));
+        } finally {
+            recovered.shutdown();
+        }
+    }
+
+    @Test
+    public void aTableThatDidNotChangeIsNoChangedInputAfterARestart() {
+        final DatabaseEngine engine = new DatabaseEngine(walConfig());
+        try {
+            engine.execute("CREATE DATABASE d");
+            engine.execute("USE SCHEMA d.PUBLIC");
+            engine.execute("CREATE TABLE s (a INT)");
+            engine.execute("INSERT INTO s VALUES (1)");
+            final Object wh = engine.executeQuery("SELECT CURRENT_WAREHOUSE()").getRows().get(0).getValue(0);
+            engine.execute("CREATE DYNAMIC TABLE dt TARGET_LAG = '1 hour' WAREHOUSE = "
+                + (wh == null ? "COMPUTE_WH" : String.valueOf(wh)) + " AS SELECT a FROM s WHERE a < 10");
+            engine.checkpoint();
+        } finally {
+            engine.shutdown();
+        }
+        final DatabaseEngine recovered = new DatabaseEngine(walConfig());
+        try {
+            assertEquals("No new data",
+                answer(recovered, "ALTER DYNAMIC TABLE d.PUBLIC.dt REFRESH ->> SELECT \"statistics\" FROM $1"));
+            // A row the query filters out still changes the table's partition: an incremental refresh of no rows.
+            recovered.execute("INSERT INTO d.PUBLIC.s VALUES (100)");
+            recovered.execute("ALTER DYNAMIC TABLE d.PUBLIC.dt REFRESH");
+            assertEquals("DT, CREATION, INCREMENTAL, " + input(1, 1, 0, 0) + " | DT, MANUAL, NO_DATA, null | DT, "
+                + "MANUAL, INCREMENTAL, " + input(1, 2, 1, 1), answer(recovered, HISTORY));
         } finally {
             recovered.shutdown();
         }

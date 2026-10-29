@@ -145,18 +145,15 @@ final class ScriptingUdfBodyValidator {
      * Whether a block holds an expression the account's reading of a function's block stops at, so that the body is
      * read as an expression instead and refused in that frame: a word before a string inside a call's parentheses
      * — {@code nosuch(TIMESTAMP_LTZ '…')}, {@code nosuch(foo 'x')}, where DATE, TIME and TIMESTAMP alone open a
-     * literal — and a name of three parts, {@code a.b.c} (all live-verified).
+     * literal — a word naming no type before a string anywhere, {@code RETURN foo 'x';}, and a name of three parts,
+     * {@code a.b.c} (all live-verified).
      *
      * @param node the block, or a node of it
      * @return whether the block is no block a function's body may be
      */
     static boolean holdsWhatNoBlockReads(final ParseTree node) {
-        return holdsWhatNoBlockReads(node, false);
-    }
-
-    private static boolean holdsWhatNoBlockReads(final ParseTree node, final boolean insideCall) {
         if (node instanceof FrostlakeParser.TypedLiteralArgExprContext
-                || insideCall && node instanceof FrostlakeParser.UnknownTypedLiteralExprContext) {
+                || node instanceof FrostlakeParser.UnknownTypedLiteralExprContext) {
             return true;
         }
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -166,9 +163,8 @@ final class ScriptingUdfBodyValidator {
             // A query's names are the query's: a.b.c there names a column of a table in a schema.
             return false;
         }
-        final boolean arguments = insideCall || node instanceof FrostlakeParser.FunctionArgListContext;
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (holdsWhatNoBlockReads(node.getChild(i), arguments)) {
+            if (holdsWhatNoBlockReads(node.getChild(i))) {
                 return true;
             }
         }

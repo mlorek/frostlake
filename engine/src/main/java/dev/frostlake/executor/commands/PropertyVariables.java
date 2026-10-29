@@ -286,7 +286,7 @@ public final class PropertyVariables {
         if (owner instanceof FrostlakeParser.ParenOptionContext && (stageOptionList(owner.getParent(), "FILE_FORMAT")
                 || tableStageList(owner.getParent()))
                 || owner instanceof FrostlakeParser.StageCopyOptionContext
-                    && stageOptionList(owner.getParent(), "COPY_OPTIONS")) {
+                    && (stageOptionList(owner.getParent(), "COPY_OPTIONS") || tableStageList(owner.getParent()))) {
             return new VariablePropertyPlace(key, VariablePropertyKind.OPTION);
         }
         if (owner instanceof FrostlakeParser.ParenOptionContext && "TYPE".equals(key)

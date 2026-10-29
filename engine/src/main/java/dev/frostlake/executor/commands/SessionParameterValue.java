@@ -133,6 +133,11 @@ final class SessionParameterValue {
         if (value.SESSION_VAR_REF() != null) {
             return held(variable(value.SESSION_VAR_REF().getText().substring(1), queryExecutor));
         }
+        if (value.listValue() != null) {
+            // A parenthesized list reads as the parser's word for it, written bare (live-verified).
+            final String word = ListValues.word(value.listValue());
+            return text(word, word);
+        }
         return word(value);
     }
 

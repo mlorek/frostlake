@@ -1478,63 +1478,6 @@ public class ProceduralExecutor {
         return "CAST(" + SqlStringLiterals.encode(text) + " AS " + SqlTypeNames.canonical(declared) + ")";
     }
 
-    /**
-     * A refusal of a rebuilt call naming each NUMBER variable it bound as the conversion the block wrote: the plan
-     * prints a text cast to a NUMBER through TO_NUMBER, where the account's echo keeps a bound variable's CAST —
-     * {@code invalid use of 'all' for function 'ABS(ALL CAST('5' AS NUMBER(38,0)))'} (live-verified).
-     *
-     * @param refused  the rebuilt call's refusal
-     * @param funcExpr the call as the block wrote it
-     * @return the refusal as the account words it
-     */
-    private RuntimeException namingBoundCasts(final RuntimeException refused, final FunctionCallExpression funcExpr) {
-        // A unit's place keeps the plan's TO_NUMBER spelling (live-verified: DATEADD(day, …) over a NUMBER variable
-        // is "Date/time component [TO_NUMBER('5') ]…").
-        if (refused.getClass() != RuntimeException.class || refused.getMessage() == null
-                || refused.getMessage().contains("Date/time component [")) {
-            return refused;
-        }
-        String message = refused.getMessage();
-        // A variable inside an argument's arithmetic is bound as one standing alone is (see boundArithmetic).
-        final List<BaseExpression> bound = new ArrayList<>();
-        for (final BaseExpression argument : funcExpr.getArguments()) {
-            collectBoundOperands(argument, bound);
-        }
-        for (final BaseExpression argument : bound) {
-            if (!(argument instanceof VariableExpression)
-                    || !hasVariable(((VariableExpression) argument).getName())) {
-                continue;
-            }
-            final DataType declared = variableTypes.get(
-                ((VariableExpression) argument).getName().toUpperCase(Locale.ROOT));
-            if (!(declared instanceof NumericType) || NumericType.isApproximate(declared)) {
-                continue;
-            }
-            final String cast = boundConversion(argument, evaluateExpression(argument));
-            if (cast == null) {
-                continue;
-            }
-            final NumericType number = (NumericType) declared;
-            final String text = cast.substring("CAST(".length(), cast.lastIndexOf(" AS "));
-            final String printed = number.getPrecision() == NumericType.NUMBER.getPrecision() && number.getScale() == 0
-                ? "TO_NUMBER(" + text + ")"
-                : "TO_NUMBER(" + text + ", " + number.getPrecision() + ", " + number.getScale() + ")";
-            message = message.replace(printed, cast);
-        }
-        return message.equals(refused.getMessage()) ? refused : new RuntimeException(message, refused.getCause());
-    }
-
-    /** An argument and the operands of its arithmetic and negations, in the order written. */
-    private static void collectBoundOperands(final BaseExpression argument, final List<BaseExpression> out) {
-        out.add(argument);
-        if (argument instanceof BinaryExpression) {
-            collectBoundOperands(((BinaryExpression) argument).getLeft(), out);
-            collectBoundOperands(((BinaryExpression) argument).getRight(), out);
-        } else if (argument instanceof UnaryExpression) {
-            collectBoundOperands(((UnaryExpression) argument).getOperand(), out);
-        }
-    }
-
     private String declaredNullOf(final BaseExpression argument) {
         if (!(argument instanceof VariableExpression)) {
             return null;
@@ -1680,9 +1623,11 @@ public class ProceduralExecutor {
      * to its scale (1.7777 into NUMBER(5,2) is 1.78, '2.5' into NUMBER is 3), and a value past its width is the
      * number's range refusal. A FLOAT parameter reads a text, a text parameter takes the value's text — its
      * width is NOT enforced ('abcdef' into a VARCHAR(2) parameter answers abcdef) — and a DATE, TIME or TIMESTAMP
-     * parameter reads a text as one. An ARRAY parameter wraps a variant that is no array ([1]) and an OBJECT
-     * parameter refuses one that is no object; a VARIANT that holds a text or a number converts as that value
-     * does, and one that does not fit is "Failed to cast variant value …".
+     * parameter reads a text as one, its fraction cut to the parameter's precision: '10:11:12.9876'::TIME(4) into
+     * a TIME(3) parameter is 10:11:12.987, for a handler in any language (live-verified). An ARRAY parameter
+     * wraps a variant that is no array ([1]) and an OBJECT parameter refuses one that is no object; a VARIANT that
+     * holds a text or a number converts as that value does, and one that does not fit is "Failed to cast variant
+     * value …".
      *
      * @param value   the argument as evaluated
      * @param type    the parameter's declared type
@@ -1713,8 +1658,11 @@ public class ProceduralExecutor {
         }
         final String name = type.getName() == null ? "" : type.getName().toUpperCase(Locale.ROOT);
         if (name.startsWith("TIMESTAMP") || "DATE".equals(name) || "TIME".equals(name) || "DATETIME".equals(name)) {
-            return value instanceof VariantValue ? variantTemporal((VariantValue) value, name)
+            final Object temporal = value instanceof VariantValue ? variantTemporal((VariantValue) value, name)
                 : ValueCaster.castValue(value, name);
+            // A number keeps every digit it carries, as it does under a cast to the type.
+            return value instanceof Number || !(type instanceof DateTimeType) ? temporal
+                : SharedFunctionHelpers.atDeclaredPrecision(temporal, ((DateTimeType) type).getPrecision());
         }
         if (value instanceof VariantValue) {
             final VariantValue variant = (VariantValue) value;
@@ -2647,7 +2595,7 @@ public class ProceduralExecutor {
                     // The fault's own sentence travels bare — live's uncaught wrapper says
                     // "Numeric value 'a' is not recognized", never a Frostlake-invented
                     // "Error evaluating function TO_NUMBER:" preamble around it.
-                    throw e instanceof RuntimeException ? namingBoundCasts((RuntimeException) e, funcExpr)
+                    throw e instanceof RuntimeException ? (RuntimeException) e
                         : new RuntimeException(e.getMessage(), e);
                 }
             }
@@ -3249,6 +3197,17 @@ public class ProceduralExecutor {
 
     public Object getVariable(final String name) {
         return scope.getVariable(name);
+    }
+
+    /**
+     * Whether a name the running block binds holds a RESULTSET or names a cursor, which a statement it runs cannot
+     * bind (see {@link RowSourceBinds}).
+     *
+     * @param name the name as written
+     * @return true for a RESULTSET or a cursor of the block
+     */
+    public boolean holdsRowSource(final String name) {
+        return scope.getVariable(name) instanceof ResultSetVariable || cursorManager.getCursor(name) != null;
     }
 
     /**

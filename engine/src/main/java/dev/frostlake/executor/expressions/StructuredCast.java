@@ -256,6 +256,22 @@ public final class StructuredCast {
     }
 
     /**
+     * A stored value of a structured column an ALTER evolved to another type of its kind: each OBJECT holds the
+     * new type's keys in its order, a key the type adds NULL and one it drops gone - or, with RENAME FIELDS, the old
+     * keys under the new names by their place - and each member in its new type (live-verified).
+     *
+     * @param value        the stored value, or null
+     * @param evolved      the column's new type
+     * @param renameFields whether the change renamed the fields
+     * @param stored       the column's type the value was stored in
+     * @return the value in the new type
+     */
+    public static Object evolved(final Object value, final DataType evolved, final boolean renameFields,
+                                 final DataType stored) {
+        return apply(value, evolved, renameFields ? CastFieldsModifier.RENAME : CastFieldsModifier.ADD, stored);
+    }
+
+    /**
      * Reshape {@code value} to the declared structured type. SQL NULL stays SQL NULL — live,
      * {@code CAST(NULL::OBJECT(x VARCHAR) AS OBJECT(y VARCHAR) RENAME FIELDS)} is NULL, not an empty
      * object.

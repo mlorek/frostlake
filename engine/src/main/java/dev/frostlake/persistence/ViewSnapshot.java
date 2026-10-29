@@ -58,6 +58,8 @@ public class ViewSnapshot implements Serializable {
     public String aggregationPolicyName;
     public List<String> aggregationEntityKey;
     public String joinPolicyName;
+    // The contacts attached, purpose to the contact's full name. Null on old snapshots.
+    public Map<String, String> contacts;
     // Attached data metric functions and their DATA_METRIC_SCHEDULE as written. Null on old snapshots.
     public List<DataMetricSnapshot> dataMetrics;
     public String dataMetricSchedule;

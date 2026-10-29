@@ -1405,4 +1405,55 @@ public class BlockReadOnTest extends MeasuredCellsTestSupport {
                 "USE SCHEMA test_schema");
         }
     }
+
+    /** A SHOW is no cursor's query: a DECLARE section's cursor over one is refused at the word after SHOW. */
+    @Test
+    public void aCursorOverAShowIsRefusedAtTheWordAfterIt() {
+        assertCells(new String[][] {
+            {"DECLARE c CURSOR FOR SHOW TABLES IN DATASET y; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN nosuch; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN a; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN a b; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN SCHEMA s; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN USER x; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN a.b c; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN DATABASE d LIMIT 1; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES LIKE 'x'; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES LIKE 'x' IN DATASET y; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES LIMIT 1; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES LIMIT 0; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES STARTS WITH 'a'; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW x; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'x'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES x; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN 1; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES 1; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES IN a 1 2; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES LIKE; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+            {"DECLARE c CURSOR FOR SHOW TABLES LIKE 'x' y; BEGIN RETURN 1; END;",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 26 unexpected 'TABLES'."},
+        });
+    }
 }

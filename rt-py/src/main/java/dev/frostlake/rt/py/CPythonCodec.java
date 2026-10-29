@@ -22,6 +22,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorElementType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantText;
@@ -57,7 +58,8 @@ import java.util.Map;
  * ({@code {"$dec": "1.25"}}, {@code {"$dt": iso}}, ... — see {@code cpython_worker.py}). Arguments are first
  * converted by the type their parameter declares, so a handler receives what Snowflake hands it: {@code int} for
  * a NUMBER without scale, {@code decimal.Decimal} with one, {@code float} for FLOAT, {@code date}, {@code time} and
- * naive or aware {@code datetime}, {@code bytes}, dict/list for semi-structured values and a memoryview for a VECTOR.
+ * naive or aware {@code datetime}, {@code bytes}, dict/list for semi-structured values, a sqlNullWrapper for a SQL NULL
+ * a VARIANT parameter takes, and a memoryview for a VECTOR.
  */
 final class CPythonCodec {
 
@@ -73,6 +75,9 @@ final class CPythonCodec {
     private static final DateTimeFormatter OFFSET_DATE_TIME =
         DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSSSSxxx", Locale.ROOT);
 
+    /** The worker's {@code $sqlnull}: a SQL NULL a VARIANT parameter takes, a sqlNullWrapper to the handler. */
+    private static final Object SQL_NULL = new Object();
+
     private CPythonCodec() {
     }
 
@@ -81,7 +86,11 @@ final class CPythonCodec {
      * literal for a FLOAT parameter, or a timestamp for a DATE one; this settles the Python type first.
      */
     static Object argument(final DataType declared, final Object value) {
-        if (value == null || declared == null || declared.getCategory() == null) {
+        if (value == null) {
+            // A SQL NULL is a sqlNullWrapper to a VARIANT parameter and None to any other (live-verified).
+            return declared instanceof VariantType ? SQL_NULL : null;
+        }
+        if (declared == null || declared.getCategory() == null) {
             return value;
         }
         switch (declared.getCategory()) {
@@ -198,6 +207,9 @@ final class CPythonCodec {
     static JsonNode encode(final Object value) {
         if (value == null) {
             return NODES.nullNode();
+        }
+        if (value == SQL_NULL) {
+            return tagged("$sqlnull", "");
         }
         if (value instanceof Boolean) {
             return NODES.booleanNode((Boolean) value);

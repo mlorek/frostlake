@@ -20,6 +20,7 @@ import dev.frostlake.parser.FrostlakeLexer;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.antlr.v4.runtime.Token;
 
@@ -36,25 +37,36 @@ import org.antlr.v4.runtime.Token;
  *   SELECT a FROM t LIMIT n                     'SELECT' 1 alone, a parameter where the count stands, after
  *                                               OFFSET and FETCH FIRST too
  *   SELECT a FROM t LIMIT n + 1                 'SELECT' 1, then the ')' closing the frame
+ *   SELECT a FROM t LIMIT -n                    likewise
+ *   SELECT a FROM t LIMIT (n) + 1               'SELECT' 1, the 'n' and the ')' closing the frame; a count
+ *                                               in parentheses alone reads, and is judged as it compiles
  * </pre>
  *
- * A query nested in the body with a parameter for its count is refused too, the body's first word first:
- * {@code SELECT COUNT(*) FROM (SELECT a FROM t LIMIT n)}, and alike after OFFSET and FETCH FIRST, in a scalar
- * subquery and under IN.
+ * A body that opens with WITH is refused alike, at the WITH. A query nested in the body with such a count is refused
+ * too, the body's first word first: {@code SELECT COUNT(*) FROM (SELECT a FROM t LIMIT n)}, and alike after OFFSET
+ * and FETCH FIRST, with a negative count, in a scalar subquery and under IN. The lines after the first are those of
+ * the account's reading on (see {@link FramedQueryReading}).
  */
 final class RowCountFaults {
+
+    /** The operators a count in parentheses may not be followed by. */
+    private static final Set<Integer> OPERATORS = Set.of(FrostlakeLexer.PLUS, FrostlakeLexer.MINUS,
+        FrostlakeLexer.STAR, FrostlakeLexer.SLASH, FrostlakeLexer.PERCENT, FrostlakeLexer.PIPE_PIPE, FrostlakeLexer.EQ,
+        FrostlakeLexer.NEQ, FrostlakeLexer.LT, FrostlakeLexer.LTE, FrostlakeLexer.GT, FrostlakeLexer.GTE);
 
     private RowCountFaults() {
     }
 
     /**
-     * The refusal's lines for a framed query body whose own row count is one of the faults above, or null.
+     * The refusal's lines for a framed query body whose own row count, or the row count of a query nested in it, is
+     * one of the faults above, or null.
      *
      * @param framed the framed body's spoken tokens, the frame's parentheses included
      * @return the lines, or null
      */
     static String lines(final List<Token> framed) {
-        if (framed.size() < 4 || framed.get(1).getType() != FrostlakeLexer.SELECT) {
+        if (framed.size() < 4 || framed.get(1).getType() != FrostlakeLexer.SELECT
+                && framed.get(1).getType() != FrostlakeLexer.WITH) {
             return null;
         }
         int depth = 0;
@@ -72,30 +84,21 @@ final class RowCountFaults {
             if (at + 1 >= framed.size()) {
                 return null;
             }
-            final Token count = framed.get(at);
-            final List<Token> refused = new ArrayList<>();
-            if (count.getType() == FrostlakeLexer.MINUS
-                    && framed.get(at + 1).getType() == FrostlakeLexer.INTEGER_LITERAL && at + 2 < framed.size()) {
-                refused.add(framed.get(1));
-                refused.add(framed.get(at + 2));
-            } else if (count.getType() == FrostlakeLexer.STRING_LITERAL && type == FrostlakeLexer.FETCH) {
-                refused.add(count);
-            } else if (count.getType() == FrostlakeLexer.IDENTIFIER) {
-                refused.add(framed.get(1));
-                if (isOperator(framed.get(at + 1))) {
-                    refused.add(framed.get(framed.size() - 1));
-                }
-            } else {
-                // A count that is a count: a later one may still be none.
-                continue;
+            if (noCount(framed, at)) {
+                return FramedQueryReading.lines(framed);
             }
-            return rendered(refused);
+            if (framed.get(at).getType() == FrostlakeLexer.STRING_LITERAL && type == FrostlakeLexer.FETCH) {
+                final List<Token> refused = new ArrayList<>();
+                refused.add(framed.get(at));
+                return rendered(refused);
+            }
+            // A count that is a count: a later one may still be none.
         }
-        return nestedParameterCount(framed);
+        return nestedCountFault(framed) ? FramedQueryReading.lines(framed) : null;
     }
 
-    /** The body's first word, where a query nested in it takes a parameter for its row count; null otherwise. */
-    private static String nestedParameterCount(final List<Token> framed) {
+    /** Whether a query nested in the body holds a row count that is none. */
+    private static boolean nestedCountFault(final List<Token> framed) {
         int depth = 0;
         for (int i = 0; i + 1 < framed.size(); i++) {
             final int type = framed.get(i).getType();
@@ -104,21 +107,55 @@ final class RowCountFaults {
             } else if (type == FrostlakeLexer.RPAREN) {
                 depth--;
             }
-            if (depth < 2 || !countsRows(framed, i)) {
-                continue;
-            }
-            final int at = i + (type == FrostlakeLexer.FETCH ? 2 : 1);
-            if (at < framed.size() && framed.get(at).getType() == FrostlakeLexer.IDENTIFIER) {
-                final List<Token> first = new ArrayList<>();
-                first.add(framed.get(1));
-                return rendered(first);
+            if (depth >= 2 && countsRows(framed, i) && noCount(framed, i + (type == FrostlakeLexer.FETCH ? 2 : 1))) {
+                return true;
             }
         }
-        return null;
+        return false;
     }
 
-    /** Whether the token at {@code i} opens a row count: LIMIT, OFFSET, or FETCH FIRST or NEXT. */
-    private static boolean countsRows(final List<Token> framed, final int i) {
+    /**
+     * Whether the row count at the index is none the account's query grammar reads: a name, as a parameter is, a
+     * negative number or name, or a count in parentheses that an operator follows.
+     *
+     * @param tokens the spoken tokens
+     * @param at     the index the count starts at
+     * @return whether it is none
+     */
+    static boolean noCount(final List<Token> tokens, final int at) {
+        if (at >= tokens.size()) {
+            return false;
+        }
+        final int type = tokens.get(at).getType();
+        if (type == FrostlakeLexer.IDENTIFIER) {
+            return true;
+        }
+        if (type == FrostlakeLexer.MINUS) {
+            return at + 1 < tokens.size() && (tokens.get(at + 1).getType() == FrostlakeLexer.INTEGER_LITERAL
+                || tokens.get(at + 1).getType() == FrostlakeLexer.IDENTIFIER);
+        }
+        if (type != FrostlakeLexer.LPAREN) {
+            return false;
+        }
+        int depth = 0;
+        for (int i = at; i < tokens.size(); i++) {
+            if (tokens.get(i).getType() == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (tokens.get(i).getType() == FrostlakeLexer.RPAREN && --depth == 0) {
+                return i + 1 < tokens.size() && OPERATORS.contains(tokens.get(i + 1).getType());
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the token at the index opens a row count: LIMIT, OFFSET, or FETCH FIRST or NEXT.
+     *
+     * @param framed the spoken tokens
+     * @param i      the index
+     * @return whether it does
+     */
+    static boolean countsRows(final List<Token> framed, final int i) {
         final int type = framed.get(i).getType();
         if (type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.OFFSET) {
             return true;
@@ -126,12 +163,6 @@ final class RowCountFaults {
         return type == FrostlakeLexer.FETCH && i + 1 < framed.size()
             && (framed.get(i + 1).getType() == FrostlakeLexer.FIRST
                 || framed.get(i + 1).getType() == FrostlakeLexer.NEXT);
-    }
-
-    private static boolean isOperator(final Token token) {
-        final int type = token.getType();
-        return type == FrostlakeLexer.PLUS || type == FrostlakeLexer.MINUS || type == FrostlakeLexer.STAR
-            || type == FrostlakeLexer.SLASH;
     }
 
     /** One syntax-error line per token, in the frame's positions. */

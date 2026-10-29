@@ -16,11 +16,20 @@
 
 package dev.frostlake.metastore;
 
+import dev.frostlake.metastore.model.AppObject;
+import dev.frostlake.metastore.model.AppObjectKind;
+import dev.frostlake.metastore.model.ArtifactRepository;
+import dev.frostlake.metastore.model.ContainerObjects;
+import dev.frostlake.metastore.model.ContainerService;
+import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.ImageRepository;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurityObjectKind;
+import dev.frostlake.metastore.model.SecurityObjectStore;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Task;
@@ -32,9 +41,12 @@ import java.util.List;
 /**
  * What becomes of the objects a role owns when the role's name stops naming it. A dropped role hands every object
  * it owned to the role that dropped it — its tables, views, sequences, stages, routines and schemas read
- * {@code ACCOUNTADMIN} as their owner straight after an ACCOUNTADMIN's {@code DROP ROLE} (live-verified), and its
- * database roles go the same way (documented) — and a renamed role goes on owning them under its new name. Without
- * that an owner's name would name no role, and nobody, or anybody, could act as the owner.
+ * {@code ACCOUNTADMIN} as their owner straight after an ACCOUNTADMIN's {@code DROP ROLE} (live-verified), and every
+ * other kind it owns goes the same way, its database roles, secrets, network rules and policies, integrations, external
+ * volumes, notebooks, Streamlit apps, Cortex Search services, image and artifact repositories and services (documented:
+ * "Ownership of any objects owned by the dropped role is transferred to the role that executes the DROP ROLE
+ * command") — and a renamed role goes on owning them under its new name. Without that an owner's name would name no
+ * role, and nobody, or anybody, could act as the owner.
  */
 public final class RoleOwnership {
 
@@ -95,8 +107,25 @@ public final class RoleOwnership {
                         format.setOwner(to);
                     }
                 }
+                for (final CortexSearchService service : schema.getCortexSearchServices()) {
+                    if (owns(from, service.getOwner())) {
+                        service.setOwner(to);
+                    }
+                }
+                for (final AppObjectKind kind : AppObjectKind.values()) {
+                    for (final AppObject object : schema.getAppObjects().all(kind)) {
+                        if (owns(from, object.getOwner())) {
+                            object.setOwner(to);
+                        }
+                    }
+                }
+                reownContainerObjects(schema.getContainerObjects(), from, to);
+                reownSecurityObjects(schema.getSecurityObjects(), from, to);
             }
         }
+        reownSecurityObjects(catalog.getSecurityObjects(), from, to);
+        reownAll(catalog.getIntegrations().all(), from, to);
+        reownAll(catalog.getExternalVolumes().all(), from, to);
         reownAll(catalog.getComputePools(), from, to);
         for (final Warehouse warehouse : catalog.getAllWarehouses()) {
             if (owns(from, warehouse.getOwner())) {
@@ -112,6 +141,30 @@ public final class RoleOwnership {
             if (owns(from, user.getOwner())) {
                 user.setOwner(to);
             }
+        }
+    }
+
+    private static void reownContainerObjects(final ContainerObjects objects, final String from, final String to) {
+        for (final ImageRepository repository : objects.getImageRepositories()) {
+            if (owns(from, repository.getOwner())) {
+                repository.setOwner(to);
+            }
+        }
+        for (final ArtifactRepository repository : objects.getArtifactRepositories()) {
+            if (owns(from, repository.getOwner())) {
+                repository.setOwner(to);
+            }
+        }
+        for (final ContainerService service : objects.getServices()) {
+            if (owns(from, service.getOwner())) {
+                service.setOwner(to);
+            }
+        }
+    }
+
+    private static void reownSecurityObjects(final SecurityObjectStore objects, final String from, final String to) {
+        for (final SecurityObjectKind kind : SecurityObjectKind.values()) {
+            reownAll(objects.list(kind), from, to);
         }
     }
 

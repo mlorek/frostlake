@@ -117,4 +117,21 @@ public class StreamSessionTemporaryShadowTest {
         assertEquals("", say("SELECT id, METADATA$ACTION FROM svw ORDER BY 1"));
         assertEquals("2", say("SELECT id FROM tw2 ORDER BY 1"));
     }
+
+    @Test
+    public void aJoinViewStreamReadsTheChangesOfTheSessionsTrackedTemporaryTable() {
+        say("CREATE TABLE tjw (id INT)");
+        say("CREATE TABLE tjv (id INT, v STRING)");
+        say("INSERT INTO tjv VALUES (1, 'one'), (2, 'two')");
+        say("CREATE VIEW vjw AS SELECT tjw.id, tjv.v FROM tjw JOIN tjv ON tjw.id = tjv.id");
+        say("CREATE STREAM sjw ON VIEW vjw");
+        // The permanent table took no change: the temporary table's are the stream's all the same.
+        say("CREATE TEMPORARY TABLE tjw (id INT)");
+        say("ALTER TABLE tjw SET CHANGE_TRACKING = TRUE");
+        say("INSERT INTO tjw VALUES (2)");
+        assertEquals("2|two|INSERT", say("SELECT id, v, METADATA$ACTION FROM sjw ORDER BY 1"));
+        say("CREATE TABLE tjo (id INT)");
+        assertEquals("1", say("INSERT INTO tjo SELECT id FROM sjw"));
+        assertEquals("", say("SELECT id, v, METADATA$ACTION FROM sjw ORDER BY 1"));
+    }
 }

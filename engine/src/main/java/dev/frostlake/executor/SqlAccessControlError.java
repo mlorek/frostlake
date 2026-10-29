@@ -120,6 +120,23 @@ public final class SqlAccessControlError {
     }
 
     /**
+     * The refusal of the listing of the organization's accounts, which only the organization account answers: what the
+     * session may not operate on is the account's own system, named with no kind, and what it lacks is the
+     * organization's MANAGE ACCOUNTS on the current account (live-verified, the two spaces before the name included).
+     *
+     * @param primaryRole the session's primary role
+     * @param secondary   whether the session asked for secondary roles
+     * @param locator     the current account's locator
+     * @return the refusal
+     */
+    public static String manageAccountsRequired(final String primaryRole, final boolean secondary,
+                                                final String locator) {
+        return insufficientPrivileges("", "SYSTEM") + " Your primary role " + primaryRole
+            + (secondary ? " or one of your secondary roles" : "") + " must have MANAGE ACCOUNTS granted on ACCOUNT "
+            + locator + ".";
+    }
+
+    /**
      * The refusal for a stream over a table whose change tracking is off, created by a role that may read the
      * table but not alter it: the stream would have to turn change tracking on (live-verified).
      *

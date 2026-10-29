@@ -221,9 +221,9 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
         assertTrue(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAVA3"));
     }
 
-    /** A handler that lives in an IMPORTS jar is not in the body, so the body is not judged. */
+    /** A body is compiled where its handler would live in an IMPORTS jar, so one that is no Java is refused. */
     @Test
-    public void anImportsHandlerLeavesTheBodyAlone() throws IOException {
+    public void anImportsHandlerStillHasItsBodyCompiled() throws IOException {
         Assumptions.assumeFalse(isLiveSnowflake(), LOCAL_STAGE_ONLY);
         // The stage and the jar have to exist: live validates BOTH at CREATE time, so a routine naming a
         // stage that was never made is refused before it can demonstrate anything about its body.
@@ -231,10 +231,18 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
         Files.writeString(stageDir.resolve("handlers.jar"), "not really a jar");
         engine.execute("CREATE STAGE stg URL='file://" + stageDir + "'");
 
-        engine.execute("CREATE FUNCTION f_jar(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
-            + " RUNTIME_VERSION = '11' IMPORTS = ('@stg/handlers.jar') HANDLER = 'C.go'"
-            + " AS 'not java at all'");
-        assertTrue(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAR"));
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE FUNCTION f_jar(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+                    + " RUNTIME_VERSION = '11' IMPORTS = ('@stg/handlers.jar') HANDLER = 'C.go'"
+                    + " AS 'not java at all'");
+            }
+        });
+        final String message = String.valueOf(refused.getMessage());
+        assertTrue(message.startsWith("Error while compiling source: /InlineCode.java:1: error: ")
+            && message.endsWith(" in function F_JAR with handler C.go"), message);
+        assertFalse(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAR"));
     }
 
     /** And the validation itself: live refuses the stage leg and the file leg, each with its own words. */

@@ -30,13 +30,15 @@ final class VirtualColumnUsageWalk extends AstPrinterVisitor {
 
     /**
      * The functions whose answer moves between two calls, each under the name the refusal gives it: a call written
-     * through SYSDATE, GETDATE or SYSTIMESTAMP is planned as CURRENT_TIMESTAMP.
+     * through SYSDATE, GETDATE or SYSTIMESTAMP is planned as CURRENT_TIMESTAMP. CURRENT_USER is one of them too
+     * (live-verified).
      */
     private static final Map<String, String> MOVING = new HashMap<>();
 
     static {
         for (final String name : new String[] {"CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME",
-            "LOCALTIMESTAMP", "LOCALTIME", "RANDOM", "LAST_QUERY_ID", "SEQ1", "SEQ2", "SEQ4", "SEQ8"}) {
+            "LOCALTIMESTAMP", "LOCALTIME", "RANDOM", "LAST_QUERY_ID", "SEQ1", "SEQ2", "SEQ4", "SEQ8",
+            "CURRENT_USER"}) {
             MOVING.put(name, name);
         }
         MOVING.put("SYSDATE", "CURRENT_TIMESTAMP");
@@ -48,6 +50,7 @@ final class VirtualColumnUsageWalk extends AstPrinterVisitor {
     private final ExpressionEvaluator scope;
     private final Map<String, String> spellings;
     private String refused;
+    private SourcePosition refusedAt;
 
     /**
      * @param functions the built-in functions
@@ -72,9 +75,27 @@ final class VirtualColumnUsageWalk extends AstPrinterVisitor {
         return refused;
     }
 
+    /**
+     * Where the call the refusal names sits in the expression's text, or null for a part that is refused at the
+     * column's name - a query, a session variable, a column by its place.
+     */
+    SourcePosition refusedAt() {
+        return refusedAt;
+    }
+
     private void note(final String usage) {
+        note(usage, null);
+    }
+
+    /** Where a call stands in the expression's text: where the builder recorded it, else the text's start. */
+    private static SourcePosition placeOf(final FunctionCallExpression call) {
+        return call.getPosition() != null ? call.getPosition() : new SourcePosition(1, 0);
+    }
+
+    private void note(final String usage, final SourcePosition at) {
         if (refused == null) {
             refused = usage;
+            refusedAt = at;
         }
     }
 
@@ -117,12 +138,13 @@ final class VirtualColumnUsageWalk extends AstPrinterVisitor {
         final boolean builtIn = functions.hasFunction(name) || functions.hasBuiltInAggregateFunction(name)
             || functions.hasTableFunction(name);
         if (MOVING.containsKey(name) || "UUID_STRING".equals(name) && expr.getArguments().isEmpty()) {
-            note("non-deterministic " + (MOVING.containsKey(name) && !MOVING.get(name).equals(name) ? MOVING.get(name)
-                : spelled(written)) + " function");
+            // Named before its kind, the call itself placed: UNIFORM(1, 10, RANDOM()) at its RANDOM (live-verified).
+            note((MOVING.containsKey(name) && !MOVING.get(name).equals(name) ? MOVING.get(name) : spelled(written))
+                + " non deterministic function", placeOf(expr));
         } else if (!builtIn && scope.resolvedUserFunction(expr) != null) {
-            note(spelled(written) + " user defined function");
+            note(spelled(written) + " user defined function", placeOf(expr));
         } else if (functions.hasBuiltInAggregateFunction(name) && !functions.hasFunction(name)) {
-            note(spelled(written) + " aggregate function");
+            note(spelled(written) + " aggregate function", placeOf(expr));
         }
         return super.visitFunctionCall(expr);
     }

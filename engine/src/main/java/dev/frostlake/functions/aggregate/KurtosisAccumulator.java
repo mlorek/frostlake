@@ -67,25 +67,7 @@ public class KurtosisAccumulator
         }
         final int n = values.size();
         if (n < 4) return null;
-        double total = 0;
-        for (final Double value : values) {
-            total += value.doubleValue();
-        }
-        final double mean = total / n;
-        double squares = 0;
-        for (final Double value : values) {
-            squares += Math.pow(value.doubleValue() - mean, 2);
-        }
-        final double variance = squares / (n - 1);
-        // A series that does not vary divides by its zero deviation, whatever its type (live-verified).
-        if (variance == 0) {
-            throw new RuntimeException("Division by zero");
-        }
-        final double stddev = Math.sqrt(variance);
-        double sum4 = 0;
-        for (final Double value : values) {
-            sum4 += Math.pow((value.doubleValue() - mean) / stddev, 4);
-        }
+        final double sum4 = AggregateNumerics.standardizedMomentSum(values, 4);
         final double kurtosis = (double) n * (n + 1) / ((n - 1) * (n - 2) * (n - 3)) * sum4
             - 3.0 * (n - 1) * (n - 1) / ((n - 2) * (n - 3));
         if (Double.isNaN(kurtosis) || Double.isInfinite(kurtosis)) {

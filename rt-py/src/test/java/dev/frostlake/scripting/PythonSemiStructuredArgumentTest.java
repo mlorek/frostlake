@@ -102,7 +102,8 @@ def h(v):
         assertEquals("float", scalar("SELECT probe(PARSE_JSON('1.5'))"));
         assertEquals("bool", scalar("SELECT probe(PARSE_JSON('true'))"));
         assertEquals("NoneType", scalar("SELECT probe(PARSE_JSON('null'))"));
-        assertEquals("NoneType", scalar("SELECT probe(NULL)"));
+        // A SQL NULL is no JSON null: a VARIANT parameter takes it as a sqlNullWrapper (live-verified).
+        assertEquals("sqlNullWrapper", scalar("SELECT probe(NULL)"));
     }
 
     @Test

@@ -37,14 +37,18 @@ import java.util.List;
  *       {@code Invalid parameter value: 0. Reason: n must be >= 1};</li>
  *   <li>a NULL generator answers NULL.</li>
  * </ul>
- * An N with a fraction is rounded to the nearest whole number. The value is drawn by rejection-inversion
- * (Hörmann and Derflinger), so each row costs the same whatever N is. The draws follow the law but not the
- * account's own values, which its generator mapping alone decides.
+ * An N with a fraction is rounded to the nearest whole number. The value is the account's (live-verified, ZIPF(1,
+ * 1000000, 1) is 4097): the generator's first draw (see {@link GeneratorDraws}) picks the first rank whose weights,
+ * summed from rank 1, reach its fraction of all of them (see {@link ZipfRanks}). Past ten million ranks the value is
+ * drawn by rejection-inversion (Hörmann and Derflinger) instead, at a cost that does not grow with N.
  */
 public class Zipf extends NumericArgumentFunction {
 
-    /** A step from one 64-bit state to the next, Weyl's increment of splitmix64. */
-    private static final long GOLDEN_GAMMA = 0x9E3779B97F4A7C15L;
+    /**
+     * The most ranks drawn as the account draws them, by summing every weight (see {@link ZipfRanks}); past it a draw
+     * is made by rejection-inversion, which follows the law at the same cost whatever the ranks.
+     */
+    private static final long EXACT_RANKS = 10_000_000L;
 
     public Zipf() {
         super("ZIPF", NumericType.NUMBER);
@@ -75,18 +79,21 @@ public class Zipf extends NumericArgumentFunction {
         if (args.get(2) == null) {
             return null;
         }
-        // The generator is read as RANDOM reads its seed: a whole number past 64 bits is no number.
-        Random.seedOf(args.get(2));
+        // The generator is read as RANDOM reads its seed, a whole number past 64 bits being no number, and its value
+        // seeds the draws (see GeneratorDraws).
+        final GeneratorDraws draws = new GeneratorDraws(Random.seedOf(args.get(2)));
         final long n = elements.min(BigDecimal.valueOf(Long.MAX_VALUE)).longValue();
-        final long[] state = {((Number) args.get(2)).longValue()};
         // An infinite exponent puts every draw on the first rank (live-verified).
         if (n == 1 || Double.isInfinite(exponent)) {
             return Long.valueOf(1L);
         }
-        if (exponent == 0) {
-            return Long.valueOf(1L + Math.floorMod(next(state), n));
+        if (n <= EXACT_RANKS) {
+            return Long.valueOf(ZipfRanks.of(exponent, n).rank(draws.canonical()));
         }
-        return Long.valueOf(sample(n, exponent, state));
+        if (exponent == 0) {
+            return Long.valueOf(Math.min(n, Math.max(1L, (long) Math.ceil(draws.canonical() * n))));
+        }
+        return Long.valueOf(sample(n, exponent, draws));
     }
 
     /** Whether an argument is a number that is not a NaN or infinite FLOAT. */
@@ -104,27 +111,13 @@ public class Zipf extends NumericArgumentFunction {
             : number.stripTrailingZeros().toPlainString();
     }
 
-    /** The next 64 bits of the generator's stream: splitmix64. */
-    private static long next(final long[] state) {
-        state[0] += GOLDEN_GAMMA;
-        long z = state[0];
-        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
-        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
-        return z ^ (z >>> 31);
-    }
-
-    /** The next uniform double in [0, 1) of the generator's stream. */
-    private static double nextDouble(final long[] state) {
-        return (next(state) >>> 11) * 0x1.0p-53;
-    }
-
     /** Rejection-inversion sampling of a Zipf variate in 1..n with this exponent. */
-    private static long sample(final long n, final double exponent, final long[] state) {
+    private static long sample(final long n, final double exponent, final GeneratorDraws draws) {
         final double hIntegralX1 = hIntegral(1.5, exponent) - 1.0;
         final double hIntegralN = hIntegral(n + 0.5, exponent);
         final double squeeze = 2.0 - hIntegralInverse(hIntegral(2.5, exponent) - h(2.0, exponent), exponent);
         while (true) {
-            final double u = hIntegralN + nextDouble(state) * (hIntegralX1 - hIntegralN);
+            final double u = hIntegralN + draws.canonical() * (hIntegralX1 - hIntegralN);
             final double x = hIntegralInverse(u, exponent);
             long k = (long) (x + 0.5);
             if (k < 1) {

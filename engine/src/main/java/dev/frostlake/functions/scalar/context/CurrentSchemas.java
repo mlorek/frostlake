@@ -51,7 +51,9 @@ public class CurrentSchemas extends BuiltInFunction {
         final List<String> names = SearchPath.names(catalog, session == null ? SearchPath.DEFAULT : session.value(),
             session == null ? null : session.account());
         if (names.isEmpty()) {
-            return "[\"" + catalog.getCurrentDatabase() + "." + catalog.getCurrentSchema() + "\"]";
+            // A session with no current schema, its database's PUBLIC gone too, searches nothing (live-verified).
+            return catalog.getCurrentSchema() == null ? "[]"
+                : "[\"" + catalog.getCurrentDatabase() + "." + catalog.getCurrentSchema() + "\"]";
         }
         final StringBuilder array = new StringBuilder("[");
         for (int i = 0; i < names.size(); i++) {

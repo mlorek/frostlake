@@ -837,6 +837,10 @@ final class TaskProperties {
         if (sessionUser != null && sessionUser.equalsIgnoreCase(userName)) {
             return;
         }
+        if (!catalog.hasUserExact(userName)) {
+            // Refused with no hint of a privilege (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("User", userName));
+        }
         final User user = catalog.getUserExact(userName);
         final String owner = task.getOwner();
         if (owner != null && !reaches(user, owner)) {

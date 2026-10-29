@@ -127,12 +127,20 @@ final class AlterStageHandler {
                 QualifiedName.key(target.getDatabaseName(), target.getName(), stage.getName()));
             logger.trace("Renamed stage {} to {}", stageName, newName);
         } else {
-            // Judged whole before anything is applied, so a refused property leaves the others unset.
+            // Judged whole before anything is applied, so a refused property leaves the others unset. An ENCRYPTION
+            // group is judged first, at the location the statement leaves the stage: an internal stage refuses a
+            // URL only once the group passed (live-verified).
+            final String location = locationAfter(stage, action.stageSetting());
             for (final FrostlakeParser.StageSettingContext setting : action.stageSetting()) {
-                set(stage, setting, false);
+                if (isEncryption(setting)) {
+                    encryption(stage, setting, location);
+                }
             }
             for (final FrostlakeParser.StageSettingContext setting : action.stageSetting()) {
-                set(stage, setting, true);
+                set(stage, setting, false, location);
+            }
+            for (final FrostlakeParser.StageSettingContext setting : action.stageSetting()) {
+                set(stage, setting, true, location);
             }
             logger.trace("Set properties on stage: {}", stageName);
         }
@@ -148,8 +156,35 @@ final class AlterStageHandler {
         }
     }
 
+    /** The location a SET leaves its stage at: the last URL it writes, else the stage's own. */
+    private String locationAfter(final Stage stage, final List<FrostlakeParser.StageSettingContext> settings) {
+        String location = stage.getUrl();
+        for (final FrostlakeParser.StageSettingContext setting : settings) {
+            if (setting.URL() != null) {
+                location = visitor.extractStringLiteral(setting.STRING_LITERAL());
+            }
+        }
+        return location;
+    }
+
+    /** Whether a setting writes the stage's ENCRYPTION, by its own alternative or as a plain word. */
+    private static boolean isEncryption(final FrostlakeParser.StageSettingContext setting) {
+        return setting.ENCRYPTION() != null
+            || setting.identifier() != null && "ENCRYPTION".equalsIgnoreCase(setting.identifier().getText());
+    }
+
+    /** The stage's ENCRYPTION group judged as an ALTER judges it (see StageEncryption). */
+    private static StageEncryption encryption(final Stage stage, final FrostlakeParser.StageSettingContext setting,
+                                              final String location) {
+        final FrostlakeParser.CopyOptionValueContext value = setting.copyOptionValue();
+        final String written = value == null ? null : value.booleanValue() != null
+            ? value.booleanValue().getText().toUpperCase(Locale.ROOT) : ParseTreeText.getOriginalText(value);
+        return StageEncryption.judge(written, setting.parenOptionList(), location, stage.getUrl() == null, false);
+    }
+
     /** One property of a SET: judged, and applied when asked to. */
-    private void set(final Stage stage, final FrostlakeParser.StageSettingContext setting, final boolean apply) {
+    private void set(final Stage stage, final FrostlakeParser.StageSettingContext setting, final boolean apply,
+                     final String location) {
         if (setting.URL() != null) {
             refuseOnInternalStage(stage);
             CloudStageUrls.require(visitor.extractStringLiteral(setting.STRING_LITERAL()));
@@ -181,6 +216,12 @@ final class AlterStageHandler {
                     stage.getCopyOptions().clear();
                     stage.getCopyOptions().putAll(options);
                 }
+            }
+        } else if (isEncryption(setting)) {
+            final StageEncryption judged = encryption(stage, setting, location);
+            if (apply) {
+                stage.setEncryptionType(judged.type());
+                stage.setEncryptionKey(judged.key());
             }
         } else {
             setNamed(stage, setting, apply);
@@ -230,13 +271,12 @@ final class AlterStageHandler {
 
     /** A property named by a plain word: DIRECTORY and COPY_OPTIONS are modeled, the other known ones inert. */
     private void setNamed(final Stage stage, final FrostlakeParser.StageSettingContext setting, final boolean apply) {
-        final String key = setting.ENCRYPTION() != null ? "ENCRYPTION"
-            : visitor.getText(setting.identifier()).toUpperCase(Locale.ROOT);
+        final String key = visitor.getText(setting.identifier()).toUpperCase(Locale.ROOT);
         if (!CreateInfrastructureHandler.isStageOption(key)) {
             // Named as written: invalid property 'foo' for 'STAGE' (live-verified).
             throw ParameterRegistry.invalidProperty(setting.identifier().getText(), "STAGE");
         }
-        if ("CREDENTIALS".equals(key) || "ENCRYPTION".equals(key)) {
+        if ("CREDENTIALS".equals(key)) {
             refuseOnInternalStage(stage);
         } else if ("STORAGE_INTEGRATION".equals(key)) {
             requireIntegration(setting);

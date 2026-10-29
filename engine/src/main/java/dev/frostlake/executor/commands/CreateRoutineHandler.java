@@ -805,7 +805,7 @@ public class CreateRoutineHandler implements CommandHandler {
             procedure.setExecuteAs(executeAsText(ctx.executeAsClause(0)));
         }
 
-        RoutineBodyCompiler.compileProcedureBody(procedure);
+        RoutineBodyCompiler.compileProcedureBody(procedure, queryExecutor);
         return procedure;
     }
 
@@ -1084,7 +1084,7 @@ public class CreateRoutineHandler implements CommandHandler {
         }
         function.setEnvironment(environment);
         function.setAggregate(ctx.AGGREGATE() != null);
-        RoutineBodyCompiler.compileFunctionBody(function);
+        RoutineBodyCompiler.compileFunctionBody(function, queryExecutor);
     }
 
 
@@ -1144,7 +1144,8 @@ public class CreateRoutineHandler implements CommandHandler {
             }
             return;
         }
-        RoutineImports.validate(imports, catalog, queryExecutor);
+        RoutineImports.validate(imports, catalog, queryExecutor,
+            queryExecutor.getEngineConfig().isStageFileUrlEnabled());
         if (runtimeVersion == null && VERSIONED_RUNTIMES.contains(lang)) {
             throw new RuntimeException("Property 'runtime_version' must be specified");
         }

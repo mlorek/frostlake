@@ -37,12 +37,20 @@ public class ReadWholeStatementInScriptTest extends MeasuredCellsTestSupport {
 
     @Test
     public void theStatementIsNamedWhereItStands() {
+        // The live harness splits a script by this grammar's statements, and this text is none, so it would go over
+        // as one statement - which the account counts as two.
+        Assumptions.assumeFalse(isLiveSnowflake(), "the live harness sends text this grammar refuses as one statement");
         assertAnswer(FAILED + "\"DESCRIBE TABLE t1 (a) x = @s!=...\" (at line 1, position 0). | SQL compilation "
                 + "error: | invalid parameter 'x'" + HELPER,
             "DESCRIBE TABLE t1 (a) x = @s!=x; SELECT 1");
         assertAnswer(FAILED + "\"DESCRIBE TABLE t1 (a) x = @s!=...\" (at line 1, position 10). | SQL compilation "
                 + "error: | invalid parameter 'x'" + HELPER,
             "SELECT 1; DESCRIBE TABLE t1 (a) x = @s!=x");
+    }
+
+    /** The statement alone is refused as it compiles. */
+    @Test
+    public void theStatementAloneIsRefused() {
         assertAnswer("REFUSED SQL compilation error: | invalid parameter 'x'", "DESCRIBE TABLE t1 (a) x = @s!=x");
     }
 

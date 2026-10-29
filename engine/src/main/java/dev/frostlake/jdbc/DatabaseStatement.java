@@ -27,8 +27,6 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
-import java.sql.SQLWarning;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -36,31 +34,24 @@ import java.util.Locale;
 /**
  * JDBC Statement implementation for Frostlake SQL Engine
  */
-public class DatabaseStatement implements Statement {
+public class DatabaseStatement extends AbstractFrostlakeStatement {
     protected final DatabaseConnection connection;
     protected final HttpClient httpClient;
-    protected boolean closed;
     protected DatabaseResultSet currentResultSet;
     // Every result the last (possibly multi-statement) execution produced, one per statement, and the walk
     // over them: which answer rows and which an update count, and where getMoreResults() stands.
     protected List<ResultSetData> pendingResultData = new ArrayList<>();
     private JdbcResultWalk walk = JdbcResultWalk.none();
     protected final List<String> batchedSql = new ArrayList<>();
-    protected int maxRows;
 
     public DatabaseStatement(final DatabaseConnection connection, final HttpClient httpClient) {
         this.connection = connection;
         this.httpClient = httpClient;
-        this.closed = false;
-        this.maxRows = 0;
     }
 
 
     /** Per-statement MULTI_STATEMENT_COUNT set via {@link #setParameter}, overriding the session's. */
     private Integer statementMultiCount;
-
-    /** The query timeout in seconds, 0 for none (see {@link #setQueryTimeout}). */
-    private volatile int queryTimeoutSeconds;
 
     /**
      * The real driver's per-statement parameter surface ({@code unwrap(...).setParameter(...)});
@@ -112,12 +103,13 @@ public class DatabaseStatement implements Statement {
     /** Send a request, gated first, and keep its results. */
     private SqlResponse run(final String sql) throws SQLException {
         checkClosed();
+        requireSqlText(sql);
         applyMultiStatementGate(sql);
         if (currentResultSet != null) {
             currentResultSet.close();
             currentResultSet = null;
         }
-        final SqlResponse response = httpClient.execute(sql, desiredMultiCount(), queryTimeoutSeconds, this);
+        final SqlResponse response = httpClient.execute(sql, desiredMultiCount(), queryTimeout(), this);
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         return response;
     }
@@ -276,68 +268,12 @@ public class DatabaseStatement implements Statement {
     }
 
     @Override
-    public int getMaxFieldSize() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public void setMaxFieldSize(final int max) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getMaxRows() throws SQLException {
-        return maxRows;
-    }
-
-    @Override
-    public void setMaxRows(final int max) throws SQLException {
-        if (max < 0) {
-            throw new SQLException("The maximum row count must be zero or more: " + max);
-        }
-        this.maxRows = max;
-    }
-
-    @Override
-    public void setEscapeProcessing(final boolean enable) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getQueryTimeout() throws SQLException {
-        return queryTimeoutSeconds;
-    }
-
-    @Override
-    public void setQueryTimeout(final int seconds) throws SQLException {
-        if (seconds < 0) {
-            throw new SQLException("Query timeout must be zero or more seconds, not " + seconds);
-        }
-        // The statements this object runs are canceled once they run this long: "SQL execution canceled".
-        queryTimeoutSeconds = seconds;
-    }
-
-    @Override
     public void cancel() throws SQLException {
+        checkClosed();
         // From any thread: the running statement ends with "SQL execution canceled", and this object runs the next
         // one as usual (live-verified). Only a request of this object's own in flight is canceled: one waiting
         // behind another object's request on the connection cancels nothing of it.
         httpClient.cancelRunning(this);
-    }
-
-    @Override
-    public SQLWarning getWarnings() throws SQLException {
-        return null;
-    }
-
-    @Override
-    public void clearWarnings() throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public void setCursorName(final String name) throws SQLException {
-        throw new SQLFeatureNotSupportedException("Named cursors not supported");
     }
 
     /** True when the first statement answers rows; false when it answers an update count. */
@@ -424,36 +360,6 @@ public class DatabaseStatement implements Statement {
     }
 
     @Override
-    public void setFetchDirection(final int direction) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getFetchDirection() throws SQLException {
-        return ResultSet.FETCH_FORWARD;
-    }
-
-    @Override
-    public void setFetchSize(final int rows) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getFetchSize() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public int getResultSetConcurrency() throws SQLException {
-        return ResultSet.CONCUR_READ_ONLY;
-    }
-
-    @Override
-    public int getResultSetType() throws SQLException {
-        return ResultSet.TYPE_FORWARD_ONLY;
-    }
-
-    @Override
     public void addBatch(final String sql) throws SQLException {
         checkClosed();
         batchedSql.add(sql);
@@ -508,12 +414,8 @@ public class DatabaseStatement implements Statement {
 
     @Override
     public Connection getConnection() throws SQLException {
+        checkClosed();
         return connection;
-    }
-
-    @Override
-    public boolean getMoreResults(final int current) throws SQLException {
-        return getMoreResults();
     }
 
     @Override
@@ -551,52 +453,4 @@ public class DatabaseStatement implements Statement {
         return execute(sql);
     }
 
-    @Override
-    public int getResultSetHoldability() throws SQLException {
-        return ResultSet.HOLD_CURSORS_OVER_COMMIT;
-    }
-
-    @Override
-    public boolean isClosed() throws SQLException {
-        return closed;
-    }
-
-    @Override
-    public void setPoolable(final boolean poolable) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public boolean isPoolable() throws SQLException {
-        return false;
-    }
-
-    @Override
-    public void closeOnCompletion() throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public boolean isCloseOnCompletion() throws SQLException {
-        return false;
-    }
-
-    @Override
-    public <T> T unwrap(final Class<T> iface) throws SQLException {
-        if (iface.isAssignableFrom(getClass())) {
-            return iface.cast(this);
-        }
-        throw new SQLException("Cannot unwrap to " + iface.getName());
-    }
-
-    @Override
-    public boolean isWrapperFor(final Class<?> iface) throws SQLException {
-        return iface.isAssignableFrom(getClass());
-    }
-
-    protected void checkClosed() throws SQLException {
-        if (closed) {
-            throw new SQLException("Statement is closed");
-        }
-    }
 }

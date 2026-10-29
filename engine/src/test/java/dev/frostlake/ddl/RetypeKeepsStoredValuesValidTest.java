@@ -27,8 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * ALTER COLUMN ... SET DATA TYPE refuses a change the stored values cannot follow. The check compared a number's
  * scale alone and let binaries, vectors and structured types through. So FLOAT became NUMBER(38,9) and back,
- * BINARY(100) shrank to BINARY(4) over an 8-byte value, and a VECTOR or an OBJECT changed shape over values the new
- * type refuses, leaving a table that holds values its own INSERT rejects.
+ * BINARY(100) shrank to BINARY(4) over an 8-byte value, a VECTOR changed shape and an OBJECT's member its type over
+ * values the new type refuses, leaving a table that holds values its own INSERT rejects.
  */
 public class RetypeKeepsStoredValuesValidTest {
 
@@ -79,9 +79,8 @@ public class RetypeKeepsStoredValuesValidTest {
     public void aVectorOrAStructuredShapeDoesNotChange() {
         assertEquals("SQL compilation error: cannot change column VEC from type VECTOR(INT, 3) to VECTOR(FLOAT, 5)",
             refusal("ALTER TABLE a ALTER COLUMN vec SET DATA TYPE VECTOR(FLOAT, 5)"));
-        assertEquals("SQL compilation error: cannot change column O from type OBJECT(a NUMBER(38,0))"
-                + " to OBJECT(b VARCHAR(16777216))",
-            refusal("ALTER TABLE a ALTER COLUMN o SET DATA TYPE OBJECT(b VARCHAR)"));
+        assertEquals("SQL compilation error: cannot change column O.a from type NUMBER(38,0) to VARCHAR(16777216)",
+            refusal("ALTER TABLE a ALTER COLUMN o SET DATA TYPE OBJECT(a VARCHAR)"));
         assertEquals("not refused", refusal("ALTER TABLE a ALTER COLUMN vec SET DATA TYPE VECTOR(INT, 3)"));
         assertEquals("not refused", refusal("ALTER TABLE a ALTER COLUMN o SET DATA TYPE OBJECT(a INT)"));
     }

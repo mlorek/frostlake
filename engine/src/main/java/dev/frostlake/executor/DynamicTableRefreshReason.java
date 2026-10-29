@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
@@ -39,6 +40,7 @@ import java.util.Set;
  *   a view whose query reads no relation            Change tracking is not supported on queries with row generators.
  *   LIMIT                                           Change tracking is not supported on queries with LIMIT.
  *   a window over the whole result (no PARTITION)   This dynamic table contains a complex query. …
+ *   an aggregate with no GROUP BY                   This dynamic table contains a complex query. …
  *   CURRENT_TIMESTAMP(), RANDOM()                   Query contains the function 'RANDOM', but change tracking is not
  *                                                   supported on queries with non-deterministic functions. …
  * </pre>
@@ -58,14 +60,16 @@ public final class DynamicTableRefreshReason {
     private static final int MAX_DEPTH = 32;
 
     private final Catalog catalog;
+    private final FunctionRegistry functions;
     private final String database;
     private final String schema;
     private final int depth;
     private final Set<String> cteNames = new HashSet<>();
 
-    private DynamicTableRefreshReason(final Catalog catalog, final String database, final String schema,
-                                      final int depth, final ParseTree query) {
+    private DynamicTableRefreshReason(final Catalog catalog, final FunctionRegistry functions, final String database,
+                                      final String schema, final int depth, final ParseTree query) {
         this.catalog = catalog;
+        this.functions = functions;
         this.database = database;
         this.schema = schema;
         this.depth = depth;
@@ -75,18 +79,25 @@ public final class DynamicTableRefreshReason {
     /**
      * Why a dynamic table's query settles an AUTO refresh mode on FULL.
      *
-     * @param catalog  the catalog
-     * @param database the dynamic table's database
-     * @param schema   the dynamic table's schema
-     * @param query    the dynamic table's query
+     * @param catalog   the catalog
+     * @param functions the functions, which say what aggregates
+     * @param database  the dynamic table's database
+     * @param schema    the dynamic table's schema
+     * @param query     the dynamic table's query
      * @return the reason, or null when the query is refreshed incrementally
      */
-    public static String of(final Catalog catalog, final String database, final String schema,
-                     final FrostlakeParser.SelectStatementContext query) {
-        return new DynamicTableRefreshReason(catalog, database, schema, 0, query).walk(query);
+    public static String of(final Catalog catalog, final FunctionRegistry functions, final String database,
+                            final String schema, final FrostlakeParser.SelectStatementContext query) {
+        return new DynamicTableRefreshReason(catalog, functions, database, schema, 0, query).walk(query);
     }
 
     private String walk(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectClauseContext
+                && ((FrostlakeParser.SelectClauseContext) node).groupByClause() == null
+                && UnreadColumnPruning.containsAggregate(((FrostlakeParser.SelectClauseContext) node).selectList(),
+                    functions)) {
+            return COMPLEX;
+        }
         if (node instanceof FrostlakeParser.SelectClauseContext && depth > 0
                 && ((FrostlakeParser.SelectClauseContext) node).tableExpression() == null) {
             return ROW_GENERATORS;
@@ -153,7 +164,7 @@ public final class DynamicTableRefreshReason {
         final View view = viewNamed(viewDatabase, viewSchema, parts[parts.length - 1]);
         final FrostlakeParser.SelectStatementContext body = view == null ? null : ChangeTrackedQuery.body(view);
         return body == null ? null
-            : new DynamicTableRefreshReason(catalog, viewDatabase, viewSchema, depth + 1, body).walk(body);
+            : new DynamicTableRefreshReason(catalog, functions, viewDatabase, viewSchema, depth + 1, body).walk(body);
     }
 
     private View viewNamed(final String viewDatabase, final String viewSchema, final String viewName) {

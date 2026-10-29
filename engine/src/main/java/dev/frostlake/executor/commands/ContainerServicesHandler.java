@@ -250,6 +250,7 @@ public final class ContainerServicesHandler {
             }
             throw new RuntimeException(SqlCompilationError.of("Object '" + name + "' already exists."));
         }
+        requireUnquotedNames(schema, name, ctx.qualifiedName());
         final ImageRepository repository = new ImageRepository(name);
         for (final FrostlakeParser.ContainerPropertyContext property : ctx.containerProperty()) {
             final String key = propertyName(property);
@@ -644,6 +645,26 @@ public final class ContainerServicesHandler {
         return limit(new ResultSet(columns, rows), ctx.showTail());
     }
 
+    /**
+     * An image repository's database, schema and name are each one an unquoted identifier spells: a quoted name that
+     * reads another way is refused, {@code "ir1"} with "Invalid identifier: TEST_DB.TEST_SCHEMA.ir1", where
+     * {@code "IR1"} is taken (live-verified).
+     */
+    private void requireUnquotedNames(final Schema schema, final String name,
+                                      final FrostlakeParser.QualifiedNameContext written) {
+        for (final String part : parts(written)) {
+            if (!part.matches("[A-Z_][A-Z0-9_$]*")) {
+                throw new RuntimeException(SqlCompilationError.of(" Invalid identifier: " + databaseOf(schema) + "."
+                    + schema.getName() + "." + name
+                    + " \n db, schema and repo names for an image repo must be unquoted identifiers"));
+            }
+        }
+    }
+
+    /**
+     * A listing's page: at most the LIMIT's rows, from the first whose name is the FROM's or past it, the names
+     * compared as written (live-verified).
+     */
     private static ResultSet limit(final ResultSet set, final FrostlakeParser.ShowTailContext tail) {
         if (tail == null || tail.LIMIT() == null || tail.INTEGER_LITERAL() == null) {
             return set;
@@ -654,9 +675,16 @@ public final class ContainerServicesHandler {
             final int index = tail.STARTS() != null ? 1 : 0;
             from = ParseTreeText.stringValue(tail.stringText(index));
         }
+        int named = 0;
+        for (int i = 0; i < set.getColumns().size(); i++) {
+            if ("name".equals(set.getColumns().get(i).getName())) {
+                named = i;
+                break;
+            }
+        }
         final List<Row> kept = new ArrayList<>();
         for (final Row row : set.getRows()) {
-            if (from != null && String.valueOf(row.getValue(0)).compareTo(from) < 0) {
+            if (from != null && String.valueOf(row.getValue(named)).compareTo(from) < 0) {
                 continue;
             }
             if (kept.size() < max) {

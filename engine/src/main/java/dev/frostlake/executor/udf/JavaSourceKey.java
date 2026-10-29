@@ -28,6 +28,8 @@ public final class JavaSourceKey {
     private final int release;
     /** Whether Snowpark's classes were on the class path (see {@link SnowparkPackage}). */
     private final boolean snowpark;
+    /** The jars on the class path as they stood, each path with its length and time; empty for none. */
+    private final String jars;
 
     /**
      * @param className  the class the handler names
@@ -53,10 +55,23 @@ public final class JavaSourceKey {
      * @param snowpark   whether Snowpark's classes are on the class path
      */
     public JavaSourceKey(final String className, final String sourceCode, final int release, final boolean snowpark) {
+        this(className, sourceCode, release, snowpark, "");
+    }
+
+    /**
+     * @param className  the class the handler names
+     * @param sourceCode the source's whole text
+     * @param release    the language level, or 0 for the JDK's own
+     * @param snowpark   whether Snowpark's classes are on the class path
+     * @param jars       the jars on the class path, each path with its length and time; empty for none
+     */
+    public JavaSourceKey(final String className, final String sourceCode, final int release, final boolean snowpark,
+                         final String jars) {
         this.className = className;
         this.sourceCode = sourceCode;
         this.release = release;
         this.snowpark = snowpark;
+        this.jars = jars;
     }
 
     @Override
@@ -66,11 +81,12 @@ public final class JavaSourceKey {
         }
         final JavaSourceKey that = (JavaSourceKey) other;
         return release == that.release && snowpark == that.snowpark && className.equals(that.className)
-            && sourceCode.equals(that.sourceCode);
+            && sourceCode.equals(that.sourceCode) && jars.equals(that.jars);
     }
 
     @Override
     public int hashCode() {
-        return 2 * (31 * (31 * className.hashCode() + sourceCode.hashCode()) + release) + (snowpark ? 1 : 0);
+        return 31 * (2 * (31 * (31 * className.hashCode() + sourceCode.hashCode()) + release) + (snowpark ? 1 : 0))
+            + jars.hashCode();
     }
 }

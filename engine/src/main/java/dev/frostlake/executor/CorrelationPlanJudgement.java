@@ -19,10 +19,12 @@ import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.CaseExpression;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LateConstantRefusal;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.PlannedCorrelations;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlFunctionArgument;
 import dev.frostlake.executor.expressions.SubqueryAnchor;
 import dev.frostlake.executor.expressions.SubqueryExpression;
@@ -478,9 +480,7 @@ public final class CorrelationPlanJudgement {
         if (lateInWhere != null && lateInWhereUnplaced != null && subqueryCount > 1) {
             // Beside another subquery of the statement, refused or not, a WHERE's depth-two one is placed
             // (live-verified).
-            return new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be"
-                + " evaluated at line " + lateInWhereUnplaced.getLine() + ", position "
-                + lateInWhereUnplaced.getCharPositionInLine()));
+            return placedRefusal(lateInWhereUnplaced);
         }
         final RuntimeException late = lateInWhere != null ? lateInWhere : lateElsewhere != null ? lateElsewhere
             : lateInOrderBy != null ? lateInOrderBy : lateInSelectList;
@@ -498,9 +498,7 @@ public final class CorrelationPlanJudgement {
             if (refusesNullableNotIn(in, in.selectStatement(), rule)) {
                 final FrostlakeParser.SelectStatementContext subquery = in.selectStatement();
                 refusedKeys.add(PlannedCorrelations.membershipKey(ParseTreeText.getOriginalText(subquery)));
-                return new UnsupportedSubqueryException(SqlCompilationError.of(
-                    "Unsupported subquery type cannot be evaluated at line " + subquery.getStart().getLine()
-                        + ", position " + subquery.getStart().getCharPositionInLine()));
+                return placedRefusal(subquery.getStart());
             }
         }
         return null;
@@ -683,9 +681,7 @@ public final class CorrelationPlanJudgement {
             if (nested != null) {
                 refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
                 judgedForItsAggregate = false;
-                return nested.isEmpty() ? new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery"
-                    + " type cannot be evaluated at line " + at.getLine() + ", position " + at.getCharPositionInLine()))
-                    : new RuntimeException(nested);
+                return nested.isEmpty() ? placedRefusal(at) : new RuntimeException(nested);
             }
             if (HavingAggregateSubqueries.answered(executor, relations, havingAggregate,
                     (FrostlakeParser.ScalarSubqueryExprContext) node)) {
@@ -721,9 +717,7 @@ public final class CorrelationPlanJudgement {
             // can make, whatever its shape, where the same key in a select list's window is answered (live-verified).
             refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
             judgedForItsAggregate = false;
-            return new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be"
-                + " evaluated at line " + subquery.getStart().getLine() + ", position "
-                + subquery.getStart().getCharPositionInLine()));
+            return placedRefusal(subquery.getStart());
         }
         final RuntimeException partitioned = scalar && !rule.readsNoOuterName(subquery)
             ? QualifyPartitionKey.refusal(node, relations) : null;
@@ -769,8 +763,18 @@ public final class CorrelationPlanJudgement {
             return new UnsupportedSubqueryException(
                 SqlCompilationError.of("Unsupported subquery type cannot be evaluated"));
         }
+        return placedRefusal(at);
+    }
+
+    /**
+     * The refusal of a subquery the account cannot evaluate, placed at a token of the text being compiled: where
+     * that text stands in its statement, as a query an EXPLAIN compiles stands after the EXPLAIN's words (see
+     * {@link ExpressionSource#place}).
+     */
+    private static UnsupportedSubqueryException placedRefusal(final Token at) {
+        final SourcePosition place = ExpressionSource.place(at.getLine(), at.getCharPositionInLine());
         return new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be evaluated"
-            + " at line " + at.getLine() + ", position " + at.getCharPositionInLine()));
+            + " at line " + place.getLine() + ", position " + place.getCharPositionInLine()));
     }
 
     /** Whether a subquery stands in the ORDER BY of a window call the QUALIFY clause holds. */

@@ -107,6 +107,11 @@ public class TransactionManager {
             txn.setSessionNumber(sessionContext.getSessionNumber());
         }
         txn.setStatementScoped(isAutoCommit());
+        if (!txn.isStatementScoped()) {
+            // Under AUTOCOMMIT = FALSE the transaction a statement opens is its scope's, as one a BEGIN opens is: a
+            // block or a procedure that leaves it open is refused for it (live-verified).
+            txn.setScope(scopeDepth.get().intValue());
+        }
         activeTransactions.put(txnId, txn);
         currentTransaction.set(txn);
         return txn;
@@ -164,7 +169,8 @@ public class TransactionManager {
 
     /**
      * Leaves the scope {@link #enterScope} entered. A transaction the scope began and left open is rolled back
-     * here, and the enclosing scope's transaction it was begun beside is the session's again.
+     * here - one a BEGIN opened, and under AUTOCOMMIT = FALSE one its first write opened - and the enclosing scope's
+     * transaction it was begun beside is the session's again.
      *
      * @return whether the scope left a transaction of its own open, which its statement reports as
      *         {@link #SCOPE_LEFT_OPEN}
@@ -173,7 +179,7 @@ public class TransactionManager {
         final int depth = scopeDepth.get().intValue();
         final Transaction txn = currentTransaction.get();
         boolean leftOpen = false;
-        if (depth > 0 && txn != null && txn.isExplicit() && txn.getScope() >= depth) {
+        if (depth > 0 && txn != null && (txn.isExplicit() || !txn.isStatementScoped()) && txn.getScope() >= depth) {
             leftOpen = true;
             try {
                 rollback();

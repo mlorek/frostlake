@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionAstBuilder;
@@ -27,11 +28,13 @@ import dev.frostlake.executor.expressions.UnknownUnitWord;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.MapType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
-import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredLeafWidths;
 import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -463,20 +466,29 @@ public final class BlockExpressionTypes {
         if (type == null || at.getLine() != line || at.getCharPositionInLine() >= column) {
             return 0;
         }
-        final String cast = type instanceof StringType ? "" : "::" + SqlTypeNames.refusalSpelling(type);
+        final String cast = type instanceof StringType ? "" : "::" + writtenOutType(type);
         return writtenOut.length() + jsonReading(type).length() + cast.length() - writtenWidth;
     }
 
     /**
-     * The call a VARIANT, OBJECT or ARRAY variable is read back through where it is written out, its JSON text bound:
-     * {@code RETURN IS_DOUBLE(v) || ' ' || TRUE} over a VARIANT is refused twelve columns further on than the
-     * variable's cast alone would place it, over an OBJECT and an ARRAY too, whatever the value holds, where a
-     * NUMBER's and a VARCHAR's places take the cast alone (live-verified).
+     * The type a variable's written-out cast spells: its refusal spelling, a structured variable's read as a cast
+     * target's, its text leaves at the width a cast gives a bare VARCHAR (see StructuredLeafWidths#castTarget).
+     */
+    private static String writtenOutType(final DataType type) {
+        return StructuredTypes.isStructured(type)
+            ? StructuredTypes.describe(StructuredLeafWidths.castTarget(type, DataTypeParser.CAST_STRING_DEFAULT))
+            : SqlTypeNames.refusalSpelling(type);
+    }
+
+    /**
+     * The call a VARIANT, OBJECT, ARRAY or MAP variable is read back through where it is written out, its JSON text
+     * bound: {@code RETURN IS_DOUBLE(v) || ' ' || TRUE} over a VARIANT is refused twelve columns further on than the
+     * variable's cast alone would place it, over an OBJECT, an ARRAY and a structured ARRAY(…), OBJECT(…) or MAP too,
+     * whatever the value holds, where a NUMBER's and a VARCHAR's places take the cast alone (live-verified).
      */
     private static String jsonReading(final DataType type) {
-        final boolean semiStructured = type instanceof VariantType
-            || type instanceof ObjectType && !(type instanceof StructuredObjectType)
-            || type instanceof ArrayType && !(type instanceof StructuredArrayType);
+        final boolean semiStructured = type instanceof VariantType || type instanceof ObjectType
+            || type instanceof ArrayType || type instanceof MapType;
         return semiStructured ? "PARSE_JSON()" : "";
     }
 

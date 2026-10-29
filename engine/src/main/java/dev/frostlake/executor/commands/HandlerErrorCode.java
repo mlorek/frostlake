@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.CallDepth;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.StatementCountMismatch;
 import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.transaction.TransactionManager;
@@ -40,7 +41,9 @@ import dev.frostlake.transaction.TransactionManager;
  * and a CLOSE of one that is not open 92201 / P0000; a RESULTSET read before anything was given to it 92212 / P0000;
  * the report of an exception a Java or a Scala procedure's handler raised, a statement it ran that failed included,
  * 100315 / P0000, and of one a Python handler raised 100357 / P0000. A refusal of no known family reads 100351 / P0000.
- * A hybrid table's primary key already held is 200001 / 22000 and a foreign key it breaks 200009 / 22000 (documented).
+ * A hybrid table's primary key already held is 200001 / 22000 and a foreign key it breaks 200009 / 22000, and a
+ * privilege refusal - an access-control error, {@code Insufficient privileges to operate on …} - 3001 / 42501
+ * (documented).
  *
  * <p>A client's driver reads the same pairs, and more families besides (live-verified): a missing object
  * 2003 / 42S02 where the sentence calls it an object, a table or a view, 2003 / 02000 where it names any other kind
@@ -75,6 +78,9 @@ final class HandlerErrorCode {
     private static final String PYTHON_INTERPRETER_ERROR = "Python Interpreter Error:";
 
     private static final HandlerErrorCode OTHER = new HandlerErrorCode(100351, "P0000");
+
+    /** How a privilege refusal's sentence starts after its access-control prefix. */
+    private static final String INSUFFICIENT_PRIVILEGES = "Insufficient privileges to operate on ";
 
     /** How a missing object's sentence goes on after its name. */
     private static final String NOT_AUTHORIZED = "' does not exist or not authorized";
@@ -132,6 +138,9 @@ final class HandlerErrorCode {
         if (message.startsWith("Cannot apply projection policy on '")
                 && message.endsWith("' because it is used as an argument by one or more policies.")) {
             return new HandlerErrorCode(506002, "23001");
+        }
+        if (message.contains(SqlAccessControlError.PREFIX) && message.contains(INSUFFICIENT_PRIVILEGES)) {
+            return new HandlerErrorCode(3001, "42501");
         }
         if (message.contains("syntax error line ")) {
             return new HandlerErrorCode(1003, "42000");

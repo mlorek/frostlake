@@ -21,9 +21,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * SPLIT_PART's part is a whole number, judged while the statement compiles and over a table with no row too:
- * an exact NUMBER with a fraction — a literal, a column, a cast, an expression — is refused, echoed as the plan
- * prints it, where what is computed from literals is computed first, so a whole number written with a fraction
- * is read and a NULL answers NULL, and so is the one whole value a column's statistics leave an expression. A
+ * an exact NUMBER with a fraction the plan knows — a literal, a column holding one value, a cast, an expression —
+ * is refused, echoed as the plan prints it, where what is computed from literals is computed first, so a whole
+ * number written with a fraction is read and a NULL answers NULL, and so is the one whole value a column's
+ * statistics leave an expression (what the plan knows is in {@link SplitPartFoldedPartTest}). A
  * BOOLEAN, a date, a time, a timestamp and a BINARY are no part at all, refused at the call; a FLOAT, a text and
  * a VARIANT are read and rounded when the row is read (live-verified).
  */

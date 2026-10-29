@@ -54,6 +54,9 @@ final class TaskContacts {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
                     catalog.qualifiedExactName(written)));
             }
+            if (assignment.listValue() != null) {
+                throw ListValues.noPurpose(assignment.listValue());
+            }
             final FrostlakeParser.ContactPurposeContext purposeWritten = assignment.contactPurpose();
             final String purpose = purposeWritten.identifier() != null
                 ? SqlIdentifiers.canonical(purposeWritten.identifier())

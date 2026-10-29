@@ -28,6 +28,7 @@ import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
+import dev.frostlake.executor.expressions.UnsupportedFeatureException;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.window.BooleanArgumentWindowFunctions;
 import dev.frostlake.metastore.Catalog;
@@ -204,7 +205,8 @@ final class PlanEcho {
                 printer.inferStaticType(parsed);
             }
         } catch (final RuntimeException refused) {
-            if (SqlCompilationError.isCompilationError(refused.getMessage())) {
+            if (SqlCompilationError.isCompilationError(refused.getMessage())
+                    || refused instanceof UnsupportedFeatureException) {
                 throw refused;
             }
         } finally {

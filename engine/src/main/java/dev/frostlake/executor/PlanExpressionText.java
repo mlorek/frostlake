@@ -344,6 +344,8 @@ final class PlanExpressionText extends AstPrinterVisitor {
             text = "LISTAGG(" + (expr.isDistinct() ? "DISTINCT " : "") + spell(args.get(0)) + ")";
         } else if ("YEAR".equals(name) && args.size() == 1) {
             text = "EXTRACT(year from " + spell(args.get(0)) + ")";
+        } else if ("COUNT_IF".equals(name) && args.size() == 1 && !expr.isDistinct()) {
+            text = countedIf(args.get(0));
         } else {
             final StringBuilder called = new StringBuilder(name).append('(');
             if (expr.isDistinct()) {
@@ -379,18 +381,28 @@ final class PlanExpressionText extends AstPrinterVisitor {
             windows.add(written);
             return written;
         }
-        final StringBuilder text = new StringBuilder(expr.getFunctionName().toUpperCase(Locale.ROOT)).append('(');
-        if (expr.isDistinct()) {
-            text.append("DISTINCT ");
-        }
-        if (expr.getStarCall() != null) {
-            text.append('*');
+        final String name = expr.getFunctionName().toUpperCase(Locale.ROOT);
+        final List<Expression> order = expr.getOrderKeys();
+        final boolean ordered = order != null && !order.isEmpty();
+        final StringBuilder text = new StringBuilder();
+        if ("COUNT_IF".equals(name) && expr.getArguments().size() == 1 && !expr.isDistinct()) {
+            text.append(countedIf(expr.getArguments().get(0)));
         } else {
-            for (int i = 0; i < expr.getArguments().size(); i++) {
-                text.append(i > 0 ? ", " : "").append(spell(expr.getArguments().get(i)));
+            text.append(name).append('(');
+            if (expr.isDistinct()) {
+                text.append("DISTINCT ");
             }
+            if (expr.getStarCall() != null) {
+                // A count of rows over an ordered window counts a constant (live-verified).
+                text.append("COUNT".equals(name) && ordered ? "1" : "*");
+            } else {
+                for (int i = 0; i < expr.getArguments().size(); i++) {
+                    text.append(i > 0 ? ", " : "").append(spell(expr.getArguments().get(i)));
+                }
+            }
+            text.append(')');
         }
-        text.append(") OVER (");
+        text.append(" OVER (");
         final List<Expression> partition = expr.getPartitionKeys();
         if (!partition.isEmpty()) {
             text.append("PARTITION BY ");
@@ -398,8 +410,7 @@ final class PlanExpressionText extends AstPrinterVisitor {
                 text.append(i > 0 ? ", " : "").append(spell(partition.get(i)));
             }
         }
-        final List<Expression> order = expr.getOrderKeys();
-        if (order != null && !order.isEmpty()) {
+        if (ordered) {
             text.append(partition.isEmpty() ? "" : " ").append("ORDER BY ");
             for (int i = 0; i < order.size(); i++) {
                 final boolean ascending = expr.getOrderAscending() == null
@@ -411,6 +422,11 @@ final class PlanExpressionText extends AstPrinterVisitor {
         final String spelled = text.append(')').toString();
         windows.add(spelled);
         return spelled;
+    }
+
+    /** A COUNT_IF as the plan counts it, a sum of one for each row its condition holds for (live-verified). */
+    private String countedIf(final Expression condition) {
+        return "SUM(IFF(" + spell(condition) + ", 1, 0))";
     }
 
     @Override
@@ -573,7 +589,26 @@ final class PlanExpressionText extends AstPrinterVisitor {
             final PlanColumn column = scope == null ? null : scope.resolve((ColumnReferenceExpression) expression);
             return column == null ? null : column.getType();
         }
+        if (expression instanceof WindowFunctionExpression) {
+            return windowType((WindowFunctionExpression) expression);
+        }
         return expression instanceof CastExpression ? ((CastExpression) expression).getTargetDataType() : null;
+    }
+
+    /**
+     * The type of a window's value where the plan's spelling turns on it: a sum, a mean or an extreme of a FLOAT is a
+     * FLOAT, so a number written beside it is a FLOAT literal, SUM(T.D) OVER () + 1.0 (live-verified); null for any
+     * other window.
+     */
+    private DataType windowType(final WindowFunctionExpression window) {
+        final String name = window.getFunctionName() == null ? "" : window.getFunctionName().toUpperCase(Locale.ROOT);
+        final List<Expression> arguments = window.getArguments();
+        if (arguments == null || arguments.size() != 1 || window.isDistinct()
+                || !("SUM".equals(name) || "AVG".equals(name) || "MIN".equals(name) || "MAX".equals(name))) {
+            return null;
+        }
+        final DataType argument = typeOf(arguments.get(0));
+        return "FLOAT".equals(familyOf(argument)) ? argument : null;
     }
 
     private static void flatten(final Expression expression, final BinaryOperator operator,

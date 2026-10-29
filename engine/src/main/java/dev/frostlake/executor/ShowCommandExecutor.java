@@ -742,10 +742,6 @@ public class ShowCommandExecutor {
         return relationalExecutor.showObjectsInDatabase(databaseName);
     }
 
-    public ResultSet showOrganizationAccounts() {
-        return sessionExecutor.showOrganizationAccounts();
-    }
-
     public ResultSet showAccounts() {
         return sessionExecutor.showAccounts();
     }

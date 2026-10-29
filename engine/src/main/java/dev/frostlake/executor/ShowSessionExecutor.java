@@ -667,10 +667,6 @@ final class ShowSessionExecutor {
         ));
     }
 
-    public ResultSet showOrganizationAccounts() {
-        return new ResultSet(accountColumns(), List.of(accountRow()));
-    }
-
     public ResultSet showAccounts() {
         return new ResultSet(accountColumns(), List.of(accountRow()));
     }

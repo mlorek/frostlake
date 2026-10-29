@@ -21,7 +21,8 @@ import java.util.List;
 import org.antlr.v4.runtime.Token;
 
 /**
- * The lines the account reports for a fault inside a stage's {@code COPY_OPTIONS = (…)} list (live-verified):
+ * The lines the account reports for a fault inside a stage's {@code COPY_OPTIONS = (…)} list, and inside a table's
+ * {@code STAGE_COPY_OPTIONS = (…)} (live-verified):
  *
  * <pre>
  *   COPY_OPTIONS = (PURGE, SIZE_LIMIT = 5)          '=', then the list's ')'
@@ -59,7 +60,8 @@ final class StageCopyOptionLines {
                 if (depth > 0) {
                     depth--;
                 } else if (spoken.get(i - 1).getType() == FrostlakeLexer.EQ
-                        && spoken.get(i - 2).getType() == FrostlakeLexer.COPY_OPTIONS) {
+                        && (spoken.get(i - 2).getType() == FrostlakeLexer.COPY_OPTIONS
+                            || ClauseWords.isWord(spoken.get(i - 2), "STAGE_COPY_OPTIONS"))) {
                     open = i;
                 } else {
                     return null;

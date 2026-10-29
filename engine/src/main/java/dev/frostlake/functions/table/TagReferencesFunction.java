@@ -38,6 +38,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -589,15 +590,18 @@ public class TagReferencesFunction extends TableFunction {
         final String[] name = qualify(written, 4, "Table", objectName);
         final Schema schema = resolveSchema(name[0], name[1], "Table", objectName);
         final Table table = schema.tableExact(name[2]);
-        if (table == null) {
+        final View view = table == null && schema.hasViewExact(name[2]) ? schema.getViewExact(name[2]) : null;
+        if (table == null && (view == null || !view.hasResolvedColumns())) {
             // A column whose table is not there is refused as a column, by its full name (live-verified).
             throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column",
                 QualifiedName.join(name)));
         }
-        for (final TableColumn column : table.getColumns()) {
+        // A view's column is tagged as a table's is, the view in the table's place (live-verified).
+        final Taggable relation = table != null ? table : view;
+        for (final TableColumn column : table != null ? table.getColumns() : view.getResolvedColumns()) {
             // The column is matched as an identifier is, too: fz."id" names no column ID.
             if (name[3].equals(column.getName())) {
-                addLineage(rows, new Taggable[] {column, table, schema, catalog.getDatabase(name[0])},
+                addLineage(rows, new Taggable[] {column, relation, schema, catalog.getDatabase(name[0])},
                     new String[] {"COLUMN", "TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "COLUMN",
                     column.getName());
                 return;

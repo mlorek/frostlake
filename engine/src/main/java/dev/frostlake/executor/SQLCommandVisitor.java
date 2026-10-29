@@ -41,6 +41,7 @@ import dev.frostlake.executor.commands.QueryCommandHandler;
 import dev.frostlake.executor.commands.SecurityObjectCommandHandler;
 import dev.frostlake.executor.commands.ShowCommandHandler;
 import dev.frostlake.executor.commands.TagValues;
+import dev.frostlake.executor.commands.TaskRunProperties;
 import dev.frostlake.executor.expressions.CaretOperator;
 import dev.frostlake.executor.expressions.DoubledSigns;
 import dev.frostlake.executor.expressions.InformationSchemaCalls;
@@ -86,7 +87,9 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.AnsiFromFormSyntax;
+import dev.frostlake.parser.AssignedTableNameLines;
 import dev.frostlake.parser.BlockCallStatementReading;
+import dev.frostlake.parser.BlockTransactionWords;
 import dev.frostlake.parser.ColdPrediction;
 import dev.frostlake.parser.EmptySchemaPartSyntax;
 import dev.frostlake.parser.FinishedPredicateSyntax;
@@ -285,8 +288,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * A session whose transaction SYSTEM$ABORT_TRANSACTION ended runs nothing until it acknowledges that with a
      * COMMIT or a ROLLBACK (live-verified): every other statement — a query of constants, a SHOW, a SET, a BEGIN,
      * a block, a statement of the block that ran the abort — is refused with one sentence, after what the
-     * statement fails to compile for. The running block itself goes on: its LET, IF, loops and RETURN are no
-     * statements of the session's, and neither is what the engine composes for itself to evaluate an expression.
+     * statement fails to compile for: a query's names, a DML statement's table, columns and values, a DDL
+     * statement's object and the query it is made from, a SHOW's or a DESCRIBE's object, a CALL's procedure. The
+     * running block itself goes on: its LET, IF, loops and RETURN are no statements of the session's, and neither
+     * is what the engine composes for itself to evaluate an expression.
      */
     private void rejectWhileTransactionAborted(final FrostlakeParser.StatementContext ctx) {
         if (queryExecutor.getTransactionManager().getAbortedTransaction() == null || queryExecutor.isUnrecorded()) {
@@ -299,12 +304,35 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         if (proceduralExecutor.isExecutingBlock() && isBlockControl(ctx.proceduralStatement())) {
             return;
         }
-        if (ctx.queryStatement() != null) {
-            // What a query fails to compile for is refused before the aborted transaction is (live-verified).
-            ExplainPlan.compileOnly(queryExecutor,
-                ParseTreeText.getOriginalText(ctx.queryStatement().selectStatement()));
+        if (ctx.proceduralStatement() != null && ctx.proceduralStatement().callStatement() != null) {
+            requireCalledProcedure(ctx.proceduralStatement().callStatement());
+        } else {
+            ExplainPlan.compileStatement(queryExecutor, ctx);
         }
         throw new RuntimeException(TransactionAbortedMessages.IGNORED);
+    }
+
+    /**
+     * A CALL of a name no procedure answers to, refused as a CALL refuses it: {@code Unknown function P.}. A name a
+     * built-in holds, a method of a class instance, a system function and a procedure the CALL defines are let
+     * through.
+     */
+    private void requireCalledProcedure(final FrostlakeParser.CallStatementContext ctx) {
+        if (ctx.qualifiedName() == null || ctx.systemFunctionName() != null || ctx.BANG() != null
+                || ctx.anonymousProcedure() != null) {
+            return;
+        }
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+        final String procName = parts[parts.length - 1];
+        final String builtIn = procName.toUpperCase(Locale.ROOT);
+        if (InformationSchemaCalls.builtIn(Arrays.asList(parts)) != null || parts.length == 1
+                && (queryExecutor.getFunctionRegistry().hasFunction(builtIn)
+                || queryExecutor.getFunctionRegistry().hasAggregateFunction(builtIn))) {
+            return;
+        }
+        if (calledSchema(parts, procName).getProcedureOverloads(procName).isEmpty()) {
+            throw unknownProcedure(parts);
+        }
     }
 
     /** Whether a statement of a block is the block's own control flow, which runs nothing in the session. */
@@ -329,11 +357,17 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * one by one in the order written, each name before its value (DescribeProperties), so theirs wait; so does
      * an ALTER SESSION's value, judged with the rest of its list (SessionParameterSettings). A variable read with
      * dotted keys after it, {@code $x.y.z}, is one name with them, X.Y.Z, whether or not X is set, and the refusal
-     * carries no position: "Session variable '$X.Y.Z' does not exist" (live-verified).
+     * carries no position: "Session variable '$X.Y.Z' does not exist" (live-verified). A grant of privileges reads
+     * its grantee before what it grants on, so of two such variables the grantee's is named (live-verified).
      */
     private void rejectUnsetSessionVariables(final ParseTree node) {
         if (node instanceof FrostlakeParser.DescribePropertyContext
                 || node instanceof FrostlakeParser.SessionValueContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.GrantStatementContext
+                && ((FrostlakeParser.GrantStatementContext) node).ON() != null) {
+            rejectUnsetGranteeFirst((FrostlakeParser.GrantStatementContext) node);
             return;
         }
         if (node instanceof FrostlakeParser.FieldAccessExprContext) {
@@ -368,6 +402,25 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             rejectUnsetSessionVariables(node.getChild(i));
+        }
+    }
+
+    /**
+     * The session variables of a grant of privileges, the grantee's - what follows TO - judged before the rest:
+     * {@code GRANT SELECT ON TABLE IDENTIFIER($a) TO ROLE IDENTIFIER($b)}, neither set, names $B (live-verified).
+     */
+    private void rejectUnsetGranteeFirst(final FrostlakeParser.GrantStatementContext grant) {
+        int to = grant.getChildCount();
+        for (int i = 0; i < grant.getChildCount(); i++) {
+            if (grant.getChild(i) == grant.TO()) {
+                to = i;
+            }
+        }
+        for (int i = to + 1; i < grant.getChildCount(); i++) {
+            rejectUnsetSessionVariables(grant.getChild(i));
+        }
+        for (int i = 0; i < to; i++) {
+            rejectUnsetSessionVariables(grant.getChild(i));
         }
     }
 
@@ -679,13 +732,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // over the task's own for this run alone.
             final FrostlakeParser.TaskExecuteOptionContext option = ctx.taskExecuteOption();
             final FrostlakeParser.TaskRetryTargetContext retry = option != null ? option.taskRetryTarget() : null;
-            String usingConfig = null;
-            if (option != null && option.taskConfigValue() != null) {
-                final FrostlakeParser.TaskConfigValueContext config = option.taskConfigValue();
-                usingConfig = config.STRING_LITERAL() != null ? extractStringLiteral(config.STRING_LITERAL())
-                    : config.DOLLAR_QUOTED_STRING().getText().substring(2,
-                        config.DOLLAR_QUOTED_STRING().getText().length() - 2);
-            }
+            final String usingConfig = option != null && option.USING() != null
+                ? TaskRunProperties.config(option.taskUsingProperty()) : null;
             taskScheduler.executeTaskManually(taskName, retry != null && retry.LAST() != null,
                 retry != null && retry.STRING_LITERAL() != null ? extractStringLiteral(retry.STRING_LITERAL()) : null,
                 usingConfig);
@@ -723,6 +771,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitListStatement(final FrostlakeParser.ListStatementContext ctx) {
+        // An owner's-rights procedure may not list a stage (live-verified).
+        rejectInsideProcedure("LIST_FILES");
         // LIST resolves the stage directory the same way PUT/GET/REMOVE and COPY do, so a URL-less
         // internal stage lists its engine-managed directory.
         return queryExecutor.executeListFromContext(ctx);
@@ -730,16 +780,20 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitPutStatement(final FrostlakeParser.PutStatementContext ctx) {
+        rejectInsideProcedureBody("PUT_FILES");
         return queryExecutor.executePutFromContext(ctx);
     }
 
     @Override
     public Object visitGetStatement(final FrostlakeParser.GetStatementContext ctx) {
+        rejectInsideProcedureBody("GET_FILES");
         return queryExecutor.executeGetFromContext(ctx);
     }
 
     @Override
     public Object visitRemoveStatement(final FrostlakeParser.RemoveStatementContext ctx) {
+        // An owner's-rights procedure may not remove staged files either (live-verified).
+        rejectInsideProcedure("REMOVE_FILES");
         return queryExecutor.executeRemoveFromContext(ctx);
     }
 
@@ -783,17 +837,31 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     }
 
     /**
-     * Whether a CREATE TABLE IF NOT EXISTS finds its table there: it creates nothing then, and ends no transaction
-     * (live-verified).
+     * Whether a CREATE … IF NOT EXISTS of a table, a view, a materialized view or a contact finds its object there:
+     * it creates nothing then, and ends no transaction (live-verified).
      */
     private boolean createsNothing(final FrostlakeParser.CreateStatementContext create) {
-        if (create == null || create.TABLE() == null || create.if_not_exists() == null
-                || create.objectName() == null) {
+        if (create == null || create.if_not_exists() == null) {
             return false;
         }
+        final Catalog catalog = queryExecutor.getCatalog();
         try {
+            if (create.CONTACT() != null) {
+                return catalog.findContact(getText(create.qualifiedName(0))) != null;
+            }
+            if (create.objectName() == null) {
+                return false;
+            }
             final String named = queryExecutor.resolveObjectName(create.objectName());
-            return queryExecutor.getCatalog().resolveTable(named) != null;
+            if (create.TABLE() != null) {
+                return catalog.resolveTable(named) != null;
+            }
+            if (create.VIEW() != null && create.MATERIALIZED() != null) {
+                final String[] parts = QualifiedName.parse(named).parts();
+                final Schema owning = catalog.requireOwningSchema(QualifiedName.of(parts));
+                return owning.hasMaterializedView(parts[parts.length - 1]);
+            }
+            return create.VIEW() != null && catalog.resolveView(named) != null;
         } catch (final RuntimeException missing) {
             return false;
         }
@@ -2019,6 +2087,23 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return procedureDepth > 0;
     }
 
+    /**
+     * How deep inside a SQL stored procedure's body execution currently is, whatever rights the procedure runs
+     * with, called by CALL or from a FROM clause.
+     */
+    private int procedureBodyDepth;
+
+    /**
+     * Refuse a statement no stored procedure's body may run, with its caller's rights or its owner's: a PUT and a
+     * GET (live-verified), when the body issues it.
+     */
+    private void rejectInsideProcedureBody(final String statementType) {
+        if (procedureBodyDepth > 0) {
+            throw new RuntimeException("Stored procedure execution error: "
+                + "Unsupported statement type '" + statementType + "'.");
+        }
+    }
+
     void rejectInsideProcedure(final String statementType) {
         // In a SQL body, and in a statement that a JavaScript, Python, Java or Scala handler issues with its
         // owner's rights (live-verified for a JavaScript handler's SET, UNSET, ALTER SESSION and USE).
@@ -2198,6 +2283,31 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             throw unknownProcedure(parts);
         }
         return database.schemaExact(schemaName);
+    }
+
+    /**
+     * The schema a CALL's name looks for its procedure in: the one its parts write, else the first along the
+     * session's SEARCH_PATH that holds a procedure of the name, else the current one. With no current database a
+     * name the session cannot place names no procedure at all, and misses in the same words as one that is simply
+     * absent (live-verified).
+     */
+    private Schema calledSchema(final String[] parts, final String procName) {
+        if (parts.length == 3) {
+            return writtenSchema(catalog.hasDatabaseExact(parts[0]) ? catalog.databaseExact(parts[0]) : null,
+                parts[1], parts);
+        }
+        if (catalog.getCurrentDatabase() == null || parts.length == 1 && catalog.getCurrentSchema() == null) {
+            throw unknownProcedure(parts);
+        }
+        if (parts.length == 2) {
+            return writtenSchema(catalog.getDatabase(catalog.getCurrentDatabase()), parts[0], parts);
+        }
+        for (final Schema candidate : queryExecutor.searchPathSchemas()) {
+            if (!candidate.getProcedureOverloads(procName).isEmpty()) {
+                return candidate;
+            }
+        }
+        return resolveCurrentSchema();
     }
 
     /** A routine's name as a refusal prints it for a CALL written with these parts: {@code TEST_SCHEMA.P}. */
@@ -2444,29 +2554,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             : anonymousProcedure(ctx.anonymousProcedure());
         final boolean callsAnonymous = anonymous != null && parts.length == 1 && anonymous.getName().equals(procName);
 
-        final Schema schema;
-        if (callsAnonymous) {
-            schema = null;
-        } else if (parts.length == 3) {
-            schema = writtenSchema(catalog.hasDatabaseExact(parts[0]) ? catalog.databaseExact(parts[0]) : null,
-                parts[1], parts);
-        } else if (catalog.getCurrentDatabase() == null
-                || parts.length == 1 && catalog.getCurrentSchema() == null) {
-            // With no current database a name the session cannot place names no procedure at all, and
-            // misses in the same words as one that is simply absent (live-verified).
-            throw unknownProcedure(parts);
-        } else if (parts.length == 2) {
-            schema = writtenSchema(catalog.getDatabase(catalog.getCurrentDatabase()), parts[0], parts);
-        } else {
-            // An unqualified procedure is looked for along the session's SEARCH_PATH.
-            Schema onPath = null;
-            for (final Schema candidate : queryExecutor.searchPathSchemas()) {
-                if (onPath == null && !candidate.getProcedureOverloads(procName).isEmpty()) {
-                    onPath = candidate;
-                }
-            }
-            schema = onPath != null ? onPath : resolveCurrentSchema();
-        }
+        final Schema schema = callsAnonymous ? null : calledSchema(parts, procName);
 
         final List<Procedure> overloads = callsAnonymous ? Collections.singletonList(anonymous)
             : schema.getProcedureOverloads(procName);
@@ -2613,6 +2701,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 // the parameter is refused as one (see ProceduralExecutor.coerceArgument).
                 given = BigDecimal.valueOf((Double) given);
             }
+            if (exactNumbers[i]) {
+                given = CallArgumentTypes.exactVariant(given, params.get(i).getDataType());
+            }
             arguments.set(i, proceduralExecutor.coerceArgument(given, params.get(i).getDataType(),
                 language == UdfLanguage.SQL));
         }
@@ -2658,7 +2749,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // was found in, along the search path for a bare name. A body that runs with its CALLER's rights stays
         // where the caller is, and where it leaves the session is where the caller finds it (live-verified).
         final String savedDb = catalog.getCurrentDatabase();
-        final String savedSchema = catalog.getCurrentSchema();
+        final String savedSchema = catalog.heldSchemaName();
         final boolean callersRights = procedure.runsWithCallersRights();
         final String homeDb = callersRights ? null : schema.getDatabaseName();
         final String homeSchema = callersRights ? null : schema.getName();
@@ -2760,6 +2851,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 if (ownersRights) {
                     procedureDepth++;
                 }
+                procedureBodyDepth++;
                 try {
                 for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(tree)) {
                     StatementClock.advance();
@@ -2793,6 +2885,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     }
                 }
                 } finally {
+                    procedureBodyDepth--;
                     if (ownersRights) {
                         procedureDepth--;
                     }
@@ -2923,6 +3016,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     private static final String EMPTY_DYNAMIC_STATEMENT = "Executing NULL or empty statement is not permitted.";
 
     private Object executeImmediate(final FrostlakeParser.ExecuteImmediateStatementContext ctx) {
+        // A staged script's file, as its refusals name it, once it is read; and whether its statements began to run.
+        String scriptFile = null;
+        boolean scriptRuns = false;
         SourcePosition requestOrigin = null;
         boolean readsTheText = false;
         BoundText displacedBinds = null;
@@ -2933,6 +3029,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             if (ctx.FROM() != null) {
                 // EXECUTE IMMEDIATE FROM @stage/file | '<location>' — run the SQL script in that file.
                 sqlString = readImmediateScript(ctx);
+                scriptFile = queryExecutor.stagedScriptName(immediateScriptLocation(ctx));
             } else {
                 if (!proceduralExecutor.isExecutingBlock()) {
                     rejectTopLevelExecuteImmediateForms(ctx);
@@ -3043,6 +3140,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 PostParseRefusals.requireBefore(coldTokens, read, coldListener);
                 RoutineArgumentOrder.requireBefore(coldTokens, coldListener);
                 SignatureTailLine.requireBefore(coldScript, read, coldListener);
+                AssignedTableNameLines.requireBefore(read, coldListener);
                 coldListener.throwIfErrors();
             }
             ScriptingStatementPlacement.requireSqlStatementsBefore(sqlScriptCtx, tokens, sqlString, errorListener);
@@ -3061,6 +3159,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             TableFunctionSubqueryArgument.requireAlone(sqlScriptCtx, tokens, sqlString);
             AnsiFromFormSyntax.requireCallForms(sqlScriptCtx, tokens, sqlString);
             ValueFunctionSyntax.requireValueFunctionForms(sqlScriptCtx, sqlString);
+            BlockTransactionWords.require(sqlScriptCtx, sqlString);
             StageArgumentSyntax.requireTextSyntax(sqlScriptCtx, sqlString, textOrigin);
             // Once it parses, the text is counted before any of it runs — against the request's count, or the
             // session's inside a block; a script read FROM a stage is not counted (see DynamicStatementCount).
@@ -3124,6 +3223,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             proceduralExecutor.enterIsolatedScope();
             final ProcedureFrame enclosingBody = proceduralExecutor.enterProcedureFrame();
             boolean textFailed = true;
+            scriptRuns = true;
             try {
                 for (final FrostlakeParser.StatementContext stmtCtx : dynamicStatements) {
                     // Only the last statement's conditional branch may reach the status sentence.
@@ -3154,8 +3254,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                         lastResult = visit(stmtCtx);
                     } catch (final RuntimeException failed) {
                         queryExecutor.failChildStatement(child, statementText, failed);
-                        throw severalStatements
-                            ? MultiStatementFailure.wrappingInText(sqlScriptCtx, stmtCtx, failed, textOrigin) : failed;
+                        if (severalStatements) {
+                            throw MultiStatementFailure.wrappingInText(sqlScriptCtx, stmtCtx, failed, textOrigin);
+                        }
+                        if (scriptFile != null) {
+                            throw StagedScriptFailure.inStatement(scriptFile, stmtCtx, failed);
+                        }
+                        throw failed;
                     } finally {
                         if (severalStatements) {
                             LeadingCommentOffset.end(displaced);
@@ -3172,9 +3277,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     // statements. Unrecorded SQL hands out no query IDs (child is null then).
                     queryExecutor.completeChildStatement(child, statementText,
                         lastResult instanceof ResultSet ? (ResultSet) lastResult : null);
-                    if (severalStatements) {
-                        // A statement of several is a statement of its own: what it changed stays when a later
-                        // one fails (live-verified).
+                    if (severalStatements || scriptFile != null) {
+                        // A statement of several, or of a staged script, is a statement of its own: what it changed
+                        // stays when a later one fails (live-verified).
                         transactions.autocommitStatementEnd();
                     }
                 }
@@ -3213,6 +3318,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 }
                 LeadingCommentOffset.end(requestOrigin);
                 readsTheText = false;
+            }
+            if (scriptFile != null && !scriptRuns && e instanceof RuntimeException) {
+                // A staged script that does not parse is refused for its file.
+                throw StagedScriptFailure.unparsed(scriptFile, (RuntimeException) e);
             }
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
@@ -3328,8 +3437,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     /** Read the SQL script referenced by {@code EXECUTE IMMEDIATE FROM} — a stage file (@stg/file) or a
      *  location string ('file://…'). */
     private String readImmediateScript(final FrostlakeParser.ExecuteImmediateStatementContext ctx) {
-        final String location = ctx.stageRef() != null ? queryExecutor.stageRefToLocation(ctx.stageRef())
-            : unquoteStringLiteral(ctx.STRING_LITERAL().getText());
+        final String location = immediateScriptLocation(ctx);
         final Path path = queryExecutor.resolveStageFilePath(location);
         if (path == null || !Files.isRegularFile(path)) {
             // A named stage's missing file is refused in the account's words; a directory is no file either.
@@ -3344,6 +3452,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final IOException e) {
             throw new RuntimeException("EXECUTE IMMEDIATE FROM: failed to read " + path + ": " + e.getMessage(), e);
         }
+    }
+
+    /** Where {@code EXECUTE IMMEDIATE FROM} reads its script: the stage file or the location string. */
+    private String immediateScriptLocation(final FrostlakeParser.ExecuteImmediateStatementContext ctx) {
+        return ctx.stageRef() != null ? queryExecutor.stageRefToLocation(ctx.stageRef())
+            : unquoteStringLiteral(ctx.STRING_LITERAL().getText());
     }
 
     private static String unquoteStringLiteral(final String literal) {

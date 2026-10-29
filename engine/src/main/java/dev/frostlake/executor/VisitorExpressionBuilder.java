@@ -772,7 +772,7 @@ public class VisitorExpressionBuilder {
 
             case "SYSTEM$CANCEL_QUERY":
             case "SYSTEM$CANCEL_ALL_QUERIES":
-                return "Query cancelled.";
+                return queryExecutor.evaluateSystemFunction(rawName, args);
 
             // ── Clustering ─────────────────────────────────────────────────────
             case "SYSTEM$CLUSTERING_DEPTH":

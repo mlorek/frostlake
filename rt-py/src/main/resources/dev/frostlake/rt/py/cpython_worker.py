@@ -21,6 +21,7 @@ its reply by serving whatever arrives first.
 
 Values that JSON lacks travel as one-key objects: {"$dec": "1.25"}, {"$f": "nan"}, {"$dt": iso},
 {"$dtz": iso with offset}, {"$d": iso}, {"$t": iso}, {"$b": hex}, {"$json": text} (semi-structured),
+{"$sqlnull": ""} (a SQL NULL a VARIANT parameter takes, handed over as a sqlNullWrapper),
 {"$vec": {"t": "f" or "i", "v": [...]}} (a VECTOR, handed over as a memoryview of 32-bit elements),
 {"$o": [[key, value], ...]} (a dict, keeping its order), {"$host": name} (an engine object) and
 {"$rs": {...}} (a result set), {"$outcome": {...}} (a statement's result or refusal). Anything the handler prints goes to stderr, which the engine logs.
@@ -98,9 +99,19 @@ _CWD_BASE = None
 _DECIMAL_BASE = None
 
 
+# A SQL NULL a VARIANT parameter takes: a sqlNullWrapper, its type made where no module name is, so it has no
+# __module__ (live-verified).
+_SQL_NULL_NAMESPACE = {"__builtins__": _builtins}
+exec("sqlNullWrapper = type('sqlNullWrapper', (), {'__slots__': (), 'is_sql_null': True})", _SQL_NULL_NAMESPACE)
+sqlNullWrapper = _SQL_NULL_NAMESPACE["sqlNullWrapper"]
+del sqlNullWrapper.__slots__
+
+
 def _owned(value):
     # What the runtime's sources define: they run as modules named __frostlake_..., and so does this worker; the
     # snowpark emulation's classes carry Snowpark's own module names, snowflake.snowpark.*.
+    if value is sqlNullWrapper:
+        return True
     module = str(getattr(value, "__module__", ""))
     return module.startswith("__frostlake") or module.startswith("snowflake.snowpark")
 
@@ -442,6 +453,8 @@ def _decode(value):
         return _TIME.fromisoformat(value["$t"])
     if "$b" in value:
         return bytes.fromhex(value["$b"])
+    if "$sqlnull" in value:
+        return sqlNullWrapper()
     if "$json" in value:
         return _DECODE(value["$json"])
     if "$vec" in value:

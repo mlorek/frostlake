@@ -822,13 +822,15 @@ final class InsertExecutor {
             semiStructured = semiStructured || VALUES_REJECTED_FUNCTIONS.contains(name);
         }
         // A rejected function poisons the whole item wherever it sits, not only at the top: live
-        // refuses UPPER(UUID_STRING()) and CONCAT('p', RANDOM()) too, naming the OUTER expression.
-        semiStructured = semiStructured || containsRejectedFunction(ast);
+        // refuses UPPER(UUID_STRING()) and CONCAT('p', RANDOM()) too, naming the OUTER expression. So does a
+        // semi-structured part anywhere in it, ARRAY_SIZE([1]) (see ValuesSemiStructuredParts).
+        semiStructured = semiStructured || containsRejectedFunction(ast)
+            || ValuesSemiStructuredParts.holdsOne(ast, evaluator, executor.getFunctionRegistry());
         if (semiStructured) {
             // The item is echoed as the statement compiled it: [1, 2] as ARRAY_CONSTRUCT(1, 2), a :: as a CAST to the
             // type spelled in full, an element appended to a structured ARRAY converted to its type (live-verified).
             throw new RuntimeException(SqlCompilationError.of("Invalid expression ["
-                + ParsedEchoPrinter.print(ast, new StructuredElementEcho()) + "] in VALUES clause"));
+                + ParsedEchoPrinter.print(ast, new ValuesItemEcho(evaluator)) + "] in VALUES clause"));
         }
         // A function a handler answers is refused wherever it sits in the item, the item echoed as the plan
         // prints it: INSERT INTO t VALUES (jcnt(1) + 1) is "Invalid expression [(EXTENSION_FUNC_V(1)) + 1] in

@@ -121,7 +121,7 @@ final class CatalogSnapshotWriter {
                                          final TableDataStore tableData) throws IOException {
         final CatalogSnapshot snapshot = new CatalogSnapshot();
         snapshot.currentDatabase = catalog.getCurrentDatabase();
-        snapshot.currentSchema = catalog.getCurrentSchema();
+        snapshot.currentSchema = catalog.heldSchemaName();
         snapshot.currentWarehouse = catalog.getCurrentWarehouse();
 
         // Save databases
@@ -408,6 +408,7 @@ final class CatalogSnapshotWriter {
             viewSnapshot.aggregationEntityKey = view.hasAggregationPolicy()
                 ? new ArrayList<>(view.getAggregationEntityKey()) : null;
             viewSnapshot.joinPolicyName = view.getJoinPolicyName();
+            viewSnapshot.contacts = view.getContacts().isEmpty() ? null : view.getContacts();
             viewSnapshot.dataMetrics = DataMetricSnapshots.of(view.dataMetricAttachments());
             viewSnapshot.dataMetricSchedule = view.dataMetricAttachments().getSchedule();
             viewSnapshot.columns = derivedColumnSnapshots(view.getResolvedColumns());
@@ -1057,8 +1058,8 @@ final class CatalogSnapshotWriter {
     }
 
     /**
-     * A table's storage as a snapshot value: its rows, their identities and its time-travel history — a live table's,
-     * or a dropped table's that waits for its UNDROP.
+     * A table's storage as a snapshot value: its rows, their identities, its time-travel history and its write mark — a
+     * live table's, or a dropped table's that waits for its UNDROP.
      *
      * @param database the table's database
      * @param schema   its schema
@@ -1079,6 +1080,7 @@ final class CatalogSnapshotWriter {
         }
         dataSnapshot.rowIds = new ArrayList<>(ids);
         dataSnapshot.history = buildHistory(table, storage, current, ids);
+        dataSnapshot.writeMark = storage.writeMark();
         return dataSnapshot;
     }
 

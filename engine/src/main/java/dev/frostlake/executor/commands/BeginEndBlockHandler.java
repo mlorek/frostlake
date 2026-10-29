@@ -35,12 +35,14 @@ import dev.frostlake.executor.InfiniteBindRefusal;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RowSourceBinds;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.ScriptedErrorPlace;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementCanceledException;
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.executor.UncaughtStatementFailure;
 import dev.frostlake.executor.UndeclaredScriptVariableException;
 import dev.frostlake.executor.UnrunBlocks;
 import dev.frostlake.executor.expressions.SourcePosition;
@@ -271,6 +273,10 @@ public class BeginEndBlockHandler implements CommandHandler {
         final SourcePosition displaced = LeadingCommentOffset.begin(new SourcePosition(line, column));
         final UndeclaredScriptVariableException blockName;
         try {
+            if (stmtCtx.proceduralStatement() == null) {
+                // A statement the block runs binds none of its RESULTSETs and cursors (see RowSourceBinds).
+                RowSourceBinds.requireNone(stmtCtx, proceduralExecutor());
+            }
             return visitor.visit(stmtCtx);
         } catch (final UndeclaredScriptVariableException refused) {
             blockName = refused;
@@ -575,8 +581,8 @@ public class BeginEndBlockHandler implements CommandHandler {
                 // inside (live-verified).
                 final int[] failed = placedPastOpeningComments(ctx, proceduralExecutor().getFailureLine(),
                     proceduralExecutor().getFailurePosition());
-                throw new RuntimeException("Uncaught exception of type 'STATEMENT_ERROR' on line "
-                    + failed[0] + " at position " + failed[1] + " : " + uncaught.getMessage(), uncaught);
+                throw new UncaughtStatementFailure("STATEMENT_ERROR", failed[0], failed[1], uncaught.getMessage(),
+                    uncaught);
             }
             // An exception no handler caught reads with live's wording at the TOP of its body
             // only — an enclosing block may still catch it by name, and SQLERRM must keep the raw
@@ -625,9 +631,8 @@ public class BeginEndBlockHandler implements CommandHandler {
                     : uncaught.getMessage();
                 final int[] failed = placedPastOpeningComments(ctx, proceduralExecutor().getFailureLine(),
                     proceduralExecutor().getFailurePosition());
-                throw new RuntimeException("Uncaught exception of type '"
-                    + proceduralExecutor().getFailureKind() + "' on line "
-                    + failed[0] + " at position " + failed[1] + " : " + inner, uncaught);
+                throw new UncaughtStatementFailure(proceduralExecutor().getFailureKind(), failed[0], failed[1], inner,
+                    uncaught);
             }
             throw uncaught;
         } finally {

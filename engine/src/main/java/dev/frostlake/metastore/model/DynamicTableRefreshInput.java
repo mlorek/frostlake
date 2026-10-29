@@ -17,9 +17,10 @@
 package dev.frostlake.metastore.model;
 
 /**
- * An input whose data changed for a refresh of a dynamic table, as INPUTS_WITH_CHANGED_DATA tells it: its kind, TABLE
- * or DYNAMIC_TABLE, its qualified name, and its micro-partitions since the refresh before — the ones added and the
- * rows they hold, and the ones removed and the rows they held (live-verified).
+ * An input whose data changed for a refresh of a dynamic table, as INPUTS_WITH_CHANGED_DATA tells it: its kind, TABLE,
+ * VIEW or DYNAMIC_TABLE, its qualified name, and its micro-partitions since the refresh before — the ones added and
+ * the rows they hold, and the ones removed and the rows they held (live-verified); a view's are its base tables'
+ * (documented).
  */
 public final class DynamicTableRefreshInput {
 
@@ -33,7 +34,7 @@ public final class DynamicTableRefreshInput {
     /**
      * An input that changed.
      *
-     * @param kind              TABLE or DYNAMIC_TABLE
+     * @param kind              TABLE, VIEW or DYNAMIC_TABLE
      * @param name              the input's qualified name
      * @param addedPartitions   the partitions added since the refresh before
      * @param registeredRows    the rows they hold

@@ -173,7 +173,9 @@ public class Stream implements Named, Taggable {
      * pair (ISUPDATE true); updated then deleted nets to a plain DELETE of the original image.
      * Logical rows are chained by value image (an update pair's DELETE half matches the entry
      * whose current image it removes), since change records carry per-operation — not per-row —
-     * ids. APPEND_ONLY streams record only true INSERTs, so they are returned as-is.
+     * ids; a dynamic table's row known by an identity keeps one id, so its INSERT after its DELETE is
+     * the row coming back, an update of it or no change at all. APPEND_ONLY streams record only true
+     * INSERTs, so they are returned as-is.
      */
     public List<StreamRecord> getUnconsumedNetRecords() {
         if (initialRecords != null) {
@@ -242,6 +244,8 @@ public class Stream implements Named, Taggable {
         // identical duplicate rows is exactly the scan's.
         final Map<List<Object>, List<StreamNetChange>> byImage = new HashMap<>();
         final Map<StreamNetChange, Integer> creationSeq = new IdentityHashMap<>();
+        // A deleted row by its id, which an INSERT of the same id brings back.
+        final Map<List<Object>, StreamNetChange> deletedById = new HashMap<>();
         int nextSeq = 0;
         for (int i = 0; i < raw.size(); i++) {
             final StreamRecord record = raw.get(i);
@@ -270,6 +274,12 @@ public class Stream implements Named, Taggable {
                     indexImage(byImage, creationSeq, change);
                 }
             } else if (record.getChangeType() == ChangeType.INSERT) {
+                final StreamNetChange back = deletedById.remove(idKey(record));
+                if (back != null) {
+                    back.setNewValues(record.getValues());
+                    indexImage(byImage, creationSeq, back);
+                    continue;
+                }
                 final StreamNetChange change =
                     new StreamNetChange(null, record.getValues(), record.getRowId(), record.getSourceTable());
                 creationSeq.put(change, Integer.valueOf(nextSeq++));
@@ -284,12 +294,14 @@ public class Stream implements Named, Taggable {
                         new StreamNetChange(record.getValues(), null, record.getRowId(), record.getSourceTable());
                     creationSeq.put(change, Integer.valueOf(nextSeq++));
                     net.add(change);
+                    deletedById.put(idKey(record), change);
                 } else if (existing.getOldValues() == null) {
                     unindexImage(byImage, existing);
                     net.remove(existing);
                 } else {
                     unindexImage(byImage, existing);
                     existing.setNewValues(null);
+                    deletedById.put(idKey(record), existing);
                 }
             }
         }
@@ -312,6 +324,14 @@ public class Stream implements Named, Taggable {
             }
         }
         return out;
+    }
+
+    /** A record's row id with the table it is of, which another record of the row shares. */
+    private static List<Object> idKey(final StreamRecord record) {
+        final List<Object> key = new ArrayList<>(2);
+        key.add(record.getSourceTable());
+        key.add(Long.valueOf(record.getRowId()));
+        return key;
     }
 
     private static List<Object> imageKey(final List<Object> image, final String sourceTable) {

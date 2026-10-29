@@ -45,8 +45,15 @@ import org.antlr.v4.runtime.Token;
  *
  * <p>A bind written as the offset, {@code :k}, names its colon and the word after its name, and in a block one token
  * more: in a statement of the block the token after that word; in a query the block assigns,
- * {@code LET res RESULTSET := (…)}, the token after the name its FROM reads first — or, when the word is followed by
- * {@code AND UNBOUNDED FOLLOWING}, that FOLLOWING. Outside a block it names nothing more.
+ * {@code LET res RESULTSET := (…)} or {@code res := (…)}, the token after the name its FROM reads first — or, when the
+ * word is followed by {@code AND UNBOUNDED FOLLOWING}, that FOLLOWING. Outside a block it names nothing more.
+ *
+ * <p>An offset of any kind in a query the block assigns names one token more after its two, the one after the name
+ * the query's FROM reads first: {@code res := (… v PRECEDING … FROM t WHERE …)} names 'v', 'AND', then 'WHERE'.
+ *
+ * <p>An offset inside a query used as a value, a scalar subquery of a select list, is read as that query's fault
+ * (see {@link ValueSubqueryLines}): its SELECT first, then — when that reading reaches the offset itself — the
+ * offset's own lines.
  */
 final class FrameOffsetLines {
 
@@ -104,6 +111,10 @@ final class FrameOffsetLines {
         final List<String> lines = new ArrayList<String>();
         lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
         lines.add(SyntaxErrorListener.sentence(second));
+        final Token third = inAssignedQuery(spoken, fault) ? afterFromName(spoken, querySelect(spoken, frame)) : null;
+        if (third != null && third.getType() != Token.EOF) {
+            lines.add(SyntaxErrorListener.sentence(third));
+        }
         return lines;
     }
 
@@ -145,6 +156,11 @@ final class FrameOffsetLines {
                 && spoken.get(direction + 3).getType() == FrostlakeLexer.FOLLOWING) {
             return spoken.get(direction + 3);
         }
+        return afterFromName(spoken, select);
+    }
+
+    /** The token after the name the query's FROM reads first, or null when the query closes or ends before one. */
+    private static Token afterFromName(final List<Token> spoken, final int select) {
         int depth = 0;
         for (int i = select + 1; i + 2 < spoken.size(); i++) {
             final int type = spoken.get(i).getType();
@@ -162,6 +178,24 @@ final class FrameOffsetLines {
             }
         }
         return null;
+    }
+
+    /**
+     * Whether the frame the token at {@code fault} stands in belongs to a query a block assigns in brackets,
+     * {@code := (SELECT …)} or {@code DEFAULT (SELECT …)}: such a query is read as a statement, not as a value.
+     *
+     * @param spoken the text's default-channel tokens
+     * @param fault  the index of the first offending token
+     * @return whether the frame's query is an assigned one
+     */
+    static boolean inAssignedQuery(final List<Token> spoken, final int fault) {
+        final int frame = frameWord(spoken, fault);
+        final int select = frame < 0 ? -1 : querySelect(spoken, frame);
+        if (select < 2 || spoken.get(select - 1).getType() != FrostlakeLexer.LPAREN) {
+            return false;
+        }
+        final int before = spoken.get(select - 2).getType();
+        return before == FrostlakeLexer.COLON_EQ || before == FrostlakeLexer.DEFAULT;
     }
 
     /** The index of the SELECT whose query the frame stands in, read back over the parentheses around it, or -1. */

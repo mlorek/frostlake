@@ -164,6 +164,9 @@ public class BindVariableSubstitutor {
                         declarations.requireReadableInHandler(nameTok.getText());
                     }
                     final Object held = variables.get(nameTok.getText().toUpperCase(Locale.ROOT));
+                    if (statement && declarations != null) {
+                        refuseRowSource(sql, toks, intoTargets, i);
+                    }
                     final Object value = declarations != null
                         ? declarations.boundValue(nameTok.getText(), held, statement) : held;
                     final RuntimeException infinite = statement ? InfiniteBindRefusal.of(value) : null;
@@ -186,6 +189,49 @@ public class BindVariableSubstitutor {
         }
         out.append(sql, cursor, sql.length());
         return out.toString();
+    }
+
+    /** A RESULTSET or a cursor bound into a statement the block runs, refused as a bind nothing sets. */
+    private void refuseRowSource(final String sql, final List<Token> toks, final Set<Integer> intoTargets,
+                                 final int colon) {
+        final String written = toks.get(colon + 1).getText();
+        if (!declarations.holdsRowSource(written)) {
+            return;
+        }
+        if (colon >= 2 && colon + 2 < toks.size() && toks.get(colon - 1).getType() == FrostlakeLexer.LPAREN
+                && toks.get(colon - 2).getType() == FrostlakeLexer.TABLE
+                && toks.get(colon + 2).getType() == FrostlakeLexer.RPAREN) {
+            throw RowSourceBinds.asTableOperand(written);
+        }
+        throw RowSourceBinds.asValue(toks.get(colon).getLine(), compiledColumn(sql, toks, intoTargets, colon), written);
+    }
+
+    /**
+     * The column of the token at {@code at} in the text that compiles: a SELECT … INTO's runs without the INTO
+     * keyword, the one blank before it and its targets, which move a place after them on their line.
+     */
+    private static int compiledColumn(final String sql, final List<Token> toks, final Set<Integer> intoTargets,
+                                      final int at) {
+        int first = -1;
+        int last = -1;
+        for (final int target : intoTargets) {
+            first = first < 0 ? target : Math.min(first, target);
+            last = Math.max(last, target);
+        }
+        final Token token = toks.get(at);
+        if (first < 1 || at < last) {
+            return token.getCharPositionInLine();
+        }
+        final Token into = toks.get(first - 1);
+        final Token lastTarget = toks.get(last + 1);
+        if (into.getLine() != token.getLine() || lastTarget.getLine() != token.getLine()) {
+            return token.getCharPositionInLine();
+        }
+        int removed = lastTarget.getStopIndex() + 1 - into.getStartIndex();
+        if (into.getStartIndex() > 0 && Character.isWhitespace(sql.charAt(into.getStartIndex() - 1))) {
+            removed++;
+        }
+        return token.getCharPositionInLine() - removed;
     }
 
     /**

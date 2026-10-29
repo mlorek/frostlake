@@ -17,6 +17,7 @@
 package dev.frostlake.rt.py;
 
 import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.udf.HandlerJson;
 import dev.frostlake.executor.udf.HandlerResults;
 import dev.frostlake.types.BinaryType;
@@ -44,21 +45,22 @@ import java.util.Locale;
  * What a Python handler hands back, as the value of its declared type (live-verified): a procedure's or a function's
  * answer as its RETURNS type, an aggregate's as well, and each value a table function writes as its column's type.
  * The Python side ({@link #CONVERT}) applies the language's own conversions — {@code int(value)} for a whole NUMBER,
- * which truncates, {@code float(value)}, {@code str(value)}, {@code bool(value)} — and judges the classes a DATE,
- * a TIMESTAMP, an ARRAY, an OBJECT and a BINARY take, a TIMESTAMP_NTZ and a TIMESTAMP_LTZ a {@code datetime}
- * without an offset; this side builds the SQL value from the text it reports, rounds a NUMBER with a scale half to
- * even, and words the refusals as the account does, each naming the routine and its handler. A VECTOR takes a list
- * or what answers {@code tolist()} - a memoryview, an {@code array.array} - of its declared length, each element
- * converted by {@code int(element)} (which truncates) or {@code float(element)} and held to the vector's 32-bit
- * elements; a tuple or a text is no vector, a None element and a conversion's own failure are refused. A NaN or an
- * infinity, a float or a {@code Decimal}, is no exact NUMBER whatever its scale: {@code ValueError: cannot convert NaN
- * to integer} and {@code OverflowError: cannot convert Infinity to integer}; a time with an offset is a TIME of its
+ * which truncates, {@code float(value)}, {@code str(value)}, {@code bool(value)} — and judges the classes a DATE, a
+ * TIMESTAMP, an ARRAY, an OBJECT and a BINARY take, a TIMESTAMP_NTZ and a TIMESTAMP_LTZ a {@code datetime} without an
+ * offset, a TIMESTAMP_TZ one with an offset; this side builds the SQL value from the text it reports, rounds a NUMBER
+ * with a scale half to even, and words the refusals as the account does, each naming the routine and its handler. A
+ * VECTOR takes a list or what answers {@code tolist()} - a memoryview, an {@code array.array} - of its declared length,
+ * each element converted by {@code int(element)} (which truncates) or {@code float(element)} and held to the vector's
+ * 32-bit elements; a tuple or a text is no vector, a None element and a conversion's own failure are refused. A NaN or
+ * an infinity, a float or a {@code Decimal}, is no exact NUMBER whatever its scale: {@code ValueError: cannot convert
+ * NaN to integer} and {@code OverflowError: cannot convert Infinity to integer}; a time with an offset is a TIME of its
  * wall clock.
  *
  * <p>A semi-structured answer is the value's JSON with every float marked as a DOUBLE (see {@link HandlerJson}),
  * a tuple as a list, and a date, a time, a datetime, a {@code Decimal} and {@code bytes} as {@code str(value)};
  * any other class is {@code TypeError: Object of type set is not serializable}. {@code None} is a JSON null for
- * a VARIANT and a SQL NULL for an ARRAY and an OBJECT.
+ * a VARIANT and a SQL NULL for an ARRAY and an OBJECT; the sqlNullWrapper a VARIANT parameter takes for a SQL NULL
+ * is a SQL NULL for a VARIANT (live-verified).
  */
 final class PythonReturn {
 
@@ -92,13 +94,20 @@ final class PythonReturn {
             if isinstance(v, (list, tuple)):
                 return [__fl_spell(e) for e in v]
             if isinstance(v, dict):
-                return dict((__fl_key(k), __fl_spell(e)) for k, e in v.items())
+                # A loop, not dict() over a generator: the interpreter rewords a member's fault raised inside one.
+                spelled = {}
+                for k, e in v.items():
+                    spelled[__fl_key(k)] = __fl_spell(e)
+                return spelled
             if isinstance(v, (__fl_datetime.date, __fl_datetime.time, __fl_decimal.Decimal, bytes)):
                 return str(v)
             raise TypeError('Object of type ' + type(v).__name__ + ' is not serializable')
         def __fl_convert(v, kind, scale):
             if v is None:
                 return ('value', 'null') if kind == 'VARIANT' else ('null', '')
+            if (kind == 'VARIANT' and type(v).__name__ == 'sqlNullWrapper'
+                    and getattr(type(v), 'is_sql_null', 0) is True):
+                return ('null', '')
             if kind == 'NUMBER':
                 if isinstance(v, (float, __fl_decimal.Decimal)) and v != v:
                     raise ValueError('cannot convert NaN to integer')
@@ -130,6 +139,8 @@ final class PythonReturn {
                     return ('refuse', 'Return value should be a datetime object')
                 if kind != 'TIMESTAMP_TZ' and v.utcoffset() is not None:
                     return ('refuse', 'Datetime object must be naive to be convertible to ' + kind)
+                if kind == 'TIMESTAMP_TZ' and v.utcoffset() is None:
+                    return ('refuse', 'Datetime object must be aware to be convertible to ' + kind)
                 return ('value', v.isoformat())
             if kind == 'ARRAY':
                 if isinstance(v, list):
@@ -361,8 +372,15 @@ final class PythonReturn {
             return LocalTime.parse(text);
         }
         if (kind != null && kind.startsWith("TIMESTAMP")) {
-            // Only a TIMESTAMP_TZ takes a datetime with an offset, and it keeps that offset as its own.
-            return zoned(text) ? (Object) OffsetDateTime.parse(text).toZonedDateTime() : LocalDateTime.parse(text);
+            // Only a TIMESTAMP_TZ takes a datetime with an offset, and it keeps that offset as its own. A
+            // TIMESTAMP_LTZ reads its wall clock in the session's zone: one a gap skips moves on past the gap, one
+            // a fold repeats takes the earlier offset.
+            if (zoned(text)) {
+                return OffsetDateTime.parse(text).toZonedDateTime();
+            }
+            final LocalDateTime wall = LocalDateTime.parse(text);
+            return "TIMESTAMP_LTZ".equals(kind) ? (Object) wall.atZone(SessionZone.current()).toOffsetDateTime()
+                : wall;
         }
         if ("ARRAY".equals(kind) || "OBJECT".equals(kind) || "VARIANT".equals(kind)) {
             return HandlerJson.toVariant(text);

@@ -49,25 +49,7 @@ public class SkewAccumulator implements AggregateFunction.Accumulator, DecfloatA
         }
         final int n = values.size();
         if (n < 3) return null;
-        double total = 0;
-        for (final Double value : values) {
-            total += value.doubleValue();
-        }
-        final double mean = total / n;
-        double squares = 0;
-        for (final Double value : values) {
-            squares += Math.pow(value.doubleValue() - mean, 2);
-        }
-        final double variance = squares / (n - 1);
-        // A series that does not vary divides by its zero deviation, whatever its type (live-verified).
-        if (variance == 0) {
-            throw new RuntimeException("Division by zero");
-        }
-        final double stddev = Math.sqrt(variance);
-        double sum3 = 0;
-        for (final Double value : values) {
-            sum3 += Math.pow((value.doubleValue() - mean) / stddev, 3);
-        }
+        final double sum3 = AggregateNumerics.standardizedMomentSum(values, 3);
         return sum3 * n / ((n - 1.0) * (n - 2.0));
     }
 

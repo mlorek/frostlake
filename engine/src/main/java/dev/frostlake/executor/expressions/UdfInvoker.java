@@ -78,6 +78,7 @@ import dev.frostlake.types.VectorType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
@@ -1069,7 +1070,7 @@ final class UdfInvoker {
         Class<?> fromBody = null;
         if (inline) {
             try {
-                fromBody = handlerClass(function, sourceCode, className);
+                fromBody = handlerClass(function, sourceCode, className, importedJars(function, queryExecutor));
             } catch (final RuntimeException notInTheBody) {
                 if (function.getImports().isEmpty()) {
                     throw notInTheBody;
@@ -1117,18 +1118,32 @@ final class UdfInvoker {
      * nothing else - not for a later statement, nor for another call of the function in the same statement
      * (live-verified). Outside a statement the one class every such caller shares.
      */
-    private static Class<?> handlerClass(final Function function, final String sourceCode, final String className) {
+    private static Class<?> handlerClass(final Function function, final String sourceCode, final String className,
+                                         final List<File> jars) {
         final int release = JavaRuntimeLevel.of(function.getRuntimeVersion());
         final String where = " in function " + function.getName() + " with handler " + function.getHandler();
         final AutoCloseable kept = StatementHandlerStates.state(function, JAVA_HANDLER_CLASS,
             new HandlerStateFactory() {
                 @Override
                 public AutoCloseable create() {
-                    return new JavaHandlerClass(javaCompiler.load(sourceCode, className, null, release, where));
+                    return new JavaHandlerClass(javaCompiler.load(sourceCode, className, null, release, where, true,
+                        jars));
                 }
             });
         return kept != null ? ((JavaHandlerClass) kept).handled()
-            : javaCompiler.compile(sourceCode, className, release, where);
+            : javaCompiler.compile(sourceCode, className, release, where, jars);
+    }
+
+    /**
+     * The jars a function's IMPORTS name, on the class path its inline body compiles against and beside the class it
+     * runs (live-verified); none without imports.
+     */
+    private List<File> importedJars(final Function function, final QueryExecutor queryExecutor) {
+        if (function.getImports().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return JarHandlerLoader.localJars(queryExecutor != null ? queryExecutor.localImports(function.getImports())
+            : function.getImports(), catalog, queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
     }
 
     /**

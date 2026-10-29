@@ -18,7 +18,6 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -31,10 +30,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ShowCommandsExtTest extends BaseDatabaseTest {
-
-    /** SHOW ORGANIZATION ACCOUNTS returns nothing without the ORGADMIN role, which the test account lacks. */
-    private static final String NEEDS_ORGADMIN =
-        "SHOW ORGANIZATION ACCOUNTS needs the ORGADMIN role to return any row";
 
     // ── SHOW PARAMETERS ───────────────────────────────────────────────────────
 
@@ -215,8 +210,6 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         assertTrue(found, "SHOW OBJECTS IN SCHEMA should show objects in that schema");
     }
 
-    // ── SHOW ORGANIZATION ACCOUNTS ────────────────────────────────────────────
-
     // ── SHOW LOCKS ────────────────────────────────────────────────────────────
 
     @Test
@@ -331,7 +324,7 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         assertNotNull(rs.getColumnIndex("value"));
     }
 
-    // ── SHOW ACCOUNTS / SHOW ORGANIZATION ACCOUNTS ───────────────────────────
+    // ── SHOW ACCOUNTS ─────────────────────────────────────────────────────────
 
     @Test
     public void testShowAccounts() {
@@ -346,21 +339,5 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         assertNotNull(rs.getRows().get(0).getValue(accIdx));
         assertNotNull(rs.getRows().get(0).getValue(editionIdx));
         assertNotNull(rs.getRows().get(0).getValue(regionIdx));
-    }
-
-    @Test
-    public void testShowOrganizationAccounts() {
-        Assumptions.assumeFalse(isLiveSnowflake(), NEEDS_ORGADMIN);
-        final ResultSet rs = engine.executeQuery("SHOW ORGANIZATION ACCOUNTS");
-        assertNotNull(rs);
-        assertTrue(rs.getRowCount() >= 1, "Should return at least one account");
-        final int orgIdx = rs.getColumnIndex("organization_name");
-        final int accIdx = rs.getColumnIndex("account_name");
-        final int editionIdx = rs.getColumnIndex("edition");
-        final int isOrgAdminIdx = rs.getColumnIndex("is_org_admin");
-        assertNotNull(rs.getRows().get(0).getValue(orgIdx), "organization_name must be non-null");
-        assertNotNull(rs.getRows().get(0).getValue(accIdx), "account_name must be non-null");
-        assertNotNull(rs.getRows().get(0).getValue(editionIdx), "edition must be non-null");
-        assertNotNull(rs.getRows().get(0).getValue(isOrgAdminIdx), "is_org_admin must be non-null");
     }
 }

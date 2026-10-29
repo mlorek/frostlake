@@ -22,7 +22,8 @@ import org.junit.jupiter.api.Test;
  * What a correlated IN, EXISTS or scalar aggregate answers when it reads the outer row through equalities: a
  * positive IN is two-valued, a NOT IN keeps the three values, an outer key that is NULL equals no inner one, and
  * TIMESTAMP_TZ keys equal by the instant they name, BINARY keys by their bytes, a collated member compares under
- * its collation, and a member's fault refuses the statement in an inner row of any key (all live-verified). The
+ * its collation, and a member's fault refuses the statement in an inner row of any key the outer table holds,
+ * whichever outer rows the query keeps (all live-verified). The
  * engine answers these from the inner rows' members and keys computed once for the statement.
  */
 public class CorrelatedInKeysTest extends MeasuredCellsTestSupport {
@@ -148,8 +149,18 @@ public class CorrelatedInKeysTest extends MeasuredCellsTestSupport {
         assertAnswer("Table KB successfully created.", "CREATE OR REPLACE TABLE kb (k INT, z INT)");
         assertAnswer("2", "INSERT INTO kb VALUES (10, 0), (20, 1)");
         assertAnswer("Table KA successfully created.", "CREATE OR REPLACE TABLE ka (id INT, v INT)");
-        assertAnswer("1", "INSERT INTO ka VALUES (3, 20)");
+        assertAnswer("2", "INSERT INTO ka VALUES (1, 10), (3, 20)");
+        // The key the fault's row has is one the outer table holds, whichever rows the outer query keeps.
+        final String in = "ka.id IN (SELECT 10 / kb.z FROM kb WHERE kb.k = ka.v)";
+        assertAnswer("REFUSED Division by zero", "SELECT ka.id, " + in + " FROM ka WHERE ka.v = 20");
+        assertAnswer("REFUSED Division by zero", "SELECT ka.id, " + in + " FROM ka WHERE ka.id = 3");
+        assertAnswer("REFUSED Division by zero", "SELECT ka.id, " + in + " FROM ka");
+        assertAnswer("REFUSED Division by zero", "SELECT ka.id FROM ka WHERE ka.id = 3 AND " + in);
+        assertAnswer("REFUSED Division by zero", "SELECT ka.id, " + in + " FROM (SELECT * FROM ka WHERE id = 3) ka");
+        // A scalar aggregate reads the inner rows of the keys the outer rows it keeps have.
+        assertAnswer("3|10.000000",
+            "SELECT ka.id, (SELECT MAX(10 / kb.z) FROM kb WHERE kb.k = ka.v) FROM ka WHERE ka.v = 20");
         assertAnswer("REFUSED Division by zero",
-            "SELECT ka.id, ka.id IN (SELECT 10 / kb.z FROM kb WHERE kb.k = ka.v) FROM ka WHERE ka.v = 20");
+            "SELECT ka.id, (SELECT MAX(10 / kb.z) FROM kb WHERE kb.k = ka.v) FROM ka");
     }
 }

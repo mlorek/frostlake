@@ -319,6 +319,18 @@ final class SignatureRecovery {
      * @param sql    the script's source text
      * @return the readings, each with the statement it reads
      */
+    /** Whether the token a statement opens with follows an opening bracket. */
+    private static boolean afterOpenBracket(final List<Token> spoken, final Token start) {
+        Token before = null;
+        for (final Token token : spoken) {
+            if (token.getStartIndex() >= start.getStartIndex()) {
+                break;
+            }
+            before = token;
+        }
+        return before != null && before.getType() == FrostlakeLexer.LPAREN;
+    }
+
     static List<SignatureRecovery> ofStatements(final FrostlakeParser.SqlScriptContext script, final String sql) {
         final List<SignatureRecovery> readings = new ArrayList<>();
         if (script == null || sql == null) {
@@ -355,6 +367,11 @@ final class SignatureRecovery {
             }
             if (spoken.isEmpty()) {
                 return new ArrayList<>();
+            }
+            if (afterOpenBracket(spoken, statement.getStart())) {
+                // A statement the parse took out of a bracket - an alert's EXISTS (DROP …) - stands in no statement's
+                // place: the bracket's own lines tell it (see AlertConditionLines).
+                continue;
             }
             Token open = null;
             Token ends = null;

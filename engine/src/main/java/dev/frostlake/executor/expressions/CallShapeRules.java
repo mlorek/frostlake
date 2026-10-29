@@ -218,7 +218,7 @@ final class CallShapeRules {
             final String unit = i == unitSlot ? DateTimeUnitSlot.unitTextOf(arguments.get(i)) : null;
             // The plan holds a date/time unit as the text it names.
             echo.append(unit != null ? "'" + unit.toUpperCase(Locale.ROOT) + "'"
-                : context.strictPlanText(arguments.get(i)));
+                : context.strictQuantifierText(arguments.get(i)));
         }
         echo.append(')');
         return new RuntimeException(SqlCompilationError.of("invalid use of '"

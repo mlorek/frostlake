@@ -59,9 +59,11 @@ public class StageJarImportTest {
         jarDir = Files.createDirectories(workDir.resolve("jars"));
         buildJavaJar(jarDir.resolve("handlers.jar"));
 
-        // Map the S3 prefix used by the stage / direct s3:// IMPORTS to the local JAR directory.
+        // Map the S3 prefix used by the stage / direct s3:// IMPORTS to the local JAR directory; an import that
+        // names a URL rather than a stage is the local-development affordance a real account refuses.
         final EngineConfig config = new EngineConfig();
         config.setProperty(EngineConfig.PROP_STAGE_S3_LOCAL_MAPPINGS, "s3://test-bucket/lib=" + jarDir);
+        config.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
 
         engine = new DatabaseEngine(config);
         engine.execute("CREATE DATABASE db");

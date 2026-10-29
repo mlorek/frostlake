@@ -21,8 +21,11 @@ import dev.frostlake.metastore.SqlObject;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
 
-public class View extends SqlObject implements SessionScoped {
+public class View extends SqlObject implements SessionScoped, ContactHolder {
 
     private final String definition;
     private final List<String> columnNames;
@@ -55,6 +58,8 @@ public class View extends SqlObject implements SessionScoped {
     private String joinPolicyName;
     /** The DATA METRIC FUNCTIONS attached to the view and their DATA_METRIC_SCHEDULE, as a table's are. */
     private final DataMetricAttachments dataMetrics = new DataMetricAttachments();
+    /** The contacts attached to the view, by purpose, each by its full name. */
+    private final Map<String, String> contacts = new TreeMap<>();
 
     public View(final String name, final String definition) {
         super(name);
@@ -222,12 +227,27 @@ public class View extends SqlObject implements SessionScoped {
     /** The data metric functions attached to this view and their schedule. */
     public DataMetricAttachments dataMetricAttachments() { return dataMetrics; }
 
+    @Override
+    public Map<String, String> getContacts() {
+        return new TreeMap<>(contacts);
+    }
+
+    @Override
+    public void setContact(final String purpose, final String contactName) {
+        contacts.put(purpose.toUpperCase(Locale.ROOT), contactName);
+    }
+
+    @Override
+    public void unsetContact(final String purpose) {
+        contacts.remove(purpose.toUpperCase(Locale.ROOT));
+    }
+
     /**
      * A full-fidelity duplicate for CLONE DATABASE/SCHEMA: keeps the explicit column list, the SECURE
      * flag, the comment, the change tracking a stream on the clone reads by, any attached row access, aggregation
-     * and join policy, the attached data metric functions and their schedule, and the columns with their masking and
-     * projection policies and their tags (the name-and-definition constructor alone silently dropped all of these
-     * from clones).
+     * and join policy, the attached data metric functions and their schedule, the contacts, and the columns with their
+     * masking and projection policies and their tags (the name-and-definition constructor alone silently dropped all of
+     * these from clones).
      */
     public View copy() {
         final View clone = columnNames != null
@@ -255,6 +275,7 @@ public class View extends SqlObject implements SessionScoped {
         clone.aggregationEntityKey = new ArrayList<>(aggregationEntityKey);
         clone.joinPolicyName = joinPolicyName;
         dataMetrics.copyInto(clone.dataMetrics);
+        clone.contacts.putAll(contacts);
         return clone;
     }
 

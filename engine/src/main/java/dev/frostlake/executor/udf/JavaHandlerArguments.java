@@ -21,8 +21,8 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.TypeCategory;
 import dev.frostlake.values.BinaryValue;
-import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
@@ -49,14 +49,13 @@ import java.util.Map;
  *   <li>A {@code String} takes the value's text: a NUMBER at its declared scale ({@code 7.00}), a FLOAT as a
  *       FLOAT prints, a DATE as {@code 2024-03-05}, a TIME to the nanosecond with a {@code Z}, a timestamp to
  *       the millisecond with its offset where it has one, a BINARY as hex, and a VARIANT, an ARRAY or an OBJECT
- *       as its JSON.</li>
+ *       as its JSON (see {@link HandlerTexts#json}).</li>
  *   <li>A {@code byte[]} takes a BINARY's bytes. A {@code java.sql.Date} takes a DATE as its midnight at UTC, a
  *       {@code java.sql.Time} a TIME as the milliseconds of its day and a {@code java.sql.Timestamp} a timestamp
  *       without a zone as its wall clock read at UTC, nanoseconds kept, and a zoned one as its instant - so
  *       {@code getTime()} is the account's whatever zone the machine is in, and the texts those classes print
  *       are the machine's zone's. A {@code Map} takes an OBJECT's members and a {@code String[]} an ARRAY's
- *       elements, a text as it is and anything else as its JSON, a JSON null and a SQL NULL element as
- *       {@code null}; a {@code Variant} a VARIANT.</li>
+ *       elements as their texts (see {@link HandlerTexts#member}); a {@code Variant} a VARIANT.</li>
  *   <li>A SQL NULL is {@code null}, which a primitive type cannot hold: {@code Cannot pass a NULL value as input
  *       to a Java type of int}.</li>
  * </ul>
@@ -117,7 +116,7 @@ public final class JavaHandlerArguments {
         if (javaType == Map.class && value instanceof VariantValue && ((VariantValue) value).isJsonObject()) {
             final Map<String, String> members = new HashMap<>();
             for (final Map.Entry<String, JsonNode> member : ((VariantValue) value).node().properties()) {
-                members.put(member.getKey(), memberText(member.getValue()));
+                members.put(member.getKey(), HandlerTexts.member(member.getValue()));
             }
             return members;
         }
@@ -125,7 +124,7 @@ public final class JavaHandlerArguments {
             final JsonNode array = ((VariantValue) value).node();
             final String[] elements = new String[array.size()];
             for (int i = 0; i < elements.length; i++) {
-                elements[i] = memberText(array.get(i));
+                elements[i] = HandlerTexts.member(array.get(i));
             }
             return elements;
         }
@@ -138,6 +137,9 @@ public final class JavaHandlerArguments {
 
     /** A value as the text a {@code String} parameter holds. */
     private static String text(final Object value, final DataType sqlType) {
+        if (sqlType != null && sqlType.getCategory() == TypeCategory.SEMI_STRUCTURED) {
+            return HandlerTexts.json(value);
+        }
         if (value instanceof String) {
             return (String) value;
         }
@@ -164,11 +166,4 @@ public final class JavaHandlerArguments {
         return String.valueOf(value);
     }
 
-    /** A member of an OBJECT or an element of an ARRAY as a {@code Map}'s value or a {@code String[]}'s element. */
-    private static String memberText(final JsonNode member) {
-        if (member == null || member.isNull()) {
-            return null;
-        }
-        return member.isString() ? member.stringValue() : VariantText.canonical(member);
-    }
 }

@@ -1068,6 +1068,38 @@ public final class AggregateNumerics {
         return value instanceof BigDecimal ? ((BigDecimal) value).scale() : 0;
     }
 
+    /**
+     * The sum of the values' deviations from their mean, each over the sample standard deviation and raised to the
+     * power — the third for SKEW, the fourth for KURTOSIS. A series that does not vary divides by its zero
+     * deviation, whatever its type (live-verified).
+     *
+     * @param values the values, two or more
+     * @param power the moment's power
+     * @return the sum
+     */
+    static double standardizedMomentSum(final List<Double> values, final int power) {
+        final int n = values.size();
+        double total = 0;
+        for (final Double value : values) {
+            total += value.doubleValue();
+        }
+        final double mean = total / n;
+        double squares = 0;
+        for (final Double value : values) {
+            squares += Math.pow(value.doubleValue() - mean, 2);
+        }
+        final double variance = squares / (n - 1);
+        if (variance == 0) {
+            throw new RuntimeException("Division by zero");
+        }
+        final double stddev = Math.sqrt(variance);
+        double sum = 0;
+        for (final Double value : values) {
+            sum += Math.pow((value.doubleValue() - mean) / stddev, power);
+        }
+        return sum;
+    }
+
     /** Whether an accumulated input is APPROXIMATE, which keeps the whole result a double. */
     public static boolean isApproximateInput(final Object value) {
         // TEXT and a VARIANT are here with the doubles because neither carries a declared scale to

@@ -41,6 +41,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -240,7 +241,8 @@ public final class ChangeTrackedQuery {
     }
 
     /**
-     * The tables a dynamic table's query reads, through the views it reads too: its inputs that are tables.
+     * The tables a dynamic table's query names itself: its inputs that are tables. A table it reads only through a
+     * view is that view's (see {@link #readViews}).
      *
      * @param catalog      the catalog
      * @param database     the database its bare names are read in
@@ -251,10 +253,65 @@ public final class ChangeTrackedQuery {
     public static List<Table> readTables(final Catalog catalog, final String database, final String schema,
                                          final DynamicTable dynamicTable) {
         final List<Table> tables = new ArrayList<>();
-        final ParseTree query = parsed(dynamicTable.getQuery(), true);
-        collectTables(catalog, database, schema, query == null ? null : (FrostlakeParser.SelectStatementContext) query,
-            0, tables);
+        readRelations(catalog, database, schema, dynamicTable, tables, new LinkedHashMap<String, List<Table>>());
         return tables;
+    }
+
+    /**
+     * The views a dynamic table's query names itself: its inputs that are views, each by its full name with the tables
+     * it reads, through the views it reads in turn. A view has no DML of its own, so its changes are its base tables'
+     * (documented).
+     *
+     * @param catalog      the catalog
+     * @param database     the database its bare names are read in
+     * @param schema       the schema its bare names are read in
+     * @param dynamicTable the dynamic table
+     * @return each view's full name and its tables, each view once, in the order the query names them
+     */
+    public static Map<String, List<Table>> readViews(final Catalog catalog, final String database,
+                                                     final String schema, final DynamicTable dynamicTable) {
+        final Map<String, List<Table>> views = new LinkedHashMap<>();
+        readRelations(catalog, database, schema, dynamicTable, new ArrayList<Table>(), views);
+        return views;
+    }
+
+    /** The tables and the views a dynamic table's query names itself (see {@link #readTables}, {@link #readViews}). */
+    private static void readRelations(final Catalog catalog, final String database, final String schema,
+                                      final DynamicTable dynamicTable, final List<Table> tables,
+                                      final Map<String, List<Table>> views) {
+        final ParseTree query = parsed(dynamicTable.getQuery(), true);
+        if (query == null) {
+            return;
+        }
+        final FrostlakeParser.SelectStatementContext body = (FrostlakeParser.SelectStatementContext) query;
+        final Set<String> ctes = new HashSet<>();
+        QueryExecutor.collectCteNames(body, ctes);
+        final List<FrostlakeParser.TableQualifiedNameContext> names = new ArrayList<>();
+        relationNames(body, names);
+        for (final FrostlakeParser.TableQualifiedNameContext name : names) {
+            if (ctes.contains(ParseTreeText.getQualifiedName(name).toUpperCase(Locale.ROOT))) {
+                continue;
+            }
+            final String[] parts = catalog.withoutAccount(ParseTreeText.qualifiedNameParts(name), 3);
+            final String relationDatabase = parts.length == 3 ? parts[0] : database;
+            final String relationSchema = parts.length >= 2 ? parts[parts.length - 2] : schema;
+            final Schema container = schemaNamed(catalog, relationDatabase, relationSchema);
+            final String relation = parts[parts.length - 1];
+            if (container == null) {
+                continue;
+            }
+            if (container.hasViewExact(relation)) {
+                final View view = container.getView(relation);
+                final String full = container.getDatabaseName() + "." + container.getName() + "." + view.getName();
+                if (!views.containsKey(full)) {
+                    final List<Table> read = new ArrayList<>();
+                    collectTables(catalog, relationDatabase, relationSchema, body(view), 1, read);
+                    views.put(full, read);
+                }
+            } else if (container.tableExact(relation) != null && !tables.contains(container.tableExact(relation))) {
+                tables.add(container.tableExact(relation));
+            }
+        }
     }
 
     private static void collectTables(final Catalog catalog, final String database, final String schema,

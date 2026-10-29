@@ -168,6 +168,39 @@ public class CreateRelationalHandler implements CommandHandler {
         }
     }
 
+    /**
+     * What a CREATE VIEW fails to compile for, nothing created: its body compiled where the view would live and its
+     * columns named, as the view's creation judges them. A session whose transaction was aborted is refused for this
+     * before the aborted transaction (live-verified).
+     *
+     * @param queryExecutor the executor compiling the view
+     * @param ctx           the CREATE VIEW
+     */
+    public static void compileOnly(final QueryExecutor queryExecutor,
+                                   final FrostlakeParser.CreateStatementContext ctx) {
+        final Catalog catalog = queryExecutor.getCatalog();
+        final String[] parts = catalog.withoutAccount(queryExecutor.resolveObjectNameParts(ctx.objectName()), 3);
+        final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        List<String> columnNames = null;
+        if (ctx.viewColumnList() != null) {
+            columnNames = new ArrayList<>();
+            for (final FrostlakeParser.ViewColumnDefContext column : ctx.viewColumnList().viewColumnDef()) {
+                columnNames.add(SqlIdentifiers.canonical(column.identifier()));
+            }
+        }
+        final SourcePosition displacedBody = ExpressionSource.beginNested(originOf(ctx.selectStatement()));
+        try {
+            queryExecutor.resolveViewShapeInScope(parts.length == 3 ? parts[0] : catalog.getCurrentDatabase(),
+                schema.getName(), ParseTreeText.getOriginalText(ctx.selectStatement()), columnNames);
+        } catch (final RowSelectItemException rowItem) {
+            validateViewColumns(ctx);
+            throw rowItem;
+        } finally {
+            ExpressionSource.end(displacedBody);
+        }
+        validateViewColumns(ctx);
+    }
+
     /** The database a CREATE names its schema in: the written one, else the session's current one. */
     private String schemaDatabaseName(final String[] parts) {
         return parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
@@ -185,7 +218,7 @@ public class CreateRelationalHandler implements CommandHandler {
         }
     }
 
-    private void validateViewColumns(final FrostlakeParser.CreateStatementContext ctx) {
+    private static void validateViewColumns(final FrostlakeParser.CreateStatementContext ctx) {
         final FrostlakeParser.SelectStatementContext select = ctx.selectStatement();
         final FrostlakeParser.SelectListContext selectList = firstSelectList(select);
         if (selectList == null) {
@@ -226,7 +259,8 @@ public class CreateRelationalHandler implements CommandHandler {
      * descend into WITH-clause CTE bodies and validate the wrong projection. Null when the first
      * operand is itself parenthesized or shapeless (validation is skipped conservatively).
      */
-    private FrostlakeParser.SelectListContext firstSelectList(final FrostlakeParser.SelectStatementContext select) {
+    private static FrostlakeParser.SelectListContext firstSelectList(
+            final FrostlakeParser.SelectStatementContext select) {
         if (select.selectOperand().isEmpty()) {
             return null;
         }
@@ -1051,7 +1085,8 @@ public class CreateRelationalHandler implements CommandHandler {
             // An AUTO refresh mode settles on FULL where the query holds a construct an incremental refresh does not
             // follow, and the status sentence says why (live-verified).
             if (refreshMode == RefreshMode.AUTO && creates) {
-                final String reason = DynamicTableRefreshReason.of(catalog, catalog.getCurrentDatabase(),
+                final String reason = DynamicTableRefreshReason.of(catalog, queryExecutor.getFunctionRegistry(),
+                    catalog.getCurrentDatabase(),
                     catalog.getCurrentSchema(), ctx.selectStatement());
                 dt.setFullRefreshReason(reason);
                 if (reason != null) {

@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.QuantifierListOperation;
 
 import org.antlr.v4.runtime.Token;
 
@@ -45,7 +46,10 @@ import java.util.List;
  * second test after a finished IS test is refused and ends the reading — {@code RETURN a IS NULL IS NULL;}
  * names the second IS — and a quantifier no predicate takes is refused before the token that opens its list:
  * {@code RETURN a NOT LIKE ANY ('x', 'y');} names the ANY and the {@code 'x'}, as a negated LIKE, ILIKE or
- * RLIKE and an RLIKE or REGEXP with ANY or ALL do; an ILIKE ALL names the token alone. Nothing after the
+ * RLIKE and an RLIKE or REGEXP with ANY or ALL do; an ILIKE ALL names the token alone. An operation such a list
+ * holds - any operator but a plus - has the comma or the closing parenthesis after it refused, and ends the
+ * reading: {@code RETURN a NOT LIKE ANY ('x' || 'y');} names the list's {@code )}, {@code ('x' - 'y', 'z')} the
+ * comma (see {@link QuantifierListOperation}). Nothing after the
  * semicolon is read: {@code BEGIN RETURN 1; RETURN 2 +; END} is the RETURN alone. A comma the semicolon follows
  * before the first parenthesis or operator is refused, where one an item follows is passed over:
  * {@code BEGIN RETURN [1, ; END} names the comma, {@code BEGIN RETURN 1, 2; END} the RETURN alone; a parenthesis of
@@ -98,6 +102,9 @@ final class BlockBodyFrameLines {
                 }
                 if (i + 1 < end) {
                     refused.add(framed.get(i + 1));
+                }
+                if (refusesQuantifier(framed, i) && refusedAfterOperation(framed, i, refused)) {
+                    return refused;
                 }
                 final int after = pastBracket(framed, i + 1, end);
                 if (after < 0) {
@@ -237,6 +244,9 @@ final class BlockBodyFrameLines {
                     }
                     if (refusesOpener(framed, j) && j + 1 < after - 1) {
                         refused.add(framed.get(j + 1));
+                        if (refusesQuantifier(framed, j) && refusedAfterOperation(framed, j, refused)) {
+                            return true;
+                        }
                     } else if (!refusesOpener(framed, j)) {
                         delimiterDue = true;
                     }
@@ -285,6 +295,17 @@ final class BlockBodyFrameLines {
 
     private static boolean isQueryStart(final int type) {
         return type == FrostlakeLexer.SELECT || type == FrostlakeLexer.WITH;
+    }
+
+    /** Refuses what an operation in the quantifier's list at {@code open} has refused after it, if anything. */
+    private static boolean refusedAfterOperation(final List<Token> framed, final int open,
+                                                 final List<Token> refused) {
+        final int operated = QuantifierListOperation.refusedAfter(framed, open);
+        if (operated < 0) {
+            return false;
+        }
+        refused.add(framed.get(operated));
+        return true;
     }
 
     /** Whether a token is an operand of its own: a name, a literal, TRUE, FALSE or NULL. */

@@ -145,6 +145,24 @@ final class SqlUdfQueryBodyRefusal {
         return false;
     }
 
+    /**
+     * Whether the framed body names a window: holds a {@code WINDOW name AS (} clause, which this grammar reads
+     * nowhere, or an {@code OVER name}.
+     *
+     * @param tokens the framed body's spoken tokens
+     * @return whether it does
+     */
+    static boolean namesWindow(final List<Token> tokens) {
+        for (int i = 0; i + 1 < tokens.size(); i++) {
+            final Token token = tokens.get(i);
+            if (token.getType() == FrostlakeLexer.OVER && isName(tokens.get(i + 1))
+                    || i + 3 < tokens.size() && opensWindowClause(tokens, token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean isName(final Token token) {
         return token.getType() == FrostlakeLexer.IDENTIFIER || token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER;
     }

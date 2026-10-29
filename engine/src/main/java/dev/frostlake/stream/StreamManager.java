@@ -335,7 +335,7 @@ public class StreamManager {
         final List<String> beforeIds = stream.getRefreshImage() == null ? new ArrayList<String>()
             : stream.getRefreshImageIds();
         if (ids != null && beforeIds != null && ids.size() == rows.size()) {
-            addIdentifiedChanges(stream, rowIdKey, before, beforeIds, rows, ids);
+            addIdentifiedChanges(stream, before, beforeIds, rows, ids);
         } else {
             final List<List<Object>> removed = new ArrayList<>();
             final List<List<Object>> added = new ArrayList<>();
@@ -351,7 +351,7 @@ public class StreamManager {
     }
 
     /** The changes between two images whose rows are known by identity (see trackDynamicTableRefresh). */
-    private void addIdentifiedChanges(final Stream stream, final String rowIdKey, final List<List<Object>> before,
+    private void addIdentifiedChanges(final Stream stream, final List<List<Object>> before,
                                       final List<String> beforeIds, final List<List<Object>> after,
                                       final List<String> afterIds) {
         final Map<String, List<Integer>> was = new LinkedHashMap<>();
@@ -364,27 +364,33 @@ public class StreamManager {
             held.add(Integer.valueOf(i));
         }
         final List<StreamRecord> deleted = new ArrayList<>();
+        final List<StreamRecord> updated = new ArrayList<>();
         final List<StreamRecord> inserted = new ArrayList<>();
         for (int i = 0; i < after.size(); i++) {
             final List<Integer> held = was.get(afterIds.get(i));
             if (held == null || held.isEmpty()) {
-                inserted.add(new StreamRecord(after.get(i), ChangeType.INSERT, false, getNextRowId(rowIdKey)));
+                inserted.add(new StreamRecord(after.get(i), ChangeType.INSERT, false,
+                    identityRowId(afterIds.get(i))));
                 continue;
             }
             final List<Object> old = before.get(held.remove(0).intValue());
             if (!old.equals(after.get(i))) {
-                final long rowId = getNextRowId(rowIdKey);
-                deleted.add(new StreamRecord(old, ChangeType.DELETE, true, rowId));
-                inserted.add(new StreamRecord(after.get(i), ChangeType.INSERT, true, rowId));
+                // An update's two halves stand together, where the stream's net changes pair them.
+                final long rowId = identityRowId(afterIds.get(i));
+                updated.add(new StreamRecord(old, ChangeType.DELETE, true, rowId));
+                updated.add(new StreamRecord(after.get(i), ChangeType.INSERT, true, rowId));
             }
         }
-        for (final List<Integer> left : was.values()) {
-            for (final Integer index : left) {
+        for (final Map.Entry<String, List<Integer>> left : was.entrySet()) {
+            for (final Integer index : left.getValue()) {
                 deleted.add(new StreamRecord(before.get(index.intValue()), ChangeType.DELETE, false,
-                    getNextRowId(rowIdKey)));
+                    identityRowId(left.getKey())));
             }
         }
         for (final StreamRecord record : deleted) {
+            stream.addRecord(record);
+        }
+        for (final StreamRecord record : updated) {
             stream.addRecord(record);
         }
         for (final StreamRecord record : inserted) {
@@ -548,6 +554,17 @@ public class StreamManager {
                 it.remove();
             }
         }
+    }
+
+    /**
+     * The row id of a dynamic table's row known by an identity: the same at every refresh, so a row that leaves and
+     * comes back unchanged nets to no change (live-verified).
+     *
+     * @param identity the row's identity, a digest's hex text
+     * @return its row id
+     */
+    private static long identityRowId(final String identity) {
+        return Long.parseLong(identity.substring(0, 15), 16);
     }
 
     /**

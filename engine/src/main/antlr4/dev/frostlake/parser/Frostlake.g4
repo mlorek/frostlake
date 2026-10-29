@@ -630,6 +630,12 @@ import java.util.List;
         return word != DATABASE && word != SCHEMA && word != TABLE && word != VIEW;
     }
 
+    /** Whether the kind SHOW GRANTS ON names is a routine's, whose parentheses list the types it is found by. */
+    private boolean routineGrants(final ShowGrantsTargetContext target) {
+        final SecurableKindContext kind = target.securableKind();
+        return kind != null && (kind.FUNCTION() != null || kind.PROCEDURE() != null);
+    }
+
     /** Which unreserved words may serve as a BARE (AS-less) alias HERE, given what follows them.
      *  Two words need the question asked, and both because the alias reading and a clause reading are
      *  each viable to plain lookahead:
@@ -1885,7 +1891,7 @@ createStatement
     // RETURNS reads any type: one other than BOOLEAN is refused by name once the body has compiled (live-verified).
     | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_alter ROW ACCESS POLICY qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
-    | CREATE or_replace? CONTACT if_not_exists? qualifiedName contactProperty* SEMI?
+    | CREATE or_replace? CONTACT if_not_exists? qualifiedName (contactProperty (COMMA? contactProperty)*)? SEMI?
     | CREATE or_replace? PROJECTION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? AGGREGATION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? JOIN POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
@@ -1966,11 +1972,26 @@ icebergTableAction
     | CONVERT TO MANAGED objectProperty*
     ;
 
-// CREATE CONTACT's properties, all string-valued: COMMENT, URL and EMAIL_DISTRIBUTION_LIST (which
-// takes ONE address, live-verified, despite the plural name). Routed through optionKey so none of
-// the property names has to become a keyword.
+// A contact's properties: COMMENT, URL and EMAIL_DISTRIBUTION_LIST (which takes ONE address, live-verified, despite
+// the plural name), each a string, and USERS, a list of names. Routed through optionKey so none of the property names
+// has to become a keyword.
 contactProperty
-    : optionKey EQ STRING_LITERAL
+    : optionKey EQ (stringText | LPAREN stringLiteralList? RPAREN)
+    ;
+
+// What ALTER CONTACT changes: its properties, set as they are created - a comma may stand between two - and unset
+// by name, each name and value judged by the handler, or its name, which may move it to another schema
+// (live-verified).
+contactAction
+    : SET contactSetting (COMMA? contactSetting)*
+    | UNSET optionKey (COMMA optionKey)*
+    | RENAME TO qualifiedName
+    ;
+
+// A comment may also be given as a session variable.
+contactSetting
+    : contactProperty
+    | commentClause
     ;
 
 // A contact is attached to an object for a PURPOSE. Live takes three, and takes them quoted too.
@@ -1979,8 +2000,9 @@ contactPurpose
     | STRING_LITERAL
     ;
 
+// A purpose written as a list is no purpose; the handler refuses it once the contact is found (live-verified).
 contactAssignment
-    : contactPurpose EQ qualifiedName
+    : (contactPurpose | listValue) EQ qualifiedName
     ;
 
 // The '=' is positional (live-verified): an OBJECT-level comment REQUIRES it — CREATE TABLE t (x INT)
@@ -2308,7 +2330,7 @@ alterStatement
     | ALTER TAG if_exists? qualifiedName tagAction SEMI?
     | ALTER ALERT if_exists? qualifiedName alertAction SEMI?
     | ALTER MASKING POLICY if_exists? qualifiedName policyAction SEMI?
-    | ALTER CONTACT if_exists? qualifiedName (SET commentClause | UNSET COMMENT) SEMI?
+    | ALTER CONTACT if_exists? qualifiedName contactAction SEMI?
     | ALTER PROJECTION POLICY if_exists? qualifiedName policyAction SEMI?
     | ALTER AGGREGATION POLICY if_exists? qualifiedName policyAction SEMI?
     | ALTER JOIN POLICY if_exists? qualifiedName policyAction SEMI?
@@ -2489,6 +2511,7 @@ commentStatement
     | COMMENT if_exists? ON WAREHOUSE identifier IS stringText SEMI?
     | COMMENT if_exists? ON STAGE qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON TAG qualifiedName IS stringText SEMI?
+    | COMMENT if_exists? ON CONTACT qualifiedName IS stringText SEMI?
     | COMMENT if_exists? ON USER identifier IS stringText SEMI?
     | COMMENT if_exists? ON ROLE identifier IS stringText SEMI?
     | COMMENT if_exists? ON SEQUENCE qualifiedName IS stringText SEMI?
@@ -2517,21 +2540,21 @@ taskStatement
     ;
 
 // A retry of the last failed graph run or of a named one, or a run with a configuration merged over the
-// task's own.
+// task's own. USING takes a list of properties, CONFIG the one a run knows; the handler judges the names and
+// the values (live-verified).
 taskExecuteOption
     : RETRY taskRetryTarget
-    | USING CONFIG EQ taskConfigValue
+    | USING taskUsingProperty (COMMA? taskUsingProperty)*
+    ;
+
+taskUsingProperty
+    : identifier EQ (taskPropertyValue | NULL)
     ;
 
 // GRAPH and RUN stay plain words, read off the tokens ahead.
 taskRetryTarget
     : LAST
     | {ClauseWords.isWord(_input.LT(1), "GRAPH") && ClauseWords.isWord(_input.LT(2), "RUN")}? identifier identifier GROUP STRING_LITERAL
-    ;
-
-taskConfigValue
-    : STRING_LITERAL
-    | DOLLAR_QUOTED_STRING
     ;
 
 // The user a task runs as, named directly or through IDENTIFIER().
@@ -2709,6 +2732,18 @@ principalName
     | KW_IDENTIFIER_OPEN {refuseNameParenthesis($ctx);}
     ;
 
+// The role or the user SHOW GRANTS TO and OF names, read as DROP reads an object's name: its name, an IDENTIFIER()
+// reference to it, or one the lexer found not whole, refused where it stops being one when its content opens as a whole
+// reference's does (see openedValueReference). The word IDENTIFIER without a whole reference after it is the name
+// itself, and a signature may follow any of them, which the account reads and ignores: SHOW GRANTS TO ROLE PUBLIC(x)
+// lists PUBLIC's grants, TO ROLE IDENTIFIER(r(1)) names the role IDENTIFIER, and TO USER IDENTIFIER(CURRENT_USER()) is
+// a syntax error at the ')' that closes CURRENT_USER( (live-verified).
+grantsPrincipal
+    : (KW_IDENTIFIER_REF LPAREN identifierArgument RPAREN | identifier) objectSignature?
+    | KW_IDENTIFIER_OPEN objectSignature
+    | openedValueReference
+    ;
+
 revokeStatement
     : revokeCaller
     | REVOKE ROLE principalName FROM (USER | ROLE) principalName revokeMode? SEMI?  // REVOKE ROLE role_name FROM USER/ROLE target_name
@@ -2838,21 +2873,31 @@ securableKind
 // live reserves is never a bare name (see bareGrantsNameAllowed), so SHOW GRANTS ON DATABASE alone stays a syntax
 // error at its end. An object, bare or after its kind, may be an IDENTIFIER() reference (live-verified).
 showGrantsTarget
-    : securableKind grantsObjectName (LPAREN dataTypeList? RPAREN)?
+    // A routine's parentheses list the types it is found by; after any other kind they are a signature the account
+    // reads and ignores, as a DROP's: SHOW GRANTS ON TABLE t (a(b)) looks for the table T, and (1) is a syntax error at
+    // the 1. The word IDENTIFIER with no whole reference after it is the object's own name, its parentheses read so:
+    // ON DATABASE IDENTIFIER(x) looks for the database IDENTIFIER, ON FUNCTION IDENTIFIER(INT) for the function of one
+    // argument, and IDENTIFIER(NULL) is refused at the NULL (live-verified).
+    : securableKind grantsObjectName
+      ({routineGrants($ctx)}? LPAREN dataTypeList? RPAREN | {!routineGrants($ctx)}? objectSignature)?
+    | securableKind KW_IDENTIFIER_OPEN
+      ({routineGrants($ctx)}? LPAREN dataTypeList? RPAREN | {!routineGrants($ctx)}? objectSignature)
     // The account's own grants; a name after ACCOUNT names another account, which is never found.
     | ACCOUNT accountName=qualifiedName
-    | relationGrantsKind grantsObjectName
+    | relationGrantsKind (grantsObjectName objectSignature? | KW_IDENTIFIER_OPEN objectSignature)
     // VOLUME alone names an external volume here (live-verified).
     | VOLUME qualifiedName
     | bare=qualifiedName {bareGrantsNameAllowed($bare.ctx)}?
     | KW_IDENTIFIER_REF LPAREN identifierArgument RPAREN
     ;
 
-// The object SHOW GRANTS ON names after its kind: its name, or an IDENTIFIER() reference to it, whose content is
-// refused where it stops being one: IDENTIFIER(NULL) at the NULL (live-verified).
+// The object SHOW GRANTS ON names after its kind: its name, or an IDENTIFIER() reference to it. A reference the lexer
+// found not whole is refused where the reading stops when its content opens as a whole reference's does —
+// IDENTIFIER('t' || '1') at the '||' — as DROP reads it (live-verified); any other leaves the word IDENTIFIER the
+// object's own name (see showGrantsTarget).
 grantsObjectName
     : wholeObjectName
-    | openedIdentifierReference
+    | openedValueReference
     ;
 
 // The relation kinds SHOW GRANTS ON names beside TABLE and VIEW. Each finds the relation of the name, whatever its
@@ -3075,16 +3120,29 @@ taskPropertyValue
     | MINUS? (INTEGER_LITERAL | FLOAT_LITERAL)
     | booleanValue
     | qualifiedName
-    // A parenthesised list of constants, one value to the account (the handler reads it).
-    | LPAREN (taskListItem (COMMA taskListItem)*)? RPAREN
+    // A parenthesised list, one value to the account (the handler reads it).
+    | listValue
     ;
 
-taskListItem
+// A parenthesized list where one value goes: of properties, name = value, which the account reads as the word
+// TOK_PROPERTY_LIST, or of constants, TOK_CONSTANT_LIST, and TOK_LIST when one of the constants is a list of
+// properties (live-verified).
+listValue
+    : LPAREN listedProperty (COMMA? listedProperty)* RPAREN
+    | LPAREN (listedConstant (COMMA listedConstant)*)? RPAREN
+    ;
+
+listedProperty
+    : identifier EQ listedConstant
+    ;
+
+listedConstant
     : STRING_LITERAL
     | DOLLAR_QUOTED_STRING
     | MINUS? (INTEGER_LITERAL | FLOAT_LITERAL)
     | booleanValue
     | qualifiedName
+    | LPAREN listedProperty (COMMA? listedProperty)* RPAREN
     ;
 
 pipeOptions
@@ -3272,9 +3330,9 @@ stageOption
     | identifier EQ (parenOptionList | copyOptionValue)   // CREDENTIALS=(...), TEMPORARY-stage props, ...
     ;
 
-// A stage's COPY_OPTIONS, of CREATE and ALTER STAGE. The list reads more than another option list does — NULL, a
-// number with a fraction or an exponent, a parenthesized list for a value, and a list of names alone, which is taken
-// and ignored — and the stage's copy options judge each value (live-verified).
+// A stage's COPY_OPTIONS, of CREATE and ALTER STAGE, and a table's STAGE_COPY_OPTIONS. The list reads more than another
+// option list does — NULL, a number with a fraction or an exponent, a parenthesized list for a value, and a list of
+// names alone, which is taken and ignored — and the stage's copy options judge each value (live-verified).
 stageCopyOptionList
     : LPAREN (stageCopyOption (COMMA? stageCopyOption)*)? RPAREN
     | LPAREN optionKey (COMMA optionKey)* RPAREN
@@ -3540,8 +3598,10 @@ tableUnsetProperties
 
 // One key=value of an ALTER TABLE … SET, kept paired with its value.
 tableSetProperty
+    // A table's STAGE_COPY_OPTIONS reads its list as a stage's COPY_OPTIONS does (live-verified).
+    : {ClauseWords.isWord(_input.LT(1), "STAGE_COPY_OPTIONS")}? optionKey EQ stageCopyOptionList
     // A number with a fraction is a FLOAT parameter's value, judged by kind with the others (see ParameterLevels).
-    : optionKey EQ (parenOptionList | copyOptionValue | MINUS? FLOAT_LITERAL)
+    | optionKey EQ (parenOptionList | copyOptionValue | MINUS? FLOAT_LITERAL)
     ;
 
 // An enforcement property of ALTER TABLE … {ALTER | MODIFY} CONSTRAINT. Several may be given at
@@ -3715,7 +3775,8 @@ alterColumnItem
     ;
 
 alterColumnItemAction
-    : ((SET DATA)? TYPE)? dataTypeName typeParameters? collateClause?
+    // A structured type's keys are renamed by their place with RENAME FIELDS (see StructuredEvolution).
+    : ((SET DATA)? TYPE)? dataTypeName typeParameters? collateClause? (RENAME FIELDS)?
     // SET is optional before NOT NULL (live-verified: `ALTER COLUMN c NOT NULL` runs, as does the
     // MODIFY spelling and the one that omits COLUMN as well). DROP NOT NULL has no such variant.
     | SET? NOT NULL
@@ -3739,6 +3800,9 @@ viewAction
     | UNSET AGGREGATION POLICY
     | SET joinPolicyClause FORCE?
     | UNSET JOIN POLICY
+    // A view takes contacts as a table does (live-verified); before the property lists, which read CONTACT as a name.
+    | SET CONTACT contactAssignment (COMMA contactAssignment)*
+    | UNSET CONTACT contactPurpose (COMMA contactPurpose)*
     | SET viewSetItem (COMMA? viewSetItem)*
     | UNSET optionKey (COMMA optionKey)*
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
@@ -4183,6 +4247,8 @@ sessionValue
     | NULL
     | SESSION_VAR_REF
     | identifier (DOT identifier)*
+    // A parenthesized list, read as the parser's word for it (see listValue).
+    | listValue
     ;
 
 sessionParameter
@@ -4561,6 +4627,8 @@ tableTailOption
     | rowAccessPolicyClause
     | WITH? aggregationPolicyClause
     | WITH? joinPolicyClause
+    // A table's STAGE_COPY_OPTIONS reads its list as a stage's COPY_OPTIONS does (live-verified).
+    | {ClauseWords.isWord(_input.LT(1), "STAGE_COPY_OPTIONS")}? optionKey EQ stageCopyOptionList COMMA?
     | optionKey EQ (parenOptionList | copyOptionValue | tablePropertyConstant) COMMA?   // CHANGE_TRACKING=TRUE etc.
     ;
 
@@ -5314,7 +5382,9 @@ fetchClause
 // A bare BEGIN starts a transaction only where its statement ends right there, at a semicolon or the
 // end of the input; followed by anything else it opens a scripting block, as live reads it. The
 // alternatives say so token by token, so a block with a fault inside stays a block and is refused as
-// one, instead of being read again as a transaction followed by loose statements.
+// one, instead of being read again as a transaction followed by loose statements. In a block, only
+// BEGIN TRANSACTION and START TRANSACTION open one; the others are refused there once the text parses
+// (see BlockTransactionWords).
 transactionStatement
     : BEGIN (WORK | TRANSACTION) transactionName? SEMI?
     | BEGIN transactionName SEMI?
@@ -5342,7 +5412,7 @@ putStatement
     ;
 
 getStatement
-    : GET stageRef (STRING_LITERAL | FILE_URL) stageFileOption*
+    : GET stageRef (STRING_LITERAL | FILE_URL) stageFileOption* SEMI?
     ;
 
 removeStatement
@@ -5407,8 +5477,8 @@ showStatement
     | SHOW TERSE? ROLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // TERSE is read by every grant listing and changes none of them (live-verified).
     | SHOW TERSE? GRANTS ON showGrantsTarget showTail SEMI?
-    | SHOW TERSE? GRANTS TO (USER | ROLE) principalName showTail SEMI?  // SHOW GRANTS TO USER/ROLE name
-    | SHOW TERSE? GRANTS OF ROLE principalName showTail SEMI?           // who holds this role
+    | SHOW TERSE? GRANTS TO (USER | ROLE) grantsPrincipal showTail SEMI?
+    | SHOW TERSE? GRANTS OF ROLE grantsPrincipal showTail SEMI?
     // Everything granted to the current user. A LIKE is read and narrows nothing, and an IN is read and refused
     // at whatever follows it (live-verified).
     | SHOW TERSE? GRANTS (LIKE stringText)? showGrantsIn? showTail SEMI?

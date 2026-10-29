@@ -21,16 +21,23 @@ import dev.frostlake.query.MeasuredCellsTestSupport;
 import org.junit.jupiter.api.Test;
 
 /**
- * The rules of a virtual column beyond those measured: its expression reads the columns that are not virtual and the
- * virtual ones before it, holds no value but the row's - no function whose answer moves, no query, no bind variable,
- * no session variable, no column by its place, no window - and has the column's type, an exact number of the same
- * scale and no more digits. A column a virtual column reads stays while it does. A CTAS's query and ALTER TABLE … ADD
- * COLUMN fill the virtual column from the rows, and a MERGE writes around it as an INSERT and an UPDATE do.
+ * The rules of a virtual column: its expression reads the columns that are not virtual and the virtual ones before it,
+ * holds no value but the row's - no function whose answer moves, refused where the call stands; no query, no session
+ * variable and no column by its place, refused at the column's name; no bind, refused as one not set; no window,
+ * refused as one outside the clauses that take it - and has the column's type, an exact number of the same scale and no
+ * more digits. A column a virtual column reads stays while it does, the refusal naming every virtual column that reads
+ * it. A CTAS's query and ALTER TABLE … ADD COLUMN fill the virtual column from the rows, and a MERGE writes around it
+ * as an INSERT and an UPDATE do (all live-verified).
  */
 public class VirtualColumnRulesTest extends MeasuredCellsTestSupport {
 
-    private static final String AT_44 =
-        "REFUSED SQL compilation error: error line 1 at position 44 |  Invalid usage of ";
+    private static final String AT = "REFUSED SQL compilation error: error line 1 at position ";
+
+    private static final String AT_44 = AT + "44 |  Invalid usage of ";
+
+    private static final String AT_34 = AT + "34 |  Invalid usage of ";
+
+    private static final String DROP = "REFUSED SQL compilation error: | Cannot drop column ";
 
     @Test
     public void anExpressionReadsTheVirtualColumnsBeforeIt() {
@@ -61,19 +68,49 @@ public class VirtualColumnRulesTest extends MeasuredCellsTestSupport {
         assertCells(new String[][] {
             {"SET myvar = 1", "Statement executed successfully."},
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS (RANDOM()))",
-                AT_44 + "non-deterministic RANDOM function in J virtual column definition."},
+                AT_44 + "RANDOM non deterministic function in J virtual column definition."},
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS ((SELECT 1)))",
-                AT_44 + "subquery in J virtual column definition."},
+                AT_34 + "subquery in J virtual column definition."},
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS (:1))",
-                AT_44 + "bind variable in J virtual column definition."},
+                "REFUSED SQL compilation error: error line 1 at position 44 | Bind variable :1 not set."},
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS ($myvar))",
-                AT_44 + "session variable in J virtual column definition."},
+                AT_34 + "session variable in J virtual column definition."},
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS ($1))",
-                AT_44 + "column positional reference in J virtual column definition."},
+                AT_34 + "column positional reference in J virtual column definition."},
+            {"CREATE OR REPLACE TABLE t (\n  i INT,\n  j INT AS ($1))",
+                "REFUSED SQL compilation error: error line 3 at position 2 |  Invalid usage of column positional "
+                    + "reference in J virtual column definition."},
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS (ROW_NUMBER() OVER (ORDER BY i)))",
-                AT_44 + "ROW_NUMBER window function in J virtual column definition."},
+                "REFUSED SQL compilation error: | Window function [ROW_NUMBER() OVER (ORDER BY T.I ASC NULLS LAST)] "
+                    + "appears outside of SELECT, QUALIFY, and ORDER BY clauses."},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (SUM(i) OVER ()))",
+                "REFUSED SQL compilation error: | Window function [SUM(T.I) OVER ()] appears outside of SELECT, "
+                    + "QUALIFY, and ORDER BY clauses."},
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i * 2) CHECK (j > 0))",
                 "REFUSED SQL compilation error: Cannot set CHECK constraint on virtual column J."},
+        });
+    }
+
+    @Test
+    public void aCallWhoseAnswerMovesIsRefusedWhereItStands() {
+        assertCells(new String[][] {
+            {"CREATE OR REPLACE TABLE t (i INT, j VARCHAR AS (UUID_STRING()))",
+                AT + "48 |  Invalid usage of UUID_STRING non deterministic function in J virtual column definition."},
+            {"CREATE OR REPLACE TABLE t (i INT, j TIMESTAMP_LTZ AS (CURRENT_TIMESTAMP()))",
+                AT + "54 |  Invalid usage of CURRENT_TIMESTAMP non deterministic function in J virtual column "
+                    + "definition."},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (SEQ4()))",
+                AT_44 + "SEQ4 non deterministic function in J virtual column definition."},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (UNIFORM(1, 10, RANDOM())))",
+                AT + "59 |  Invalid usage of RANDOM non deterministic function in J virtual column definition."},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i + RANDOM()))",
+                AT + "48 |  Invalid usage of RANDOM non deterministic function in J virtual column definition."},
+            {"CREATE OR REPLACE TABLE t (i INT, j VARCHAR AS (CURRENT_USER()))",
+                AT + "48 |  Invalid usage of CURRENT_USER non deterministic function in J virtual column definition."},
+            {"CREATE OR REPLACE TABLE t (i INT, j DATE AS (CURRENT_DATE))",
+                AT + "45 |  Invalid usage of CURRENT_DATE non deterministic function in J virtual column definition."},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i), k INT AS (RANDOM()))",
+                AT + "58 |  Invalid usage of RANDOM non deterministic function in K virtual column definition."},
         });
     }
 
@@ -81,8 +118,20 @@ public class VirtualColumnRulesTest extends MeasuredCellsTestSupport {
     public void aColumnAVirtualColumnReadsStays() {
         assertCells(new String[][] {
             {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i * 2))", "Table T successfully created."},
-            {"ALTER TABLE t DROP COLUMN i",
-                "REFUSED SQL compilation error: Cannot drop column 'I' because virtual column J depends on it."},
+            {"ALTER TABLE t DROP COLUMN i", DROP + "'I' because virtual column 'J' depends on it"},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i * 2), k INT AS (i + 1))", "Table T successfully created."},
+            {"ALTER TABLE t DROP COLUMN i", DROP + "'I' because virtual columns 'J', 'K' depend on it"},
+            {"CREATE OR REPLACE TABLE t (i INT, h INT, j INT AS (i * h))", "Table T successfully created."},
+            {"ALTER TABLE t DROP COLUMN h", DROP + "'H' because virtual column 'J' depends on it"},
+            {"ALTER TABLE t DROP COLUMN i, h", DROP + "'I' because virtual column 'J' depends on it"},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i * 2), k INT AS (j + 1))", "Table T successfully created."},
+            {"ALTER TABLE t DROP COLUMN j", DROP + "'J' because virtual column 'K' depends on it"},
+            {"ALTER TABLE t DROP COLUMN i", DROP + "'I' because virtual column 'J' depends on it"},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i * 2))", "Table T successfully created."},
+            {"ALTER TABLE t DROP COLUMN j", "Statement executed successfully."},
+            {"ALTER TABLE t DROP COLUMN i", "REFUSED SQL compilation error: | cannot drop all the columns of a table"},
+            {"CREATE OR REPLACE TABLE t (i INT, j INT AS (i * 2))", "Table T successfully created."},
+            {"ALTER TABLE t RENAME COLUMN i TO i2", "Statement executed successfully."},
         });
     }
 

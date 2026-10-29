@@ -70,9 +70,9 @@ public final class PythonInterpreter {
         if ("cpython".equals(runtime)) {
             settings = runtime + '|' + executable;
         } else if (runtime.isEmpty() || GRAALPY.equals(runtime)) {
-            // GraalPy runs in the JVM, one context per thread whichever engine calls it: the first context built
-            // settles the venv every later one imports from, and an engine naming another is refused at its first
-            // Python call (see PythonRuntime#requireVenv).
+            // GraalPy runs in the JVM, one context per thread whichever engine calls it: the first Python call naming
+            // a venv, or else the first context built, fixes the venv every later one imports from, and an engine
+            // naming another is refused at its first Python call (see PythonVenvChoice).
             PythonRuntime.configureVenv(config.getPythonVenv());
             VENVS.put(config, PythonRuntime.validVenv(config.getPythonVenv()));
             settings = GRAALPY;

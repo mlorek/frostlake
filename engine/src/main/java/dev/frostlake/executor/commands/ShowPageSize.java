@@ -15,6 +15,7 @@
  */
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.PageSizeRefusal;
 import dev.frostlake.executor.SqlCompilationError;
 
 import java.math.BigInteger;
@@ -45,10 +46,10 @@ final class ShowPageSize {
     static void requireReadable(final String written) {
         final BigInteger limit = new BigInteger(written);
         if (limit.signum() <= 0) {
-            throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
+            throw new PageSizeRefusal("page size \"" + limit + "\" must be greater than 0 in limit clause");
         }
         if (limit.compareTo(LARGEST_READ) > 0) {
-            throw new RuntimeException(SqlCompilationError.of("invalid value [" + written
+            throw new PageSizeRefusal(SqlCompilationError.of("invalid value [" + written
                 + "] for parameter 'LIMIT_COUNT'"));
         }
     }

@@ -718,6 +718,11 @@ public class Schema extends SqlObject {
     public void dropContact(final String name) { contacts.dropExact(name); }
     public Contact getContact(final String name) { return contacts.findExact(name); }
     public boolean hasContact(final String name) { return contacts.hasExact(name); }
+
+    /** Rename a contact here; a name another contact holds is refused. */
+    public void renameContact(final String oldName, final String newName) {
+        NamedObjects.rename(contacts, oldName, newName);
+    }
     public List<Contact> getContacts() { return contacts.values(); }
 
     private final SecurityObjectStore securityObjects = new SecurityObjectStore();
@@ -1800,7 +1805,8 @@ public class Schema extends SqlObject {
      * @param temporary whether the new stage is temporary
      */
     public void dropStageFor(final String name, final boolean temporary) {
-        if (!temporary) {
+        // The engine's own session keeps its temporary stages among the shared ones, as it keeps its temporary tables.
+        if (!temporary || StatementSession.current() == null) {
             stages.dropExact(name);
         } else if (removeOwnStage(name, true) == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualifiedName(name)));

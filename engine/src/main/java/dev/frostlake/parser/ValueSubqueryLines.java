@@ -470,7 +470,7 @@ final class ValueSubqueryLines {
         final List<String> lines = new ArrayList<>();
         if (reads == FrostlakeLexer.COMMA) {
             return doubled ? null : listedWordLines(spoken, word, place == ARGUMENT && calls == 1 && literalFirst,
-                place == CLAUSE && calls == 0 && literalFirst);
+                place == CLAUSE && calls == 0 && literalFirst, place == ARGUMENT && calls == 1 && !literalFirst);
         }
         if (place == ARGUMENT && calls == 1 && literalFirst) {
             if (reads == FrostlakeLexer.JOIN) {
@@ -503,31 +503,67 @@ final class ValueSubqueryLines {
      * statement word no word of the query to live (all live-verified):
      *
      * <pre>
-     *   SELECT ABS((SELECT 1 FROM t, (DESCRIBE TABLE t)))     'SELECT', then 'TABLE' twice: the token after DESCRIBE
-     *                                                         or DESC
+     *   SELECT ABS((SELECT 1 FROM t, (DESCRIBE TABLE t)))     'SELECT', then 'TABLE' twice: the token after DESCRIBE,
+     *                                                         DESC or EXPLAIN
      *   SELECT ABS((SELECT 1 FROM t, (UPDATE t SET a = 1)))   'SELECT', 'UPDATE', then 'SET', as after FROM
-     *   … WHERE 1 = (SELECT 1 FROM t, (DESCRIBE TABLE t))     'SELECT', then 'TABLE' once
+     *   SELECT ABS((SELECT 1 FROM t, (CALL p())))             'SELECT', the name after CALL, then the token after it
+     *   SELECT ABS((SELECT a FROM t, (CALL p())))             'SELECT', 'CALL': a select list opening with no literal
+     *   … WHERE 1 = (SELECT 1 FROM t, (DESCRIBE TABLE t))     'SELECT', then 'TABLE' once, as EXPLAIN's next word;
+     *                                                         a USING there, then the token after the first ')'
+     *   … WHERE 1 = (SELECT 1 FROM t, (UPDATE t SET a = 1))   'SELECT', 'UPDATE', then the token after the first ')'
+     *   … WHERE 1 = (SELECT 1 FROM t, (CALL p(1)))            'SELECT', 'p', '1', then the token after the first ')'
+     *                                                         past it
      * </pre>
      *
      * Null for any other word or place.
      */
     private static List<String> listedWordLines(final List<Token> spoken, final int word, final boolean argument,
-                                                final boolean compared) {
+                                                final boolean compared, final boolean plain) {
         final int type = spoken.get(word).getType();
         final Token after = StatementWordInFromLines.afterWord(spoken, word);
         final boolean described = type == FrostlakeLexer.DESCRIBE || type == FrostlakeLexer.DESC;
         final List<String> lines = new ArrayList<>();
-        if (after == null || !argument && !(compared && described)) {
+        if (plain) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(word)));
+            return lines;
+        }
+        if (after == null || !argument && !compared) {
             return null;
         }
-        if (described) {
+        if (argument && (described || type == FrostlakeLexer.EXPLAIN)) {
             lines.add(SyntaxErrorListener.sentence(after));
-            if (argument) {
-                lines.add(SyntaxErrorListener.sentence(after));
-            }
-        } else if (type == FrostlakeLexer.UPDATE) {
+            lines.add(SyntaxErrorListener.sentence(after));
+        } else if (argument && type == FrostlakeLexer.UPDATE) {
             lines.add(SyntaxErrorListener.sentence(spoken.get(word)));
             lines.add(SyntaxErrorListener.sentence(after));
+        } else if (argument && type == FrostlakeLexer.CALL) {
+            lines.add(SyntaxErrorListener.sentence(after));
+            if (word + 2 < spoken.size() && spoken.get(word + 2).getType() != Token.EOF) {
+                lines.add(SyntaxErrorListener.sentence(spoken.get(word + 2)));
+            }
+        } else if (argument) {
+            return null;
+        } else if (described || type == FrostlakeLexer.EXPLAIN) {
+            lines.add(SyntaxErrorListener.sentence(after));
+            final Token close = after.getType() == FrostlakeLexer.USING
+                ? StatementWordInFromLines.afterFirstClose(spoken, word + 1) : null;
+            if (close != null) {
+                lines.add(SyntaxErrorListener.sentence(close));
+            }
+        } else if (type == FrostlakeLexer.UPDATE) {
+            final Token close = StatementWordInFromLines.afterFirstClose(spoken, word);
+            lines.add(SyntaxErrorListener.sentence(spoken.get(word)));
+            if (close != null) {
+                lines.add(SyntaxErrorListener.sentence(close));
+            }
+        } else if (type == FrostlakeLexer.CALL && word + 3 < spoken.size()
+                && spoken.get(word + 2).getType() == FrostlakeLexer.LPAREN) {
+            final Token close = StatementWordInFromLines.afterFirstClose(spoken, word + 3);
+            lines.add(SyntaxErrorListener.sentence(after));
+            lines.add(SyntaxErrorListener.sentence(spoken.get(word + 3)));
+            if (close != null) {
+                lines.add(SyntaxErrorListener.sentence(close));
+            }
         } else {
             return null;
         }

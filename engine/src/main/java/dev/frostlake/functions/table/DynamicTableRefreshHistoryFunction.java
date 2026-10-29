@@ -183,16 +183,17 @@ public class DynamicTableRefreshHistoryFunction extends TableFunction {
     }
 
     /**
-     * The tables and dynamic tables the refresh read whose data changed for it, each by its kind and name, with the
-     * micro-partitions added since the refresh before and the rows they hold, and the ones removed and the rows they
-     * held.
+     * The tables, views and dynamic tables the refresh read whose data changed for it, each by its kind and name, with
+     * the micro-partitions added since the refresh before and the rows they hold, and the ones removed and the rows
+     * they held: a view's as baseTableStatisticsAgg, the sums of its base tables' (documented).
      */
     private static VariantValue inputs(final DynamicTableRefreshRecord record) {
         final StringBuilder json = new StringBuilder("[");
         for (final DynamicTableRefreshInput input : record.getInputs()) {
             json.append(json.length() > 1 ? "," : "").append("{\"kind\":").append(json(input.getKind()))
                 .append(",\"name\":").append(json(input.getName()))
-                .append(",\"statistics\":{\"numAddedPartitions\":").append(input.getAddedPartitions())
+                .append("VIEW".equals(input.getKind()) ? ",\"baseTableStatisticsAgg\":" : ",\"statistics\":")
+                .append("{\"numAddedPartitions\":").append(input.getAddedPartitions())
                 .append(",\"numRegisteredRows\":").append(input.getRegisteredRows())
                 .append(",\"numRemovedPartitions\":").append(input.getRemovedPartitions())
                 .append(",\"numUnregisteredRows\":").append(input.getUnregisteredRows()).append("}}");

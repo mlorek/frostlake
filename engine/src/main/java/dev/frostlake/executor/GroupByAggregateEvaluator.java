@@ -134,8 +134,9 @@ final class GroupByAggregateEvaluator {
 
     /**
      * Whether an expression of a grouped query is one of the keys it groups by: one written as a key, the item a key
-     * names by its position or its alias, every expression item under GROUP BY ALL, a member of a ROLLUP, a CUBE or a
-     * grouping set. The key's value is the expression's, computed over each row before the rows are grouped, so the
+     * names by its position or its alias, every expression item under GROUP BY ALL, a member of the one grouping set
+     * a GROUPING SETS of one names - a ROLLUP's, a CUBE's and several sets' keys are none, each set computing its own
+     * value. The key's value is the expression's, computed over each row before the rows are grouped, so the
      * expression reads the rows as they are (see StoredRead): {@code a[0]::DATE ... GROUP BY 1} reads a stored element
      * where {@code a[0]::DATE ... GROUP BY a[0]} reads the key's value.
      *
@@ -223,7 +224,14 @@ final class GroupByAggregateEvaluator {
             }
             return keys;
         }
-        for (final List<String> set : expandGroupByToSets(select.groupByClause())) {
+        final List<List<String>> sets = expandGroupByToSets(select.groupByClause());
+        if (sets.size() > 1) {
+            // Grouped by several sets - a ROLLUP, a CUBE, GROUPING SETS of more than one - a key's value is the set's,
+            // so none reads the rows as they are: a[0]::DATE ... GROUP BY ROLLUP (a[0]::DATE) is refused where
+            // GROUPING SETS ((a[0]::DATE)) converts the stored element (live-verified).
+            return keys;
+        }
+        for (final List<String> set : sets) {
             for (final String key : set) {
                 noteKey(keys, key, items);
             }

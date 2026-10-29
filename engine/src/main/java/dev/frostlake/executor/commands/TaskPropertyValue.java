@@ -30,8 +30,9 @@ import java.util.Locale;
  * The value a task property is given, read off its parse tree: a quoted string (single-quoted or between
  * {@code $$}), a number, a boolean, a name, or a parenthesised list of constants.
  *
- * <p>A parenthesised list is one value to the account, spelled {@code TOK_CONSTANT_LIST}: a string parameter
- * holds that word, and a parameter of another type refuses it by that word.
+ * <p>A parenthesised list is one value to the account, spelled {@code TOK_CONSTANT_LIST} (see ListValues): a string
+ * parameter holds that word, and a parameter of another type refuses it by that word. A list of properties is the
+ * word {@code TOK_PROPERTY_LIST} written bare.
  */
 final class TaskPropertyValue {
 
@@ -72,13 +73,19 @@ final class TaskPropertyValue {
      * @return the value
      */
     static TaskPropertyValue of(final FrostlakeParser.TaskPropertyValueContext ctx) {
-        if (ctx.LPAREN() != null) {
+        if (ctx.listValue() != null) {
+            final FrostlakeParser.ListValueContext list = ctx.listValue();
+            if (ListValues.isPropertyList(list)) {
+                // A list of properties reads as the parser's word for it, as if that word were written bare.
+                return resolvedName(ListValues.PROPERTY_LIST);
+            }
             final List<String> items = new ArrayList<>();
-            for (final FrostlakeParser.TaskListItemContext item : ctx.taskListItem()) {
+            for (final FrostlakeParser.ListedConstantContext item : list.listedConstant()) {
                 items.add(item.STRING_LITERAL() != null ? SqlStringLiterals.decode(item.STRING_LITERAL().getText())
                     : item.getText());
             }
-            return new TaskPropertyValue(CONSTANT_LIST, CONSTANT_LIST, false, false, false, true, null, null, items);
+            final String word = ListValues.word(list);
+            return new TaskPropertyValue(word, word, false, false, false, true, null, null, items);
         }
         if (ctx.STRING_LITERAL() != null) {
             return quoted(ctx.STRING_LITERAL().getText());

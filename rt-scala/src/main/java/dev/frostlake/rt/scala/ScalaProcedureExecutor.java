@@ -100,8 +100,8 @@ public final class ScalaProcedureExecutor {
 
         final Method target = findMethod(clazz, methodName, args.length);
         // Each argument as the class the handler declares for it, as a Java handler's are.
-        final Object[] adapted = HandlerArguments.adapt(target.getParameterTypes(), args, procedure.getName(),
-            procedure.getHandler());
+        final Object[] adapted = HandlerArguments.adapt(target.getParameterTypes(), args, procedure.getParameters(),
+            procedure.getName(), procedure.getHandler());
         UdfConsoleCapture.enter();
         try {
             return target.invoke(instance, adapted);

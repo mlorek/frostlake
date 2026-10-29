@@ -31,6 +31,7 @@ import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryMemo;
+import dev.frostlake.executor.expressions.UnsupportedFeatureException;
 import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
@@ -995,8 +996,10 @@ public class ExpressionEvaluator {
             reusableVisitor.rejectArgumentFamilies(expression);
         } catch (final RuntimeException undetermined) {
             // A COMPILATION error is a refusal the channel reached on purpose — an argument family
-            // Snowflake rejects — not the ordinary "could not determine a type" this swallows.
-            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+            // Snowflake rejects — not the ordinary "could not determine a type" this swallows; so is a feature
+            // refused as unsupported.
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())
+                    || undetermined instanceof UnsupportedFeatureException) {
                 throw undetermined;
             }
         }

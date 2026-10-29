@@ -491,6 +491,20 @@ public class TableStorage {
         return writeMark;
     }
 
+    /**
+     * Puts back the mark a snapshot of the engine's state saved with the rows just restored (see {@link #writeMark}):
+     * a dynamic table that read them before the restart finds them unchanged, until the next write moves it.
+     *
+     * @param mark the saved mark, or 0 where the snapshot saved none
+     */
+    public synchronized void restoreWriteMark(final long mark) {
+        if (mark > 0) {
+            SnapshotSequence.advancePast(mark);
+            writeMark = mark;
+            markedWrites = writes.get();
+        }
+    }
+
     public List<Row> scan() {
         return new ArrayList<>(rows);
     }

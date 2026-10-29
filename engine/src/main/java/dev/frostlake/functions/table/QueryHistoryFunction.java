@@ -321,6 +321,7 @@ public class QueryHistoryFunction extends TableFunction {
             case "SCHEMA_NAME": return q.getSchema();
             case "QUERY_TYPE": return q.getQueryTypeName();
             case "SESSION_ID": return q.getSessionId();
+            case "QUERY_TAG": return q.getQueryTag();
             case "AUTHN_EVENT_ID": return q.getSessionId();
             case "ERROR_CODE": return q.getErrorCode() == null ? null : Long.valueOf(q.getErrorCode().longValue());
             case "WAREHOUSE_SIZE": return q.getWarehouseSize();

@@ -33,6 +33,9 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * are part of the sentence the account produces, so they are part of this one too: a client that
  * matches on the account's wording sees the same text here.
  *
+ * <p>A driver's cancel or query timeout ends the whole request instead, which answers as a statement alone does,
+ * {@code SQL execution canceled} (live-verified).
+ *
  * <p>Only a failure DURING EXECUTION is spelled this way. A script whose text will not parse is
  * refused as a whole before any of it runs, with an ordinary syntax error that names no statement,
  * and a request carrying a single statement answers with that statement's own error unadorned.
@@ -120,8 +123,8 @@ public final class MultiStatementFailure extends RuntimeException {
     public static RuntimeException wrappingInRequest(final FrostlakeParser.SqlScriptContext tree,
             final FrostlakeParser.StatementContext failing, final RuntimeException failure,
             final boolean topLevel, final boolean moreFollow) {
-        if (moreFollow && topLevel && !(failure instanceof MultiStatementFailure) && failing != null
-                && failing.getStart() != null) {
+        if (moreFollow && topLevel && !(failure instanceof MultiStatementFailure) && !canceled(failure)
+                && failing != null && failing.getStart() != null) {
             final Token start = failing.getStart();
             return new MultiStatementFailure(sentence(statementText(failing), failure,
                 LeadingCommentOffset.rebase(start.getLine(), start.getCharPositionInLine())), failure);
@@ -158,8 +161,15 @@ public final class MultiStatementFailure extends RuntimeException {
     /** Whether a failure is one of a statement among several, not yet named as such. */
     private static boolean names(final FrostlakeParser.SqlScriptContext tree,
             final FrostlakeParser.StatementContext failing, final RuntimeException failure) {
-        return !(failure instanceof MultiStatementFailure) && tree != null && tree.flowChain() != null
-            && tree.flowChain().size() >= 2 && failing != null && failing.getStart() != null;
+        return !(failure instanceof MultiStatementFailure) && !canceled(failure) && tree != null
+            && tree.flowChain() != null && tree.flowChain().size() >= 2 && failing != null
+            && failing.getStart() != null;
+    }
+
+    /** Whether a failure is a cancel's — the driver's, its query timeout's, or SYSTEM$CANCEL_QUERY's. */
+    private static boolean canceled(final RuntimeException failure) {
+        return failure instanceof StatementCanceledException
+            && ((StatementCanceledException) failure).getCode() == StatementCanceledException.CANCEL_CODE;
     }
 
     /** The account's sentence for the statement quoted at its place, carrying its own error inside. */

@@ -173,6 +173,12 @@ final class JavaScriptFaultWording {
                 + "' in " + searched.group(1);
         }
         final Matcher called = NOT_A_FUNCTION.matcher(message);
+        final String printed = called.matches() && "".equals(scan.soleArgument())
+            ? JavaScriptCallPrinter.printed(scan.callee()) : null;
+        if (printed != null) {
+            // A callee called with nothing is named as the account's engine prints it from its source.
+            return "TypeError: " + printed + " is not a function";
+        }
         if (called.matches() && scan.calledName() != null && called.group(1).startsWith("(intermediate value)")) {
             return "TypeError: " + scan.calledName() + " is not a function";
         }

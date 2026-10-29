@@ -104,6 +104,7 @@ final class MaskingPolicyApplier {
         final List<TableColumn> columns = relation.getColumns();
         final List<Integer> slots = new ArrayList<>();
         final List<Expression> bodies = new ArrayList<>();
+        final List<MaskingPolicy> boundByValue = new ArrayList<>();
         final List<DeferredFault> unreadable = new ArrayList<>();
         for (int i = 0; i < columns.size(); i++) {
             final TableColumn column = columns.get(i);
@@ -112,13 +113,21 @@ final class MaskingPolicyApplier {
                 // An attachment whose policy is gone refuses every read of the column, and only of the column: the
                 // cells hold the refusal, which reading one raises (DeferredFault).
                 Expression body = null;
+                MaskingPolicy byValue = null;
                 DeferredFault refusal = null;
                 try {
-                    body = ExpressionEvaluator.parse(maskingPolicyBody(column, owner));
+                    final MaskingPolicy policy = PolicyReferences.maskingPolicy(executor.getCatalog(),
+                        column.getMaskingPolicyName(), owner);
+                    if (ParameterReferences.readInSubquery(policy.getBody(), parameterNames(policy))) {
+                        byValue = policy;
+                    } else {
+                        body = ExpressionEvaluator.parse(maskingPolicyBody(column, owner));
+                    }
                 } catch (final RuntimeException gone) {
                     refusal = new DeferredFault(gone);
                 }
                 bodies.add(body);
+                boundByValue.add(byValue);
                 unreadable.add(refusal);
             }
         }
@@ -135,6 +144,8 @@ final class MaskingPolicyApplier {
                     final int slot = slots.get(k);
                     if (slot < values.size()) {
                         values.set(slot, unreadable.get(k) != null ? unreadable.get(k)
+                            : boundByValue.get(k) != null
+                                ? valueBoundMask(evaluator, boundByValue.get(k), columns, slot, row, owner)
                             : maskedValue(evaluator, bodies.get(k), row, columns.get(slot)));
                     }
                 }
@@ -161,6 +172,47 @@ final class MaskingPolicyApplier {
         } catch (final RuntimeException failed) {
             return new DeferredFault(failed);
         }
+    }
+
+    /**
+     * The policy's answer for one row of a body that reads a parameter inside a subquery: each parameter bound to the
+     * row's value of the column it masks or reads, as the account binds a parameter there ahead of the subquery's own
+     * columns, so {@code val || '/' || (SELECT MAX(val) FROM val)} masks 'secret' as {@code secret/secret} beside a
+     * table VAL with a column VAL (live-verified). A fault is held in the cell, as {@link #maskedValue} holds one.
+     */
+    private Object valueBoundMask(final ExpressionEvaluator evaluator, final MaskingPolicy policy,
+                                  final List<TableColumn> laidOut, final int slot, final Row row, final Table table) {
+        final TableColumn column = laidOut.get(slot);
+        final List<String> using = column.getMaskingPolicyArguments();
+        final List<String> bound = new ArrayList<>();
+        for (int i = 0; i < policy.getParameters().size(); i++) {
+            final String source = i == 0 ? column.getName() : i < using.size() ? using.get(i) : null;
+            int at = -1;
+            for (int c = 0; c < laidOut.size() && source != null && at < 0; c++) {
+                if (laidOut.get(c).getName().equals(source)) {
+                    at = c;
+                }
+            }
+            bound.add(at < 0 || at >= row.getValues().size() ? "NULL" : SqlArgumentText.forTableParameter(
+                row.getValues().get(at), policy.getParameters().get(i).getDataType(), laidOut.get(at).getDataType()));
+        }
+        final Expression body;
+        try {
+            body = ExpressionEvaluator.parse("(" + rewriteCurrentTagFunctions(
+                ParameterReferences.bound(policy.getBody(), parameterNames(policy), bound), table.getName(),
+                SqlIdentifiers.spellCanonicalEscaped(column.getName())) + ")");
+        } catch (final RuntimeException unbound) {
+            return new DeferredFault(unbound);
+        }
+        return maskedValue(evaluator, body, row, column);
+    }
+
+    private static List<String> parameterNames(final MaskingPolicy policy) {
+        final List<String> names = new ArrayList<>();
+        for (final Parameter parameter : policy.getParameters()) {
+            names.add(parameter.getName());
+        }
+        return names;
     }
 
     /** The tables whose rows this thread is masking right now, which a policy body reading them reads as stored. */

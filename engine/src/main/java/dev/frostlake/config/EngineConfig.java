@@ -89,7 +89,10 @@ public class EngineConfig {
     /** The cell budget of the results kept for RESULT_SCAN when the configuration names none. */
     public static final int DEFAULT_QUERY_RESULT_CACHE_CELLS = 2_000_000;
     public static final String PROP_STAGE_S3_LOCAL_ROOT = "stage.s3.localRoot";
-    /** Opt-in for {@code file://} (and bare local-path) stage URLs, which a real account refuses. */
+    /**
+     * Opt-in for {@code file://} (and bare local-path) stage URLs and for a routine's IMPORTS that name a local path or
+     * a URL rather than a stage, which a real account refuses.
+     */
     public static final String PROP_STAGE_FILE_URL_ENABLED = "stage.file.urlEnabled";
     public static final String PROP_STAGE_S3_LOCAL_MAPPINGS = "stage.s3.localMappings";
     public static final String PROP_STAGE_INTERNAL_LOCAL_ROOT = "stage.internal.localRoot";
@@ -367,8 +370,9 @@ public class EngineConfig {
 
     /**
      * When true, {@code CREATE STAGE} accepts {@code file://} (and bare local-path) URLs backed by
-     * the local filesystem — the local-development affordance. Off by default: a real account
-     * refuses those URLs, and the default surface matches it.
+     * the local filesystem, and a routine's IMPORTS may name a local path or a URL the loader resolves
+     * itself — the local-development affordance. Off by default: a real account refuses those URLs and
+     * imports, and the default surface matches it.
      */
     public boolean isStageFileUrlEnabled() {
         return getBooleanProperty(PROP_STAGE_FILE_URL_ENABLED, false);

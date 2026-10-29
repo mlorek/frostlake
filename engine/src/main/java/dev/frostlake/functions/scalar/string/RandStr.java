@@ -18,16 +18,22 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.WholeNumberArgument;
+import dev.frostlake.functions.scalar.math.GeneratorDraws;
+import dev.frostlake.functions.scalar.math.Random;
 import dev.frostlake.types.StringType;
 
 import java.math.BigInteger;
 import java.util.List;
-import java.util.Random;
 
-/** RANDSTR(length, generator) — a deterministic random alphanumeric string seeded by the generator. */
+/**
+ * RANDSTR(length, generator) — a random alphanumeric string the generator's value decides: each character is a draw
+ * over the digits, then the small letters, then the capitals, the generator's draws (see {@link GeneratorDraws}) taken
+ * in turn, so a longer string extends a shorter one and one generator value answers one string on every row
+ * (live-verified: RANDSTR(5, 0) is 046Bo and RANDSTR(10, 1) CaFHJdoX3u).
+ */
 public class RandStr extends TextArgumentFunction {
 
-    private static final String ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    private static final String ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     /** The longest text RANDSTR makes. */
     private static final int MAX_LENGTH = 134_217_728;
 
@@ -52,11 +58,11 @@ public class RandStr extends TextArgumentFunction {
         }
         final int length = asked.intValue();
         if (args.get(1) == null) return null;
-        final long seed = (long) Double.parseDouble(args.get(1).toString());
-        final Random random = new Random(seed);
+        // The generator is read as RANDOM reads its seed, a fraction rounding to the nearest whole number.
+        final GeneratorDraws draws = new GeneratorDraws(Random.seedOf(args.get(1)));
         final StringBuilder sb = new StringBuilder(length);
         for (int i = 0; i < length; i++) {
-            sb.append(ALPHABET.charAt(random.nextInt(ALPHABET.length())));
+            sb.append(ALPHABET.charAt((int) draws.uniform(0, ALPHABET.length() - 1)));
         }
         return sb.toString();
     }

@@ -24,12 +24,14 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
 
+import java.io.File;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -136,8 +138,22 @@ public final class JavaTableFunctions {
         final String where = where(function);
         final String className = function.getHandler();
         try {
-            return function.getImports().isEmpty() ? inlineClass(function, className, where)
-                : importedClass(function, className, catalog, s3Resolver);
+            if (function.getImports().isEmpty()) {
+                return inlineClass(function, className, where, Collections.<File>emptyList());
+            }
+            if (function.getBody() != null && !function.getBody().trim().isEmpty()) {
+                // An inline body beside imports compiles with their jars on its class path and runs beside them; a
+                // body that holds no handler class leaves the handler to the jars (live-verified).
+                try {
+                    return inlineClass(function, className, where,
+                        JarHandlerLoader.localJars(function.getImports(), catalog, s3Resolver));
+                } catch (final RuntimeException notInTheBody) {
+                    if (!String.valueOf(notInTheBody.getMessage()).startsWith("No class bytes generated for")) {
+                        throw notInTheBody;
+                    }
+                }
+            }
+            return importedClass(function, className, catalog, s3Resolver);
         } catch (final RuntimeException unreadable) {
             if (String.valueOf(unreadable.getMessage()).startsWith("No class bytes generated for")) {
                 throw new RuntimeException(JavaHandlerFailure.missingClass(className,
@@ -152,18 +168,19 @@ public final class JavaTableFunctions {
      * what its static fields hold carries from one partition of the call to the next, over the rows a LATERAL call is
      * made for, and to no other call (live-verified: a counter it keeps reads 1, 2 and 3 over three rows).
      */
-    private static Class<?> inlineClass(final Function function, final String className, final String where) {
+    private static Class<?> inlineClass(final Function function, final String className, final String where,
+                                        final List<File> jars) {
         final AutoCloseable kept = StatementHandlerStates.state(function, INLINE_TABLE_HANDLER_CLASS,
             new HandlerStateFactory() {
                 @Override
                 public AutoCloseable create() {
                     return new JavaHandlerClass(COMPILER.load(function.getBody(), className, null,
-                        JavaRuntimeLevel.of(function.getRuntimeVersion()), where));
+                        JavaRuntimeLevel.of(function.getRuntimeVersion()), where, true, jars));
                 }
             });
         return kept != null ? ((JavaHandlerClass) kept).handled()
             : COMPILER.load(function.getBody(), className, null, JavaRuntimeLevel.of(function.getRuntimeVersion()),
-                where);
+                where, true, jars);
     }
 
     /**

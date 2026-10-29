@@ -324,9 +324,9 @@ public class SystemFunctionEvaluator {
     }
 
     /**
-     * SYSTEM$CANCEL_QUERY: the running statement its query ID names is canceled, from any session; an ID that names no
-     * running statement answers that it is not executing, and a text that is no UUID that it is invalid
-     * (live-verified).
+     * SYSTEM$CANCEL_QUERY: the running statement its query ID names is canceled, from any session, and the answer names
+     * it, {@code query [<id>] terminated.}; an ID that names no running statement answers that it is not executing,
+     * and a text that is no UUID that it is invalid (live-verified).
      */
     private static String cancelQuery(final Object id) {
         if (id == null) {
@@ -338,7 +338,7 @@ public class SystemFunctionEvaluator {
         } catch (final IllegalArgumentException notAUuid) {
             return "invalid UUID";
         }
-        return StatementCancellation.cancelRunning(text) ? "Query cancelled."
+        return StatementCancellation.cancelRunning(text) ? "query [" + text + "] terminated."
             : "Identified SQL statement is not currently executing.";
     }
 }

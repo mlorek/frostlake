@@ -99,7 +99,7 @@ public final class VariantJsonText {
             return null;
         }
         final StringBuilder out = new StringBuilder();
-        append(node, out, false);
+        append(node, out, false, false);
         return out.toString();
     }
 
@@ -243,7 +243,21 @@ public final class VariantJsonText {
      */
     public static String render(final JsonNode node) {
         final StringBuilder out = new StringBuilder();
-        append(node, out, false);
+        append(node, out, false, false);
+        return out.toString();
+    }
+
+    /**
+     * The JSON a Java or a Scala handler's {@code String} parameter takes for a semi-structured argument
+     * (live-verified): the conversion text, but for a non-finite DOUBLE, which is quoted into a string -
+     * {@code "NaN"}, {@code "Infinity"}, {@code "-Infinity"} - as a standard writer spells it.
+     *
+     * @param node the parsed document
+     * @return its JSON text
+     */
+    public static String handlerText(final JsonNode node) {
+        final StringBuilder out = new StringBuilder();
+        append(node, out, false, true);
         return out.toString();
     }
 
@@ -262,7 +276,7 @@ public final class VariantJsonText {
             return value.text();
         }
         final StringBuilder out = new StringBuilder();
-        append(node, out, true);
+        append(node, out, true, false);
         return out.toString();
     }
 
@@ -272,7 +286,8 @@ public final class VariantJsonText {
         return shortest.indexOf('E') >= 0 ? shortest : shortest + "e0";
     }
 
-    private static void append(final JsonNode node, final StringBuilder out, final boolean exact) {
+    private static void append(final JsonNode node, final StringBuilder out, final boolean exact,
+                               final boolean quoted) {
         final VectorValue vector = TypedVectorNode.vectorValueOf(node);
         if (vector != null) {
             // The vector's own elements, each in the fifteen-decimal form — a second spelling of the
@@ -300,7 +315,7 @@ public final class VariantJsonText {
                 }
                 first = false;
                 out.append(VariantText.canonical(StringNode.valueOf(member.getKey()))).append(':');
-                append(member.getValue(), out, exact);
+                append(member.getValue(), out, exact, quoted);
             }
             out.append('}');
             return;
@@ -311,7 +326,7 @@ public final class VariantJsonText {
                 if (i > 0) {
                     out.append(',');
                 }
-                append(node.get(i), out, exact);
+                append(node.get(i), out, exact, quoted);
             }
             out.append(']');
             return;
@@ -323,7 +338,8 @@ public final class VariantJsonText {
         // Every other leaf converts as it displays — including the typed scalars, whose text is their
         // own and must stay byte-identical, and the non-finite numbers, which the canonical writer
         // spells bare where a standard one would quote them into strings.
-        out.append(VariantText.canonical(node));
+        final boolean nonFinite = node.isFloatingPointNumber() && !node.isBigDecimal();
+        out.append(quoted && nonFinite ? VariantText.standard(node) : VariantText.canonical(node));
     }
 
     /**

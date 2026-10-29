@@ -105,6 +105,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     private boolean tellingColumnDefault;
     /** Whether a column prints as written, unresolved — see {@link #columnsAsWritten()}. */
     private boolean columnsAsWritten;
+    /** Whether each cast prints as written — see {@link #castingAsWritten()}. */
+    private boolean castsAsWritten;
     /** Whether what the plan folds early prints as its value — see {@link #foldingConstants()}. */
     private boolean foldingConstants;
     /** Whether a literal's planned conversion prints as the value it folds to — see {@link #foldingConversions()}. */
@@ -130,6 +132,18 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     StrictMessagePrinter(final ExpressionEvaluatorVisitor context, final StrictPrintMode mode) {
         this.context = context;
         this.mode = mode;
+    }
+
+    /**
+     * Prints each cast as written, its type spelled out — {@code CAST('5' AS NUMBER(38,0))}, {@code CAST(null AS
+     * NUMBER(10,2))}, {@code CAST(PARSE_JSON('1') AS VARIANT)} — as a quantifier's refusal echoes its call, where the
+     * other sentences print the conversion the plan runs, {@code TO_NUMBER('5')} (live-verified).
+     *
+     * @return this printer
+     */
+    StrictMessagePrinter castingAsWritten() {
+        this.castsAsWritten = true;
+        return this;
     }
 
     /**
@@ -919,7 +933,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         if (expression instanceof BindVariableExpression
                 && blockExpressionConversion((BindVariableExpression) expression) != null
-                || convertedCallType(expression) != null) {
+                || convertedCallType(expression) != null
+                || expression instanceof ColumnReferenceExpression && context != null
+                    && context.boundBlockVariable((ColumnReferenceExpression) expression) instanceof CastExpression) {
             return "(" + expression.accept(this) + ")";
         }
         if (tellingDefault && !tellingColumnDefault && expression instanceof BinaryOperationExpression
@@ -1154,12 +1170,44 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      */
     private String rescaled(final Expression lower, final NumericType lowType, final NumericType highType,
                             final boolean arithmetic) {
+        return "(" + rescaledValue(lower, lowType, highType, arithmetic) + ")";
+    }
+
+    /** {@link #rescaled} unbracketed, as an argument is printed. */
+    private String rescaledValue(final Expression lower, final NumericType lowType, final NumericType highType,
+                                 final boolean arithmetic) {
         final int growth = highType.getScale() - lowType.getScale();
         final int widened = Math.max(lowType.getPrecision() + growth, highType.getPrecision());
         final int precision = arithmetic
             ? Math.max(widened, ARITHMETIC_INTEGER_DIGITS + highType.getScale()) : widened;
-        return "(" + fixedToFixed(lower.accept(this),
-            "NUMBER(" + Math.min(MAX_PRECISION, precision) + "," + highType.getScale() + ")") + ")";
+        return fixedToFixed(lower.accept(this),
+            "NUMBER(" + Math.min(MAX_PRECISION, precision) + "," + highType.getScale() + ")");
+    }
+
+    /**
+     * MOD over exact numbers of different scales, the lower-scale argument rescaled as the remainder operator's
+     * operand is: {@code MOD(5.5, 2)} is {@code MOD(5.5, CAST(2 AS NUMBER(3,1)))} (live-verified). Null for any other
+     * call.
+     */
+    private String rescaledModulo(final FunctionCallExpression call) {
+        if (call.getNameExpression() != null || call.isStar() || call.getArguments().size() != 2
+                || !"MOD".equalsIgnoreCase(call.getFunctionName())) {
+            return null;
+        }
+        final Expression left = call.getArguments().get(0);
+        final Expression right = call.getArguments().get(1);
+        final DataType leftType = argumentType(left);
+        final DataType rightType = argumentType(right);
+        if (!(leftType instanceof NumericType) || !(rightType instanceof NumericType)
+                || NumericType.isApproximate(leftType) || NumericType.isApproximate(rightType)
+                || ((NumericType) leftType).getScale() == ((NumericType) rightType).getScale()) {
+            return null;
+        }
+        final NumericType l = (NumericType) leftType;
+        final NumericType r = (NumericType) rightType;
+        final boolean leftLower = l.getScale() < r.getScale();
+        return "MOD(" + (leftLower ? rescaledValue(left, l, r, true) : left.accept(this)) + ", "
+            + (leftLower ? right.accept(this) : rescaledValue(right, r, l, true)) + ")";
     }
 
     /** An exact number's move to another width: a CAST in the plan, FIXED_TO_FIXED in an invalid-type sentence. */
@@ -1775,6 +1823,13 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 return printingCorrelatedCall ? read : "CORRELATION(" + read + ")";
             }
         }
+        if (qualifier == null) {
+            // A block's variable in one of the block's own expressions is the binding the block writes in its place.
+            final Expression bound = context.boundBlockVariable(expr);
+            if (bound != null) {
+                return bound.accept(this);
+            }
+        }
         if (qualifier == null && bareColumns != null) {
             bareColumns.add(expr.getColumnName());
         }
@@ -1995,6 +2050,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
         if (expr instanceof PlannedCastExpression) {
             return "CAST(" + expr.getExpression().accept(this) + " AS " + expr.getTargetType() + ")";
+        }
+        if (castsAsWritten) {
+            final String written = typeText(expr);
+            return (expr.isTryMode() ? "TRY_CAST(" : "CAST(") + expr.getExpression().accept(this) + " AS "
+                + (written != null ? written : expr.getTargetType()) + ")";
         }
         if (conversionShaped() && expr.isTryMode()) {
             final String conversion = tryConversion(expr);
@@ -2409,6 +2469,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             // NULLIFZERO is the NULLIF it stands for: NULLIF(RT.N, 0) (live-verified).
             return new FunctionCallExpression("NULLIF", new ArrayList<Expression>(Arrays.asList(
                 expr.getArguments().get(0), new LiteralExpression(Long.valueOf(0), LiteralType.INTEGER)))).accept(this);
+        }
+        final String remainder = rescaledModulo(expr);
+        if (remainder != null) {
+            return remainder;
         }
         // IDENTIFIER(<value>) names a column, and the plan holds the column, not the call: live's
         // predicate refusal reads [T1.A] for `WHERE IDENTIFIER('a')` (live-verified).
@@ -4204,16 +4268,22 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
      *   REGR_COUNT(f, n)          COUNT(CAST(IFF(T.F IS NULL, SYSTEM$NULL_TO_FIXED(null), T.N) AS FLOAT))
      *   REGR_AVGY(n, f)           as REGR_AVGX over the pair of the dependent value, IFF(T.F IS NULL, …, T.N)
      *   REGR_SXX(n, f)            (SUM(SQUARE(P))) - ((SQUARE(SUM(P))) / (CAST(COUNT(P) AS FLOAT)))
+     *   VAR_SAMP(n)               SCALED_ROUND_INT_DIVIDE(IFF(… &lt; 0, 0, …), NULLIF((COUNT(T.N)) * (…), 0))
+     *   STDDEV(f), KURTOSIS(d)    the variance family and the moments, typed as the plan types arithmetic
+     *   CORR(n, f), REGR_R2(n, d) the covariance, the regressions and the correlation over the pairs
      * </pre>
+     *
+     * <p>The statistics' formulas are {@link MomentFormulas}'; a text or a VARIANT is read there as the FLOAT it
+     * converts to, its pair member's NULL being SYSTEM$NULL_TO_TEXT or SYSTEM$NULL_TO_VARIANT.
      *
      * <p>What takes NO cast is measured too: ARRAY_AGG, HASH_AGG, MAX, MIN, COUNT, ANY_VALUE, MODE and
      * MAX_BY print their argument as it is, so does a bit aggregate over a whole number and a
      * two-argument APPROX_COUNT_DISTINCT; a DISTINCT LISTAGG, SUM or BITXOR_AGG repeats the word inside
      * its cast, and a DISTINCT BITOR_AGG or BITAND_AGG drops it. The zero a boolean aggregate compares a number with is
      * cast to the number's type only when that type carries a scale. A call this does not know, or an
-     * argument whose type does not resolve, prints as written — BOOLXOR_AGG's null-guarded sum, the
-     * variance family's formulas, a regression over an exact independent value and the refusals live raises
-     * instead (COUNT_IF over a non-boolean, OBJECT_AGG with a text or DATE value) are not echoes to reproduce.
+     * argument whose type does not resolve, prints as written — BOOLXOR_AGG's null-guarded sum, a moment over
+     * distinct values and the refusals live raises instead (COUNT_IF over a non-boolean, OBJECT_AGG with a text or
+     * DATE value) are not echoes to reproduce.
      */
     private String withArgumentCasts(final FunctionCallExpression expr, final String name) {
         final List<Expression> args = expr.getArguments();
@@ -4343,39 +4413,68 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             case "ARRAY_UNION_AGG":
                 return args.size() == 1 && type instanceof VariantType
                     ? name + "(CAST(" + printed + " AS ARRAY))" : null;
+            case "STDDEV":
+            case "STDDEV_SAMP":
+            case "STDDEV_POP":
+            case "VARIANCE":
+            case "VARIANCE_SAMP":
+            case "VARIANCE_POP":
+            case "VAR_SAMP":
+            case "VAR_POP":
+            case "KURTOSIS":
+            case "SKEW": {
+                // A moment over distinct values is no formula: KURTOSIS(DISTINCT T.F) is echoed as written.
+                final MomentArgument value = args.size() == 1 ? momentArgument(first) : null;
+                return value == null || expr.isDistinct() && (name.equals("KURTOSIS") || name.equals("SKEW")) ? null
+                    : MomentFormulas.oneArgument(name, value, expr.isDistinct());
+            }
             case "REGR_COUNT":
             case "REGR_AVGX":
             case "REGR_AVGY":
-            case "REGR_SXX": {
-                // A regression aggregate reads the pairs whose values are both there: the value it sums, the other
-                // one's IS NULL guarding it - the independent value, but the dependent one for REGR_AVGY. A FLOAT
-                // value's NULL is a REAL one; an exact value's is a FIXED one, and the pair is cast to FLOAT.
+            case "REGR_SXX":
+            case "REGR_SYY":
+            case "REGR_SXY":
+            case "REGR_SLOPE":
+            case "REGR_INTERCEPT":
+            case "REGR_R2":
+            case "CORR":
+            case "COVAR_POP":
+            case "COVAR_SAMP": {
                 if (args.size() != 2 || expr.isDistinct()) {
                     return null;
                 }
-                final boolean dependent = name.equals("REGR_AVGY");
-                final Expression value = dependent ? first : args.get(1);
-                final Expression other = dependent ? args.get(1) : first;
-                final DataType valueType = argumentType(value);
-                if (!(valueType instanceof NumericType)) {
-                    return null;
-                }
-                final boolean approximate = NumericType.isApproximate(valueType);
-                final String guarded = "IFF(" + operand(other) + " IS NULL, SYSTEM$NULL_TO_"
-                    + (approximate ? "REAL" : "FIXED") + "(null), " + value.accept(this) + ")";
-                final String pair = approximate ? guarded : "CAST(" + guarded + " AS FLOAT)";
-                if (name.equals("REGR_COUNT")) {
-                    return "COUNT(" + pair + ")";
-                }
-                if (name.equals("REGR_SXX")) {
-                    return "(SUM(SQUARE(" + pair + "))) - ((SQUARE(SUM(" + pair + "))) / (CAST(COUNT(" + pair
-                        + ") AS FLOAT)))";
-                }
-                return "(SUM(" + pair + ")) / (CAST(COUNT(" + pair + ") AS FLOAT))";
+                final MomentArgument dependent = momentArgument(first);
+                final MomentArgument independent = momentArgument(args.get(1));
+                return dependent == null || independent == null ? null
+                    : MomentFormulas.twoArguments(name, dependent, independent);
             }
             default:
                 return null;
         }
+    }
+
+    /**
+     * An argument of a statistics aggregate as its formula reads it: an exact number by its digits, a FLOAT, a text or
+     * a VARIANT as the FLOAT it converts to; null for any other type, whose call prints as written.
+     */
+    private MomentArgument momentArgument(final Expression argument) {
+        final DataType type = argumentType(argument);
+        final String printed = argument.accept(this);
+        if (type instanceof StringType) {
+            return MomentArgument.converted(printed, "TEXT");
+        }
+        if (type instanceof VariantType) {
+            return MomentArgument.converted(printed, "VARIANT");
+        }
+        if (!(type instanceof NumericType) || NumericType.isDecfloat(type)) {
+            return null;
+        }
+        final boolean bare = operand(argument).equals(printed);
+        if (NumericType.isApproximate(type)) {
+            return MomentArgument.real(printed, bare);
+        }
+        final NumericType number = (NumericType) type;
+        return MomentArgument.exact(printed, bare, number.getPrecision() - number.getScale(), number.getScale());
     }
 
     /** A condition printed with every doubled NOT kept: {@code NOT NOT b} is {@code NOT(NOT(T.B))}. */

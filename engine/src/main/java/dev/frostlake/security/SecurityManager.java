@@ -520,9 +520,13 @@ public class SecurityManager {
         return false;
     }
 
+    /**
+     * Whether the roles hold any privilege on an object: one of them owns it, or holds a database role that owns it,
+     * or whatever grant on it reaches them (see {@link #holdsPrivilege}).
+     */
     private boolean holdAny(final Set<String> roles, final String objectType, final String objectName,
                             final String owner) {
-        if (roles.contains(catalog.resolveRoleName(owner))) {
+        if (roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)) {
             return true;
         }
         final String recorded = GrantNames.of(catalog, objectType, objectName);

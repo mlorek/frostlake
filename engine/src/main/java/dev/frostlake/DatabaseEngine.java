@@ -936,7 +936,7 @@ public class DatabaseEngine {
         walStatementStart.set(new WalStatementContext(lifetime + ":" + sessionContext.getSessionNumber(),
             sessionContext.getCurrentUser(), sessionContext.getCurrentRole(),
             new ArrayList<String>(sessionContext.getActiveRoles()), catalog.getCurrentDatabase(),
-            catalog.getCurrentSchema(), null, Collections.<CounterDraw>emptyList(),
+            catalog.heldSchemaName(), null, Collections.<CounterDraw>emptyList(),
             sessionContext.getAllSessionVariables(), sessionContext.getAllSessionParameters(),
             Collections.<String>emptySet(), Collections.<String>emptySet(), Collections.<RecordedResult>emptyList(),
             -1L, 0).withDecfloatVariables(sessionContext.getDecfloatVariableNames())
@@ -973,7 +973,7 @@ public class DatabaseEngine {
         final WalStatementContext context = new WalStatementContext(
             lifetime + ":" + sessionContext.getSessionNumber(), sessionContext.getCurrentUser(),
             sessionContext.getCurrentRole(), new ArrayList<String>(sessionContext.getActiveRoles()),
-            catalog.getCurrentDatabase(), catalog.getCurrentSchema(), null, recorded.getDraws(),
+            catalog.getCurrentDatabase(), catalog.heldSchemaName(), null, recorded.getDraws(),
             sessionContext.getAllSessionVariables(), sessionContext.getAllSessionParameters(),
             Collections.<String>emptySet(), Collections.<String>emptySet(), recorded.getResults(),
             recorded.getAnswers(), false, walAppends.get(), 0)

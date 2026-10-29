@@ -57,6 +57,9 @@ public class SyntaxErrorListener extends BaseErrorListener {
 
     private static final Logger logger = LoggerFactory.getLogger(SyntaxErrorListener.class);
 
+    /** Set while a text a reading collects lines for is judged by the refusals made after its parse. */
+    private static final ThreadLocal<Boolean> REREADING = new ThreadLocal<Boolean>();
+
     private final List<String> errors;
     private boolean firstErrorMissingTerminator;
     /** Whether the first fault stands in a RETURN TABLE(…)'s argument. */
@@ -2478,6 +2481,10 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (blockValue != null) {
             return blockValue;
         }
+        final List<String> keywordValue = spokenTokens == null ? null : BlockKeywordValueLines.lines(sql, spokenTokens);
+        if (keywordValue != null) {
+            return keywordValue;
+        }
         final List<String> stageArguments = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
             ? null : StageArgumentLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
         if (stageArguments != null) {
@@ -2614,7 +2621,21 @@ public class SyntaxErrorListener extends BaseErrorListener {
         final List<String> frameOffset = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
             ? null : FrameOffsetLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
         if (frameOffset != null) {
-            return frameOffset;
+            // Inside a query used as a value, that query's SELECT is refused first (see ValueSubqueryLines), and where
+            // its reading reaches the offset the offset's own lines follow; a query a block assigns is no value.
+            final int fault = offendingIndexes.get(0).intValue();
+            final List<String> asValue = FrameOffsetLines.inAssignedQuery(spokenTokens, fault) ? null
+                : ValueSubqueryLines.lines(sql, spokenTokens, fault, statementParse);
+            if (asValue == null) {
+                return frameOffset;
+            }
+            final int reached = asValue.indexOf(frameOffset.get(0));
+            if (reached < 1) {
+                return asValue;
+            }
+            final List<String> lines = new ArrayList<String>(asValue.subList(0, reached));
+            lines.addAll(frameOffset);
+            return lines;
         }
         final List<String> namedWindow = spokenTokens == null || offendingIndexes.isEmpty() || !statementParse
             ? null : NamedWindowLines.lines(spokenTokens, offendingIndexes.get(0).intValue());
@@ -4490,14 +4511,35 @@ public class SyntaxErrorListener extends BaseErrorListener {
         parser.addErrorListener(listener);
         final FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
         try {
+            // The lines a reading collects are judged by the refusals made after the parse as well, as the statement
+            // itself is: an operator after a finished predicate is one of the lines live's recovery stacks, EXISTS (…)
+            // = 1) refusing its '=' ahead of the ')' left over. Those refusals read texts of their own, so a text read
+            // for them is judged by its parse alone.
+            final boolean judgedAfter = statementParse && !firstOnly && REREADING.get() == null;
             if (statementParse) {
                 StatementSeparation.requireSeparatorsBefore(tree, tokens, text, listener);
+            }
+            if (judgedAfter) {
+                REREADING.set(Boolean.TRUE);
+                try {
+                    PostParseRefusals.requireBefore(tokens, text, listener);
+                } finally {
+                    REREADING.remove();
+                }
             }
             if (listener.hasErrors()) {
                 return firstOnly ? Collections.singletonList(listener.firstReportedLine()) : listener.reportedLines();
             }
             if (statementParse) {
                 StatementSeparation.requireSeparators(tree, tokens, text);
+            }
+            if (judgedAfter) {
+                REREADING.set(Boolean.TRUE);
+                try {
+                    FinishedPredicateSyntax.requireOpenOperands(tree, tokens, text);
+                } finally {
+                    REREADING.remove();
+                }
             }
         } catch (final SqlSyntaxException separatorFault) {
             return separatorFault.getSyntaxErrors();

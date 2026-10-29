@@ -819,50 +819,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
         "CREDENTIALS", "STORAGE_INTEGRATION", "DIRECTORY", "COPY_OPTIONS",
         "AWS_ROLE", "AWS_EXTERNAL_ID", "SNOWFLAKE_IAM_USER", "ENCRYPTION");
 
-    /** The encryption types a stage takes: Snowflake's own, and the cloud providers' for an external stage. */
-    private static final Set<String> ENCRYPTION_TYPES = Set.of("SNOWFLAKE_FULL", "SNOWFLAKE_SSE", "AWS_CSE",
-        "AWS_SSE_S3", "AWS_SSE_KMS", "GCS_SSE_KMS", "AZURE_CSE", "NONE");
-
     /** Whether a word names a stage property a CREATE STAGE or an ALTER STAGE … SET takes by a plain name. */
     static boolean isStageOption(final String name) {
         return STAGE_OPTION_NAMES.contains(name);
-    }
-
-    /** Collect a parenthesized option list's key=value pairs (values unquoted, keys upper). */
-    private void collectParenOptions(final FrostlakeParser.ParenOptionListContext list,
-                                     final Map<String, String> into) {
-        for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
-            final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
-            if (option.LPAREN() != null) {
-                into.put(key, listedValues(option.stringLiteralList()));
-                continue;
-            }
-            String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : "";
-            if (value.length() >= 2 && value.startsWith("'") && value.endsWith("'")) {
-                value = value.substring(1, value.length() - 1);
-            }
-            into.put(key, value);
-        }
-    }
-
-    /**
-     * A list option's values as a stage lists them: {@code NULL_IF = ('\\N', 'NULL')} reads {@code [\\N, NULL]},
-     * a backslash doubled, and a list of nothing but empty texts reads {@code []} (live-verified).
-     *
-     * @param list the written list, or null for an empty pair of parentheses
-     * @return the listed text
-     */
-    static String listedValues(final FrostlakeParser.StringLiteralListContext list) {
-        final List<String> values = new ArrayList<>();
-        if (list != null) {
-            for (final TerminalNode node : list.STRING_LITERAL()) {
-                final String value = ParseTreeText.extractStringLiteral(node);
-                if (!value.isEmpty()) {
-                    values.add(value.replace("\\", "\\\\"));
-                }
-            }
-        }
-        return "[" + String.join(", ", values) + "]";
     }
 
     /**
@@ -941,17 +900,17 @@ public class CreateInfrastructureHandler implements CommandHandler {
             String url = hasProps && ctx.stageProperties().URL() != null
                 ? ddl.extractStringLiteral(ctx.stageProperties().STRING_LITERAL()) : null;
             String fileFormat = "CSV";
-            boolean encryption = false;
+            boolean encryptionGiven = false;
+            FrostlakeParser.ParenOptionListContext encryptionGroup = null;
+            String encryptionWritten = null;
             String comment = null;
             boolean sawFileFormat = false;
             boolean sawCloudAccessOption = false;
             Integration storageIntegration = null;
             boolean credentials = false;
-            boolean encryptionKey = false;
             StageDirectoryOptions directory = null;
             final Map<String, String> formatOptions = new LinkedHashMap<>();
             final Map<String, String> copyOptions = new LinkedHashMap<>();
-            String declaredEncryptionType = null;
 
             if (hasProps) {
                 for (final FrostlakeParser.StageOptionContext option : ctx.stageProperties().stageOption()) {
@@ -991,27 +950,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             formatOptions.putAll(written.format().getOptions());
                         }
                     } else if (option.ENCRYPTION() != null) {
-                        encryption = option.booleanValue() != null && option.booleanValue().TRUE() != null;
-                        if (option.parenOptionList() != null) {
-                            final Map<String, String> encryptionOptions = new LinkedHashMap<>();
-                            collectParenOptions(option.parenOptionList(), encryptionOptions);
-                            declaredEncryptionType = encryptionOptions.get("TYPE");
-                            encryptionKey = encryptionOptions.containsKey("MASTER_KEY")
-                                || encryptionOptions.containsKey("KMS_KEY_ID");
-                            // A type no stage knows is refused by its value before what fits the stage is weighed
-                            // (live-verified).
-                            if (declaredEncryptionType != null && !ENCRYPTION_TYPES.contains(
-                                    declaredEncryptionType.toUpperCase(Locale.ROOT))) {
-                                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
-                                    declaredEncryptionType, "TYPE"));
-                            }
-                            // Only Snowflake-managed encryption fits an internal stage, live-verified.
-                            if (url == null && declaredEncryptionType != null
-                                    && !declaredEncryptionType.toUpperCase(Locale.ROOT).startsWith("SNOWFLAKE_")) {
-                                throw new RuntimeException(SqlCompilationError.of("Cannot set URL,"
-                                    + " credentials, or encryption key of an internal or temporary stage."));
-                            }
-                        }
+                        // Judged once the location, which may be written after it, is known (see StageEncryption).
+                        encryptionGiven = true;
+                        encryptionGroup = option.parenOptionList();
+                        encryptionWritten = option.booleanValue() == null ? null
+                            : option.booleanValue().getText().toUpperCase(Locale.ROOT);
                     } else if (option.COMMENT() != null) {
                         comment = ddl.extractStringLiteral(option.STRING_LITERAL());
                     } else if (option.COPY_OPTIONS() != null) {
@@ -1035,6 +978,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             // Named as written: invalid property 'foo' for 'STAGE' (live-verified).
                             throw ParameterRegistry.invalidProperty(option.identifier().getText(), "STAGE");
                         }
+                        if ("ENCRYPTION".equals(key)) {
+                            // A value of another kind than the grammar's own ENCRYPTION alternative reads.
+                            encryptionGiven = true;
+                            encryptionGroup = option.parenOptionList();
+                            encryptionWritten = option.copyOptionValue() == null ? null
+                                : ParseTreeText.getOriginalText(option.copyOptionValue());
+                            continue;
+                        }
                         if ("STORAGE_INTEGRATION".equals(key)) {
                             // The integration is looked up before the stage's own shape is judged.
                             storageIntegration = StorageIntegrationReference.require(catalog,
@@ -1052,6 +1003,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 }
             }
 
+            // The group is judged where its stage's location is known, before the location's own checks.
+            final StageEncryption judgedEncryption = encryptionGiven
+                ? StageEncryption.judge(encryptionWritten, encryptionGroup, url, url == null, true) : null;
+
             // Cloud access options make no sense without a location, live-verified wording.
             if (sawCloudAccessOption && url == null) {
                 throw new RuntimeException(SqlCompilationError.of("invalid stage ("
@@ -1060,6 +1015,12 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             CloudStageUrls.require(url);
             StorageIntegrationReference.requireLocation(storageIntegration, url);
+            // A GCS stage reaches its bucket through a storage integration alone (live-verified).
+            if (storageIntegration == null && url != null && url.regionMatches(true, 0, "gcs://", 0, 6)) {
+                throw new RuntimeException(SqlCompilationError.of("Creation of stages with direct credentials,"
+                    + " including accessing public stages, has been forbidden for GCS stages. See your account"
+                    + " administrator for details."));
+            }
             refuseLocalUrlUnlessEnabled(url);
             // A replacement drops the stage it replaces once the new one is judged whole, so a refused statement
             // leaves that stage as it was (live-verified).
@@ -1074,7 +1035,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
 
             final StageType type = (url == null || url.startsWith("file://")) ? StageType.INTERNAL : StageType.EXTERNAL;
-            catalog.createStage(stageName, type, url, fileFormat, encryption, comment, temporary);
+            catalog.createStage(stageName, type, url, fileFormat, false, comment, temporary);
             if (url == null) {
                 // A new internal stage is empty on a real account too.
                 queryExecutor.resetInternalStageDir(stageName);
@@ -1083,9 +1044,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final Stage created = catalog.getStage(stageName);
             created.getFileFormatOptions().putAll(formatOptions);
             created.getCopyOptions().putAll(copyOptions);
-            created.setEncryptionType(declaredEncryptionType);
+            created.setEncryptionType(judgedEncryption == null ? null : judgedEncryption.type());
             created.setCredentials(credentials);
-            created.setEncryptionKey(encryptionKey);
+            created.setEncryptionKey(judgedEncryption != null && judgedEncryption.key());
             if (directory != null) {
                 directory.applyTo(created);
                 // A directory table enabled at creation registers the files its stage already holds, unless

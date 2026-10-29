@@ -300,8 +300,10 @@ public class Catalog {
      * Drop a schema and move the session off it when it was the current one.
      *
      * <p>★ THE SCHEMA FALLS BACK TO PUBLIC, not to nothing — live leaves the DATABASE alone and puts
-     * the schema back to PUBLIC, which is the same landing place {@link #useDatabase} chooses. Only
-     * dropping the database itself clears both.
+     * the schema back to PUBLIC, which is the same landing place {@link #useDatabase} chooses, or to none where
+     * PUBLIC is gone too; a restore of the dropped schema does not bring the session back (live-verified). Only
+     * dropping the database itself clears both. Another session keeps the name it holds (see
+     * {@link #getCurrentSchema}).
      *
      * @param databaseName the schema's database
      * @param schemaName the schema to drop
@@ -310,7 +312,7 @@ public class Catalog {
     public void dropSchema(final String databaseName, final String schemaName, final boolean cascade) {
         final Database database = getDatabase(databaseName);
         database.dropSchema(schemaName, cascade);
-        if (schemaName.equalsIgnoreCase(getCurrentSchema())
+        if (schemaName.equalsIgnoreCase(heldSchemaName())
                 && database.getName().equalsIgnoreCase(getCurrentDatabase())) {
             setCurrentSchemaName(database.hasSchema("PUBLIC") ? "PUBLIC" : null);
         }
@@ -386,20 +388,6 @@ public class Catalog {
         GrantNames.containerRenamed(this, from, new String[] {target.getName(), schema.getName()});
         // The policies it holds go with it, and so do the attachments that name them, wherever those are.
         PolicyReferences.repoint(allSchemas(), null, from, new String[] {target.getName(), schema.getName()});
-    }
-
-    /**
-     * Leave the session with no current schema when its current schema's name no longer names one. The session holds
-     * its schema by name: a rename away leaves it a current database and no current schema, so CURRENT_SCHEMA() is
-     * NULL, while a SWAP hands the name to the other schema, which the session then is in (live-verified).
-     */
-    public void releaseVanishedCurrentSchema() {
-        final String database = getCurrentDatabase();
-        final String schema = getCurrentSchema();
-        if (database != null && schema != null && databases.containsKey(database)
-                && !databaseExact(database).hasSchemaExact(schema)) {
-            setCurrentSchemaName(null);
-        }
     }
 
     /** Every schema of every database: the places an attachment to a policy anywhere can be. */
@@ -663,7 +651,31 @@ public class Catalog {
         return scope != null ? scope[0] : currentDatabase;
     }
 
+    /**
+     * The session's current schema, or null. The session holds its schema by name (live-verified): while its current
+     * database holds no schema of that name — the session or another renamed it away, or another dropped it — the
+     * session has no current schema, and a schema renamed back, restored or created under the name is current again.
+     *
+     * @return the current schema's name, or null
+     */
     public String getCurrentSchema() {
+        final String[] scope = sessionScope.get();
+        final String database = scope != null ? scope[0] : currentDatabase;
+        final String schema = scope != null ? scope[1] : currentSchema;
+        if (schema == null || database == null) {
+            return schema;
+        }
+        final Database held = databases.get(database);
+        return held == null || held.hasSchemaExact(schema) ? schema : null;
+    }
+
+    /**
+     * The name of the schema the session holds as its current one, whether or not its database holds a schema of
+     * that name now: what a saved context keeps, so that a schema of the name is current again once there is one.
+     *
+     * @return the held name, or null
+     */
+    public String heldSchemaName() {
         final String[] scope = sessionScope.get();
         return scope != null ? scope[1] : currentSchema;
     }
@@ -2127,6 +2139,41 @@ public class Catalog {
      */
     public Contact findContact(final String qualifiedName) {
         return resolveSchemaForObject(qualifiedName).getContact(objectName(qualifiedName));
+    }
+
+    /**
+     * Rename a contact. A new name resolves as a created one does, and a qualified one naming another schema moves
+     * the contact there, its attachments going with it (live-verified); a name a contact holds there is refused, the
+     * contact's own included.
+     *
+     * @param oldName the contact's name as written
+     * @param newName the new name as written
+     */
+    public void renameContact(final String oldName, final String newName) {
+        final Schema from = resolveSchemaForObject(oldName);
+        final Schema to = resolveSchemaForObject(newName);
+        to.requireCreatable(Privilege.CREATE_CONTACT);
+        if (to.getContact(objectName(newName)) != null) {
+            throw renamedOntoTaken(newName);
+        }
+        final String was = from.qualifiedName(from.getContact(objectName(oldName)).getName());
+        from.renameContact(objectName(oldName), objectName(newName));
+        final Contact renamed = from.getContact(objectName(newName));
+        if (from != to) {
+            from.dropContact(objectName(newName));
+            to.addContact(renamed);
+        }
+        ContactReferences.repoint(allSchemas(), was, to.qualifiedName(renamed.getName()));
+    }
+
+    /**
+     * Leave the attachments of a contact replaced by another of its name naming nothing: they held the contact
+     * replaced (live-verified).
+     *
+     * @param fullName the replaced contact's full name
+     */
+    public void contactReplaced(final String fullName) {
+        ContactReferences.repoint(allSchemas(), fullName, null);
     }
 
     /**

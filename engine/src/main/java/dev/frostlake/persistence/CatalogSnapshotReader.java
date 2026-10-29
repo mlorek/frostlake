@@ -658,6 +658,11 @@ final class CatalogSnapshotReader {
                     view.setAggregationPolicyName(viewSnapshot.aggregationPolicyName);
                     view.setAggregationEntityKey(viewSnapshot.aggregationEntityKey);
                     view.setJoinPolicyName(viewSnapshot.joinPolicyName);
+                    if (viewSnapshot.contacts != null) {
+                        for (final Map.Entry<String, String> attached : viewSnapshot.contacts.entrySet()) {
+                            view.setContact(attached.getKey(), attached.getValue());
+                        }
+                    }
                     view.setResolvedColumns(derivedColumns(viewSnapshot.columns));
                     DataMetricSnapshots.restore(viewSnapshot.dataMetrics, viewSnapshot.dataMetricSchedule,
                         view.dataMetricAttachments());
@@ -1302,8 +1307,8 @@ final class CatalogSnapshotReader {
     }
 
     /**
-     * Fills a table's empty storage with what a snapshot saved of it: its rows, under the identities they had, and its
-     * time-travel history — a live table's, or a dropped table's that waits for its UNDROP.
+     * Fills a table's empty storage with what a snapshot saved of it: its rows, under the identities they had, its
+     * time-travel history and its write mark — a live table's, or a dropped table's that waits for its UNDROP.
      *
      * @param storage      the storage
      * @param table        the table
@@ -1324,6 +1329,7 @@ final class CatalogSnapshotReader {
         if (dataSnapshot.history != null) {
             restoreHistory(storage, table, dataSnapshot.history, keptIds);
         }
+        storage.restoreWriteMark(dataSnapshot.writeMark);
     }
 
     /**

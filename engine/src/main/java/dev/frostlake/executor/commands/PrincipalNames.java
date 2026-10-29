@@ -23,6 +23,8 @@ import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.Locale;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+
 /**
  * The names a GRANT or a REVOKE reads beside its object, each written as a name or as an IDENTIFIER() reference:
  * the role or the user that is granted or holds a grant, a bulk grant's schema or database, a database role. A
@@ -40,13 +42,31 @@ final class PrincipalNames {
      * @return the canonical name
      */
     static String of(final FrostlakeParser.PrincipalNameContext name, final QueryExecutor queryExecutor) {
-        if (name.identifier() != null) {
-            return SqlIdentifiers.canonical(name.identifier());
+        return named(name.identifier(), name.identifierArgument(), name, queryExecutor);
+    }
+
+    /**
+     * @param name          the role or the user a SHOW GRANTS names, as the statement writes it
+     * @param queryExecutor the executor that resolves an IDENTIFIER() reference
+     * @return the canonical name, the word IDENTIFIER itself where no whole reference follows it
+     */
+    static String of(final FrostlakeParser.GrantsPrincipalContext name, final QueryExecutor queryExecutor) {
+        if (name.KW_IDENTIFIER_OPEN() != null) {
+            return name.KW_IDENTIFIER_OPEN().getText().toUpperCase(Locale.ROOT);
         }
-        if (name.identifierArgument() == null) {
+        return named(name.identifier(), name.identifierArgument(), name, queryExecutor);
+    }
+
+    private static String named(final FrostlakeParser.IdentifierContext word,
+                                final FrostlakeParser.IdentifierArgumentContext reference,
+                                final ParserRuleContext name, final QueryExecutor queryExecutor) {
+        if (word != null) {
+            return SqlIdentifiers.canonical(word);
+        }
+        if (reference == null) {
             return name.getText().toUpperCase(Locale.ROOT);
         }
-        final String[] parts = queryExecutor.resolveIdentifierArgument(name.identifierArgument());
+        final String[] parts = queryExecutor.resolveIdentifierArgument(reference);
         if (parts.length != 1) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }

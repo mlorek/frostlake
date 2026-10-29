@@ -489,6 +489,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                                     final List<Table> allTables) {
         if (base != this.declaredTypeBase) {
             typeInferencer.clearMemo();
+            splitPartsReadEmpty.clear();
         }
         this.declaredTypeBase = base;
         this.declaredTypeAliasToTable = aliasToTable;
@@ -501,6 +502,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // miss verdicts and static-type verdicts no longer apply.
             multiTableRefMemo.clear();
             typeInferencer.clearMemo();
+            splitPartsReadEmpty.clear();
         }
         if (allTables != this.multiTableAllTables || aliasToTable != this.multiTableAliasToTable) {
             loneStarSplices.clear();
@@ -2671,6 +2673,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
     }
 
+    /**
+     * Whether each SPLIT_PART part judged so far reads as the empty text on every row (see judgeFractionalSplitPart),
+     * by node identity: the plan judges a part once, by its statistics, whichever row is read.
+     */
+    private final Map<Expression, Boolean> splitPartsReadEmpty = new IdentityHashMap<Expression, Boolean>();
+
     /** Whether each call read so far is a math function over a DECFLOAT (see decfloatMath). */
     private final Map<FunctionCallExpression, Boolean> decfloatMathCalls =
         new IdentityHashMap<FunctionCallExpression, Boolean>();
@@ -4144,6 +4152,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 requireFixedShiftAmount(funcName, expr, argValues);
             }
             requireFittingWholeNumbers(funcName, expr, argValues);
+            if ("SPLIT_PART".equals(funcName) && readsEmptySplitPart(expr, argValues)) {
+                requireFittingFractionalPart(expr.getArguments().get(2), argValues.get(2));
+                return "";
+            }
             if ("OBJECT_PICK".equals(funcName) && argValues.size() == 2 && expr.getArguments().size() == 2) {
                 pickKeysByType(expr, argValues);
             }
@@ -5444,7 +5456,6 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return;
         }
         final List<String> parts = udfNameParts(call);
-        final String name = parts.get(parts.size() - 1);
         final String upper = call.getFunctionName().toUpperCase(Locale.ROOT);
         if (parts.size() == 1 && (functionRegistry.hasFunction(upper) || functionRegistry.hasAggregateFunction(upper)
                 || upper.startsWith("SYSTEM$") || WindowFunctionNames.handles(upper)
@@ -5457,9 +5468,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(SqlCompilationError.of(unknownFunctionSentence(call)));
         }
         final List<String> written = call.getArgumentNames();
+        // The function is named as the call writes it: TEST_SCHEMA.F for a call with its schema (live-verified).
         throw new RuntimeException(positionedArgumentTypes(call, "named arguments ["
             + NamedArguments.listed(candidates.isEmpty() ? new ArrayList<Parameter>() : candidates.get(0).getParameters(),
-                written) + "] do not match any signature for function " + name));
+                written) + "] do not match any signature for function " + spelledFunctionName(call)));
     }
 
     /**
@@ -5482,7 +5494,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         List<Parameter> widest = overloads.get(0).getParameters();
         for (final Function overload : overloads) {
-            if (NamedArguments.fit(overload.getParameters(), written)) {
+            final int[] targets = NamedArguments.targets(overload.getParameters(), written);
+            if (targets != null && bindsByName(overload.getParameters(), targets, call.getArguments())) {
                 return;
             }
             if (overload.getParameters().size() > widest.size()) {
@@ -5491,6 +5504,31 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         throw arityMismatch("named arguments [" + NamedArguments.listed(widest, written)
             + "] do not match any signature for function " + spelledFunctionName(call), call);
+    }
+
+    /**
+     * Whether a named call's arguments bind to the parameters they fill by the structured binding rule a positional
+     * call's do (see {@link #rejectStructuredUdfArgument}): an overload of {@code nsf(o OBJECT(x VARCHAR))} takes
+     * {@code o => {'x': 'a'}::OBJECT(x VARCHAR)} and no other shape, a plain OBJECT or ARRAY for a structured parameter
+     * none either, and a call no overload takes so is refused as named arguments that match no signature
+     * (live-verified).
+     */
+    private boolean bindsByName(final List<Parameter> params, final int[] targets, final List<Expression> args) {
+        for (int i = 0; i < targets.length && i < args.size(); i++) {
+            if (args.get(i) instanceof SpreadExpression) {
+                return true;
+            }
+            DataType argType = null;
+            try {
+                argType = typeInferencer.infer(args.get(i));
+            } catch (final RuntimeException untyped) {
+                argType = null;
+            }
+            if (!StructuredTypes.bindsAsArgument(argType, params.get(targets[i]).getDataType())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -6215,7 +6253,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             final BigInteger whole = WholeNumbers.decimalOf(argValues.get(2)).setScale(0, RoundingMode.HALF_UP)
                 .toBigInteger();
             final DataType declared = inferStaticType(call.getArguments().get(2));
-            if (whole.bitLength() > 31 && declared instanceof NumericType && !NumericType.isApproximate(declared)) {
+            if (whole.bitLength() > 31 && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                    && ((NumericType) declared).getScale() <= 0) {
                 throw new RuntimeException("Number out of representable range: type FIXED[SB4]("
                     + ((NumericType) declared).getPrecision() + "," + ((NumericType) declared).getScale()
                     + "){nullable}, value " + whole);
@@ -8814,16 +8853,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
-     * SPLIT_PART's part is a whole number, judged while the statement compiles and over a table with no row too.
-     * A BOOLEAN, a date, a time or a timestamp there is no part: "Invalid argument types for function
-     * 'SPLIT_PART': (VARCHAR(5), VARCHAR(1), BOOLEAN)", placed at the call, and so is a BINARY. An exact NUMBER
-     * with a fraction — a literal, a NUMBER(4,2) column, a cast to one, {@code 1 + 0.6} — is refused, echoed as the
-     * plan prints it: "argument 3 to function SPLIT_PART needs to be an integer, found: 'T.N'". What is computed
-     * from literals is computed first: a whole number written with a fraction ({@code 2.0}, {@code 1.5 + 0.5},
-     * {@code 2::NUMBER(4,1)}) is read, and a NULL ({@code NULL::NUMBER(4,2)}, {@code NULLIF(1.6, 1.6)}) answers
-     * NULL; so is the one whole value a column's statistics leave an expression ({@code n * 100} over a column
-     * holding 0.02 alone). A whole part past 32 bits is refused alike (see {@link #rejectWideSplitPart}). A FLOAT, a
-     * text and a VARIANT are read too, each rounded when the row is read (live-verified).
+     * SPLIT_PART's part, judged once a statement by what the plan knows of its value, while the statement compiles and
+     * over a table with no row too. A BOOLEAN, a date, a time or a timestamp there is no part: "Invalid argument types
+     * for function 'SPLIT_PART': (VARCHAR(5), VARCHAR(1), BOOLEAN)", placed at the call, and so is a BINARY. A whole
+     * part past 32 bits is refused where the plan knows it (see {@link #rejectWideSplitPart}), and a FLOAT, a text and
+     * a VARIANT are rounded when the row is read. An exact NUMBER with a fraction in its type is judged by
+     * {@link #judgeFractionalSplitPart} (live-verified).
      *
      * @param funcName the call's name, upper-cased
      * @param args     its arguments
@@ -8831,7 +8866,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private void rejectFractionalSplitPart(final String funcName, final List<Expression> args,
                                            final Expression call) {
-        if (!"SPLIT_PART".equals(funcName) || args.size() != 3) {
+        if (!"SPLIT_PART".equals(funcName) || args.size() != 3 || splitPartsReadEmpty.containsKey(args.get(2))) {
             return;
         }
         final Expression part = args.get(2);
@@ -8840,50 +8875,329 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(positionedArgumentTypes(call, "Invalid argument types for function '"
                 + funcName + "': (" + strictArgTypeList(args) + ")"));
         }
-        if (!(type instanceof NumericType) || NumericType.isApproximate(type)) {
-            return;
+        boolean readsEmpty = false;
+        if (type instanceof NumericType && !NumericType.isApproximate(type)) {
+            final BigDecimal written = writtenNumber(part);
+            if (((NumericType) type).getScale() <= 0 || written != null && written.stripTrailingZeros().scale() <= 0) {
+                rejectWideSplitPart(args, part, written);
+            } else {
+                readsEmpty = judgeFractionalSplitPart(args, part, type, written);
+            }
         }
-        final BigDecimal written = writtenNumber(part);
-        if (((NumericType) type).getScale() <= 0 || written != null && written.stripTrailingZeros().scale() <= 0) {
-            rejectWideSplitPart(args, part, written);
-            return;
+        splitPartsReadEmpty.put(part, Boolean.valueOf(readsEmpty));
+    }
+
+    /**
+     * SPLIT_PART's exact part with a fraction in its type. A value the plan knows is folded: one with a fraction is
+     * refused, "argument 3 to function SPLIT_PART needs to be an integer, found: 'T.N'", and a whole one names its
+     * part. The plan knows a literal ({@code 1.6}), what is computed from literals ({@code 1 + 0.6}, while
+     * {@code 1.5 * 2} is 3), a scalar subquery it folds ({@code (SELECT 1.6)}, {@code (SELECT MAX(n) FROM t)} its
+     * statistics answer), the one value a table's statistics leave an expression over its columns ({@code n * 2} over
+     * a column holding 1.6 alone, two such rows too) and a cast of a FLOAT or a text column holding one value. A
+     * division folds only to an exact quotient ({@code 4 / 2}, {@code n / 1} over that column; {@code 2 / 3} does
+     * not), and a ROUND never does. Any other part is read where the row is, and there every value of its type names
+     * no part, a whole one too: over rows that differ, {@code n}, {@code i::NUMBER(4,2)} and {@code i / 2} answer the
+     * empty text on every row. The echo is the plan's, {@code n * 1} the cast it makes,
+     * {@code CAST(T.N AS NUMBER(5,2))}, while a subquery and a conversion of a FLOAT or a text are echoed by the value
+     * they make, {@code '1.6'} (live-verified).
+     *
+     * @param args    the call's arguments
+     * @param part    its part
+     * @param type    the part's type
+     * @param written the number the part writes out, or null
+     * @return whether every row reads the part as the empty text
+     */
+    private boolean judgeFractionalSplitPart(final List<Expression> args, final Expression part, final DataType type,
+                                             final BigDecimal written) {
+        if (written != null) {
+            throw fractionalSplitPart(written.toPlainString());
         }
-        String echo = written != null ? written.toPlainString() : null;
-        if (written == null && ConstantRootFold.isOverLiterals(part, functionRegistry)) {
-            final Object computed;
+        final BigDecimal known;
+        boolean valueEchoed = convertsTextOrFloat(part);
+        if (part instanceof SubqueryExpression) {
+            known = foldedSubqueryNumber((SubqueryExpression) part);
+            valueEchoed = true;
+        } else {
+            known = knownNumber(part);
+        }
+        if (known == null) {
+            return true;
+        }
+        if (wholeDecimal(known)) {
+            // A whole value is read as a whole part is, and past 32 bits refused alike: i / 1 over a column holding
+            // 3000000000 alone is "found: 'SCALED_ROUND_INT_DIVIDE(TB1.I, 1)'" (live-verified).
+            if (!isNullLiteral(args.get(0)) && !isNullLiteral(args.get(1))
+                    && known.setScale(0, RoundingMode.HALF_UP).toBigInteger().bitLength() > 31) {
+                throw fractionalSplitPart(valueEchoed ? known.stripTrailingZeros().toPlainString()
+                    : strictPlanText(part));
+            }
+            return false;
+        }
+        final String echo = valueEchoed ? known.stripTrailingZeros().toPlainString() : timesOneCast(part, type);
+        throw fractionalSplitPart(echo != null ? echo : strictPlanText(part));
+    }
+
+    private static RuntimeException fractionalSplitPart(final String echo) {
+        return new RuntimeException(SqlCompilationError.of("argument 3 to function SPLIT_PART needs to be an integer,"
+            + " found: '" + echo + "'"));
+    }
+
+    /**
+     * The one number the plan knows an expression to be, or null: computed where it is over literals, else the one
+     * value the statistics leave it - none over a column holding a NULL beside it, nor beside a WHERE they cannot
+     * prove of every row. A division is known as {@link #knownQuotient} has it, a ROUND, TRUNC, CEIL or FLOOR to a
+     * scale only where it is whole ({@code ROUND(2.0, 1)}, not {@code ROUND(1.6, 1)}), and an expression over one the
+     * plan does not fold is not known itself: {@code 10 / 4 * 2} and {@code ROUND(1.5, 1) + 0.5} are read where the
+     * row is (live-verified).
+     */
+    private BigDecimal knownNumber(final Expression expression) {
+        if (isDivision(expression)) {
+            return knownQuotient((BinaryOperationExpression) expression);
+        }
+        final BigDecimal value = foldsThrough(expression) ? computedOrHeld(expression) : null;
+        return value != null && isScaledRounding(expression) && !wholeDecimal(value) ? null : value;
+    }
+
+    /** The value of an expression over literals, computed, else the one value the statistics leave it; or null. */
+    private BigDecimal computedOrHeld(final Expression expression) {
+        if (ConstantRootFold.isOverLiterals(expression, functionRegistry)) {
             try {
-                computed = part.accept(this);
+                return ValueRange.exactOf(expression.accept(this));
             } catch (final RuntimeException uncomputed) {
                 // What cannot be computed fails where the row is read.
-                return;
-            }
-            if (computed == null || computed instanceof BigDecimal && wholeDecimal((BigDecimal) computed)
-                    || computed instanceof Long || computed instanceof Integer || computed instanceof BigInteger) {
-                return;
-            }
-            // A conversion of a text or a FLOAT the plan carried out is echoed by the value it made:
-            // TO_DECIMAL('1.6', 4, 1) and 1.6::FLOAT::NUMBER(4,2) are '1.6' (live-verified).
-            if (computed instanceof BigDecimal && convertsTextOrFloat(part)) {
-                echo = ((BigDecimal) computed).stripTrailingZeros().toPlainString();
+                return null;
             }
         }
-        if (written == null && !accumulates(part)) {
-            // The one whole value the plan knows a column's expression to be is read as a constant is.
-            final ValueRange known = valueRangeInferencer.infer(part);
-            if (known != null && !known.isEmpty() && known.getMin() != null && known.getMax() != null
-                    && known.getMin().compareTo(known.getMax()) == 0 && wholeDecimal(known.getMin())) {
-                return;
+        if (accumulates(expression) || queryExecutor != null && queryExecutor.filtersPastStatistics()) {
+            return null;
+        }
+        final ValueRange range = valueRangeInferencer.infer(expression);
+        if (range != null && !range.isEmpty() && !range.isNullable() && range.getMin() != null
+                && range.getMax() != null && range.getMin().compareTo(range.getMax()) == 0) {
+            return range.getMin();
+        }
+        return soleConvertedNumber(expression);
+    }
+
+    /** Whether every division and rounding to a scale within an expression folds (see {@link #knownNumber}). */
+    private boolean foldsThrough(final Expression expression) {
+        final List<Expression> inner = new ArrayList<Expression>();
+        if (expression instanceof BinaryOperationExpression) {
+            inner.add(((BinaryOperationExpression) expression).getLeft());
+            inner.add(((BinaryOperationExpression) expression).getRight());
+        } else if (expression instanceof UnaryOperationExpression) {
+            inner.add(((UnaryOperationExpression) expression).getOperand());
+        } else if (expression instanceof CastExpression) {
+            inner.add(((CastExpression) expression).getExpression());
+        } else if (expression instanceof FunctionCallExpression) {
+            inner.addAll(((FunctionCallExpression) expression).getArguments());
+        }
+        for (final Expression operand : inner) {
+            final boolean folds = isDivision(operand) || isScaledRounding(operand) ? knownNumber(operand) != null
+                : foldsThrough(operand);
+            if (!folds) {
+                return false;
             }
         }
-        throw new RuntimeException(SqlCompilationError.of("argument 3 to function SPLIT_PART needs to be an integer,"
-            + " found: '" + (echo != null ? echo : strictPlanText(part)) + "'"));
+        return true;
+    }
+
+    private static boolean isDivision(final Expression expression) {
+        return expression instanceof BinaryOperationExpression
+            && ((BinaryOperationExpression) expression).getOperator() == BinaryOperator.DIVIDE;
+    }
+
+    /** Whether an expression is a ROUND, TRUNC, CEIL or FLOOR of an exact number to a scale. */
+    private boolean isScaledRounding(final Expression expression) {
+        if (!(expression instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expression;
+        return call.getNameExpression() == null && !call.isStar() && call.getArguments().size() >= 2
+            && SCALED_ROUNDING_NAMES.contains(call.getFunctionName().toUpperCase(Locale.ROOT))
+            && isExactNumber(typeInferencer.infer(call.getArguments().get(0)));
+    }
+
+    /** The calls that round a number to a scale. */
+    private static final Set<String> SCALED_ROUNDING_NAMES = new HashSet<>(Arrays.asList(
+        "ROUND", "TRUNC", "TRUNCATE", "CEIL", "CEILING", "FLOOR"));
+
+    private static boolean isExactNumber(final DataType type) {
+        return type instanceof NumericType && !NumericType.isApproximate(type) && !NumericType.isDecfloat(type);
+    }
+
+    /**
+     * The quotient a division folds to, both operands known: an integer one's only where it is whole ({@code 6 / 3};
+     * {@code 3 / 2} and {@code 1 / 8} are read where the row is), one of a number with a fraction where it is exact
+     * at the division's scale ({@code 1.5 / 3} and {@code 3 / 1.5}, not {@code 1.6 / 3}); null for any other
+     * (live-verified).
+     */
+    private BigDecimal knownQuotient(final BinaryOperationExpression division) {
+        final DataType dividendType = typeInferencer.infer(division.getLeft());
+        final DataType divisorType = typeInferencer.infer(division.getRight());
+        final DataType quotientType = typeInferencer.infer(division);
+        if (!isExactNumber(dividendType) || !isExactNumber(divisorType) || !isExactNumber(quotientType)) {
+            return null;
+        }
+        final BigDecimal dividend = knownNumber(division.getLeft());
+        final BigDecimal divisor = dividend == null ? null : knownNumber(division.getRight());
+        if (divisor == null || divisor.signum() == 0) {
+            return null;
+        }
+        final boolean integral = ((NumericType) dividendType).getScale() <= 0
+            && ((NumericType) divisorType).getScale() <= 0;
+        try {
+            final BigDecimal quotient = dividend.divide(divisor);
+            return quotient.stripTrailingZeros().scale() <= (integral ? 0 : ((NumericType) quotientType).getScale())
+                ? quotient : null;
+        } catch (final ArithmeticException nonTerminating) {
+            return null;
+        }
+    }
+
+    /**
+     * The number a conversion of a FLOAT or a text expression over a table's columns makes where each column holds one
+     * value, at the conversion's scale - {@code f::NUMBER(4,2)}, {@code (f + 0)::NUMBER(4,2)} and
+     * {@code TO_NUMBER(s, 4, 2)} over columns holding 1.6 alone are 1.60, and so is their product by 1, which the plan
+     * holds as a cast - or null for any other expression, over a join, and over a column whose values differ or that
+     * holds a NULL. Only the conversion is folded: {@code f::NUMBER(4,2) + 0} is read where the row is
+     * (live-verified).
+     */
+    private BigDecimal soleConvertedNumber(final Expression expression) {
+        Expression conversion = expression;
+        if (expression instanceof BinaryOperationExpression
+                && ((BinaryOperationExpression) expression).getOperator() == BinaryOperator.MULTIPLY) {
+            final BinaryOperationExpression product = (BinaryOperationExpression) expression;
+            conversion = isWholeOne(product.getRight()) ? product.getLeft()
+                : isWholeOne(product.getLeft()) ? product.getRight() : null;
+        }
+        if (conversion == null || !convertsTextOrFloat(conversion) || queryExecutor == null
+                || multiTableAllTables != null && multiTableAllTables.size() > 1) {
+            return null;
+        }
+        final Expression folded;
+        if (conversion instanceof CastExpression) {
+            final CastExpression cast = (CastExpression) conversion;
+            final Expression held = heldValues(cast.getExpression());
+            folded = held == null || held == cast.getExpression() ? null : new CastExpression(held,
+                cast.getTargetType(), cast.isTryMode(), cast.getDeclaredTarget(), cast.getFieldsModifier());
+        } else {
+            final FunctionCallExpression call = (FunctionCallExpression) conversion;
+            final Expression held = heldValues(call.getArguments().get(0));
+            final List<Expression> arguments = new ArrayList<Expression>(call.getArguments());
+            arguments.set(0, held);
+            folded = held == null || held == call.getArguments().get(0) ? null
+                : new FunctionCallExpression(call.getFunctionName(), arguments);
+        }
+        if (folded == null) {
+            return null;
+        }
+        try {
+            return ValueRange.exactOf(folded.accept(this));
+        } catch (final RuntimeException uncomputed) {
+            return null;
+        }
+    }
+
+    /**
+     * An expression with each column it reads replaced by the one value the column holds, a text cast to the column's
+     * type; the expression itself where it reads no column, and null where a column holds more than one value or a
+     * NULL, or the expression holds anything but literals, signs, casts and arithmetic.
+     */
+    private Expression heldValues(final Expression expression) {
+        if (expression instanceof LiteralExpression) {
+            return expression;
+        }
+        if (expression instanceof ColumnReferenceExpression) {
+            final ColumnReferenceExpression ref = (ColumnReferenceExpression) expression;
+            final Table owner = resolveDeclaredOwner(ref);
+            final TableColumn column = owner == null ? null : owner.getColumn(ref.getColumnName());
+            final Object held = column == null || owner.residentSource() == null ? null
+                : queryExecutor.columnSoleValue(owner.residentSource(), column.getName());
+            if (held == null) {
+                return null;
+            }
+            final Expression text = new LiteralExpression(held instanceof BigDecimal
+                ? ((BigDecimal) held).toPlainString() : String.valueOf(held), LiteralType.STRING);
+            return held instanceof CharSequence ? text
+                : new CastExpression(text, SqlTypeNames.canonical(column.getDataType()));
+        }
+        if (expression instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) expression;
+            final Expression operand = heldValues(unary.getOperand());
+            return operand == null ? null : operand == unary.getOperand() ? expression
+                : new UnaryOperationExpression(unary.getOperator(), operand);
+        }
+        if (expression instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) expression;
+            final Expression left = heldValues(binary.getLeft());
+            final Expression right = heldValues(binary.getRight());
+            if (left == null || right == null || binary.getEscape() != null) {
+                return null;
+            }
+            return left == binary.getLeft() && right == binary.getRight() ? expression
+                : new BinaryOperationExpression(left, binary.getOperator(), right);
+        }
+        if (expression instanceof CastExpression) {
+            final CastExpression cast = (CastExpression) expression;
+            final Expression operand = heldValues(cast.getExpression());
+            return operand == null ? null : operand == cast.getExpression() ? expression : new CastExpression(operand,
+                cast.getTargetType(), cast.isTryMode(), cast.getDeclaredTarget(), cast.getFieldsModifier());
+        }
+        return null;
+    }
+
+    /** The number a scalar subquery the plan folds to a constant answers, or null for one it does not fold. */
+    private BigDecimal foldedSubqueryNumber(final SubqueryExpression subquery) {
+        if (queryExecutor == null || !queryExecutor.foldsToConstant(subquery)) {
+            return null;
+        }
+        try {
+            return ValueRange.exactOf(subquery.accept(this));
+        } catch (final RuntimeException unanswered) {
+            return null;
+        }
+    }
+
+    /**
+     * A SPLIT_PART part with a fraction in its type that the plan does not know is read in its own type held in 32
+     * bits, the digits past the point counted in: over rows that differ, {@code i / 2} reading 1500000000 is "Number
+     * out of representable range: type FIXED[SB4](38,6){nullable}, value 1500000000.000000" (live-verified).
+     *
+     * @param part  the part
+     * @param value the value it reads
+     */
+    private void requireFittingFractionalPart(final Expression part, final Object value) {
+        final DataType declared = inferStaticType(part);
+        final BigDecimal number = value instanceof Number || value instanceof CharSequence
+            ? ValueRange.exactOf(value) : null;
+        if (!(declared instanceof NumericType) || number == null) {
+            return;
+        }
+        final NumericType type = (NumericType) declared;
+        final BigDecimal held = number.setScale(type.getScale(), RoundingMode.HALF_UP);
+        if (held.unscaledValue().bitLength() > 31) {
+            throw new RuntimeException("Number out of representable range: type FIXED[SB4](" + type.getPrecision()
+                + "," + type.getScale() + "){nullable}, value " + held.toPlainString());
+        }
+    }
+
+    /**
+     * Whether a SPLIT_PART call answers the empty text for the row read: its part judged one the plan does not know
+     * with a fraction in its type (see {@link #judgeFractionalSplitPart}), and no argument NULL.
+     */
+    private boolean readsEmptySplitPart(final FunctionCallExpression call, final List<Object> argValues) {
+        return argValues.size() == 3 && call.getArguments().size() == 3 && argValues.get(0) != null
+            && argValues.get(1) != null && argValues.get(2) != null
+            && Boolean.TRUE.equals(splitPartsReadEmpty.get(call.getArguments().get(2)));
     }
 
     /**
      * SPLIT_PART's whole part past 32 bits, refused while the statement compiles where the plan knows its value — a
      * literal, an expression of literals by the value it computes, the one value a column's statistics leave it — and
-     * echoed as the plan prints it, a literal by its value: {@code 3000000000} is "found: '3000000000'",
-     * {@code 2147483647 + 1} "found: '2147483647 + 1'", a column holding 3000000000 alone "found: 'TB1.I'". A NULL
+     * echoed as the plan prints it, a literal and a folded subquery by its value: {@code 3000000000} and
+     * {@code (SELECT 3000000000)} are "found: '3000000000'", {@code 2147483647 + 1} "found: '2147483647 + 1'", a
+     * column holding 3000000000 alone "found: 'TB1.I'", where one holding a NULL beside it is not known. A NULL
      * text or separator answers NULL first, and a part the plan cannot know is refused where the row is read
      * (live-verified).
      *
@@ -8896,6 +9210,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return;
         }
         BigDecimal value = written;
+        final boolean subquery = part instanceof SubqueryExpression;
+        if (value == null && subquery) {
+            value = foldedSubqueryNumber((SubqueryExpression) part);
+        }
         if (value == null && ConstantRootFold.isOverLiterals(part, functionRegistry)) {
             final Object computed;
             try {
@@ -8910,17 +9228,37 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         if (value == null && !accumulates(part) && (queryExecutor == null || !queryExecutor.filtersPastStatistics())) {
             final ValueRange known = valueRangeInferencer.infer(part);
-            if (known != null && !known.isEmpty() && known.getMin() != null && known.getMax() != null
-                    && known.getMin().compareTo(known.getMax()) == 0) {
+            if (known != null && !known.isEmpty() && !known.isNullable() && known.getMin() != null
+                    && known.getMax() != null && known.getMin().compareTo(known.getMax()) == 0) {
                 value = known.getMin();
             }
         }
         if (value == null || value.setScale(0, RoundingMode.HALF_UP).toBigInteger().bitLength() <= 31) {
             return;
         }
-        throw new RuntimeException(SqlCompilationError.of("argument 3 to function SPLIT_PART needs to be an integer,"
-            + " found: '" + (written != null ? written.stripTrailingZeros().toPlainString() : strictPlanText(part))
-            + "'"));
+        throw fractionalSplitPart(written != null || subquery ? value.stripTrailingZeros().toPlainString()
+            : strictPlanText(part));
+    }
+
+    /**
+     * The echo of a product by the whole number 1, which the plan holds as the cast to the product's type:
+     * {@code n * 1} over a NUMBER(4,2) is {@code CAST(T.N AS NUMBER(5,2))}; null for any other part.
+     */
+    private String timesOneCast(final Expression part, final DataType type) {
+        if (!(part instanceof BinaryOperationExpression)
+                || ((BinaryOperationExpression) part).getOperator() != BinaryOperator.MULTIPLY) {
+            return null;
+        }
+        final BinaryOperationExpression product = (BinaryOperationExpression) part;
+        final Expression other = isWholeOne(product.getRight()) ? product.getLeft()
+            : isWholeOne(product.getLeft()) ? product.getRight() : null;
+        return other == null ? null : "CAST(" + strictPlanText(other) + " AS " + SqlTypeNames.canonical(type) + ")";
+    }
+
+    private static boolean isWholeOne(final Expression operand) {
+        return operand instanceof LiteralExpression && ((LiteralExpression) operand).getType() == LiteralType.INTEGER
+            && ((LiteralExpression) operand).getValue() instanceof Number
+            && new BigDecimal(((LiteralExpression) operand).getValue().toString()).compareTo(BigDecimal.ONE) == 0;
     }
 
     /** Whether a value is a conversion into an exact number of a text or a FLOAT: a cast, or TO_NUMBER and kin. */
@@ -11550,6 +11888,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * {@link #strictPlanText} as a quantifier's refusal echoes its call: each cast as written — see
+     * {@link StrictMessagePrinter#castingAsWritten}.
+     */
+    String strictQuantifierText(final Expression expr) {
+        return expr.accept(new StrictMessagePrinter(this, StrictPrintMode.PLAN).castingAsWritten());
+    }
+
+    /**
      * {@link #strictPlanText} as the refusal of a column default echoes it — see
      * {@link StrictMessagePrinter#echoingDefault}.
      *
@@ -11726,80 +12072,103 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * The columns a star stands for over relations joined with USING or NATURAL, as the plan echoes them: the join is
      * one view to it, {@code SYS_VW}, whose columns are the keys once, then each relation's other columns in the order
      * read, a name met again suffixed {@code _0}, then {@code _1}, and so on. A chain of such joins is one view too:
-     * {@code fa JOIN fb USING (id) JOIN fc USING (id)} is {@code SYS_VW.ID, SYS_VW.A, SYS_VW.B, SYS_VW.C}. A qualified
-     * star reads its relation's columns under their view names, and an EXCLUDE of a name the view holds twice is
-     * {@code ambiguous column name 'B'} (all live-verified). The account leaves out of a chain's star, and of its
-     * echo, the columns an earlier USING join renamed — {@code SYS_VW.ID, SYS_VW.B, SYS_VW.B_1} over three relations
-     * of columns ID and B — a column of a relation the query reads lost: every column is kept here. Null for any other
-     * relation, a chain joined in part by a condition among them.
+     * {@code fa JOIN fb USING (id) JOIN fc USING (id)} is {@code SYS_VW.ID, SYS_VW.A, SYS_VW.B, SYS_VW.C}. A relation
+     * joined to the view by a condition, a cross join or a comma follows it under its own name, wherever the FROM
+     * writes it: {@code fc JOIN (fa JOIN fb USING (id)) ON …} is {@code SYS_VW.ID, SYS_VW.A, SYS_VW.B, FC.ID, FC.C}. A
+     * star qualified by a relation of the view reads its columns under their view names, one qualified by another
+     * relation its own, and an EXCLUDE of a name the view holds twice is {@code ambiguous column name 'B'} (all
+     * live-verified). The account leaves out of a chain's star, and of its echo, the columns an earlier USING join
+     * renamed — {@code SYS_VW.ID, SYS_VW.B, SYS_VW.B_1} over three relations of columns ID and B — a column of a
+     * relation the query reads lost: every column is kept here. Null for any other relation, and for two separate
+     * runs of keyed joins.
      */
     private List<String> usingViewColumns(final StarArgument star) {
-        if (table == null || table.getJoinKeyNames() == null || table.getJoinedRelations() == null
-                || multiTableAllTables == null || multiTableAllTables.size() < 2) {
+        if (table == null || table.getJoinedRelations() == null || multiTableAllTables == null
+                || multiTableAllTables.size() < 2) {
             return null;
         }
-        // Where each relation's columns start among the joined ones; past two relations each joins by its keys.
-        final int[] offsets = new int[multiTableAllTables.size() + 1];
-        for (int r = 0; r < multiTableAllTables.size(); r++) {
+        final int count = multiTableAllTables.size();
+        // Where each relation's columns start among the joined ones.
+        final int[] offsets = new int[count + 1];
+        for (int r = 0; r < count; r++) {
             final Table relation = multiTableAllTables.get(r);
             if (!table.getJoinedRelations().includes(relation) || relation.getJoinedRelations() != null) {
                 return null;
             }
             offsets[r + 1] = offsets[r] + relation.getColumns().size();
         }
-        if (table.getColumns().size() != offsets[multiTableAllTables.size()]) {
+        if (table.getColumns().size() != offsets[count]) {
             return null;
         }
-        for (int r = 1; r < multiTableAllTables.size() && multiTableAllTables.size() > 2; r++) {
+        // The view is the run of relations a USING or NATURAL join keys - each holds the key it merged, hidden from
+        // the star - with the relation the run begins at.
+        int first = -1;
+        int last = -1;
+        for (int r = 1; r < count; r++) {
             boolean keyed = false;
             for (int i = offsets[r]; i < offsets[r + 1]; i++) {
                 keyed = keyed || table.getColumns().get(i).isHiddenFromStar();
             }
-            if (!keyed) {
-                return null;
+            if (keyed) {
+                if (last >= 0 && last != r - 1) {
+                    return null;
+                }
+                first = first < 0 ? r - 1 : first;
+                last = r;
             }
+        }
+        if (last < 0) {
+            return null;
         }
         // Each column of the view under its name there, aligned with the merged columns; a hidden key takes its
         // visible twin's name.
-        final List<String> viewNames = new ArrayList<>();
+        final Map<Integer, String> viewNames = new HashMap<>();
         final Map<String, Integer> met = new HashMap<>();
-        for (final TableColumn column : table.getColumns()) {
+        for (int i = offsets[first]; i < offsets[last + 1]; i++) {
+            final TableColumn column = table.getColumns().get(i);
             final String name = column.getName();
             if (column.isHiddenFromStar()) {
-                viewNames.add(name);
+                viewNames.put(i, name);
                 continue;
             }
             final Integer before = met.get(name);
-            viewNames.add(before == null ? name : name + "_" + (before - 1));
+            viewNames.put(i, before == null ? name : name + "_" + (before - 1));
             met.put(name, before == null ? 1 : before + 1);
         }
         if (star.getExcludes() != null) {
             for (final String excluded : star.getExcludes()) {
-                final Integer count = met.get(excluded);
-                if (count != null && count > 1) {
+                final Integer times = met.get(excluded);
+                if (times != null && times > 1) {
                     throw new RuntimeException(SqlCompilationError.of("ambiguous column name '"
                         + SqlIdentifiers.spellCanonical(excluded) + "'"));
                 }
             }
         }
-        int from = 0;
-        int to = table.getColumns().size();
-        if (star.getQualifier() != null) {
-            final Table relation = qualifiedRelation(star.getQualifier());
-            int named = -1;
-            for (int r = 0; r < multiTableAllTables.size() && relation != null; r++) {
-                if (multiTableAllTables.get(r) == relation) {
-                    named = r;
-                }
-            }
-            if (named < 0) {
-                return null;
-            }
-            from = offsets[named];
-            to = offsets[named + 1];
-        }
         final Pattern kept = star.getIlike() == null ? null : StarArgument.ilikePattern(star.getIlike());
         final List<String> columns = new ArrayList<>();
+        if (star.getQualifier() != null) {
+            final Table relation = qualifiedRelation(star.getQualifier());
+            for (int r = first; r <= last && relation != null; r++) {
+                if (multiTableAllTables.get(r) == relation) {
+                    addViewColumns(columns, offsets[r], offsets[r + 1], viewNames, star, kept);
+                    return columns;
+                }
+            }
+            return null;
+        }
+        addViewColumns(columns, offsets[first], offsets[last + 1], viewNames, star, kept);
+        for (int r = 0; r < count; r++) {
+            if (r < first || r > last) {
+                final Table relation = multiTableAllTables.get(r);
+                addStarColumns(columns, relationAlias(relation), relation, star.getExcludes(), kept);
+            }
+        }
+        return columns;
+    }
+
+    /** The view's columns from one place to another as the echo names them, as a star or its qualifier keeps them. */
+    private void addViewColumns(final List<String> columns, final int from, final int to,
+                                final Map<Integer, String> viewNames, final StarArgument star, final Pattern kept) {
         for (int i = from; i < to; i++) {
             final TableColumn column = table.getColumns().get(i);
             final String name = column.getName();
@@ -11810,7 +12179,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             columns.add("SYS_VW." + SqlIdentifiers.spellCanonical(viewNames.get(i)));
         }
-        return columns;
+    }
+
+    /** The name a relation of the query goes by: its alias, else its own. */
+    private String relationAlias(final Table relation) {
+        if (multiTableAliasToTable != null) {
+            for (final Map.Entry<String, Table> entry : multiTableAliasToTable.entrySet()) {
+                if (entry.getValue() == relation) {
+                    return entry.getKey();
+                }
+            }
+        }
+        return relation.getName();
     }
 
     /** The relation a star's qualifier names among the query's, or null. */
@@ -12242,6 +12622,85 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             && argument instanceof ColumnReferenceExpression
             && ((ColumnReferenceExpression) argument).getTableName() == null
             && procedural.hasVariable(((ColumnReferenceExpression) argument).getColumnName());
+    }
+
+    /**
+     * A block's variable read by its bare name in one of the block's own SQL expressions, as the block binds it (see
+     * {@link BlockVariableBinding}).
+     *
+     * @param ref the name as written
+     * @return the binding, or null for a name that reads a relation's column or no such variable
+     */
+    Expression boundBlockVariable(final ColumnReferenceExpression ref) {
+        if (ref.isQualified() || ref.getStarArgument() != null || ref.getPositionalOrdinal() > 0
+                || queryExecutor == null) {
+            return null;
+        }
+        final ProceduralExecutor procedural = queryExecutor.getProceduralExecutor();
+        if (procedural == null || !procedural.bindsIntoBlockExpression()
+                || !procedural.hasVariable(ref.getColumnName()) || strictMessageQualifier(ref) != null) {
+            return null;
+        }
+        final Object value;
+        try {
+            value = procedural.readVariable(ref.getColumnName());
+        } catch (final RuntimeException unreadable) {
+            // A name the block may not read yet is printed as written.
+            return null;
+        }
+        return BlockVariableBinding.of(procedural.getDeclaredVariableType(ref.getColumnName()), value);
+    }
+
+    /**
+     * An argument with each of a block's variables it reads replaced by the binding the block writes in its place
+     * (see {@link #boundBlockVariable}), as the account judges a constant argument over them: the argument itself
+     * where it reads none, or where one sits in a part no binding is written into.
+     */
+    private Expression withBoundVariables(final Expression argument) {
+        if (argument instanceof ColumnReferenceExpression) {
+            final Expression bound = boundBlockVariable((ColumnReferenceExpression) argument);
+            return bound != null ? bound : argument;
+        }
+        if (argument instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) argument;
+            final Expression left = withBoundVariables(binary.getLeft());
+            final Expression right = withBoundVariables(binary.getRight());
+            if (left == binary.getLeft() && right == binary.getRight()) {
+                return argument;
+            }
+            final BinaryOperationExpression rebuilt = new BinaryOperationExpression(left, binary.getOperator(), right,
+                binary.getEscape());
+            if (binary.isWrittenInParentheses()) {
+                rebuilt.markWrittenInParentheses();
+            }
+            return rebuilt;
+        }
+        if (argument instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) argument;
+            final Expression operand = withBoundVariables(unary.getOperand());
+            return operand == unary.getOperand() ? argument
+                : new UnaryOperationExpression(unary.getOperator(), operand);
+        }
+        if (argument instanceof CastExpression && !(argument instanceof PlannedCastExpression)
+                && !((CastExpression) argument).isTypedLiteral()) {
+            final CastExpression cast = (CastExpression) argument;
+            final Expression source = withBoundVariables(cast.getExpression());
+            return source == cast.getExpression() ? argument : new CastExpression(source, cast.getTargetType(),
+                cast.isTryMode(), cast.getDeclaredTarget(), cast.getFieldsModifier());
+        }
+        if (argument instanceof FunctionCallExpression
+                && ((FunctionCallExpression) argument).getNameExpression() == null) {
+            final FunctionCallExpression call = (FunctionCallExpression) argument;
+            final List<Expression> bound = new ArrayList<>();
+            boolean changed = false;
+            for (final Expression each : call.getArguments()) {
+                final Expression rebuilt = withBoundVariables(each);
+                changed |= rebuilt != each;
+                bound.add(rebuilt);
+            }
+            return changed ? call.withArguments(bound) : argument;
+        }
+        return argument;
     }
 
     /**
@@ -13306,11 +13765,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (!"LAST_QUERY_ID".equals(funcName) || args.size() != 1) {
             return;
         }
-        final Expression index = args.get(0);
-        if (blockExpressionConstant(index, true)) {
+        if (blockExpressionConstant(args.get(0), true)) {
             // A block binds its variable as a constant, and folds what reads no name before this rule (live-verified).
             return;
         }
+        // An index over a block's variables is judged and echoed over their bindings: i + 1 over an INT holding 1 is
+        // found '1 + 1', i * 3 over one holding 0 is constant (live-verified).
+        final Expression index = withBoundVariables(args.get(0));
         if (QueryIndexArgument.folds(index, this)) {
             QueryIndexArgument.requireWithinLimit(index, this);
             return;
@@ -13341,8 +13802,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(SqlCompilationError.of("invalid type [" + conversionCallEcho(funcName, args)
                 + "] for parameter 'TO_ARRAY'"));
         }
+        // A block's variable is judged by its binding: TO_OBJECT(n) over an INT is [TO_OBJECT(TO_NUMBER('5'))]
+        // (live-verified).
         if (!"TO_OBJECT".equals(funcName) || args.size() != 1
-                || !isRefusedObjectSource(typeInferencer.infer(args.get(0)))) {
+                || !isRefusedObjectSource(typeInferencer.infer(withBoundVariables(args.get(0))))) {
             return;
         }
         throw new RuntimeException(SqlCompilationError.of("invalid type [" + conversionCallEcho(funcName, args)
@@ -13362,8 +13825,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private void rejectNonConstantGeneratorArgument(final String funcName, final List<Expression> args) {
         final int constants = generatorConstantSlots(funcName);
         for (int position = 0; position < constants && position < args.size(); position++) {
+            // A block's variables are bound as constants, so RANDOM(n + 1) over one is seeded (live-verified).
             if (!blockExpressionConstant(args.get(position), false)
-                    && !ConstantArgumentWalk.isConstant(args.get(position), functionRegistry)) {
+                    && !ConstantArgumentWalk.isConstant(withBoundVariables(args.get(position)), functionRegistry)) {
                 throw new RuntimeException(SqlCompilationError.of("argument " + (position + 1) + " to function "
                     + funcName + " needs to be constant, found '" + strictPlanText(args.get(position)) + "'"));
             }
@@ -16979,6 +17443,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     // and no position: "invalid use of 'distinct' for function 'COUNT_IF(DISTINCT AW.B)'".
                     throw new RuntimeException(SqlCompilationError.of(
                         "invalid use of 'distinct' for function '" + strictText(call) + "'"));
+                }
+                if (call.isDistinct() && "VARIANCE".equals(funcName)
+                        && functionRegistry.hasAggregateFunction(funcName)) {
+                    // VARIANCE alone takes no DISTINCT, which VARIANCE_SAMP, VAR_SAMP and the deviations take
+                    // (live-verified).
+                    throw new UnsupportedFeatureException("VARIANCE(DISTINCT)");
                 }
                 // A conversion's own source rule belongs to this walk too, or an aggregate around
                 // TO_DATE(f) would be judged before the conversion it wraps. A TIMESTAMP scale is

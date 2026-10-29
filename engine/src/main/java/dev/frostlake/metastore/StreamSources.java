@@ -390,6 +390,29 @@ public final class StreamSources {
         return false;
     }
 
+    /**
+     * Whether a temporary table that tracks changes hides one of a view stream's tables from the session (see
+     * {@link #readsTrackedShadow}): the stream then has that table's changes to list, whatever the hidden tables'.
+     *
+     * @param catalog the catalog
+     * @param stream  the stream
+     * @return whether one does
+     */
+    public static boolean readsAnyTrackedShadow(final Catalog catalog, final Stream stream) {
+        final List<Table> bound = baseTablesOf(catalog, stream);
+        if (bound == null) {
+            return false;
+        }
+        final Schema viewHome = viewHomeOf(catalog, homeOf(catalog, stream), stream);
+        for (int i = 0; i < bound.size() && i < stream.getBaseTableNames().size(); i++) {
+            final Table hiding = hidingOf(catalog, viewHome, stream.getBaseTableNames().get(i), bound.get(i));
+            if (hiding != null && hiding.isChangeTracking()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The temporary table that hides one of a stream's tables from the session under its recorded name, or null. */
     private static Table hidingOf(final Catalog catalog, final Schema viewHome, final String recorded,
                                   final Table bound) {

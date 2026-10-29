@@ -49,7 +49,6 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 /**
  * Handles CREATE for security / governance objects — TAG, MASKING POLICY, ROW ACCESS POLICY, USER, ROLE —
@@ -61,7 +60,6 @@ public class CreateSecurityHandler implements CommandHandler {
     private static final Logger logger = LoggerFactory.getLogger(CreateSecurityHandler.class);
 
     /** What live accepts as a contact's address: one address, a dotted domain, no spaces. */
-    private static final Pattern EMAIL = Pattern.compile("[^\\s@]+@[^\\s@,]+\\.[A-Za-z]{2,}");
 
     private final DDLCommandHandler ddl;
     private final Catalog catalog;
@@ -668,9 +666,8 @@ public class CreateSecurityHandler implements CommandHandler {
     }
 
     /**
-     * CREATE CONTACT — a schema-level object with three string properties and no behaviour. COMMENT,
-     * URL and EMAIL_DISTRIBUTION_LIST are the ones live takes; anything else is refused the way live
-     * refuses a property an object type does not have ({@code invalid property 'EMAIL' for 'CONTACT'}).
+     * CREATE CONTACT — a schema-level object with three string properties and no behaviour, judged as {@link
+     * ContactProperties} judges them.
      */
     public Object handleCreateContact(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String qn = getText(ctx.qualifiedName(0));
@@ -688,14 +685,11 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             final Contact contact = new Contact(contactName);
             for (final FrostlakeParser.ContactPropertyContext property : ctx.contactProperty()) {
-                applyContactProperty(contact, property);
+                ContactProperties.set(contact, property, catalog);
             }
-            // A contact is reached one way or the other, never both (live-verified). Each property is
-            // validated as it is read, so an unusable address is refused before this pairing is.
-            if (contact.getUrl() != null && !contact.getUrl().isEmpty()
-                    && contact.getEmailDistributionList() != null
-                    && !contact.getEmailDistributionList().isEmpty()) {
-                throw new RuntimeException("Email, url or users/email_list, only one could be set.");
+            ContactProperties.requireOneWay(contact);
+            if (!freshName) {
+                catalog.contactReplaced(schema.qualifiedName(schema.getContact(contactName).getName()));
             }
             contact.setOwner(catalog.currentRoleForOwner());
             schema.addContact(contact);
@@ -703,28 +697,6 @@ public class CreateSecurityHandler implements CommandHandler {
             logger.trace("Created contact: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
-    }
-
-    private void applyContactProperty(final Contact contact,
-                                      final FrostlakeParser.ContactPropertyContext property) {
-        final String key = property.optionKey().getText().toUpperCase(Locale.ROOT);
-        final String value = ddl.extractStringLiteral(property.STRING_LITERAL());
-        if ("COMMENT".equals(key)) {
-            contact.setComment(value);
-        } else if ("URL".equals(key)) {
-            contact.setUrl(value);
-        } else if ("EMAIL_DISTRIBUTION_LIST".equals(key)) {
-            // ONE address, whatever the property name suggests — live refuses a comma-separated list,
-            // an address with no dotted domain, a one-letter top level and any address with a space.
-            // The empty string is allowed and clears it.
-            if (!value.isEmpty() && !EMAIL.matcher(value).matches()) {
-                throw new RuntimeException("Invalid email address(es): [" + value + "].");
-            }
-            contact.setEmailDistributionList(value);
-        } else {
-            throw new RuntimeException(SqlCompilationError.of(
-                "invalid property '" + key + "' for 'CONTACT'"));
-        }
     }
 
     /**

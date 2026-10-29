@@ -279,12 +279,12 @@ final class IcebergColumnTypes {
         if (name.MAP() != null && parsed instanceof MapType) {
             final MapType map = (MapType) parsed;
             return new MapType(written(name.mapKey, name.mapKeyParameters, map.getKeyType()),
-                written(name.mapValue, name.mapValueParameters, map.getValueType()));
+                written(name.mapValue, name.mapValueParameters, map.getValueType()), map.isValueNotNull());
         }
         if (name.ARRAY() != null && parsed instanceof StructuredArrayType) {
             return new StructuredArrayType(written(name.dataTypeName(0),
                 name.typeParameters().isEmpty() ? null : name.typeParameters(0),
-                ((StructuredArrayType) parsed).getElementType()));
+                ((StructuredArrayType) parsed).getElementType()), ((StructuredArrayType) parsed).isElementNotNull());
         }
         if (name.OBJECT() != null && parsed instanceof StructuredObjectType) {
             final List<StructuredField> declaredFields = ((StructuredObjectType) parsed).getFields();
@@ -352,10 +352,11 @@ final class IcebergColumnTypes {
     private static DataType widened(final DataType type) {
         if (type instanceof MapType) {
             final MapType map = (MapType) type;
-            return new MapType(widened(map.getKeyType()), widened(map.getValueType()));
+            return new MapType(widened(map.getKeyType()), widened(map.getValueType()), map.isValueNotNull());
         }
         if (type instanceof StructuredArrayType) {
-            return new StructuredArrayType(widened(((StructuredArrayType) type).getElementType()));
+            return new StructuredArrayType(widened(((StructuredArrayType) type).getElementType()),
+                ((StructuredArrayType) type).isElementNotNull());
         }
         if (type instanceof StructuredObjectType) {
             final List<StructuredField> fields = new ArrayList<>();

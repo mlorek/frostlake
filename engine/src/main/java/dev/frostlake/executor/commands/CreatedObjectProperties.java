@@ -120,16 +120,24 @@ final class CreatedObjectProperties {
             new ArrayList<FrostlakeParser.CopyOptionValueContext>();
         final List<FrostlakeParser.TablePropertyConstantContext> constants =
             new ArrayList<FrostlakeParser.TablePropertyConstantContext>();
+        final List<FrostlakeParser.ParenOptionListContext> lists =
+            new ArrayList<FrostlakeParser.ParenOptionListContext>();
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
             if (tail.optionKey() != null) {
                 names.add(tail.optionKey().getText());
                 values.add(tail.copyOptionValue());
                 constants.add(tail.tablePropertyConstant());
+                lists.add(tail.parenOptionList());
+                if (tail.stageCopyOptionList() != null) {
+                    // Judged before anything is made or replaced (see StageCopyOptions).
+                    StageCopyOptions.read(tail.stageCopyOptionList());
+                }
             }
         }
         rejectDuplicates(names);
         final List<Integer> order = judgedOrder(names);
         rejectUnknown(names, order);
+        rejectListsOfAnotherType(names, constants, lists, order);
         if (ctx.ICEBERG() != null) {
             // A parameter a session keeps is no property of a table of any kind: cannot set parameter 'TIMEZONE'
             // at 'ICEBERG_TABLE' (live-verified).
@@ -492,6 +500,28 @@ final class CreatedObjectProperties {
             }
             if (!fits) {
                 throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.getText(), key));
+            }
+        }
+    }
+
+    /**
+     * A list given a name that takes no list (live-verified): a list of properties is {@code invalid value
+     * [TOK_PROPERTY_LIST] for parameter 'CHANGE_TRACKING'}, and a list of constants given for STAGE_FILE_FORMAT is
+     * read as the name of a format, {@code File format 'TOK_CONSTANT_LIST' does not exist}.
+     */
+    private static void rejectListsOfAnotherType(final List<String> names,
+                                                 final List<FrostlakeParser.TablePropertyConstantContext> constants,
+                                                 final List<FrostlakeParser.ParenOptionListContext> lists,
+                                                 final List<Integer> order) {
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (lists.get(i) != null && typeOf(key) != null) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(ListValues.PROPERTY_LIST,
+                    key));
+            }
+            final FrostlakeParser.TablePropertyConstantContext constant = constants.get(i);
+            if ("STAGE_FILE_FORMAT".equals(key) && constant != null && constant.LPAREN() != null) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("File format", ListValues.CONSTANT_LIST));
             }
         }
     }

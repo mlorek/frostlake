@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.SessionNullOrdering;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StarArgument;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.GeoTypes;
@@ -207,6 +208,12 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
 
     @Override
     public String visitColumnReference(final ColumnReferenceExpression expr) {
+        final StarArgument star = expr.getStarArgument();
+        if (star != null && star.getExcludes().isEmpty() && star.getIlike() == null) {
+            // A star among a call's arguments prints as written: NOSUCH(*, …), NOSUCH(RC_T.*, …) (live-verified).
+            return star.getQualifier() == null ? "*"
+                : SqlIdentifiers.spellAlreadyCanonicalPath(star.getQualifier()) + ".*";
+        }
         final String column = expr.getPositionalOrdinal() > 0
             ? "$" + expr.getPositionalOrdinal() : SqlIdentifiers.spellCanonical(expr.getColumnName());
         if (!expr.isQualified()) {
@@ -673,7 +680,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         for (int i = 0; i < arguments.size(); i++) {
             text.append(i > 0 ? ", " : "");
             if (names != null && names.get(i) != null) {
-                text.append(names.get(i).toUpperCase(Locale.ROOT)).append(" => ");
+                // A name as written: TABLE (FLATTEN(input => …)) (live-verified).
+                text.append(names.get(i)).append(" => ");
             }
             text.append(arguments.get(i).accept(this));
         }

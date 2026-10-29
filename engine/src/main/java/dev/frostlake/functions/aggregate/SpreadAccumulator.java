@@ -18,8 +18,14 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 
-/** Accumulator for {@link VarPop}. */
-public class VarPopAccumulator
+/**
+ * Accumulator for the variance and the standard deviation, of a sample or of a whole population: {@link Variance}
+ * and {@link VarSamp}, {@link VarPop}, {@link StdDev} and {@link StdDevSamp}, {@link StdDevPop}. The sample
+ * statistics divide by n-1, so fewer than two rows have no sample spread and answer NULL (live: VARIANCE is an alias
+ * of VAR_SAMP, STDDEV of STDDEV_SAMP); the population ones answer from one row on. A standard deviation is the ROOT
+ * OF THE ROUNDED variance, not of the raw one — see {@link AggregateNumerics#rootOfDeclaredVariance}.
+ */
+public class SpreadAccumulator
         implements AggregateFunction.Accumulator, ApproximateAwareAccumulator, DecfloatAwareAccumulator {
 
     /** The values of a DECFLOAT argument, whose statistic is a DECFLOAT of 38 digits (see DecfloatMoments). */
@@ -31,6 +37,21 @@ public class VarPopAccumulator
     private final SquaredSumMoments floatMoments = new SquaredSumMoments();
     private int maxScale;
     private boolean approximate;
+
+    /** Whether the statistic is of a sample, over n-1, rather than of the whole population. */
+    private final boolean sample;
+
+    /** Whether the statistic is the standard deviation, the root of the variance. */
+    private final boolean deviation;
+
+    /**
+     * @param sample whether the statistic is of a sample rather than of the whole population
+     * @param deviation whether it is the standard deviation rather than the variance
+     */
+    public SpreadAccumulator(final boolean sample, final boolean deviation) {
+        this.sample = sample;
+        this.deviation = deviation;
+    }
 
     /**
      * The argument's DECLARED type, which the values alone cannot say: a FLOAT column is stored
@@ -45,39 +66,48 @@ public class VarPopAccumulator
         this.approximate = this.approximate || approximate;
     }
 
-
     @Override
     public void setDecfloatArgument(final boolean decfloat) {
         this.decfloat = decfloat;
     }
 
     @Override
-    public void accumulate(final Object v) {
+    public void accumulate(final Object value) {
         if (decfloat) {
-            decfloatMoments.add(v);
+            decfloatMoments.add(value);
             return;
         }
-        if (v == null) return;
-        // The input's SCALE decides the declared scale the result is presented at — read it before the
-        // value becomes a double. See AggregateNumerics.varianceAtDeclaredScale.
-        maxScale = Math.max(maxScale, AggregateNumerics.scaleOfInput(v));
-        approximate = approximate || AggregateNumerics.isApproximateInput(v);
-        final double number = NumericAggregateInput.asDouble(v);
-        moments.add(v);
-        floatMoments.add(number);
+        if (value != null) {
+            // The input's SCALE decides the declared scale the result is presented at, so it has to be
+            // read before the value becomes a double — see AggregateNumerics.varianceAtDeclaredScale.
+            maxScale = Math.max(maxScale, AggregateNumerics.scaleOfInput(value));
+            approximate = approximate || AggregateNumerics.isApproximateInput(value);
+            final double number = NumericAggregateInput.asDouble(value);
+            moments.add(value);
+            floatMoments.add(number);
+        }
     }
 
     @Override
     public Object getResult() {
         if (decfloat) {
-            return decfloatMoments.heldVariance(false);
+            return deviation ? decfloatMoments.heldDeviation(sample) : decfloatMoments.heldVariance(sample);
         }
-        if (moments.count() == 0) return null;
+        if (moments.count() < (sample ? 2 : 1)) {
+            return null;
+        }
         // A FLOAT input is read through the account's sums, an exact one exactly.
         if (approximate || !moments.isExact()) {
-            return AggregateNumerics.varianceAtDeclaredScale(floatMoments.populationVariance(), maxScale, approximate);
+            final double variance = sample ? floatMoments.sampleVariance() : floatMoments.populationVariance();
+            if (deviation) {
+                return AggregateNumerics.rootOfDeclaredVariance(variance, maxScale, approximate);
+            }
+            return AggregateNumerics.varianceAtDeclaredScale(variance, maxScale, approximate);
         }
-        return AggregateNumerics.exactVarianceAtDeclaredScale(moments, false, maxScale);
+        if (deviation) {
+            return AggregateNumerics.rootOfExactVariance(moments, sample, maxScale);
+        }
+        return AggregateNumerics.exactVarianceAtDeclaredScale(moments, sample, maxScale);
     }
 
     @Override
@@ -91,7 +121,7 @@ public class VarPopAccumulator
 
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
-        final VarPopAccumulator o = (VarPopAccumulator) other;
+        final SpreadAccumulator o = (SpreadAccumulator) other;
         decfloatMoments.merge(o.decfloatMoments);
         moments.merge(o.moments);
         floatMoments.merge(o.floatMoments);

@@ -413,7 +413,7 @@ public class ConcurrentDatabaseEngine {
     private void captureSessionContext(final SessionContext session) {
         try {
             session.setCurrentDatabase(engine.getCurrentDatabase());
-            session.setCurrentSchema(engine.getCurrentSchema());
+            session.setCurrentSchema(engine.getCatalog().heldSchemaName());
             session.setCurrentWarehouse(engine.getCatalog().getCurrentWarehouse());
             session.setAutoCommit(engine.isAutoCommit());
             // An aborted transaction the session has not acknowledged is still the session's to end.

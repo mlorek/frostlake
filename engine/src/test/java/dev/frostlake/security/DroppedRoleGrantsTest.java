@@ -35,8 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * DROP ROLE revokes every grant that names the role: the role granted to roles and to users, and what it granted as
  * the grantor - roles, database roles and privileges, those on the objects it owned too, which pass to the dropping
- * role with the database roles it owned (documented). Its future grants go with it. The session's own primary role
- * cannot be dropped, IF EXISTS or not.
+ * role whatever their kind (documented). Its future grants go with it. The session's own primary role cannot be
+ * dropped, IF EXISTS or not.
  */
 public class DroppedRoleGrantsTest extends BaseDatabaseTest {
 
@@ -149,6 +149,27 @@ public class DroppedRoleGrantsTest extends BaseDatabaseTest {
         assertEquals(originalRole, roles.getValue("owner"));
         engine.execute("DROP DATABASE ROLE dr_dbrole");
         engine.execute("DROP ROLE dr_member");
+    }
+
+    @Test
+    public void whatItOwnedOfAnyKindPassesToTheDroppingRole() {
+        engine.execute("CREATE ROLE dr_kinds");
+        engine.execute("GRANT ROLE dr_kinds TO USER \"" + user + "\"");
+        engine.execute("GRANT USAGE ON DATABASE test_db TO ROLE dr_kinds");
+        engine.execute("GRANT ALL ON SCHEMA test_db.test_schema TO ROLE dr_kinds");
+        engine.execute("USE ROLE dr_kinds");
+        engine.execute("CREATE SECRET dr_secret TYPE = GENERIC_STRING SECRET_STRING = 'x'");
+        engine.execute("CREATE NETWORK RULE dr_rule TYPE = IPV4 VALUE_LIST = ('10.0.0.1') MODE = INGRESS");
+        engine.execute("CREATE IMAGE REPOSITORY dr_images");
+        engine.execute("CREATE NOTEBOOK dr_note");
+        engine.execute("USE ROLE \"" + originalRole + "\"");
+        engine.execute("DROP ROLE dr_kinds");
+        for (final String show : new String[] {"SHOW SECRETS LIKE 'DR_SECRET'", "SHOW NETWORK RULES LIKE 'DR_RULE'",
+            "SHOW IMAGE REPOSITORIES LIKE 'DR_IMAGES'", "SHOW NOTEBOOKS LIKE 'DR_NOTE'"}) {
+            final ResultSet rs = engine.executeQuery(show);
+            assertTrue(rs.next(), show);
+            assertEquals(originalRole, rs.getValue("owner"), show);
+        }
     }
 
     @Test

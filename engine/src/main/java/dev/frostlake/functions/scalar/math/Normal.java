@@ -24,13 +24,13 @@ import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Random;
 
 /**
  * NORMAL(mean, stddev, generator) — a normally distributed FLOAT, drawn from the generator's value: one
  * value of the generator always answers the same number, so {@code NORMAL(0, 1, 7)} equals itself while
- * {@code NORMAL(0, 1, RANDOM())} differs from row to row. The numbers drawn are the engine's own, not the
- * account's.
+ * {@code NORMAL(0, 1, RANDOM())} differs from row to row. The numbers are the account's (see
+ * {@link GeneratorDraws#normal}), scaled by the deviation and moved by the mean (live-verified: NORMAL(0, 1, 1) is
+ * -1.143416214 and NORMAL(5, 2, 1) 2.713167572).
  *
  * <p>The mean and the deviation are numbers, or texts that spell one ("Numeric value 'a' is not
  * recognized" otherwise), and are judged left to right before the generator is read: a NULL mean is
@@ -65,12 +65,9 @@ public class Normal extends BuiltInFunction {
         if (args.get(GENERATOR) == null) {
             return null;
         }
-        // The generator is read as RANDOM reads its seed: a whole number past 64 bits is no number.
-        dev.frostlake.functions.scalar.math.Random.seedOf(args.get(GENERATOR));
-        final double drawnFrom = number(args.get(GENERATOR));
-        final long seed = drawnFrom == Math.rint(drawnFrom) && !Double.isInfinite(drawnFrom)
-            ? (long) drawnFrom : Double.doubleToLongBits(drawnFrom);
-        return mean + stddev * new Random(seed).nextGaussian();
+        // The generator is read as RANDOM reads its seed, a whole number past 64 bits being no number, and its value
+        // seeds the draws (see GeneratorDraws).
+        return new GeneratorDraws(Random.seedOf(args.get(GENERATOR))).normal() * stddev + mean;
     }
 
     private static double number(final Object value) {

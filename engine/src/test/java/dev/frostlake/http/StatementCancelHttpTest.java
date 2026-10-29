@@ -39,11 +39,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -140,12 +138,10 @@ public class StatementCancelHttpTest {
             refused(timed, "SELECT SYSTEM$WAIT(3)", CANCELED, 604);
             timed.setQueryTimeout(0);
             assertEquals("2", one(timed, "SELECT 2"));
-            assertThrows(SQLException.class, new Executable() {
-                @Override
-                public void execute() throws SQLException {
-                    timed.setQueryTimeout(-1);
-                }
-            });
+            // A negative timeout is kept as given and bounds nothing, as the account's driver keeps it.
+            timed.setQueryTimeout(-1);
+            assertEquals(-1, timed.getQueryTimeout());
+            assertEquals("3", one(timed, "SELECT 3"));
         } finally {
             timed.close();
         }

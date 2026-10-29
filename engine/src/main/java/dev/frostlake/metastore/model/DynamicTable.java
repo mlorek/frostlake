@@ -122,6 +122,15 @@ public class DynamicTable extends SqlObject {
      * @param fullRefreshReason the reason, or null for an incremental table
      */
     public void setFullRefreshReason(final String fullRefreshReason) { this.fullRefreshReason = fullRefreshReason; }
+
+    /**
+     * Whether each refresh rewrites the table whole: its refresh mode is FULL, or AUTO settled on FULL.
+     *
+     * @return true for a table refreshed in full
+     */
+    public boolean refreshesFull() {
+        return refreshMode == RefreshMode.FULL || refreshMode == RefreshMode.AUTO && fullRefreshReason != null;
+    }
     public Initialize getInitialize() { return initialize; }
     public void setInitialize(final Initialize initialize) { this.initialize = initialize; }
     public int getDataRetentionDays() { return dataRetentionDays; }

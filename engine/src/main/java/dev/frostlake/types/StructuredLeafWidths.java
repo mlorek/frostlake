@@ -116,6 +116,51 @@ public final class StructuredLeafWidths {
         return StructuredTypes.isStructured(type) ? storedMember(type) : type;
     }
 
+    /**
+     * The type a structured shape takes where the account reads it as a cast target, as it does a block's structured
+     * variable it writes out: every text leaf of the column default width held unsized, at the width a cast gives a
+     * bare VARCHAR, so that {@code ARRAY(VARCHAR)} is written out with {@code VARCHAR(134217728)} (live-verified). Any
+     * type without such a leaf is itself.
+     *
+     * @param type            the type
+     * @param conversionWidth the width a cast gives a bare VARCHAR
+     * @return the type a cast target holds
+     */
+    public static DataType castTarget(final DataType type, final int conversionWidth) {
+        return StructuredTypes.isStructured(type) ? castMember(type, conversionWidth) : type;
+    }
+
+    private static DataType castMember(final DataType type, final int conversionWidth) {
+        if (type instanceof StructuredObjectType) {
+            final List<StructuredField> fields = ((StructuredObjectType) type).getFields();
+            final List<StructuredField> unsized = new ArrayList<>(fields.size());
+            boolean changed = false;
+            for (final StructuredField field : fields) {
+                final DataType member = castMember(field.getDataType(), conversionWidth);
+                changed |= member != field.getDataType();
+                unsized.add(member == field.getDataType() ? field
+                    : new StructuredField(field.getName(), member, field.isNotNull()));
+            }
+            return changed ? new StructuredObjectType(unsized) : type;
+        }
+        if (type instanceof MapType) {
+            final DataType key = castMember(((MapType) type).getKeyType(), conversionWidth);
+            final DataType value = castMember(((MapType) type).getValueType(), conversionWidth);
+            return key == ((MapType) type).getKeyType() && value == ((MapType) type).getValueType()
+                ? type : new MapType(key, value, ((MapType) type).isValueNotNull());
+        }
+        if (type instanceof StructuredArrayType) {
+            final DataType element = castMember(((ArrayType) type).getElementType(), conversionWidth);
+            return element == ((ArrayType) type).getElementType() ? type
+                : new StructuredArrayType(element, ((StructuredArrayType) type).isElementNotNull());
+        }
+        if (type != null && type.getClass() == StringType.class && !((StringType) type).isUnsized()
+                && ((StringType) type).getMaxLength() == StringType.VARCHAR.getMaxLength()) {
+            return new StringType("VARCHAR", conversionWidth, true);
+        }
+        return type;
+    }
+
     private static DataType storedMember(final DataType type) {
         if (type instanceof StructuredObjectType) {
             final List<StructuredField> fields = ((StructuredObjectType) type).getFields();

@@ -41,7 +41,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class Table extends SqlObject implements SessionScoped {
+public class Table extends SqlObject implements SessionScoped, ContactHolder {
 
     /** What an IDENTITY column's draws are recorded under, before its table's name (see StatementDraws). */
     public static final String IDENTITY_COUNTER_PREFIX = "IDENTITY:";
@@ -2273,6 +2273,7 @@ public class Table extends SqlObject implements SessionScoped {
     }
 
     /** The contacts attached to this table, keyed by purpose. */
+    @Override
     public Map<String, String> getContacts() { return new LinkedHashMap<>(contacts); }
 
     /**
@@ -2294,11 +2295,13 @@ public class Table extends SqlObject implements SessionScoped {
     }
 
     /** Attach a contact for a purpose, replacing whatever that purpose held. */
+    @Override
     public void setContact(final String purpose, final String contactName) {
         contacts.put(purpose.toUpperCase(Locale.ROOT), contactName);
     }
 
     /** Detach the contact held for a purpose, if any — live does not mind that there was none. */
+    @Override
     public void unsetContact(final String purpose) {
         contacts.remove(purpose.toUpperCase(Locale.ROOT));
     }

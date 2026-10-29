@@ -86,9 +86,10 @@ tasks.autostart=false
 # guard against accidental data loss; set to true to allow it.
 command.removeEnabled=false
 
-# CREATE STAGE with a local URL (file:///dir, or a bare path) — a real account refuses those URLs,
-# and so does the default engine, with the account's own wording. Set to true to allow local
-# filesystem-backed stages for development and testing.
+# CREATE STAGE with a local URL (file:///dir, or a bare path), and a routine's IMPORTS that name a
+# local path or a URL rather than a stage — a real account refuses those, and so does the default
+# engine, with the account's own wording. Set to true to allow local filesystem-backed stages and
+# imports for development and testing.
 stage.file.urlEnabled=false
 
 # Query Results

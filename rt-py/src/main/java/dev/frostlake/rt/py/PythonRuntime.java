@@ -22,6 +22,7 @@ import dev.frostlake.executor.udf.TruffleLogBridge;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.TypeCategory;
+import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorElementType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantText;
@@ -94,18 +95,11 @@ public final class PythonRuntime {
     }
 
     /**
-     * GraalPy venv whose site-packages the contexts import from (numpy/pandas — the local stand-in for
-     * Snowflake's {@code PACKAGES=(...)}), or null for the standard library only. Set once from
-     * {@code EngineConfig} before the first Python execution; contexts created earlier keep the
-     * environment they were built with.
+     * The GraalPy venv whose site-packages the contexts import from (numpy/pandas — the local stand-in for
+     * Snowflake's {@code PACKAGES=(...)}), or none for the standard library only: one venv a JVM, as each thread
+     * keeps its context whichever engine calls it.
      */
-    private static volatile String venvDirectory;
-
-    /**
-     * Whether a context has been built: the venv the first one is built with is the venv of every later one, as each
-     * thread keeps its context whichever engine calls it (see {@link #requireVenv}). Guarded by the class.
-     */
-    private static boolean venvSettled;
+    private static final PythonVenvChoice VENV = new PythonVenvChoice();
 
     /**
      * The JVM default time zone before any Python ran. GraalPy's {@code import pandas} (via its time
@@ -264,6 +258,22 @@ public final class PythonRuntime {
                 _chdir(_cwd_base)
             _setcontext(_decimal_base.copy())
         _decode = _json.JSONDecoder().decode
+        # A SQL NULL a VARIANT parameter takes: a sqlNullWrapper, its type made where no module name is, so it has
+        # no __module__ (live-verified). The interpreter reads a type's missing module unlike the account's, so the
+        # type's own type says it as the account does.
+        class _SqlNullType(type):
+            @property
+            def __module__(cls):
+                # Told whose attribute it is, the fault offers no other name in its place.
+                fault = AttributeError('__module__')
+                fault.obj = cls
+                raise fault
+            def __repr__(cls):
+                return "<class '" + cls.__qualname__ + "'>"
+        _sql_null_namespace = {'__builtins__': _builtins, 'kind': _SqlNullType}
+        exec("sqlNullWrapper = kind('sqlNullWrapper', (), {'__slots__': (), 'is_sql_null': True})", _sql_null_namespace)
+        sqlNullWrapper = _sql_null_namespace['sqlNullWrapper']
+        del sqlNullWrapper.__slots__
         _decimal_type = _decimal.Decimal
         _date_type = _datetime.date
         _time_type = _datetime.time
@@ -284,6 +294,8 @@ public final class PythonRuntime {
                 return _datetime_type.fromisoformat(text)
             if kind == 'bytes':
                 return bytes.fromhex(text)
+            if kind == 'sqlnull':
+                return sqlNullWrapper()
             if kind == 'f':
                 return memoryview(_array_type('f', [float(e) for e in text.split(',')]))
             if kind == 'i':
@@ -308,6 +320,8 @@ public final class PythonRuntime {
         def forget(key):
             _kept.pop(key, None)
         def _owned(value):
+            if value is sqlNullWrapper:
+                return True
             module = str(getattr(value, '__module__', ''))
             return module.startswith('__frostlake') or module.startswith('snowflake.snowpark')
         def _guard(holder):
@@ -443,11 +457,7 @@ public final class PythonRuntime {
             // Hand Python the host's zone explicitly: without TZ, GraalPy's tzset falls back to GMT
             // and (see HOST_TIME_ZONE) mutates the JVM default when pandas imports.
             .environment("TZ", HOST_TIME_ZONE.getID());
-        final String venv;
-        synchronized (PythonRuntime.class) {
-            venvSettled = true;
-            venv = venvDirectory;
-        }
+        final String venv = VENV.build();
         if (venv != null) {
             // Pointing the interpreter's executable into the venv is how GraalPy activates one when
             // embedded: site.py finds pyvenv.cfg next to the executable and adds the venv's
@@ -511,15 +521,12 @@ public final class PythonRuntime {
     }
 
     /**
-     * Configure the GraalPy venv packages become importable from (see {@link #venvDirectory}). A null,
-     * blank, or non-existent directory leaves the runtime on the standard library alone — a missing venv
-     * must not break every Python handler that never imports third-party packages.
+     * Configure the GraalPy venv packages become importable from (see {@link #VENV}). A null, blank, or
+     * non-existent directory leaves the runtime on the standard library alone — a missing venv must not
+     * break every Python handler that never imports third-party packages.
      */
-    public static synchronized void configureVenv(final String venvDir) {
-        final String valid = validVenv(venvDir);
-        if (valid != null && !venvSettled) {
-            venvDirectory = valid;
-        }
+    public static void configureVenv(final String venvDir) {
+        VENV.configure(validVenv(venvDir));
     }
 
     /**
@@ -540,22 +547,12 @@ public final class PythonRuntime {
     /**
      * Refuse a Python call of an engine whose {@code python.venv} names a venv other than the one this JVM's GraalPy
      * contexts import from: each thread keeps one context whichever engine calls it, so a JVM's GraalPy runs one
-     * venv. Until the first context is built, the calling engine's venv is the one it will be built with.
+     * venv. The first call naming a venv fixes it (see {@link PythonVenvChoice#require}).
      *
      * @param requested the venv the calling engine names (see {@link #validVenv}), or null for none
      */
-    static synchronized void requireVenv(final String requested) {
-        if (!venvSettled) {
-            if (requested != null) {
-                venvDirectory = requested;
-            }
-            return;
-        }
-        if (requested != null && !requested.equals(venvDirectory)) {
-            throw new IllegalStateException("python.venv '" + requested + "' cannot be used: GraalPy runs one venv a "
-                + "JVM, and its interpreters here " + (venvDirectory == null ? "were started without one"
-                    : "import from '" + venvDirectory + "'"));
-        }
+    static void requireVenv(final String requested) {
+        VENV.require(requested);
     }
 
     /** This thread's Python context, created on first use; every execution on it passes here (see {@link #RAN}). */
@@ -884,7 +881,12 @@ public final class PythonRuntime {
      */
     public static void bindArgument(final String name, final Object value, final DataType type) {
         if (value == null) {
-            bind(name, null);
+            // A SQL NULL is a sqlNullWrapper to a VARIANT parameter and None to any other (live-verified).
+            if (type instanceof VariantType) {
+                bindParsed(name, "sqlnull", "");
+            } else {
+                bind(name, null);
+            }
             return;
         }
         final boolean semiStructured = type != null && type.getCategory() == TypeCategory.SEMI_STRUCTURED;

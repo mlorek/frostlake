@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.OutsideWindowCalls;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
@@ -47,9 +48,11 @@ import java.util.Set;
  * <ul>
  *   <li>the expression reads the columns that are not virtual and the virtual ones defined before it, a name it
  *       does not find being an invalid identifier where it stands;</li>
- *   <li>it holds nothing a value of the row alone cannot (see {@link VirtualColumnUsage}), refused at its start:
- *       {@code b INT AS (SUM(a))} is "error line 1 at position 48" and " Invalid usage of SUM aggregate function
- *       in B virtual column definition.", the sentence opening with a blank;</li>
+ *   <li>it holds nothing a value of the row alone cannot (see {@link VirtualColumnUsage}), a call refused where it
+ *       stands and anything else at the column's name: {@code b INT AS (SUM(a))} is "error line 1 at position 48"
+ *       and " Invalid usage of SUM aggregate function in B virtual column definition.", the sentence opening with
+ *       a blank; a bind no value was given for is "Bind variable :1 not set." at the bind, and a window call the
+ *       refusal of one outside the clauses that take it (see {@link OutsideWindowCalls});</li>
  *   <li>its type is the column's, refused at the column's name: {@code b VARCHAR AS (a)} over a number is "Data
  *       type of virtual column does not match the data type of its expression for column 'B'. Expected data type
  *       'VARCHAR(16777216)', found 'NUMBER(38,0)'" (see {@link VirtualColumnTypes});</li>
@@ -133,13 +136,21 @@ final class VirtualColumnDefinitions {
         if (holdsPositionalBind(body)) {
             throw usage(at, "bind variable", column);
         }
+        refuseUnsetBinds(body);
         // Copies: a relation numbers the columns it is given, and these are the statement's own. Their declared types
         // are the ones the expression reads.
         final List<TableColumn> scope = new ArrayList<>();
+        final List<TableColumn> echoed = new ArrayList<>();
         for (final TableColumn readableColumn : readable) {
             final TableColumn copy = readableColumn.copy();
             copy.setStaticallyTyped(true);
             scope.add(copy);
+            echoed.add(readableColumn.copy());
+        }
+        final RuntimeException window = OutsideWindowCalls.refusalOf(body,
+            new Table(tableName(definition, executor), echoed, false), executor);
+        if (window != null) {
+            throw window;
         }
         // A relation of no name: the expression is told back with its columns bare, A + 1.
         final Table relation = new Table("DUMMY", scope, false);
@@ -157,7 +168,9 @@ final class VirtualColumnDefinitions {
         final String refused = VirtualColumnUsage.refused(parsed, executor.getFunctionRegistry(), evaluator,
             spellings);
         if (refused != null) {
-            throw usage(at, refused, column);
+            final SourcePosition within = VirtualColumnUsage.refusedAt(parsed, executor.getFunctionRegistry(),
+                evaluator, spellings);
+            throw usage(within != null ? inBody(start, within) : nameOf(definition), refused, column);
         }
         final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(start.getLine(),
             start.getCharPositionInLine()));
@@ -181,27 +194,89 @@ final class VirtualColumnDefinitions {
     }
 
     /**
-     * Refuses an ALTER TABLE … DROP COLUMN of a column a virtual column that stays reads: "Cannot drop column 'I'
-     * because virtual column J depends on it.". A virtual column that reads another reads what that one reads, so
-     * the chain is kept whole.
+     * Refuses an ALTER TABLE … DROP COLUMN of a column a virtual column that stays reads, naming every virtual
+     * column that reads it (live-verified): "Cannot drop column 'I' because virtual column 'J' depends on it", or
+     * "because virtual columns 'J', 'K' depend on it", on the prefix's next line. A virtual column that reads
+     * another that reads the column is not named.
      *
      * @param table    the table
      * @param dropping the names of the columns the statement drops
      */
     static void refuseDroppedReads(final Table table, final Set<String> dropping) {
-        for (final TableColumn column : table.columnsView()) {
-            if (!column.isVirtual() || dropping.contains(column.getName())) {
+        for (final TableColumn dropped : table.columnsView()) {
+            if (!dropping.contains(dropped.getName())) {
                 continue;
             }
-            for (final String read : VirtualColumnUsage.columnsRead(
-                    ExpressionEvaluator.parse(column.getVirtualExpression()))) {
-                if (table.hasColumn(read) && dropping.contains(table.getColumn(read).getName())) {
-                    throw new RuntimeException(SqlCompilationError.inline("Cannot drop column '"
-                        + table.getColumn(read).getName() + "' because virtual column " + column.getName()
-                        + " depends on it."));
+            final List<String> readers = new ArrayList<>();
+            for (final TableColumn column : table.columnsView()) {
+                if (column.isVirtual() && !dropping.contains(column.getName()) && reads(table, column, dropped)) {
+                    readers.add("'" + column.getName() + "'");
                 }
             }
+            if (!readers.isEmpty()) {
+                throw new RuntimeException(SqlCompilationError.of("Cannot drop column '" + dropped.getName()
+                    + "' because virtual column" + (readers.size() > 1 ? "s " + String.join(", ", readers)
+                    + " depend" : " " + readers.get(0) + " depends") + " on it"));
+            }
         }
+    }
+
+    /** Whether a virtual column's expression reads a column of its table. */
+    private static boolean reads(final Table table, final TableColumn virtual, final TableColumn column) {
+        for (final String read : VirtualColumnUsage.columnsRead(
+                ExpressionEvaluator.parse(virtual.getVirtualExpression()))) {
+            if (table.hasColumn(read) && table.getColumn(read).getName().equals(column.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Where a place within the expression's text stands in the statement: the body's start composed with it. */
+    private static SourcePosition inBody(final Token start, final SourcePosition within) {
+        final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(start.getLine(),
+            start.getCharPositionInLine()));
+        try {
+            return ExpressionSource.resolve(within);
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /** Where the column's name stands in the statement. */
+    private static SourcePosition nameOf(final FrostlakeParser.ColumnDefContext definition) {
+        final Token name = definition.columnDefName().getStart();
+        return ExpressionSource.place(name.getLine(), name.getCharPositionInLine());
+    }
+
+    /** Refuses a named or numbered bind the expression still holds: no value was given for it (live-verified). */
+    private static void refuseUnsetBinds(final ParseTree node) {
+        if (node instanceof FrostlakeParser.BindVarExprContext) {
+            final Token colon = ((FrostlakeParser.BindVarExprContext) node).getStart();
+            final SourcePosition at = ExpressionSource.place(colon.getLine(), colon.getCharPositionInLine());
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                "Bind variable " + node.getText() + " not set."));
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            refuseUnsetBinds(node.getChild(i));
+        }
+    }
+
+    /** The table a column definition belongs to: the last part of the name its CREATE or ALTER gives it. */
+    private static String tableName(final ParseTree node, final QueryExecutor executor) {
+        for (ParseTree at = node; at != null; at = at.getParent()) {
+            FrostlakeParser.ObjectNameContext name = null;
+            if (at instanceof FrostlakeParser.CreateStatementContext) {
+                name = ((FrostlakeParser.CreateStatementContext) at).objectName();
+            } else if (at instanceof FrostlakeParser.AlterStatementContext) {
+                name = ((FrostlakeParser.AlterStatementContext) at).objectName();
+            }
+            if (name != null) {
+                final String[] parts = executor.resolveObjectNameParts(name);
+                return parts[parts.length - 1];
+            }
+        }
+        return "DUMMY";
     }
 
     private static RuntimeException usage(final SourcePosition at, final String refused, final TableColumn column) {

@@ -16,11 +16,16 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.commands.CreateRelationalHandler;
 import dev.frostlake.executor.commands.ExplainedStatementChecks;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SessionSettings;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -65,6 +70,9 @@ final class ExplainPlan {
     /** What a value is written after to be compiled as the one item of a query. */
     private static final String VALUE_QUERY = "SELECT ";
 
+    /** How many views deep a query's views are followed for a subquery their bodies hold. */
+    private static final int VIEW_DEPTH = 32;
+
     private static final ThreadLocal<int[]> PLANNING = new ThreadLocal<int[]>() {
         @Override
         protected int[] initialValue() {
@@ -98,6 +106,54 @@ final class ExplainPlan {
             executor.resolveRelationShape(query, null);
         } finally {
             PLANNING.get()[0]--;
+        }
+    }
+
+    /**
+     * Compile a statement for what it fails to compile for, as its plan is compiled, with nothing it would do done: a
+     * query for its shape, an INSERT, an UPDATE, a DELETE and a MERGE as they compile before they read a row, a DDL
+     * statement as {@link ExplainedStatementChecks} judges it with the query it is made from - a view's where the view
+     * would live, its columns named - and a SHOW or a DESCRIBE run, its answer dropped. Any other statement is let
+     * through.
+     *
+     * @param executor the executor that compiles the statement
+     * @param ctx      the statement
+     */
+    static void compileStatement(final QueryExecutor executor, final FrostlakeParser.StatementContext ctx) {
+        PLANNING.get()[0]++;
+        try {
+            if (ctx.queryStatement() != null) {
+                executor.resolveRelationShape(ParseTreeText.getOriginalText(ctx.queryStatement().selectStatement()),
+                    null);
+            } else if (ctx.dmlStatement() != null) {
+                compileDml(executor, ctx.dmlStatement());
+            } else if (ctx.ddlStatement() != null) {
+                compileDdl(executor, ctx.ddlStatement());
+            } else if (ctx.showStatement() != null || ctx.showClassStatement() != null
+                    || ctx.describeStatement() != null) {
+                final Token start = ctx.getStart();
+                executor.executeFromUnrecorded(ParseTreeText.getOriginalText(ctx),
+                    new SourcePosition(start.getLine(), start.getCharPositionInLine()));
+            }
+        } finally {
+            PLANNING.get()[0]--;
+        }
+    }
+
+    /** A DDL statement compiled as its plan is, and the query a CREATE makes its object from. */
+    private static void compileDdl(final QueryExecutor executor, final FrostlakeParser.DdlStatementContext ddl) {
+        if (!ExplainedStatementChecks.compile(executor, ddl)) {
+            return;
+        }
+        final FrostlakeParser.CreateStatementContext create = ddl.createStatement();
+        final FrostlakeParser.SelectStatementContext query = create == null ? null : createdQuery(create);
+        if (query == null) {
+            return;
+        }
+        if (create.MATERIALIZED() == null && create.VIEW() != null) {
+            CreateRelationalHandler.compileOnly(executor, create);
+        } else {
+            compileStatementQuery(executor, query);
         }
     }
 
@@ -163,12 +219,22 @@ final class ExplainPlan {
             compileStatementQuery(executor, ctx.selectStatement());
             return;
         }
-        // An INSERT, an UPDATE, a DELETE and a MERGE compile as they do before they read a row — every refusal of
-        // theirs is the plan's, at the statement's own place (live-verified); their executors stop there while a
-        // plan is asked for (see planning).
-        final FrostlakeParser.DmlStatementContext dml = ctx.dmlStatement();
+        compileDml(executor, ctx.dmlStatement());
+    }
+
+    /**
+     * An INSERT, an UPDATE, a DELETE and a MERGE compiled as they compile before they read a row: every refusal of
+     * theirs is the plan's, at the statement's own place (live-verified); their executors stop there while a plan is
+     * asked for (see planning).
+     */
+    private static void compileDml(final QueryExecutor executor, final FrostlakeParser.DmlStatementContext dml) {
         if (dml.insertStatement() != null) {
             executor.executeInsertFromContext(dml.insertStatement());
+            // The query it writes from is then judged by its rows, as a query is (see compileStatementQuery).
+            final FrostlakeParser.SelectStatementContext source = dml.insertStatement().selectStatement();
+            if (source != null && judgedByRows(executor, source, ParseTreeText.getOriginalText(source))) {
+                compileAt(executor, source, true);
+            }
         } else if (dml.updateStatement() != null) {
             executor.executeUpdateFromContext(dml.updateStatement());
         } else if (dml.deleteStatement() != null) {
@@ -281,14 +347,29 @@ final class ExplainPlan {
         }
     }
 
+    /**
+     * A query is compiled for its shape, but a dynamic PIVOT and a subquery expression are judged by the rows the
+     * query reads: a PIVOT's values name its columns, and a correlated subquery the account cannot evaluate is
+     * refused as a run refuses it. The account's EXPLAIN refuses it so too, and plans it where a run reads no row it
+     * would refuse or its outer relation holds one stored row at most (live-verified: under WHERE FALSE, a WHERE its
+     * statistics prove empty, LIMIT 0, and over a table of one row or none). Rows are read only where reading them
+     * writes nothing (see {@link #readsOnly}).
+     */
     private static void compileStatementQuery(final QueryExecutor executor,
                                               final FrostlakeParser.SelectStatementContext query) {
+        compileAt(executor, query,
+            holdsDynamicPivot(query) || judgedByRows(executor, query, ParseTreeText.getOriginalText(query)));
+    }
+
+    /** A query compiled from its text where it stands in its statement: for the rows it reads, or for its shape. */
+    private static void compileAt(final QueryExecutor executor, final FrostlakeParser.SelectStatementContext query,
+                                  final boolean rows) {
         final String text = ParseTreeText.getOriginalText(query);
         final Token start = query.getStart();
         final SourcePosition displaced = ExpressionSource.beginNested(
             new SourcePosition(start.getLine(), start.getCharPositionInLine()));
         try {
-            if (holdsDynamicPivot(query)) {
+            if (rows) {
                 executor.resolveRelationColumns(text, null);
             } else {
                 executor.resolveRelationShape(text, null);
@@ -296,6 +377,83 @@ final class ExplainPlan {
         } finally {
             ExpressionSource.end(displaced);
         }
+    }
+
+    /**
+     * Whether a query's subqueries are judged by the rows it reads: it holds a subquery expression, or reads a view
+     * whose body holds one, and reading its rows writes nothing.
+     */
+    private static boolean judgedByRows(final QueryExecutor executor,
+                                        final FrostlakeParser.SelectStatementContext query, final String text) {
+        return (holdsSubqueryExpression(query) || readsViewHoldingSubquery(executor.getCatalog(), query, 0))
+            && readsOnly(executor, text);
+    }
+
+    /**
+     * Whether a tree reads a view whose body holds a subquery expression, itself or through a view it reads, its
+     * refusal then the view's (see {@link UnsupportedSubqueryException#insideView}). A name is looked for in every
+     * schema: a view of another schema that carries it only costs the EXPLAIN a read of the query's rows.
+     */
+    private static boolean readsViewHoldingSubquery(final Catalog catalog, final ParseTree node, final int depth) {
+        if (depth > VIEW_DEPTH) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.TableSourceContext
+                && ((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.TableSourceContext) node).tableQualifiedName());
+            for (final Database database : catalog.getAllDatabases()) {
+                for (final Schema schema : database.getAllSchemas()) {
+                    if (schema.hasViewExact(parts[parts.length - 1])) {
+                        final FrostlakeParser.SelectStatementContext body =
+                            ChangeTrackedQuery.body(schema.getView(parts[parts.length - 1]));
+                        if (body != null && (holdsSubqueryExpression(body)
+                                || readsViewHoldingSubquery(catalog, body, depth + 1))) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (readsViewHoldingSubquery(catalog, node.getChild(i), depth)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a tree holds a query read as a value or a test: a scalar subquery, an IN's, an EXISTS', a quantified
+     * comparison's, and a call's argument written without parentheses.
+     */
+    private static boolean holdsSubqueryExpression(final ParseTree node) {
+        if (node instanceof FrostlakeParser.ScalarSubqueryExprContext
+                || node instanceof FrostlakeParser.InSubqueryExprContext
+                || node instanceof FrostlakeParser.ExistsExprContext
+                || node instanceof FrostlakeParser.QuantifiedComparisonExprContext
+                || node instanceof FrostlakeParser.FunctionArgContext
+                    && ((FrostlakeParser.FunctionArgContext) node).selectStatement() != null) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsSubqueryExpression(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether reading a query's rows writes nothing, as a request that only reads is judged (see
+     * {@link ReadOnlyRequest}): no NEXTVAL, TO_QUERY or system function that acts on the server in its text or in a
+     * body its names stand for, and no stream, whose read inside a transaction holds it.
+     */
+    private static boolean readsOnly(final QueryExecutor executor, final String text) {
+        final Catalog catalog = executor.getCatalog();
+        final SessionSettings session = executor.boundSessionSettings();
+        return ReadOnlyRequest.tokenRefusal(text) == null && !ReadOnlyBodies.reachWrite(catalog, text, session)
+            && !ReadOnlyBodies.namesStream(catalog, text, session);
     }
 
     /** Whether a tree holds a PIVOT whose values are read: IN (ANY) or IN (a subquery). */

@@ -91,6 +91,42 @@ public class JavaFunctionCompiler {
     }
 
     /**
+     * Compiles Java source code and caches the resulting class (see {@link #compile(String, String, int, String)}),
+     * with a routine's IMPORTS jars on the class path and beside the class.
+     *
+     * @param sourceCode the Java source code
+     * @param className the fully qualified class name to compile
+     * @param release   the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where     the end of a refusal's sentence, {@code  in function F with handler H.f}
+     * @param jars      the jars the routine imports, in class path order
+     * @return the compiled Class object
+     */
+    public Class<?> compile(final String sourceCode, final String className, final int release,
+                            final String where, final List<File> jars) {
+        if (jars.isEmpty()) {
+            return compile(sourceCode, className, release, where);
+        }
+        final JavaSourceKey cacheKey = new JavaSourceKey(className, sourceCode, release, true, jarsKey(jars));
+        final Class<?> cached = compiledClasses.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        final Class<?> compiledClass = load(sourceCode, className, null, release, where, true, jars);
+        compiledClasses.put(cacheKey, compiledClass);
+        return compiledClass;
+    }
+
+    /** The jars a compilation reads, each path with its length and time, as a cache key holds them. */
+    private static String jarsKey(final List<File> jars) {
+        final StringBuilder key = new StringBuilder();
+        for (final File jar : jars) {
+            key.append(jar.getAbsolutePath()).append(':').append(jar.length()).append(':').append(jar.lastModified())
+                .append('|');
+        }
+        return key.toString();
+    }
+
+    /**
      * Loads a source's classes anew at the JDK's own level.
      *
      * @param sourceCode the Java source code
@@ -132,17 +168,43 @@ public class JavaFunctionCompiler {
      */
     public Class<?> load(final String sourceCode, final String className, final ClassLoader parent,
                          final int release, final String where, final boolean snowpark) {
+        return load(sourceCode, className, parent, release, where, snowpark, Collections.<File>emptyList());
+    }
+
+    /**
+     * Loads a source's classes anew (see {@link #load(String, String, ClassLoader, int, String, boolean)}), compiled
+     * with a routine's IMPORTS jars on the class path and loaded beside them: a class a jar holds is the jar's, one of
+     * the same name the source declares included, and the handler's class may be one a jar alone holds
+     * (live-verified).
+     *
+     * @param sourceCode the Java source code
+     * @param className  the class the handler names
+     * @param parent     the loader every other class comes from, or null for the system's
+     * @param release    the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where      the end of a refusal's sentence, {@code  in function F with handler H.f}
+     * @param snowpark   whether the routine names Snowpark (see {@link SnowparkPackage})
+     * @param jars       the jars the routine imports, in class path order
+     * @return the handler's class
+     */
+    public Class<?> load(final String sourceCode, final String className, final ClassLoader parent,
+                         final int release, final String where, final boolean snowpark, final List<File> jars) {
         // Every class the source declares is loaded with the handler's: a nested class, an enum, an
         // anonymous class and another top-level class are part of the body the handler runs.
-        final Map<String, byte[]> classes = compileClasses(sourceCode, className, release, where, snowpark);
-        if (!classes.containsKey(className)) {
+        final Map<String, byte[]> classes = compileClasses(sourceCode, className, release, where, snowpark, jars);
+        if (!classes.containsKey(className) && jars.isEmpty()) {
             throw new RuntimeException("No class bytes generated for: " + className);
         }
-        final InMemoryClassLoader classLoader = parent == null ? new InMemoryClassLoader(classes)
-            : new InMemoryClassLoader(classes, parent);
+        final ClassLoader beside = jars.isEmpty() ? parent : JarHandlerLoader.jarLoader(jars,
+            parent != null ? parent : Thread.currentThread().getContextClassLoader());
+        final InMemoryClassLoader classLoader = beside == null ? new InMemoryClassLoader(classes)
+            : new InMemoryClassLoader(classes, beside);
         try {
             return classLoader.loadClass(className);
         } catch (final ClassNotFoundException | LinkageError e) {
+            if (!classes.containsKey(className)) {
+                // Neither the body nor a jar it imports holds the handler's class.
+                throw new RuntimeException("No class bytes generated for: " + className, e);
+            }
             throw new RuntimeException("Failed to compile Java function: " + e.getMessage(), e);
         }
     }
@@ -189,7 +251,29 @@ public class JavaFunctionCompiler {
      */
     public Map<String, byte[]> compileClasses(final String sourceCode, final String className, final int release,
                                               final String where, final boolean snowpark) {
-        final JavaSourceKey key = new JavaSourceKey(className, sourceCode, release, snowpark);
+        return compileClasses(sourceCode, className, release, where, snowpark, Collections.<File>emptyList());
+    }
+
+    /**
+     * Compiles Java source code (see {@link #compileClasses(String, String, int, String, boolean)}) with a routine's
+     * IMPORTS jars on the class path. A report names each jar where the account's sandbox keeps it,
+     * {@code /home/udf/0/a.jar} for the first (live-verified for one import).
+     *
+     * @param sourceCode the Java source code
+     * @param className  the class the source declares
+     * @param release    the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where      the end of the refusal's sentence, {@code  in function F with handler H.f}
+     * @param snowpark   whether the routine names Snowpark (see {@link SnowparkPackage})
+     * @param jars       the jars the routine imports, in class path order
+     * @return the classes' bytes by binary name, in name order
+     */
+    public Map<String, byte[]> compileClasses(final String sourceCode, final String className, final int release,
+                                              final String where, final boolean snowpark, final List<File> jars) {
+        final StringBuilder jarPath = new StringBuilder();
+        for (final File jar : jars) {
+            jarPath.append(File.pathSeparator).append(jar.getAbsolutePath());
+        }
+        final JavaSourceKey key = new JavaSourceKey(className, sourceCode, release, snowpark, jarsKey(jars));
         final Map<String, byte[]> kept = JavaCompiledSources.get(key);
         if (kept != null) {
             return kept;
@@ -204,7 +288,7 @@ public class JavaFunctionCompiler {
         // it raises ("Error while compiling source: …"), and a body rejected at CREATE is useless to the caller
         // without knowing which line broke it.
         final StringWriter report = new StringWriter();
-        final List<String> options = new ArrayList<>(Arrays.asList("-classpath", classpath()));
+        final List<String> options = new ArrayList<>(Arrays.asList("-classpath", classpath() + jarPath));
         if (release > 0) {
             options.add("--release");
             options.add(String.valueOf(release));
@@ -212,7 +296,11 @@ public class JavaFunctionCompiler {
         final JavaCompiler.CompilationTask task = compiler.getTask(report, fileManager, null, options, null,
             Arrays.asList(new InMemoryJavaFile(sourceCode)));
         if (!task.call()) {
-            final String printed = report.toString();
+            String printed = report.toString();
+            for (int i = 0; i < jars.size(); i++) {
+                printed = printed.replace(jars.get(i).getAbsolutePath(),
+                    "/home/udf/" + i + "/" + jars.get(i).getName());
+            }
             throw new RuntimeException("Error while compiling source: " + printed
                 + (printed.endsWith("\n") || where.isEmpty() ? "" : "\n") + where);
         }

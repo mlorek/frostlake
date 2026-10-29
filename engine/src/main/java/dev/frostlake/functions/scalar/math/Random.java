@@ -39,8 +39,8 @@ import java.util.Locale;
  * call with that seed in one row agrees, and a relation that numbers its rows from the first draws the
  * same sequence again — two UNION ALL arms over one table repeat each other's values (live-verified, as
  * documented: "RANDOM returns a different value for each row, even though the seed is the same"). The
- * values are this engine's own; the account's generator promises none. java.util.Random is fully
- * qualified because this class shadows that name.
+ * values are the account's: the seed starts a 64-bit Mersenne Twister, and a row takes the output of its
+ * place (see {@link MersenneTwister64}).
  *
  * <p>The seedless path is genuinely random, as Snowflake's is. It once returned a SplitMix64 scramble
  * of a monotonic counter for test reproducibility; that was removed because nothing depended on it —
@@ -55,14 +55,11 @@ public class Random extends BuiltInFunction {
     // and a refusal listing it as an argument spells the same pair.
     public Random() { super("RANDOM", new NumericType("NUMBER", 19, 0)); }
 
-    /** How far a seed moves from one row to the next: odd, so the rows of a statement never share a seed. */
-    private static final long ROW_STEP = 0x9E3779B97F4A7C15L;
-
     @Override
     public Object evaluate(final List<Object> args) {
         if (!args.isEmpty()) {
-            // The row's place (see RowOrdinal) moves the seed by an odd step, so no two rows share one.
-            return new java.util.Random(seedOf(args.get(0)) + RowOrdinal.current() * ROW_STEP).nextLong();
+            // The row's place (see RowOrdinal) is the engine's output it takes (see MersenneTwister64).
+            return Long.valueOf(MersenneTwister64.outputAt(seedOf(args.get(0)), RowOrdinal.current()));
         }
         // Drawn from the statement's own stream, so the write-ahead log's replay draws the same one.
         return StatementTokens.nextLong();
@@ -100,7 +97,7 @@ public class Random extends BuiltInFunction {
      *       VARIANT text that is no seed is {@code Failed to cast variant value}.</li>
      * </ul>
      */
-    static long seedOf(final Object seed) {
+    public static long seedOf(final Object seed) {
         if (seed == null) {
             throw new RuntimeException(NULL_SEED);
         }

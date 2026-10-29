@@ -908,6 +908,23 @@ final class CallArgumentTypes {
         return type instanceof NumericType && !NumericType.isApproximate(type);
     }
 
+    /**
+     * An exact number written for a VARIANT parameter, which the CALL evaluated as a double: the DECIMAL VARIANT the
+     * number is, so a handler's text reads {@code 1.5}, not a DOUBLE's {@code 1.500000000000000e+00}
+     * (live-verified).
+     *
+     * @param given the argument as evaluated
+     * @param type  the parameter's declared type
+     * @return the argument as the parameter takes it, or {@code given} where it is no such number
+     */
+    public static Object exactVariant(final Object given, final DataType type) {
+        if (!(type instanceof VariantType) || !(given instanceof Double) || !Double.isFinite((Double) given)) {
+            return given;
+        }
+        return VariantValue.ofNode(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER,
+            BigDecimal.valueOf(((Double) given).doubleValue())));
+    }
+
     public static boolean bindsAVariant(final FrostlakeParser.ExpressionContext written,
                                         final ExpressionEvaluator typer) {
         try {

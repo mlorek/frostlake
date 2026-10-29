@@ -33,7 +33,8 @@ import dev.frostlake.parser.FrostlakeParser;
  * </pre>
  *
  * <p>A chain of one statement is no block: its refusal stays its own. A canceled statement keeps its own refusal and
- * codes, and a refusal of the chain as a whole stays its own (see {@link FlowChainRefusal}).
+ * codes, and a refusal of the chain as a whole stays its own (see {@link FlowChainRefusal}), as does a SHOW's page
+ * size the request is refused for while it is read (see {@link PageSizeRefusal}).
  */
 public final class FlowChainFailure {
 
@@ -50,7 +51,8 @@ public final class FlowChainFailure {
      */
     static RuntimeException wrapping(final FrostlakeParser.StatementContext stage, final RuntimeException failure,
                                      final String sql) {
-        if (failure instanceof StatementCanceledException || failure instanceof FlowChainRefusal) {
+        if (failure instanceof StatementCanceledException || failure instanceof FlowChainRefusal
+                || failure instanceof PageSizeRefusal) {
             return failure;
         }
         final int[] placed = LeadingCommentOffset.rebase(LeadingCommentOffset.of(sql), stage.getStart().getLine(),

@@ -74,10 +74,17 @@ public final class AssignedQueryLines {
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
         final List<Token> spoken = new ArrayList<>();
+        Token end = null;
         for (final Token token : stream.getTokens()) {
-            if (token.getChannel() == Token.DEFAULT_CHANNEL && token.getType() != Token.EOF) {
+            if (token.getType() == Token.EOF) {
+                end = token;
+            } else if (token.getChannel() == Token.DEFAULT_CHANNEL) {
                 spoken.add(token);
             }
+        }
+        final List<String> tableNames = AssignedTableNameLines.linesOf(sql, spoken, end, firstLine);
+        if (tableNames != null) {
+            return tableNames;
         }
         // The first line names the word that opens the query, straight after the assignment's parenthesis.
         int first = -1;
@@ -124,7 +131,7 @@ public final class AssignedQueryLines {
                 ? resultSetLines(sql, spoken.get(first), closing) : null;
         }
         if (declaredScalar(spoken, first - 3)) {
-            return resultSetLines(sql, spoken.get(first), closing);
+            return framed(spoken, end, resultSetLines(sql, spoken.get(first), closing));
         }
         // The query as a statement of its own, standing where it stood in its block: the assignment's opening is
         // read over, and the parenthesis that closes the query ends the statement.
@@ -144,6 +151,10 @@ public final class AssignedQueryLines {
         if (lines.isEmpty()) {
             return null;
         }
+        final List<String> bound = frameOffsetLines(spoken, end, lines.get(0));
+        if (bound != null) {
+            return bound;
+        }
         final int[] shown = LeadingCommentOffset.rebase(closing.getLine(), closing.getCharPositionInLine());
         final String ended = "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected ';'.";
         for (int i = 0; i < lines.size(); i++) {
@@ -152,6 +163,34 @@ public final class AssignedQueryLines {
             }
         }
         return lines;
+    }
+
+    /** The lines read, or a window frame offset's lines when the first of them names one (see below). */
+    private static List<String> framed(final List<Token> spoken, final Token end, final List<String> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return lines;
+        }
+        final List<String> bound = frameOffsetLines(spoken, end, lines.get(0));
+        return bound != null ? bound : lines;
+    }
+
+    /**
+     * The lines for a window frame's offset the query writes that is no literal, read over the whole text as a LET's
+     * RESULTSET query is (see {@link FrameOffsetLines}): the offset's two lines and the token after the name the
+     * query's FROM reads first; null when the first line names no such offset.
+     */
+    private static List<String> frameOffsetLines(final List<Token> spoken, final Token end, final String firstLine) {
+        if (end == null) {
+            return null;
+        }
+        for (int i = 0; i < spoken.size(); i++) {
+            if (firstLine.equals(SyntaxErrorListener.sentence(spoken.get(i)))) {
+                final List<Token> ended = new ArrayList<>(spoken);
+                ended.add(end);
+                return FrameOffsetLines.lines(ended, i);
+            }
+        }
+        return null;
     }
 
     /**

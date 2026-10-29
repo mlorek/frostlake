@@ -817,7 +817,13 @@ public class ShowCommandHandler implements CommandHandler {
                 // The organization's listing reads a LIKE, and no STARTS WITH after one (live-verified).
                 throw SyntaxAfter.unexpected(ctx.stringText());
             }
-            return showExecutor.showOrganizationAccounts();
+            // Only the organization account lists the organization's accounts, which this account is not: the
+            // listing is refused whatever the role, LIKE or no LIKE (live-verified).
+            final SessionContext session = queryExecutor.getSecurityManager() == null ? null
+                : queryExecutor.getSecurityManager().getSessionContext();
+            throw new PrivilegeRefusal(SqlAccessControlError.manageAccountsRequired(
+                session == null ? null : session.getCurrentRole(), session != null && session.isSecondaryRolesInUse(),
+                catalog.getAccountLocator()));
         } else if (ctx.ACCOUNTS() != null) {
             if (ctx.showAccountsScope() != null) {
                 // The listing takes no scope: an IN with nothing after it is unfinished, any other is refused whole.
@@ -1657,12 +1663,12 @@ public class ShowCommandHandler implements CommandHandler {
         } else if (ctx.TO() != null) {
             // SHOW GRANTS TO USER/ROLE identifier
             final String targetType = ctx.USER() != null ? "USER" : "ROLE";
-            final String targetName = PrincipalNames.of(ctx.principalName(), queryExecutor);
+            final String targetName = PrincipalNames.of(ctx.grantsPrincipal(), queryExecutor);
             return showExecutor.showGrantsTo(targetType, targetName);
         }
-        if (ctx.OF() != null && ctx.ROLE() != null && ctx.principalName() != null) {
+        if (ctx.OF() != null && ctx.ROLE() != null && ctx.grantsPrincipal() != null) {
             // SHOW GRANTS OF ROLE identifier
-            return showExecutor.showGrantsOfRole(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            return showExecutor.showGrantsOfRole(PrincipalNames.of(ctx.grantsPrincipal(), queryExecutor));
         }
         if (ctx.ON() == null && ctx.TO() == null && ctx.OF() == null) {
             // Bare SHOW GRANTS: what the current user holds.
@@ -1675,6 +1681,10 @@ public class ShowCommandHandler implements CommandHandler {
     private String[] grantsTargetParts(final FrostlakeParser.ShowGrantsTargetContext target) {
         if (target.grantsObjectName() != null && target.grantsObjectName().wholeObjectName() != null) {
             return queryExecutor.resolveWholeObjectNameParts(target.grantsObjectName().wholeObjectName());
+        }
+        if (target.KW_IDENTIFIER_OPEN() != null) {
+            // The word IDENTIFIER with no whole reference after it is the object's own name.
+            return new String[] {target.KW_IDENTIFIER_OPEN().getText().toUpperCase(Locale.ROOT)};
         }
         if (target.identifierArgument() != null) {
             return queryExecutor.resolveIdentifierArgument(target.identifierArgument());

@@ -85,7 +85,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * {@code GET_DDL('<object_type>', '<object_name>' [, <use_fully_qualified_names>])} — reconstructs the
@@ -756,7 +758,8 @@ public class GetDdl extends BuiltInFunction {
 
     /**
      * What follows a table's closing paren: its attachments — the aggregation policy with its entity key, the row
-     * access policy with its columns, the join policy and the tags, in that order — the first after a space and each
+     * access policy with its columns, the join policy, the tags and the contacts, in that order — the first after a
+     * space and each
      * other on a line of its own led by a space, then the COMMENT on the next line, and the semicolon. With neither
      * the COMMENT follows the paren directly, and a table with nothing ends on the paren.
      */
@@ -777,6 +780,16 @@ public class GetDdl extends BuiltInFunction {
         final String tableTags = tagAssignments(table, schema);
         if (!tableTags.isEmpty()) {
             attachments.add("WITH TAG (" + tableTags + ")");
+        }
+        if (!table.getContacts().isEmpty()) {
+            final StringBuilder contacts = new StringBuilder();
+            final Map<String, String> sorted = new TreeMap<String, String>(table.getContacts());
+            for (final Map.Entry<String, String> contact : sorted.entrySet()) {
+                // The contact by its full name, as a task's is.
+                contacts.append(contacts.length() > 0 ? ", " : "").append(contact.getKey()).append('=')
+                    .append(SqlIdentifiers.spellAlreadyCanonicalPath(contact.getValue()));
+            }
+            attachments.add("WITH CONTACT (" + contacts + ")");
         }
         final StringBuilder tail = new StringBuilder();
         for (int i = 0; i < attachments.size(); i++) {

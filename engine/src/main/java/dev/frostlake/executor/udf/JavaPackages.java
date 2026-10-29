@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -40,11 +41,17 @@ import java.util.Set;
  */
 public final class JavaPackages {
 
+    /** The Java packages the account lists, each a name and a version as written, in the list's order. */
+    private static final List<String[]> JAVA_LISTED = load("/java-packages.tsv");
+
+    /** The Scala packages the account lists, likewise. */
+    private static final List<String[]> SCALA_LISTED = load("/scala-packages.tsv");
+
     /** The versions of each Java package, by its group and artifact, lower-cased. */
-    private static final Map<String, Set<String>> VERSIONS = load("/java-packages.tsv");
+    private static final Map<String, Set<String>> VERSIONS = versions(JAVA_LISTED);
 
     /** The versions of each Scala package, by its group and artifact, lower-cased. */
-    private static final Map<String, Set<String>> SCALA_VERSIONS = load("/scala-packages.tsv");
+    private static final Map<String, Set<String>> SCALA_VERSIONS = versions(SCALA_LISTED);
 
     private JavaPackages() {
     }
@@ -67,6 +74,20 @@ public final class JavaPackages {
         requireListed(packages, SCALA_VERSIONS);
     }
 
+    /**
+     * The packages the account lists for Java or for Scala, as its {@code INFORMATION_SCHEMA.PACKAGES} holds them.
+     *
+     * @param scala whether the Scala list is asked for, else the Java one
+     * @return each package's name and version, in the list's order
+     */
+    public static List<String[]> listed(final boolean scala) {
+        final List<String[]> rows = new ArrayList<>();
+        for (final String[] row : scala ? SCALA_LISTED : JAVA_LISTED) {
+            rows.add(row.clone());
+        }
+        return rows;
+    }
+
     private static void requireListed(final List<String> packages, final Map<String, Set<String>> offered) {
         if (packages == null) {
             return;
@@ -87,8 +108,22 @@ public final class JavaPackages {
         return versions != null && ("latest".equals(parts[2]) || versions.contains(parts[2]));
     }
 
-    private static Map<String, Set<String>> load(final String resource) {
+    private static Map<String, Set<String>> versions(final List<String[]> listed) {
         final Map<String, Set<String>> versions = new HashMap<>();
+        for (final String[] row : listed) {
+            final String name = row[0].toLowerCase(Locale.ROOT);
+            Set<String> known = versions.get(name);
+            if (known == null) {
+                known = new HashSet<>();
+                versions.put(name, known);
+            }
+            known.add(row[1].toLowerCase(Locale.ROOT));
+        }
+        return versions;
+    }
+
+    private static List<String[]> load(final String resource) {
+        final List<String[]> rows = new ArrayList<>();
         try (InputStream in = JavaPackages.class.getResourceAsStream(resource)) {
             if (in == null) {
                 throw new IllegalStateException("missing package list " + resource);
@@ -98,13 +133,7 @@ public final class JavaPackages {
                 while (line != null) {
                     final String[] fields = line.split("\t", -1);
                     if (fields.length == 2) {
-                        final String name = fields[0].toLowerCase(Locale.ROOT);
-                        Set<String> known = versions.get(name);
-                        if (known == null) {
-                            known = new HashSet<>();
-                            versions.put(name, known);
-                        }
-                        known.add(fields[1].toLowerCase(Locale.ROOT));
+                        rows.add(fields);
                     }
                     line = reader.readLine();
                 }
@@ -112,6 +141,6 @@ public final class JavaPackages {
         } catch (final IOException e) {
             throw new IllegalStateException("cannot load the package list " + resource, e);
         }
-        return versions;
+        return rows;
     }
 }

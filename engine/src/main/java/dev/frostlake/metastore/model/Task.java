@@ -36,7 +36,7 @@ import java.util.TreeMap;
 /**
  * Represents a Snowflake Task - Scheduled SQL execution
  */
-public class Task implements Named, Taggable {
+public class Task implements Named, Taggable, ContactHolder {
 
     private final String name;
     /** The task's id, drawn by the statement creating it so that a replay of the statement keeps it. */
@@ -437,16 +437,19 @@ public class Task implements Named, Taggable {
     }
 
     /** The contacts attached to the task, by purpose in the order a description tells them. */
+    @Override
     public Map<String, String> getContacts() {
         return new TreeMap<>(contacts);
     }
 
     /** Attach a contact for a purpose, replacing whatever that purpose held. */
+    @Override
     public void setContact(final String purpose, final String contactName) {
         contacts.put(purpose.toUpperCase(Locale.ROOT), contactName);
     }
 
     /** Detach the contact held for a purpose; one that held none is left as it is. */
+    @Override
     public void unsetContact(final String purpose) {
         contacts.remove(purpose.toUpperCase(Locale.ROOT));
     }

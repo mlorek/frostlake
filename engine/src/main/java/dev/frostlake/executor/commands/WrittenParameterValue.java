@@ -67,7 +67,7 @@ final class WrittenParameterValue {
      * @return the value, or null for a parenthesized list
      */
     static WrittenParameterValue of(final FrostlakeParser.TaskPropertyValueContext value) {
-        if (value == null || value.LPAREN() != null) {
+        if (value == null || value.listValue() != null) {
             return null;
         }
         final boolean whole = value.INTEGER_LITERAL() != null;

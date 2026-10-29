@@ -519,6 +519,11 @@ public class DDLCommandHandler implements CommandHandler {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", sourceQualified));
             }
             sourceDynamicTable = sourceSchema.getDynamicTable(sourceObjectName);
+            // A table its every refresh rewrites whole has no changes to track, append-only or not (live-verified).
+            if (sourceDynamicTable.refreshesFull()) {
+                throw new RuntimeException("Change tracking is not supported on dynamic tables with 'FULL' REFRESH_MODE"
+                    + " unless the Dynamic Table has FROZEN WHERE constraint specified.");
+            }
             if (appendOnly) {
                 throw new RuntimeException("Change tracking of type APPEND_ONLY is not supported on dynamic tables.");
             }

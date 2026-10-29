@@ -100,7 +100,8 @@ final class JavaScriptTableFunction {
             constants.add(ConstantTableArguments.isConstant(i) && !rows.isEmpty() && i < rows.get(0).size()
                 ? rows.get(0).get(i) : JavaScriptHandler.NOT_CONSTANT);
         }
-        final String source = JavaScriptHandler.tableSource(parameters, columns, function.getBody(), constants);
+        final String source = JavaScriptHandler.tableSource(function.getName(), parameters, columns, function.getBody(),
+            constants);
         // One world for the statement's call: its handler object, made once, reads every partition in turn, so what
         // it keeps in itself carries from one partition to the next (live-verified). A call outside any statement
         // has a world of its own.

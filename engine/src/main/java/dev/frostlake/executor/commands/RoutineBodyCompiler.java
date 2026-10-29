@@ -49,6 +49,8 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.parser.AssignedTableNameLines;
+import dev.frostlake.parser.BlockKeywordValueLines;
 import dev.frostlake.parser.BlockValueSubqueryLines;
 import dev.frostlake.parser.EndOfInput;
 import dev.frostlake.parser.FrostlakeLexer;
@@ -74,6 +76,7 @@ import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -286,11 +289,22 @@ final class RoutineBodyCompiler {
             CompiledTagCalls.requireInProcedureBody(block, queryExecutor);
             return;
         }
+        // A query a block assigns whose only faults are TABLE( over bare names is refused at CREATE as the block run on
+        // its own is (see AssignedTableNameLines).
+        final List<String> tableNameLines = AssignedTableNameLines.linesOf(body);
+        if (tableNameLines != null) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", tableNameLines)));
+        }
         // A block's value that is a query in parentheses which does not parse is refused at CREATE, at the query's
         // SELECT and then its own fault (see BlockValueSubqueryLines).
         final List<String> valueLines = BlockValueSubqueryLines.lines(body, spokenTokens(body));
         if (valueLines != null) {
             throw new RuntimeException(SqlCompilationError.of(String.join("\n", valueLines)));
+        }
+        // So is a value a CASE, a CAST or a WHEN opens where a name is meant (see BlockKeywordValueLines).
+        final List<String> keywordLines = BlockKeywordValueLines.lines(body, spokenTokens(body));
+        if (keywordLines != null) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", keywordLines)));
         }
         // A block whose one fault is a LET of a name alone is refused for that at CREATE, as a DECLARE's is.
         final SourcePosition statements = LeadingCommentOffset.begin(null);
@@ -374,6 +388,15 @@ final class RoutineBodyCompiler {
         final List<Token> tokens = spokenTokens(body);
         if (tokens.size() < 2) {
             return "syntax error " + describeEndOfBody(body) + ".";
+        }
+        // The block's first word refused, the frame reads on as it does for a block that reads as none:
+        // BEGIN RETURN nosuch((SELECT a FROM t LIMIT '1')); END is the RETURN and the second '(' (live-verified).
+        final String framed = "(" + body + ")";
+        final List<Token> framedTokens = spokenTokens(framed);
+        final String frame = framedTokens.size() > 3 ? blockFrameLines(framed, framedTokens, framedTokens.get(2))
+            : null;
+        if (frame != null) {
+            return frame;
         }
         final StringBuilder lines = new StringBuilder("syntax error ").append(describeInBody(tokens.get(1))).append('.');
         for (int i = 2; i + 1 < tokens.size(); i++) {
@@ -1044,6 +1067,12 @@ final class RoutineBodyCompiler {
             if (SqlUdfQueryBodyRefusal.readsWithBareAlias(queryExecutor, body)) {
                 return null;
             }
+            // A query whose one fault is a table function written bare in its FROM clause is read on by the account
+            // through its first select item and the call (see SqlUdfBareCallLines).
+            final String bareCall = stop == null ? SqlUdfBareCallLines.lines(framedTokens) : null;
+            if (bareCall != null) {
+                return bareCall;
+            }
             final String rowCount = RowCountFaults.lines(framedTokens);
             if (rowCount != null) {
                 return rowCount;
@@ -1054,15 +1083,23 @@ final class RoutineBodyCompiler {
                     // A query this grammar stops reading before its end may hold a construct only the account's
                     // grammar has, ORDER BY ALL, and stays FAIL-OPEN; one that runs out of text is refused. A WINDOW
                     // clause it stopped on is named after the first word (live-verified).
-                    if (stop != null && SqlUdfQueryBodyRefusal.opensWindowClause(framedTokens, stop)
-                            && !SqlUdfQueryBodyRefusal.runsOut(framed)) {
-                        return query + "\nsyntax error " + describe(stop) + ".";
+                    final boolean refused = stop == null || SqlUdfQueryBodyRefusal.runsOut(framed)
+                        || SqlUdfQueryBodyRefusal.stopsAtSureFault(framedTokens, stop);
+                    // A body refused for a window it names is read on as the account reads it (see
+                    // FramedQueryReading).
+                    if (refused && SqlUdfQueryBodyRefusal.namesWindow(framedTokens)) {
+                        return FramedQueryReading.lines(framedTokens);
                     }
-                    return stop == null || SqlUdfQueryBodyRefusal.runsOut(framed)
-                        || SqlUdfQueryBodyRefusal.stopsAtSureFault(framedTokens, stop) ? query : null;
+                    return refused ? query : null;
                 }
             }
         } else {
+            // A body opening with CASE, CAST or WHEN where a parameter so named is meant is read as what the word
+            // opens (see SqlUdfKeywordBodyLines).
+            final String keywordBody = SqlUdfKeywordBodyLines.lines(framed, framedTokens);
+            if (keywordBody != null) {
+                return keywordBody;
+            }
             // A character the lexer cannot read is a token no expression takes: the frame breaks there unless it
             // broke before it.
             final int unread = firstLexerFault(framed);
@@ -1904,8 +1941,25 @@ final class RoutineBodyCompiler {
 
     /** Compile {@code function}'s body, throwing whatever its compiler said if it will not build. */
     static void compileFunctionBody(final Function function) {
+        compileFunctionBody(function, null);
+    }
+
+    /**
+     * Compile {@code function}'s body (see {@link #compileFunctionBody(Function)}). An inline Java body is compiled
+     * with the jars its IMPORTS name on the class path, as the account compiles it (live-verified), where the
+     * executor finds them.
+     *
+     * @param function      the function being created
+     * @param queryExecutor the executor creating it, or null where its imports are not read
+     */
+    static void compileFunctionBody(final Function function, final QueryExecutor queryExecutor) {
         if (function == null || !judgeable(function.getUdfLanguage(), function.getBody(),
-                function.getImports().isEmpty())) {
+                function.getImports().isEmpty()
+                    || readsImportedJars(function.getUdfLanguage(), function.getImports(), queryExecutor))) {
+            return;
+        }
+        if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isAggregate()
+                && !function.getImports().isEmpty()) {
             return;
         }
         if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isAggregate()) {
@@ -1917,7 +1971,16 @@ final class RoutineBodyCompiler {
         if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isTableFunction()) {
             // A table function's handler is a class: its process method, its output class and that class's
             // fields are judged as the function is created (live-verified).
-            JavaTableFunctions.check(function, null, null);
+            if (function.getImports().isEmpty()) {
+                JavaTableFunctions.check(function, null, null);
+                return;
+            }
+            final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+            try {
+                JavaTableFunctions.check(function, queryExecutor.getCatalog(), queryExecutor.getS3PathResolver());
+            } finally {
+                JarHandlerLoader.restore(outer);
+            }
             return;
         }
         if (function.getUdfLanguage() == UdfLanguage.JAVA) {
@@ -1929,7 +1992,8 @@ final class RoutineBodyCompiler {
             }
             compileJava(function.getBody(), function.getHandler(), argumentTypes.size(), function.getName(),
                 argumentTypes, function.isTableFunction() ? null : function.getReturnType(), false, false,
-                function.getRuntimeVersion(), SnowparkPackage.isNamed(function.getEnvironment().getPackages()));
+                function.getRuntimeVersion(), SnowparkPackage.isNamed(function.getEnvironment().getPackages()),
+                importedJars(function.getImports(), queryExecutor));
             return;
         }
         final UdfLanguageRuntime runtime = UdfRuntimes.installed(function.getUdfLanguage());
@@ -1940,14 +2004,25 @@ final class RoutineBodyCompiler {
 
     /** Compile {@code procedure}'s body — see the language table for which languages that means. */
     static void compileProcedureBody(final Procedure procedure) {
+        compileProcedureBody(procedure, null);
+    }
+
+    /**
+     * Compile {@code procedure}'s body (see {@link #compileProcedureBody(Procedure)}), an inline Java body with the
+     * jars its IMPORTS name on the class path (see {@link #compileFunctionBody(Function, QueryExecutor)}).
+     *
+     * @param procedure     the procedure being created
+     * @param queryExecutor the executor creating it, or null where its imports are not read
+     */
+    static void compileProcedureBody(final Procedure procedure, final QueryExecutor queryExecutor) {
         if (procedure != null && procedure.getUdfLanguage() == UdfLanguage.PYTHON
                 && PythonSnowparkPackage.namesNone(procedure.getPackages())) {
             // Its handler is handed a Snowpark session the account cannot build without the package.
             throw PythonSnowparkPackage.missing(procedure.getName(), procedure.getHandler());
         }
         if (procedure == null || procedure.getUdfLanguage() == UdfLanguage.PYTHON
-                || !judgeable(procedure.getUdfLanguage(), procedure.getBody(),
-                    procedure.getImports().isEmpty())) {
+                || !judgeable(procedure.getUdfLanguage(), procedure.getBody(), procedure.getImports().isEmpty()
+                    || readsImportedJars(procedure.getUdfLanguage(), procedure.getImports(), queryExecutor))) {
             return;
         }
         if (procedure.getUdfLanguage() == UdfLanguage.JAVA) {
@@ -1961,7 +2036,7 @@ final class RoutineBodyCompiler {
             compileJava(procedure.getBody(), procedure.getHandler(), argumentTypes.size() + 1, procedure.getName(),
                 argumentTypes, procedure.returnsTable() ? null : procedure.getReturnType(), true,
                 procedure.returnsTable(), procedure.getRuntimeVersion(),
-                SnowparkPackage.isNamed(procedure.getPackages()));
+                SnowparkPackage.isNamed(procedure.getPackages()), importedJars(procedure.getImports(), queryExecutor));
             return;
         }
         final UdfLanguageRuntime runtime = UdfRuntimes.installed(procedure.getUdfLanguage());
@@ -1978,6 +2053,25 @@ final class RoutineBodyCompiler {
         "com.snowflake.snowpark.DataFrame");
 
     /** Whether a body of this language is the engine's to judge at all. */
+    /** Whether a routine's inline body is compiled against the jars its IMPORTS name: a Java one's, read here. */
+    private static boolean readsImportedJars(final UdfLanguage language, final List<String> imports,
+                                             final QueryExecutor queryExecutor) {
+        return language == UdfLanguage.JAVA && !imports.isEmpty() && queryExecutor != null;
+    }
+
+    /** The jars a Java routine's IMPORTS name, as the executor finds them; none without imports or an executor. */
+    private static List<File> importedJars(final List<String> imports, final QueryExecutor queryExecutor) {
+        if (imports.isEmpty() || queryExecutor == null) {
+            return Collections.emptyList();
+        }
+        final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+        try {
+            return JarHandlerLoader.localJars(imports, queryExecutor.getCatalog(), queryExecutor.getS3PathResolver());
+        } finally {
+            JarHandlerLoader.restore(outer);
+        }
+    }
+
     private static boolean judgeable(final UdfLanguage language, final String body,
                                      final boolean inlineBody) {
         return inlineBody
@@ -2003,7 +2097,8 @@ final class RoutineBodyCompiler {
     private static void compileJava(final String body, final String handler, final int arity,
                                     final String routineName, final List<DataType> argumentTypes,
                                     final DataType returnType, final boolean procedure, final boolean table,
-                                    final String runtimeVersion, final boolean snowpark) {
+                                    final String runtimeVersion, final boolean snowpark,
+                                    final List<File> jars) {
         if (handler == null) {
             return;
         }
@@ -2018,7 +2113,8 @@ final class RoutineBodyCompiler {
         final Class<?> compiled;
         try {
             // A load of its own: the class a later statement or CALL runs is not this one.
-            compiled = JAVA_COMPILER.load(body, className, null, JavaRuntimeLevel.of(runtimeVersion), where, snowpark);
+            compiled = JAVA_COMPILER.load(body, className, null, JavaRuntimeLevel.of(runtimeVersion), where, snowpark,
+                jars);
         } catch (final RuntimeException unloaded) {
             if (String.valueOf(unloaded.getMessage()).startsWith("No class bytes generated for")) {
                 throw new RuntimeException(JavaHandlerFailure.missingClass(className,

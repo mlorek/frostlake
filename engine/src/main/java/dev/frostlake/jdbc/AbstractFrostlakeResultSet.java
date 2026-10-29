@@ -498,8 +498,20 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (cell == null) {
             return null;
         }
+        if (semiStructured(columnIndex)) {
+            // A semi-structured cell is handed back as the text getString reads, as the account's driver hands back
+            // every one, a number, a boolean and a date the engine holds unwrapped included (live-verified: the
+            // VARIANT of 0.0000001 is the String 0.0000001, the VARIANT of TRUE the String true).
+            return text(columnIndex, cell);
+        }
         final Object temporal = TemporalCellReads.object(cell, temporalKind(columnIndex), sessionZone());
         return temporal != null ? temporal : object(columnIndex, cell);
+    }
+
+    /** Whether a column holds semi-structured values, by the type its metadata names: a VARIANT, OBJECT or ARRAY. */
+    private boolean semiStructured(final int column) throws SQLException {
+        final String type = getMetaData().getColumnTypeName(column);
+        return "VARIANT".equalsIgnoreCase(type) || "OBJECT".equalsIgnoreCase(type) || "ARRAY".equalsIgnoreCase(type);
     }
 
     /** The account's driver reads no cell through a type map (live-verified), so neither does this one. */

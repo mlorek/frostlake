@@ -835,8 +835,25 @@ final class ScriptingNameValidator {
     private static void requireBind(final FrostlakeParser.BindVarExprContext bind, final Set<String> scope) {
         if (bind.variableName() != null) {
             requireName(text(bind.variableName()), bind, scope, true);
+            refuseMisusedBind(bind);
         } else if (bind.INTEGER_LITERAL() != null) {
             requireName(bind.INTEGER_LITERAL().getText(), bind, scope, true);
+        }
+    }
+
+    /**
+     * A bind of a cursor or a RESULTSET in a block's own expression, or in a query written in one, is refused while the
+     * block compiles, on a branch that never runs too, at the bind and by the name as written: n := (SELECT :rs) and
+     * TABLE(:rs) in an assignment's, a LET's, a RETURN's or a condition's query are " Invalid use of resultset 'rs'.",
+     * TABLE(:c) " Invalid use of cursor 'c'." (live-verified). A query the block runs as a statement of its own, or as
+     * a RESULTSET's, reads its binds when it runs.
+     */
+    private static void refuseMisusedBind(final FrostlakeParser.BindVarExprContext bind) {
+        final String written = text(bind.variableName());
+        final String misuse = DeclarationLookup.misuse(DeclarationLookup.declarationOf(bind, canonical(written)));
+        if (misuse != null) {
+            throw new RuntimeException(SqlCompilationError.at(bind.getStart().getLine(),
+                bind.getStart().getCharPositionInLine(), " Invalid use of " + misuse + " '" + written + "'."));
         }
     }
 
@@ -977,6 +994,27 @@ final class ScriptingNameValidator {
     private static void checkCall(final FrostlakeParser.CallStatementContext call, final Set<String> scope) {
         CallNamedShape.require(call);
         checkEmbeddedBinds(call, scope);
+        refuseMisusedCallBinds(call);
+    }
+
+    /**
+     * A CALL's argument that binds a cursor or a RESULTSET is refused while the block compiles, as a bind in a block's
+     * own expression is (see {@link #refuseMisusedBind}): the account fails such a CALL, on a branch that never runs
+     * too, with an internal error (live-verified), which is not mirrored.
+     */
+    private static void refuseMisusedCallBinds(final ParseTree node) {
+        if (node instanceof FrostlakeParser.BeginEndBlockContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.BindVarExprContext) {
+            if (((FrostlakeParser.BindVarExprContext) node).variableName() != null) {
+                refuseMisusedBind((FrostlakeParser.BindVarExprContext) node);
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            refuseMisusedCallBinds(node.getChild(i));
+        }
     }
 
     /** A RESULTSET's statement other than a query, a CALL or an EXECUTE IMMEDIATE: a DML statement's binds compile. */

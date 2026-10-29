@@ -16,56 +16,23 @@
 
 package dev.frostlake.functions.aggregate;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.util.List;
-
-/** REGR_SXY(y, x) — sum of products of x and y deviations over non-null (y, x) pairs (y dependent, x independent). See {@link RegrAccumulator}. */
-public class RegrSxy extends AggregateFunction {
-    public RegrSxy() { super("REGR_SXY", NumericType.DOUBLE); }
-
-    @Override
-    public Accumulator createAccumulator() { return new RegrAccumulator(RegrKind.SXY); }
-
-    @Override
-    public Object evaluate(final List<Object> args) { return null; }
-
-    @Override
-    public int getMinArgCount() { return 2; }
-    @Override
-    public int getMaxArgCount() { return 2; }
-
-    /**
-     * Either argument outside the numbers, the strings and VARIANT is refused at compile time in the
-     * multiplication's name, the X's type listed before the Y's — "Invalid argument types for function
-     * '*': (NUMBER(10,2), BOOLEAN)" for {@code REGR_SXY(bo, n)} — because live reaches its sum of x·y
-     * first (live-verified). See {@link SemiStructuredRejection#CROSS_PRODUCT_OPERANDS}.
-     */
-    @Override
-    public SemiStructuredRejection semiStructuredRejection(final int position) {
-        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
+/**
+ * REGR_SXY(y, x) — sum of products of x and y deviations over non-null (y, x) pairs (y dependent, x independent). See
+ * {@link RegrAccumulator}. Either argument outside the numbers, the strings and VARIANT — a VECTOR too — is refused at
+ * compile time in the multiplication's name, the X's type listed before the Y's — "Invalid argument types for function
+ * '*': (NUMBER(10,2), BOOLEAN)" for {@code REGR_SXY(bo, n)} — because live reaches its sum of x·y first
+ * (live-verified). See {@link SemiStructuredRejection#CROSS_PRODUCT_OPERANDS}.
+ */
+public class RegrSxy extends StatisticalAggregate {
+    public RegrSxy() {
+        super("REGR_SXY", NumericType.DOUBLE, 2, SemiStructuredRejection.CROSS_PRODUCT_OPERANDS);
     }
 
     @Override
-    public SemiStructuredRejection binaryRejection(final int position) {
-        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
-    }
-
-    @Override
-    public SemiStructuredRejection booleanRejection(final int position) {
-        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
-    }
-
-    @Override
-    public SemiStructuredRejection temporalRejection(final int position) {
-        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
-    }
-
-    /** A VECTOR is refused in the product's words too, the X listed first (live-verified). */
-    @Override
-    public SemiStructuredRejection vectorRejection(final int position) {
-        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
+    public Accumulator createAccumulator() {
+        return new RegrAccumulator(RegrKind.SXY);
     }
 }

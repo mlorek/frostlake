@@ -20,6 +20,7 @@ import com.snowflake.snowpark.SnowparkClientException;
 import com.snowflake.snowpark_java.types.Geography;
 import com.snowflake.snowpark_java.types.Geometry;
 import com.snowflake.snowpark_java.types.Variant;
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.udf.SnowparkStatementFailure;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.GeoValue;
@@ -38,6 +39,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -98,13 +100,13 @@ public class Row {
         return values[index] == null;
     }
 
-    /** The row's values, in their order, each as {@link #get} hands it. */
+    /**
+     * The row's values, in their order, as Snowpark's own row holds them: a geospatial one as the
+     * {@code com.snowflake.snowpark.types} class of its kind, where {@link #get} hands the Java surface's
+     * (live-verified).
+     */
     public List<Object> toList() {
-        final Object[] read = new Object[values.length];
-        for (int i = 0; i < values.length; i++) {
-            read[i] = javaValue(values[i]);
-        }
-        return Collections.unmodifiableList(Arrays.asList(read));
+        return Collections.unmodifiableList(Arrays.asList(Arrays.copyOf(values, values.length)));
     }
 
     /** A value as the Java surface hands it: a geospatial one as that surface's class, any other as it is. */
@@ -134,11 +136,7 @@ public class Row {
         }
         if (value instanceof byte[]) {
             // Bytes are told as the array of numbers they are.
-            final StringBuilder told = new StringBuilder("[");
-            for (final byte one : (byte[]) value) {
-                told.append(told.length() > 1 ? "," : "").append(one);
-            }
-            return told.append(']').toString();
+            return "[" + byteNumbers((byte[]) value) + "]";
         }
         if (value instanceof com.snowflake.snowpark.types.Geography
                 || value instanceof com.snowflake.snowpark.types.Geometry) {
@@ -311,18 +309,29 @@ public class Row {
      * type:FIXED(null,null) to type:Long, value=12345678901234567890.}, as a {@link SQLException} of SQLSTATE
      * 0A000 and code 200038 — over a table's NUMBER(38,0) column as over a literal, whichever row holds it.
      *
+     * <p>A TIMESTAMP_LTZ and a TIMESTAMP_TZ cell print as the account prints them, in the zone the session's
+     * TIMEZONE names and in their own offset (see {@link SessionTimestamp}).
+     *
      * @param cells the engine's values
      * @param whole for each cell, whether its column is a NUMBER of no scale; null where no column is known
+     * @param local for each cell, whether its column is a TIMESTAMP_LTZ, printed in the session's zone
+     * @param own   for each cell, whether its column is a TIMESTAMP_TZ, printed in its own wall clock
      * @return the row a handler reads
      */
-    static Row ofEngineCells(final List<Object> cells, final boolean[] whole) {
+    static Row ofEngineCells(final List<Object> cells, final boolean[] whole, final boolean[] local,
+                             final boolean[] own) {
+        final ZoneId zone = SessionZone.current();
         final Object[] read = new Object[cells == null ? 0 : cells.size()];
         for (int i = 0; i < read.length; i++) {
             final Object cell = cells.get(i);
             read[i] = whole != null && i < whole.length && whole[i] && cell instanceof Number
-                ? wholeNumber((Number) cell) : handed(cell);
+                ? wholeNumber((Number) cell) : handed(cell, zone, marked(local, i), marked(own, i));
         }
         return new Row(read);
+    }
+
+    private static boolean marked(final boolean[] columns, final int index) {
+        return columns != null && index < columns.length && columns[index];
     }
 
     /** A whole number's cell as a Long, or the driver's refusal when no Long holds it. */
@@ -336,7 +345,12 @@ public class Row {
         return Long.valueOf(whole.longValue());
     }
 
-    private static Object handed(final Object cell) {
+    /**
+     * @param local whether the cell's column is a TIMESTAMP_LTZ
+     * @param own   whether the cell's column is a TIMESTAMP_TZ; where neither is known an offset cell is the
+     *              engine's TIMESTAMP_LTZ and a zoned one its TIMESTAMP_TZ
+     */
+    private static Object handed(final Object cell, final ZoneId zone, final boolean local, final boolean own) {
         if (cell instanceof LocalDate) {
             return Date.valueOf((LocalDate) cell);
         }
@@ -347,13 +361,17 @@ public class Row {
             return Timestamp.valueOf((LocalDateTime) cell);
         }
         if (cell instanceof OffsetDateTime) {
-            return Timestamp.from(((OffsetDateTime) cell).toInstant());
+            final OffsetDateTime offset = (OffsetDateTime) cell;
+            return own ? SessionTimestamp.ofOwnClock(offset.toInstant(), offset.toLocalDateTime(), zone)
+                : SessionTimestamp.ofInstant(offset.toInstant(), zone);
         }
         if (cell instanceof ZonedDateTime) {
-            return Timestamp.from(((ZonedDateTime) cell).toInstant());
+            final ZonedDateTime zoned = (ZonedDateTime) cell;
+            return local ? SessionTimestamp.ofInstant(zoned.toInstant(), zone)
+                : SessionTimestamp.ofOwnClock(zoned.toInstant(), zoned.toLocalDateTime(), zone);
         }
         if (cell instanceof Instant) {
-            return Timestamp.from((Instant) cell);
+            return SessionTimestamp.ofInstant((Instant) cell, zone);
         }
         if (cell instanceof BinaryValue) {
             return ((BinaryValue) cell).bytes();
@@ -417,7 +435,10 @@ public class Row {
         }
     }
 
-    /** The row as Snowpark prints it: its values between brackets, a text between double quotes. */
+    /**
+     * The row as Snowpark prints it: its values between brackets, a text between double quotes and a binary as its
+     * bytes, {@code Row[Binary(65,66,67)]} (live-verified).
+     */
     @Override
     public String toString() {
         final StringBuilder text = new StringBuilder("Row[");
@@ -427,11 +448,22 @@ public class Row {
             }
             if (values[i] instanceof String) {
                 text.append('"').append(values[i]).append('"');
+            } else if (values[i] instanceof byte[]) {
+                text.append("Binary(").append(byteNumbers((byte[]) values[i])).append(')');
             } else {
                 text.append(values[i]);
             }
         }
         return text.append("]").toString();
+    }
+
+    /** Bytes as the numbers they are, between commas. */
+    private static String byteNumbers(final byte[] bytes) {
+        final StringBuilder told = new StringBuilder();
+        for (final byte one : bytes) {
+            told.append(told.length() > 0 ? "," : "").append(one);
+        }
+        return told.toString();
     }
 
     @Override

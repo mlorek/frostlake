@@ -43,7 +43,13 @@ import java.util.Set;
  *   any other ALTER, COMMENT ON        … type 'ALTER' …
  *   SET / UNSET of a session variable  … type 'SET' … — in a caller's-rights procedure; an owner's-rights one
  *                                      is refused the statement in its own words wherever it is called from
+ *   ALTER SESSION                      … type 'ALTER_SESSION' …, likewise in a caller's-rights procedure only
+ *   LIST, REMOVE                       … type 'LIST_FILES', 'REMOVE_FILES' …, likewise
+ *   BEGIN, START TRANSACTION           … type 'BEGIN_TRANSACTION' … in FROM clause.
+ *   COMMIT, ROLLBACK                   … type 'COMMIT', 'ROLLBACK' …
  * </pre>
+ *
+ * <p>A PUT and a GET are no child jobs at all: a procedure's body may run neither, however it is called.
  *
  * <p>The rule reaches as deep as the call does: the text an EXECUTE IMMEDIATE runs and the body of a
  * procedure the body calls are child jobs too. The same procedure called by CALL — also the CALL that
@@ -106,6 +112,15 @@ final class FromClauseProcedureJobs {
         if (statement.sessionSetStatement() != null || statement.sessionUnsetStatement() != null) {
             return ownersRights ? null : statement.getStart().getText().toUpperCase(Locale.ROOT);
         }
+        if (statement.listStatement() != null || statement.removeStatement() != null) {
+            return ownersRights ? null : statement.listStatement() != null ? "LIST_FILES" : "REMOVE_FILES";
+        }
+        final FrostlakeParser.TransactionStatementContext transaction = statement.transactionStatement();
+        if (transaction != null) {
+            final int word = transaction.getStart().getType();
+            return word == FrostlakeParser.BEGIN || word == FrostlakeParser.START ? "BEGIN_TRANSACTION"
+                : transaction.getStart().getText().toUpperCase(Locale.ROOT);
+        }
         final FrostlakeParser.DdlStatementContext ddl = statement.ddlStatement();
         if (ddl != null) {
             if (ddl.useStatement() != null) {
@@ -121,15 +136,16 @@ final class FromClauseProcedureJobs {
                 return ddl.commentStatement().COLUMN() != null ? "ALTER_TABLE_MODIFY_COLUMN" : "ALTER";
             }
             final FrostlakeParser.AlterStatementContext alter = ddl.alterStatement();
+            if (alter != null && alter.SESSION() != null) {
+                return ownersRights ? null : "ALTER_SESSION";
+            }
             if (alter != null) {
                 return alterType(statement, alter);
             }
             return ddl.getStart().getText().toUpperCase(Locale.ROOT);
         }
         if (statement.securityStatement() != null || statement.accessControlStatement() != null
-                || statement.transactionStatement() != null || statement.putStatement() != null
-                || statement.removeStatement() != null || statement.taskStatement() != null
-                || statement.containerServicesStatement() != null) {
+                || statement.taskStatement() != null || statement.containerServicesStatement() != null) {
             return statement.getStart().getText().toUpperCase(Locale.ROOT);
         }
         return null;
