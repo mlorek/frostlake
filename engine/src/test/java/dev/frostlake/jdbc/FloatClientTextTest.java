@@ -23,21 +23,27 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * A FLOAT's text through the DRIVER — the same width the SQL text uses.
+ * A FLOAT's text through the DRIVER: Java's own {@code Double.toString} of the double, as the account's driver
+ * reads it on its default results, and not the SQL text.
  *
- * <p>★ ONE VALUE, ONE SPELLING. TO_VARCHAR over a FLOAT already used Snowflake's width; the driver's
- * getString did not, and returned Java's {@code Double.toString} instead — so the same value read two
- * ways gave two answers and neither could claim to be its text. Live's driver returns the SQL text,
- * and these cells are read through the driver on BOTH engines so the comparison is driver-to-driver
- * rather than engine-to-driver.
+ * <p>★ TWO SURFACES, TWO SPELLINGS. TO_VARCHAR writes a square root as {@code 1.414213562}, Snowflake's width;
+ * the driver's getString hands back {@code 1.4142135623730951}, because on the ARROW results it asks for by
+ * default the account's driver is sent the double and formats it itself. On JSON results it hands back the
+ * server's text instead, so this class puts the live session on the default (see {@link DefaultResultFormat}).
+ * These cells are read through the driver on BOTH engines, so the comparison is driver-to-driver.
  *
- * <p>★ THE DECLARED TYPE DECIDES, not the value's carrier: a FLOAT-declared value can still arrive in
- * an exact carrier — computed exactly, or restored from an older snapshot — and asking the object what
- * it is would spell it the wrong way.
+ * <p>★ THE DECLARED TYPE DECIDES, not the value's carrier: a FLOAT-declared value can still arrive in an exact
+ * carrier — computed exactly, or restored from an older snapshot — and asking the object what it is would spell it
+ * the wrong way.
  *
  * <p>NEGATIVE ZERO and the carrier itself are pinned by the FLOAT carrier cells beside this class.
  */
 public class FloatClientTextTest extends BaseJdbcTest {
+
+    @Override
+    protected void setupTest() throws SQLException {
+        DefaultResultFormat.use(statement);
+    }
 
     /** One FLOAT expression as the DRIVER renders it. */
     private String text(final String expression) throws SQLException {
@@ -48,44 +54,46 @@ public class FloatClientTextTest extends BaseJdbcTest {
         return value;
     }
 
-    /** ★ The ordinary range: ten significant digits, no exponent. */
+    /** ★ The shortest text that reads back as the double, where the SQL text keeps ten digits. */
     @Test
-    public void theplainRangeKeepsTenDigits() throws SQLException {
-        assertEquals("1.414213562", text("SQRT(2)::FLOAT"),
-            "the driver returns the SQL text, not Java's seventeen-digit shortest form");
+    public void theTextIsJavasOwnOfTheDouble() throws SQLException {
+        assertEquals("1.4142135623730951", text("SQRT(2)::FLOAT"),
+            "the driver formats the double it is sent");
+        assertEquals("1.414213562", text("TO_VARCHAR(SQRT(2))"), "★ while the SQL text keeps Snowflake's width");
+        assertEquals("0.30000000000000004", text("0.1::FLOAT + 0.2::FLOAT"));
         assertEquals("0.1", text("0.1::FLOAT"));
-        assertEquals("0.0001", text("0.0001::FLOAT"));
-        assertEquals("1", text("1.0::FLOAT"),
-            "★ a whole value carries no decimal point at all");
+        assertEquals("0.001", text("0.001::FLOAT"));
+        assertEquals("1.0", text("1.0::FLOAT"), "★ a whole value keeps its point and one zero");
+        assertEquals("9999999.0", text("9999999::FLOAT"));
     }
 
-    /** ★ Past the plain range the exponent form takes over, with its own width. */
+    /** ★ Below a thousandth and from ten million up, Java's exponent form takes over. */
     @Test
-    public void thescientificRangeWidensToFifteen() throws SQLException {
-        assertEquals("1.4142135623731e+16", text("1.4142135623730951e16::FLOAT"),
-            "lower-case e and an explicit sign, with trailing zeros dropped");
-        assertEquals("1.4142135623731e+18", text("1.4142135623730951e18::FLOAT"));
-        assertEquals("1.23456789012346e+18", text("1234567890123456789::FLOAT"));
-        assertEquals("1.414213562e-16", text("1.4142135623730951e-16::FLOAT"),
-            "★ and a small magnitude is back to ten digits — the width follows the exponent");
+    public void largeAndSmallMagnitudesTakeJavasExponent() throws SQLException {
+        assertEquals("1.0E7", text("10000000::FLOAT"), "an upper-case E with no sign, after a point");
+        assertEquals("1.0E18", text("1e18::FLOAT"));
+        assertEquals("1.0E-4", text("0.0001::FLOAT"));
+        assertEquals("1.5E-7", text("1.5e-7::FLOAT"));
+        assertEquals("1.7976931348623157E308", text("1.7976931348623157e308::FLOAT"),
+            "every digit of the largest double");
     }
 
-    /** The non-finites, which the driver spells as the SQL text does. */
+    /** The non-finites, in Java's words for them. */
     @Test
-    public void thenonFinitesKeepTheirWords() throws SQLException {
+    public void theNonFinitesAreJavasWords() throws SQLException {
         assertEquals("NaN", text("'NaN'::FLOAT"));
-        assertEquals("inf", text("'inf'::FLOAT"), "lower case, as TO_VARCHAR writes it");
-        assertEquals("-inf", text("'-inf'::FLOAT"));
+        assertEquals("Infinity", text("'inf'::FLOAT"), "where TO_VARCHAR writes inf");
+        assertEquals("-Infinity", text("'-inf'::FLOAT"));
     }
 
     /** ★ A stored FLOAT COLUMN reads the same way. */
     @Test
-    public void astoredColumnReadsTheSameWay() throws SQLException {
+    public void aStoredColumnReadsTheSameWay() throws SQLException {
         statement.execute("CREATE OR REPLACE TABLE fct (f FLOAT)");
         statement.execute("INSERT INTO fct SELECT SQRT(2)::FLOAT");
         final ResultSet rs = statement.executeQuery("SELECT f FROM fct");
         rs.next();
-        assertEquals("1.414213562", rs.getString(1),
+        assertEquals("1.4142135623730951", rs.getString(1),
             "★ the column's declared type says how to spell it");
         rs.close();
         statement.execute("DROP TABLE fct");

@@ -21,6 +21,7 @@ import dev.frostlake.ExecutionResult;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.values.VariantJsonFormat;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -69,11 +70,12 @@ public final class EngineBackend implements Backend {
             for (final ResultSetColumn column : first.getColumns()) {
                 names.add(column.getName());
             }
+            final boolean scriptingAnswer = first.isScriptingAnswer();
             final List<List<String>> grid = new ArrayList<>();
             for (final Row row : first.getRows()) {
                 final List<String> cells = new ArrayList<>();
                 for (final Object value : row.getValues()) {
-                    cells.add(value == null ? null : String.valueOf(value));
+                    cells.add(value == null ? null : cellText(value, scriptingAnswer));
                 }
                 grid.add(cells);
             }
@@ -81,6 +83,15 @@ public final class EngineBackend implements Backend {
             out.setRows(grid);
         }
         return out;
+    }
+
+    /**
+     * A cell as a client is handed it: an array or object a Snowflake Scripting RETURN answers laid out across
+     * lines, as the driver and the HTTP wire carry it, and any other cell as the engine displays it.
+     */
+    private static String cellText(final Object value, final boolean scriptingAnswer) {
+        final String laidOut = scriptingAnswer ? VariantJsonFormat.scriptingAnswerText(value) : null;
+        return laidOut != null ? laidOut : String.valueOf(value);
     }
 
     @Override

@@ -30,9 +30,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * A double or a float bound as a rounding scale is a FLOAT scale: ROUND(1.2345, ?) over setDouble(2.0) rounds in
  * FLOAT arithmetic and answers the FLOAT 1.23, as TRUNC does, where an exact scale keeps the NUMBER (all
- * live-verified).
+ * live-verified). Each answer is read on the driver's default results (see {@link DefaultResultFormat}).
  */
 public class PreparedFloatScaleBindTest extends BaseJdbcTest {
+
+    @Override
+    protected void setupTest() throws SQLException {
+        DefaultResultFormat.use(statement);
+    }
 
     /** The first column of the statement's one row, each placeholder bound to the value. */
     private String bound(final String sql, final Object value) throws SQLException {
@@ -55,7 +60,7 @@ public class PreparedFloatScaleBindTest extends BaseJdbcTest {
         assertEquals("FLOAT[DOUBLE]", bound("SELECT SYSTEM$TYPEOF(ROUND(1.2345, ?)) AS t", Double.valueOf(2.0)));
         assertEquals("1.23", bound("SELECT TRUNC(1.2345, ?) AS r", Double.valueOf(2.0)));
         assertEquals("1.23", bound("SELECT ROUND(1.2345, ?) AS r /* f */", Float.valueOf(2.0f)));
-        assertEquals("1.233288287", bound("SELECT ROUND(1.2345, ?) AS r /* 2.5 */", Double.valueOf(2.5)));
+        assertEquals("1.2332882874656679", bound("SELECT ROUND(1.2345, ?) AS r /* 2.5 */", Double.valueOf(2.5)));
     }
 
     @Test

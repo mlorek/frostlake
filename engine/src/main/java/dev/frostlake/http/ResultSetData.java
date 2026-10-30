@@ -131,7 +131,9 @@ public class ResultSetData {
                 // text with every DOUBLE in the account's fifteen-decimal form, and so does a DOUBLE read
                 // out of a VARIANT, which the engine holds unwrapped and would send as a bare JSON number.
                 // A STRING read out of one crosses JSON-quoted, as live's driver hands it back. A FLOAT cell crosses
-                // with the digits the account's JSON results carry (see FloatWireDigits).
+                // as its double with every digit, as the account's default Arrow results carry it: its JSON results
+                // round the value, so a driver reading them gets 0.3 for 0.1 + 0.2, and Infinity for the largest
+                // double.
                 final String unwrappedDouble = VariantJsonText.unwrappedDoubleText(cell, declared);
                 rowData.add(cell instanceof Number && NumericType.isDecfloat(declared)
                         ? Decfloats.text(Decfloats.of((Number) cell, "TO_DECFLOAT"))
@@ -143,8 +145,6 @@ public class ResultSetData {
                     : SharedFunctionHelpers.isNativeTemporal(cell) && VariantJsonText.isSemiStructured(declared)
                         ? VariantJsonText.unwrappedStringText(SharedFunctionHelpers.variantTemporalText(cell))
                     : unwrappedDouble != null ? unwrappedDouble
-                    : cell instanceof Double && NumericType.isApproximate(declared)
-                        ? FloatWireDigits.of((Double) cell)
                     : IntervalCells.isInterval(cell) ? IntervalCells.wireText(cell)
                     : TemporalText.wireValue(cell, declared));
             }

@@ -272,6 +272,11 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         return TemporalColumnKind.of(getMetaData().getColumnTypeName(column));
     }
 
+    /** Whether a column is a FLOAT, which a typed getter reads by {@link FloatColumnReads}. */
+    private boolean floatColumn(final int column) throws SQLException {
+        return FloatColumnReads.isFloat(jdbcType(column));
+    }
+
     /**
      * A cell's wire text: what the account's driver converts when a typed getter reads it (see
      * {@link JdbcMarshaling#quotedCell}).
@@ -284,11 +289,14 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
 
     /**
      * The cell a temporal getter reads; a cell of a column that getter does not read is refused as the account's
-     * driver refuses it (see {@link JdbcMarshaling#readsTemporal}).
+     * driver refuses it (see {@link JdbcMarshaling#readsTemporal}), and a FLOAT column's even when it is NULL.
      */
     private Object temporalCell(final int column, final String target) throws SQLException {
         final Object value = read(column);
         final int type = jdbcType(column);
+        if (FloatColumnReads.isFloat(type)) {
+            throw FloatColumnReads.temporalRefusal(target);
+        }
         if (value != null && !JdbcMarshaling.readsTemporal(type, target)) {
             throw JdbcMarshaling.unconvertible(type, target, wire(column, value));
         }
@@ -323,6 +331,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getBoolean(interval, intervalCount(cell));
         }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getBoolean(cell);
+        }
         return cell != null && JdbcCellReads.booleanOf(jdbcType(columnIndex), cell, wire(columnIndex, cell));
     }
 
@@ -332,6 +343,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         final IntervalKind interval = intervalKind(columnIndex, cell);
         if (interval != null) {
             return IntervalColumnReads.getByte(interval, intervalCount(cell));
+        }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getByte();
         }
         return cell == null ? 0 : JdbcCellReads.byteOf(jdbcType(columnIndex), wire(columnIndex, cell));
     }
@@ -343,6 +357,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getShort(interval, intervalCount(cell));
         }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getShort(cell);
+        }
         return cell == null ? 0 : JdbcCellReads.shortOf(jdbcType(columnIndex), wire(columnIndex, cell));
     }
 
@@ -352,6 +369,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         final IntervalKind interval = intervalKind(columnIndex, cell);
         if (interval != null) {
             return IntervalColumnReads.getInt(interval, intervalCount(cell));
+        }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getInt(cell);
         }
         if (cell == null) {
             return 0;
@@ -366,6 +386,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         final IntervalKind interval = intervalKind(columnIndex, cell);
         if (interval != null) {
             return IntervalColumnReads.getLong(interval, intervalCount(cell));
+        }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getLong(cell);
         }
         if (cell == null) {
             return 0;
@@ -400,6 +423,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         final IntervalKind interval = intervalKind(columnIndex, cell);
         if (interval != null) {
             return IntervalColumnReads.getBigDecimal(interval, intervalCount(cell));
+        }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getBigDecimal(cell);
         }
         return cell == null ? null : decimal(columnIndex, cell);
     }

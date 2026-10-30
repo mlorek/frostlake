@@ -34,15 +34,16 @@ import java.sql.Types;
  * <ul>
  *   <li>{@code getBoolean} reads TRUE and FALSE, and the texts {@code 1}, {@code 0}, {@code true} and {@code false}
  *       of an integer, a fixed-point number, a BOOLEAN or a text; anything else is refused.</li>
- *   <li>{@code getShort}, {@code getInt} and {@code getLong} parse the text, a FLOAT's cut at its point: 2.5 reads 2,
- *       while a fixed-point number with a fraction (3.50, 3.00), a number past the getter's type and a text that is
- *       no integer are refused. {@code getByte} parses the text as it stands.</li>
+ *   <li>{@code getShort}, {@code getInt} and {@code getLong} parse the text: a fixed-point number with a fraction
+ *       (3.50, 3.00), a number past the getter's type and a text that is no integer are refused. {@code getByte}
+ *       parses the text as it stands.</li>
  *   <li>{@code getFloat}, {@code getDouble} and {@code getBigDecimal} read a number as itself and parse any other
  *       text ({@code inf} and {@code -inf} included); a time or a timestamp is refused.</li>
  * </ul>
  * A refusal is {@code Cannot convert value in the driver from type:<jdbc type> to type:<getter>, value=<text>.},
  * SQLSTATE 0A000 and code 200038. Where the account's driver lets a parser's own exception escape — {@code getByte}
- * over 300 or 3.50 — the same refusal is raised instead.
+ * over 300 or 3.50 — the same refusal is raised instead. A FLOAT column is read by its double, see
+ * {@link FloatColumnReads}.
  */
 final class JdbcCellReads {
 
@@ -117,7 +118,7 @@ final class JdbcCellReads {
      */
     static short shortOf(final int type, final String wire) throws SQLException {
         try {
-            return Short.parseShort(integerText(type, wire));
+            return Short.parseShort(wire);
         } catch (final NumberFormatException notAShort) {
             throw JdbcMarshaling.unconvertible(type, "short", wire);
         }
@@ -139,7 +140,7 @@ final class JdbcCellReads {
             return decfloatWhole(cell, wire, "int").intValue();
         }
         try {
-            return Integer.parseInt(integerText(type, wire));
+            return Integer.parseInt(wire);
         } catch (final NumberFormatException notAnInt) {
             throw JdbcMarshaling.unconvertible(type, "int", wire);
         }
@@ -161,16 +162,10 @@ final class JdbcCellReads {
             return decfloatWhole(cell, wire, "long").longValue();
         }
         try {
-            return Long.parseLong(integerText(type, wire));
+            return Long.parseLong(wire);
         } catch (final NumberFormatException notALong) {
             throw JdbcMarshaling.unconvertible(type, "long", wire);
         }
-    }
-
-    /** The text an integer getter parses: a FLOAT's cut at its point, any other text as it stands. */
-    private static String integerText(final int type, final String wire) {
-        final int point = wire.indexOf('.');
-        return point >= 0 && (type == Types.FLOAT || type == Types.DOUBLE) ? wire.substring(0, point) : wire;
     }
 
     /**

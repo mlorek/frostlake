@@ -195,17 +195,13 @@ final class DriverSurfaceChecks {
     }
 
     /**
-     * The integer getters parse a cell's text: a FLOAT's cut at its point, a text that spells an integer, a BOOLEAN's
-     * 1; a number past the getter's type and a text that is no integer are refused.
+     * The integer getters parse a cell's text: a text that spells an integer, a BOOLEAN's 1; a number past the getter's
+     * type and a text that is no integer are refused. A FLOAT is read by its double instead (see FloatColumnChecks).
      *
      * @param c the connection
      */
     static void integerReads(final Connection c) throws SQLException {
-        final ResultSet rs = firstRow(c, """
-            SELECT 2.5::FLOAT AS F, '12' AS T, TRUE AS B, 'x' AS W, 9999999999 AS BIG, 70000 AS MID,
-                   1e10::FLOAT AS FBIG""");
-        assertEquals(2, rs.getInt("F"));
-        assertEquals(2L, rs.getLong("F"));
+        final ResultSet rs = firstRow(c, "SELECT '12' AS T, TRUE AS B, 'x' AS W, 9999999999 AS BIG, 70000 AS MID");
         assertEquals(12, rs.getInt("T"));
         assertEquals(1, rs.getInt("B"));
         assertEquals(9999999999L, rs.getLong("BIG"));
@@ -227,13 +223,6 @@ final class DriverSurfaceChecks {
                 rs.getShort("MID");
             }
         });
-        unconvertible(8, "int", "10000000000", new Executable() {
-            @Override
-            public void execute() throws Throwable {
-                rs.getInt("FBIG");
-            }
-        });
-        assertEquals(10000000000L, rs.getLong("FBIG"));
     }
 
     /**
@@ -243,8 +232,7 @@ final class DriverSurfaceChecks {
      */
     static void booleanReads(final Connection c) throws SQLException {
         final ResultSet rs = firstRow(c, """
-            SELECT 1 AS ONE, 0 AS ZERO, 'true' AS T, '1' AS TONE, 'yes' AS YES, 2 AS TWO, 1.5::FLOAT AS F,
-                   NULL::BOOLEAN AS N""");
+            SELECT 1 AS ONE, 0 AS ZERO, 'true' AS T, '1' AS TONE, 'yes' AS YES, 2 AS TWO, NULL::BOOLEAN AS N""");
         assertTrue(rs.getBoolean("ONE"));
         assertFalse(rs.getBoolean("ZERO"));
         assertTrue(rs.getBoolean("T"));
@@ -261,12 +249,6 @@ final class DriverSurfaceChecks {
             @Override
             public void execute() throws Throwable {
                 rs.getBoolean("TWO");
-            }
-        });
-        unconvertible(8, "boolean", "1.5", new Executable() {
-            @Override
-            public void execute() throws Throwable {
-                rs.getBoolean("F");
             }
         });
     }

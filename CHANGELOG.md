@@ -1810,9 +1810,6 @@ Changes since 0.3.0 accumulate here as they land.
   COUNT(*) reads the rows without decoding them.
 - **A refused LONG reads on** (live-verified): after a `::` cast to LONG the token after the word is told too, unless
   a whole select item may end there.
-- **FLOAT cells on the wire** (live-verified): the HTTP result set carries a FLOAT cell with the digits the account's
-  JSON results carry, at most nine decimals and fifteen significant digits from 1 up and ten significant digits below
-  1; the engine's values are unchanged.
 - **Named logical arguments** (live-verified): a NOT, AND or OR over values written for a name in a function's or
   FLATTEN's argument list binds its BOOLEAN, and an incomplete one is refused at the call's ')'.
 - **Column defaults told back** (live-verified): an expression DEFAULT is printed by DESCRIBE, SHOW COLUMNS, GET_DDL
@@ -2843,6 +2840,14 @@ Changes since 0.3.0 accumulate here as they land.
   on, as it leaves Snowflake's driver. Both transports read labels so, and an HTTP answer reports the setting as
   `clientResultColumnCaseInsensitive`. Code that relied on labels in any case needs the ALTER SESSION, as it does
   against Snowflake.
+- **The JDBC driver reads a FLOAT as Snowflake's driver does on its default results** (live-verified): `getString`
+  is Java's own text of the double, `0.30000000000000004` for `0.1 + 0.2`, `1.4142135623730951` for `SQRT(2)`,
+  `3.0`, `1.0E18`, `-0.0` and `Infinity`, where it was the SQL text's shorter width (`0.3`, `1.414213562`, `3`,
+  `1e+18`, `-0`, `inf`), which Snowflake's driver hands back only on JSON results. `getLong`, `getInt` and `getShort`
+  narrow the double as Java does (`getInt` of `1e18` is 2147483647, of `-2.5` -2), where they parsed the text and
+  refused a value past their type; `getByte` and the temporal getters refuse every FLOAT cell, a NULL one included,
+  with `Cannot convert value in the driver from type:REAL to type:byte, value=.`, where `getByte` read a whole one.
+  The SQL text, `TO_VARCHAR`'s and a VARCHAR cast's, keeps Snowflake's width. Both transports read so.
 
 ## 0.3.0 — unreleased
 

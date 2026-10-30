@@ -16,7 +16,6 @@
 
 package dev.frostlake.jdbc;
 
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.http.ColumnData;
 import dev.frostlake.http.ResultSetData;
 import dev.frostlake.types.DecimalText;
@@ -68,7 +67,8 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
 
     /**
      * A wire cell. JSON has no NaN or infinity, so the wire spells a FLOAT's as a string: it is the double it names,
-     * which getObject answers and getString spells NaN, inf and -inf, as the account's driver does (live-verified).
+     * which getObject answers and getString spells NaN, Infinity and -Infinity, as the account's driver does
+     * (live-verified).
      */
     @Override
     protected Object cell(final int row, final int column) {
@@ -105,9 +105,8 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
             return ClientValueText.booleanText(((Boolean) value).booleanValue());
         }
         if (value instanceof Number && isApproximateColumn(column)) {
-            // A FLOAT's text is Snowflake's own width — ten significant digits growing to fifteen —
-            // and not the JSON wire's spelling; the in-process driver answers the same way.
-            return SharedFunctionHelpers.floatText(((Number) value).doubleValue());
+            // A FLOAT's text is Java's own of its double, as the in-process driver spells it.
+            return ClientValueText.approximateText(((Number) value).doubleValue());
         }
         if (value instanceof BigDecimal) {
             // The digits in place, never BigDecimal's scientific 1E-8 / 0E-20 — see ClientValueText.

@@ -40,7 +40,7 @@
       {"sql": "  ;  ", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
     ]},
     {"name": "the-empty-string-is-empty-too",
-     "skip": {"backends": ["snowflake"], "reason": "transport divergence: the Snowflake JDBC driver refuses an empty statement client-side (Invalid SQL text:, error 200021 / SQLSTATE 03000), so the account's own sentence never comes back; asserted on the other transports, against the rule the other nine cells measure."},
+     "skip": {"backends": ["snowflake", "jdbc"], "reason": "transport divergence: the Snowflake JDBC driver refuses an empty statement client-side (Invalid SQL text:, error 200021 / SQLSTATE 03000), and Frostlake's own JDBC driver refuses it as that one does, so the server's own sentence never comes back through either; asserted on the other transports, against the rule the other nine cells measure."},
      "steps": [
       {"sql": "", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
     ]},

@@ -30,7 +30,9 @@ import java.util.Locale;
  *
  * <p>Only a semi-structured COLUMN is decoded, and only one level: a cell that is a JSON string
  * becomes that string's content, which for a whole object or array is the object's own text. Any
- * other cell — a number, a boolean, text that is not JSON at all — is left exactly as it came.
+ * other cell — a number, a boolean, text that is not JSON at all — is left exactly as it came, and so
+ * is an array or object, in whatever layout it came: a Snowflake Scripting answer's arrives laid out
+ * across lines, and the suites record it that way.
  */
 public final class SemiStructuredCells {
 

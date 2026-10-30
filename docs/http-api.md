@@ -150,12 +150,13 @@ it back from `executeQuery` of a single statement — so a client that shows the
 can go on doing so. Always sent; absent means a server that predates the field, and the driver then treats every
 result as rows, as it used to.
 
-Cells cross as JSON values: numbers as numbers, BOOLEAN as a JSON boolean, VARIANT / OBJECT / ARRAY as their
-JSON text, BINARY as upper-case hex text, VECTOR as its text (`[1.000000,2.000000,3.000000]`, an INT
-vector `[1,2,3]`), a DECFLOAT as a JSON **string** of its text (`"1.5"`,
-`"3.3333333333333333333333333333333333333e-1"`, `"1.23e7002"` — every one of its 38 digits kept for a client whose
-JSON numbers are doubles, read back as a decimal the way Snowflake's drivers read the type; its column sends
-`precision` 38 and `scale` 0), and temporal values as text:
+Cells cross as JSON values: numbers as numbers (a FLOAT as its double with every digit, `0.30000000000000004` for
+`0.1 + 0.2`, as the account's default Arrow results carry it), BOOLEAN as a JSON boolean, VARIANT / OBJECT / ARRAY as
+their JSON text, BINARY as upper-case hex text, VECTOR as its text (`[1.000000,2.000000,3.000000]`, an INT vector
+`[1,2,3]`), a DECFLOAT as a JSON **string** of its text (`"1.5"`, `"3.3333333333333333333333333333333333333e-1"`,
+`"1.23e7002"` — every one of its 38 digits kept for a client whose JSON numbers are doubles, read back as a decimal
+the way Snowflake's drivers read the type; its column sends `precision` 38 and `scale` 0), and temporal values as
+text:
 
 | type | wire text |
 |---|---|
@@ -166,6 +167,12 @@ JSON numbers are doubles, read back as a decimal the way Snowflake's drivers rea
 
 The wire keeps the whole fraction of a second. The account's drivers DISPLAY three digits for a timestamp and
 none for a TIME, so a client rendering display text cuts the fraction back (the JDBC driver's `getString` does).
+
+A FLOAT cell is its double, and a client should read it as Snowflake's JDBC driver does with its default (ARROW)
+results: this project's JDBC driver hands back Java's own text of it from `getString` (`0.30000000000000004`,
+`3.0`, `1.0E18`, `-0.0`, `Infinity`), not the SQL text's shorter width, narrows it for `getLong`, `getInt` and
+`getShort` (`getInt` of `1e18` is 2147483647), and refuses `getByte`, `getBoolean` and the temporal getters
+(`Cannot convert value in the driver from type:REAL to type:byte, value=.`).
 
 #### Intervals
 

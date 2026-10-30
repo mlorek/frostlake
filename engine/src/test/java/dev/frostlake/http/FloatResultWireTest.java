@@ -26,9 +26,10 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * A FLOAT result cell crosses the JSON wire with the digits the account's JSON results carry: at most nine decimals
- * and fifteen significant digits from 1 up, ten significant digits below 1 (live-verified), while the engine's own
- * value is unchanged.
+ * A FLOAT result cell crosses the JSON wire as its double with every digit, as the account's default Arrow results
+ * carry it (live-verified): {@code 0.1 + 0.2} is 0.30000000000000004 and the largest double stays a number. The
+ * account's JSON results round a FLOAT to at most fifteen significant digits, which reads {@code 0.1 + 0.2} as 0.3
+ * and the largest double as Infinity; the wire does not follow them.
  */
 public class FloatResultWireTest {
 
@@ -39,18 +40,19 @@ public class FloatResultWireTest {
     }
 
     @Test
-    public void aFloatCrossesWithTheAccountsDigits() {
-        assertEquals(Arrays.<Object>asList(Double.valueOf(1.100000024), Double.valueOf(1.1)),
-            wireRow("SELECT 1.100000023841858::FLOAT, 1.1::FLOAT"));
-        assertEquals(Arrays.<Object>asList(Double.valueOf(0.3), Double.valueOf(0.3333333333),
-            Double.valueOf(0.6666666667)), wireRow("SELECT 0.1::FLOAT + 0.2::FLOAT, 1 / 3::FLOAT, 2::FLOAT / 3"));
-        assertEquals(Arrays.<Object>asList(Double.valueOf(123456.7890625), Double.valueOf(1.23456789012346E9),
-            Double.valueOf(9.00719925474099E15)),
-            wireRow("SELECT 123456.7890625::FLOAT, 1234567890.123456789::FLOAT, 9007199254740993::FLOAT"));
-        assertEquals(Arrays.<Object>asList(Double.valueOf(-1.23456789E-4), Double.valueOf(1.23456789E-5),
-            Double.valueOf(3.141592654), Double.valueOf(1.23456789E7)),
-            wireRow("SELECT -0.000123456789012::FLOAT, 1.23456789012345e-5::FLOAT, 3.141592653589793::FLOAT, "
-                + "12345678.9::FLOAT"));
+    public void aFloatCrossesWithEveryDigit() {
+        assertEquals(Arrays.<Object>asList(Double.valueOf(0.30000000000000004), Double.valueOf(0.30000000000000004),
+            Double.valueOf(1.4142135623730951)),
+            wireRow("SELECT 0.1::FLOAT + 0.2::FLOAT, 0.30000000000000004::FLOAT, SQRT(2)"));
+        assertEquals(Arrays.<Object>asList(Double.valueOf(1.100000023841858), Double.valueOf(9.007199254740992E15),
+            Double.valueOf(1.2345678901234567E9)),
+            wireRow("SELECT 1.100000023841858::FLOAT, 9007199254740993::FLOAT, 1234567890.123456789::FLOAT"));
+    }
+
+    @Test
+    public void theRangeEdgesCrossAsNumbers() {
+        assertEquals(Arrays.<Object>asList(Double.valueOf(Double.MIN_NORMAL), Double.valueOf(Double.MAX_VALUE)),
+            wireRow("SELECT 2.2250738585072014e-308::FLOAT, 1.7976931348623157e308::FLOAT"));
     }
 
     @Test
@@ -58,11 +60,5 @@ public class FloatResultWireTest {
         assertEquals(Arrays.<Object>asList(Double.valueOf(Double.NaN), Double.valueOf(Double.POSITIVE_INFINITY),
             Double.valueOf(0.0), Double.valueOf(-0.0), Double.valueOf(1.0E-20), Double.valueOf(1.0E30)),
             wireRow("SELECT 'NaN'::FLOAT, 'inf'::FLOAT, 0::FLOAT, -0::FLOAT, 1e-20::FLOAT, 1.0E30::FLOAT"));
-    }
-
-    @Test
-    public void theEnginesValueIsUnchanged() {
-        assertEquals(Double.valueOf(1.100000023841858),
-            engine.executeQuery("SELECT 1.100000023841858::FLOAT").getRows().get(0).getValue(0));
     }
 }
